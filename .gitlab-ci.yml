@@ -36,7 +36,7 @@ publish (snapshot):
     - if: $CI_COMMIT_BRANCH == "main"
 
 publish (release):
-  stage: release
+  stage: publish
   script:
     - mvn versions:set -DnewVersion=${CI_COMMIT_TAG}
     - mvn $MAVEN_CLI_OPTS deploy
