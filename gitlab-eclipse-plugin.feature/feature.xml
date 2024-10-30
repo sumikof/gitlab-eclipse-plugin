@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <feature
-      id="com.gitlab.eclipse.feature"
+      id="gitlab-eclipse-plugin.feature"
       label="GitLab Duo Plugin (feature)"
       version="0.1.0"
       provider-name="GitLab">
