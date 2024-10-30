@@ -16,6 +16,7 @@
 
   <modules>
     <module>gitlab-eclipse-plugin.core</module>
+    <module>gitlab-eclipse-plugin.feature</module>
     <module>gitlab-eclipse-plugin.site</module>
   </modules>
 
