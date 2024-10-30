@@ -1,0 +1,44 @@
+image: maven:3.9.9-openjdk-21
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Code-Quality.gitlab-ci.yml
+
+variables:
+  MAVEN_CLI_OPTS: "-s .m2/settings.xml --no-transfer-progress"
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+
+cache:
+  paths:
+    - .m2/repository/
+    - target/
+
+stages:
+  - compile
+  - test
+  - publish
+
+compile:
+  stage: compile
+  script:
+    - mvn $MAVEN_CLI_OPTS compile
+
+verify:
+  stage: test
+  script:
+    - mvn $MAVEN_CLI_OPTS verify
+
+publish (snapshot):
+  stage: publish
+  script:
+    - mvn $MAVEN_CLI_OPTS deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+publish (release):
+  stage: release
+  script:
+    - mvn versions:set -DnewVersion=${CI_COMMIT_TAG}
+    - mvn $MAVEN_CLI_OPTS deploy
+  rules:
+    - if: $CI_COMMIT_TAG
