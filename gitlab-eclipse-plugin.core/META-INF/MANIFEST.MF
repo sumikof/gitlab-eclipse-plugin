@@ -1,0 +1,15 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: GitLab Eclipse Plugin
+Bundle-SymbolicName: gitlab-eclipse-plugin.core;singleton:=true
+Bundle-Vendor: GitLab Inc.
+Bundle-Version: 1.0.0.qualifier
+Require-Bundle: org.eclipse.core.runtime,
+ org.eclipse.ui,
+ org.eclipse.lsp4e,
+ org.eclipse.jface.text;bundle-version="3.25.200",
+ org.eclipse.lsp4j.jsonrpc;bundle-version="0.23.1",
+ org.eclipse.equinox.security;bundle-version="1.4.400"
+Bundle-ActivationPolicy: lazy
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Automatic-Module-Name: gitlab-eclipse-plugin.core

@@ -1,0 +1,51 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.gitlab.eclipse</groupId>
+  <artifactId>gitlab-eclipse-plugin-parent</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <description>Parent for gitlab-eclipse-plugin Maven modules.</description>
+
+  <properties>
+    <tycho.version>4.0.8</tycho.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+  </properties>
+
+  <modules>
+    <module>gitlab-eclipse-plugin.core</module>
+    <module>gitlab-eclipse-plugin.site</module>
+  </modules>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.eclipse.tycho</groupId>
+          <artifactId>tycho-p2-director-plugin</artifactId>
+          <version>${tycho.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>org.eclipse.tycho</groupId>
+        <artifactId>tycho-maven-plugin</artifactId>
+        <version>${tycho.version}</version>
+        <extensions>true</extensions>
+      </plugin>
+    </plugins>
+  </build>
+
+ <repositories>
+   <repository>
+     <!-- Codenames are no longer used so target 2024-09 (4.33.0) instead. See also https://wiki.eclipse.org/Eclipse_Project_Update_Sites -->
+     <id>2024-09</id>
+     <layout>p2</layout>
+     <url>http://download.eclipse.org/releases/2024-09</url>
+   </repository>
+  </repositories>
+</project>

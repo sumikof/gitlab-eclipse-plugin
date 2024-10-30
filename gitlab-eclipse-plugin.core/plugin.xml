@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+	<extension point="org.eclipse.ui.views">
+		<category name="GitLab" id="gitlab-eclipse-plugin"></category>
+
+		<!-- TODO: Use perspective to pin the view to the right for new users. Renaming the view is helpful for testing first time UX. -->
+		<view id="com.gitlab.eclipse.views.LanguageServerBrowserView"
+			category="gitlab-eclipse-plugin"
+			class="com.gitlab.eclipse.views.LanguageServerBrowserView"
+			name="GitLab Duo"
+			icon="icons/notification.png"
+			inject="true">
+		</view>
+	</extension>
+</plugin>

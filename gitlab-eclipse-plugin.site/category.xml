@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<site>
+   <bundle id="gitlab-eclipse-plugin.core">
+      <category name="com.gitlab.eclipse.category"/>
+   </bundle>
+   <category-def name="com.gitlab.eclipse.category" label="GitLab">
+      <description>
+         Contains plugins for GitLab, GitLab Duo, GitLab Duo Workflow, and more.
+      </description>
+   </category-def>
+</site>
