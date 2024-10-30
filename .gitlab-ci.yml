@@ -5,7 +5,7 @@ include:
   - template: Code-Quality.gitlab-ci.yml
 
 variables:
-  MAVEN_CLI_OPTS: "--no-transfer-progress"
+  MAVEN_CLI_OPTS: "-s .mvn/settings.xml --no-transfer-progress"
   MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
 
 cache:

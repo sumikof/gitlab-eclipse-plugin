@@ -1,0 +1,15 @@
+<settings>
+  <servers>
+    <server>
+      <id>gitlab-maven</id>
+      <username>gitlab-ci-token</username>
+      <password>${CI_JOB_TOKEN}</password>
+      <configuration>
+        <authenticationInfo>
+          <userName>gitlab-ci-token</userName>
+          <password>${CI_JOB_TOKEN}</password>
+        </authenticationInfo>
+      </configuration>
+    </server>
+  </servers>
+</settings>
