@@ -22,3 +22,7 @@ Inside of the `gitlab-eclipse-plugin.core` directory use the `mvn exec:exec` tas
 ### Eclipse
 
 Inside of Eclipse you can use the `GitLab Eclipse Plugin` run configuration to launch the Eclipse IDE with this plugin installed.
+
+### IntelliJ
+
+Inside of IntelliJ you can use the `Launch Eclipse` run configuration to launch the Eclipse IDE with this plugin installed.
