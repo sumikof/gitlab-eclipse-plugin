@@ -17,6 +17,8 @@ Consider [parent pom.xml](../pom.xml) and [project CI/CD configuration](../.gitl
 
 You can use `mvn verify` to compile and run all tests for this project.
 
+Inside of the `gitlab-eclipse-plugin.core` directory use the `mvn exec:exec` task to launch Eclipse with this plugin installed.
+
 ### Eclipse
 
 Inside of Eclipse you can use the `GitLab Eclipse Plugin` run configuration to launch the Eclipse IDE with this plugin installed.
