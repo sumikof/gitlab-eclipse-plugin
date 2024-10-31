@@ -1,15 +1,106 @@
 <?xml version="1.0"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-  <artifactId>gitlab-eclipse-plugin.core</artifactId>
-  <packaging>eclipse-plugin</packaging>
-  <description>GitLab Eclipse Plugin</description>
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<artifactId>gitlab-eclipse-plugin.core</artifactId>
+	<packaging>eclipse-plugin</packaging>
+	<description>GitLab Eclipse Plugin</description>
 
-  <parent>
-    <groupId>com.gitlab.eclipse</groupId>
-    <artifactId>gitlab-eclipse-plugin-parent</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-  </parent>
+	<parent>
+		<groupId>com.gitlab.eclipse</groupId>
+		<artifactId>gitlab-eclipse-plugin-parent</artifactId>
+		<version>1.0.0-SNAPSHOT</version>
+	</parent>
+
+	<properties>
+		<eclipse.plugin.configuration.directory>file:${eclipse.workspace}/.metadata/.plugins/org.eclipse.pde.core/GitLab Eclipse Plugin</eclipse.plugin.configuration.directory>
+		<equinox.launcher.version>1.6.900</equinox.launcher.version>
+	</properties>
+
+	<build>
+		<plugins>
+			<!--This plugin's configuration is used to store Eclipse m2e settings only. It has no influence on the Maven build itself.-->
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>exec-maven-plugin</artifactId>
+				<version>3.5.0</version>
+				<executions>
+					<execution>
+						<goals>
+							<goal>exec</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<executable>java</executable>
+					<mainClass>org.eclipse.equinox.launcher.Main</mainClass>
+					<includeProjectDependencies>false</includeProjectDependencies>
+					<includePluginDependencies>true</includePluginDependencies>
+					<systemProperties>
+						<systemProperty>
+							<key>org.eclipse.swt.graphics.Resource.reportNonDisposed</key>
+							<value>true</value>
+						</systemProperty>
+						<systemProperty>
+							<key>eclipse.pde.launch</key>
+							<value>true</value>
+						</systemProperty>
+						<systemProperty>
+							<key>java.security.manager</key>
+							<value>allow</value>
+						</systemProperty>
+						<systemProperty>
+							<key>file.encoding</key>
+							<value>UTF-8</value>
+						</systemProperty>
+						<systemProperty>
+							<key>stdout.encoding</key>
+							<value>UTF-8</value>
+						</systemProperty>
+						<systemProperty>
+							<key>stderr.encoding</key>
+							<value>UTF-8</value>
+						</systemProperty>
+					</systemProperties>
+					<arguments>
+						<argument>-XstartOnFirstThread</argument>
+						<argument>--add-modules=ALL-SYSTEM</argument>
+						<argument>-XX:+ShowCodeDetailsInExceptionMessages</argument>
+						<argument>-classpath</argument>
+						<classpath/>
+						<argument>org.eclipse.equinox.launcher.Main</argument>
+						<argument>-name</argument>
+						<argument>Eclipse</argument>
+						<argument>-showsplash</argument>
+						<argument>600</argument>
+						<argument>-product</argument>
+						<argument>org.eclipse.epp.package.jee.product</argument>
+						<argument>-data</argument>
+						<argument>${eclipse.workspace}/../runtime-GitLabEclipsePlugin</argument>
+						<argument>-configuration</argument>
+						<argument>${eclipse.plugin.configuration.directory}</argument>
+						<argument>-dev</argument>
+						<argument>${eclipse.plugin.configuration.directory}/dev.properties</argument>
+						<argument>-os</argument>
+						<argument>macosx</argument>
+						<argument>-ws</argument>
+						<argument>cocoa</argument>
+						<argument>-arch</argument>
+						<argument>aarch64</argument>
+						<argument>-nl</argument>
+						<argument>en_GB</argument>
+						<argument>-consoleLog</argument>
+					</arguments>
+				</configuration>
+				<dependencies>
+					<dependency>
+						<groupId>org.eclipse.platform</groupId>
+						<artifactId>org.eclipse.equinox.launcher</artifactId>
+						<version>${equinox.launcher.version}</version>
+					</dependency>
+				</dependencies>
+			</plugin>
+		</plugins>
+	</build>
 </project>

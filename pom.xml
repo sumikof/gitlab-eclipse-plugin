@@ -8,10 +8,13 @@
   <description>Parent for gitlab-eclipse-plugin Maven modules.</description>
 
   <properties>
-    <tycho.version>4.0.8</tycho.version>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- See also https://wiki.eclipse.org/Eclipse_Project_Update_Sites -->
+    <eclipse.release>2024-09</eclipse.release>
+    <eclipse.workspace>${user.home}/eclipse-workspace</eclipse.workspace>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <tycho.version>4.0.8</tycho.version>
   </properties>
 
   <modules>
@@ -42,10 +45,9 @@
 
   <repositories>
     <repository>
-      <!-- Codenames are no longer used so target 2024-09 (4.33.0) instead. See also https://wiki.eclipse.org/Eclipse_Project_Update_Sites -->
-      <id>2024-09</id>
+      <id>${eclipse.release}</id>
       <layout>p2</layout>
-      <url>http://download.eclipse.org/releases/2024-09</url>
+      <url>http://download.eclipse.org/releases/${eclipse.release}</url>
     </repository>
 
     <repository>

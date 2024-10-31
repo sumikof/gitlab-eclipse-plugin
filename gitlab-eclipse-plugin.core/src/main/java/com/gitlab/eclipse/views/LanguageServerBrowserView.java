@@ -3,6 +3,10 @@ package com.gitlab.eclipse.views;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.DateFormat;
+import java.time.Instant;
+import java.util.Date;
+
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.browser.Browser;
 import org.eclipse.swt.widgets.Composite;
@@ -50,7 +54,8 @@ public class LanguageServerBrowserView extends ViewPart
 		buffer.append("<script>" + js + "</script>");
 		buffer.append("</head>");
 		buffer.append("<body>");
-		buffer.append("<p>Hello world from the GitLab Eclipse Plugin.</p>");
+		buffer.append("<p>Hello world from the GitLab for Eclipse.</p>");
+		buffer.append("<p>Webview content loaded at: " + DateFormat.getInstance().format(Date.from(Instant.now())) + "</p>");
 		buffer.append("</body>");
 		buffer.append("</html>");
 		return buffer.toString();
