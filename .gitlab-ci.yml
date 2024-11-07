@@ -1,0 +1,24 @@
+stages:
+  - build
+  - test
+  - deploy
+  - release
+
+image: gradle:8-jdk21
+
+cache:
+  paths:
+     - .gradle/caches
+     - .gradle/wrapper
+     - .m2/repository/
+
+variables:
+  MAVEN_CLI_OPTS: "-s settings.xml --batch-mode --no-transfer-progress"
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  GRADLE_OPTS:  "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Code-Quality.gitlab-ci.yml
+  - local: .gitlab/templates/update-site.yml
+  - local: .gitlab/templates/gitlab-eclipse-plugin.yml

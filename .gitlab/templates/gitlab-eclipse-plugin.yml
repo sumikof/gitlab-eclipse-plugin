@@ -1,0 +1,30 @@
+build plugin:
+  stage: build
+  script:
+     - ./gradlew assemble
+
+check plugin:
+  stage: test
+  script:
+     - ./gradlew check
+
+publish plugin (snapshot):
+  stage: deploy
+  script:
+    - |-
+      if ./gradlew checkSnapshotVersion; then
+        ./gradlew publish
+      else
+        echo 'WARNING: Skipping publish to package registry due to project version missing -SNAPSHOT suffix. If this is an error please amend build.gradle.kts.'
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+publish plugin (release):
+  stage: release
+  script:
+    - ./gradlew checkReleaseVersion
+    - ./gradlew publish
+  rules:
+    - if: $CI_COMMIT_TAG
+
