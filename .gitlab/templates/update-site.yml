@@ -1,0 +1,25 @@
+.maven:
+  image: maven:3.9.9-eclipse-temurin-21
+  variables:
+    MAVEN_CLI_OPTS: "-s settings.xml --batch-mode --no-transfer-progress"
+
+publish update site (snapshot):
+  extends: .maven
+  needs: ["publish plugin (snapshot)"]
+  stage: deploy
+  script:
+    - cd update-site
+    - mvn $MAVEN_CLI_OPTS deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+publish update site (release):
+  extends: .maven
+  needs: ["publish plugin (release)"]
+  stage: release
+  script:
+    - cd update-site
+    - mvn $MAVEN_CLI_OPTS versions:set -DnewVersion=${CI_COMMIT_TAG}
+    - mvn $MAVEN_CLI_OPTS deploy
+  rules:
+    - if: $CI_COMMIT_TAG
