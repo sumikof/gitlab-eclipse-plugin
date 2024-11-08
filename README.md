@@ -17,3 +17,7 @@ Use `./gradlew equoIde` to start a Equo instance with GitLab for Eclipse install
 Creates a P2 update site (e.g. Eclipse repository) which can be used to install the GitLab for Eclipse plug-in.
 
 Learn more in the [update site project README](./gitlab-eclipse-plugin.site/README.md).
+
+## Releasing
+
+Follow the release process issue template to create and distribute a new plugin release.

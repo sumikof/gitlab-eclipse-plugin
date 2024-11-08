@@ -1,0 +1,7 @@
+^[Kotlin Reviewers] @erran
+*.kt
+*.kts
+
+^[Documentation Pages]
+/*.md @aqualls
+/docs/ @aqualls
