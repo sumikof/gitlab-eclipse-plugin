@@ -34,16 +34,19 @@ dependencies {
     // See note below around manually packing the Kotlin Standard Library/Runtime classes into the GitLab for Eclipse plug-in bundle.
     runtimeOnly(kotlin("osgi-bundle"))
     testImplementation(kotlin("test"))
+    testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
+    testImplementation("io.mockk:mockk:1.13.13")
 }
 
 val eclipseRelease = "4.33"
 p2deps {
-    into("compileOnly") {
+    into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
 
         install("org.eclipse.jdt.core")
         install("org.eclipse.osgi")
         install("org.eclipse.swt")
+        install("org.eclipse.equinox.security")
         install("org.eclipse.ui")
     }
 }
@@ -79,6 +82,10 @@ tasks.withType<Jar> {
         )
         attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
     }
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
 }
 
 publishing {
