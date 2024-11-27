@@ -2,7 +2,6 @@ package com.gitlab.eclipse.preferences
 
 import com.gitlab.eclipse.storage.SecretStorage
 import org.eclipse.jface.preference.StringFieldEditor
-import org.eclipse.osgi.storage.Storage.StorageException
 import org.eclipse.swt.widgets.Composite
 import java.util.*
 
@@ -40,11 +39,7 @@ class SecretStringFieldEditor(
             return
         }
 
-        try {
-            secretStorage.putSecret(preferenceName, text)
-        } catch (e: StorageException) {
-            e.printStackTrace()
-        }
+        secretStorage.putSecret(preferenceName, text)
 
         doLoad()
     }
