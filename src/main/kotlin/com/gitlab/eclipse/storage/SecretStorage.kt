@@ -22,7 +22,6 @@ class SecretStorage(rootURI: String?) {
         node.get(key, null)
     } catch (e: StorageException) {
         Platform.getLog(javaClass).error(e.message, e)
-        e.printStackTrace()
 
         key?.split(Regex("[^a-zA-Z0-9]+"))
            ?.joinToString("_")
@@ -35,8 +34,7 @@ class SecretStorage(rootURI: String?) {
         try {
             node.put(key, value, true)
         } catch (e: StorageException) {
-            Platform.getLog(javaClass).log(Status(ERROR, "gitlab-eclipse-plugin", e.message))
-            e.printStackTrace()
+        Platform.getLog(javaClass).error(e.message, e)
         }
     }
 }
