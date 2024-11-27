@@ -39,15 +39,6 @@ val osgiPlatform = when (System.getProperty("os.name")) {
   "Windows 11" -> "win32.win32.$arch"
   else -> "gtk.linux.$arch"
 }
-val eclipseRelease = "4.33"
-p2deps {
-    into("compileOnly") {
-      p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
-      install("org.eclipse.swt")
-      install("org.eclipse.ui")
-    }
-}
-
 // Transform the string `${osgi.platform}` into an explicit artifactId
 // for transient Maven dependencies since Gradle does not support
 // properties inside of artifact name/versions.
