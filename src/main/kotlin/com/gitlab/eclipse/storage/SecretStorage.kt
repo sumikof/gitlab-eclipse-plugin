@@ -1,31 +1,43 @@
 package com.gitlab.eclipse.storage
 
+import org.eclipse.core.runtime.IStatus.ERROR
+import org.eclipse.core.runtime.Platform
+import org.eclipse.core.runtime.Status
 import org.eclipse.equinox.security.storage.ISecurePreferences
 import org.eclipse.equinox.security.storage.SecurePreferencesFactory
-import org.eclipse.osgi.storage.Storage.StorageException
+import org.eclipse.equinox.security.storage.StorageException
 
+/**
+ * Stubbed secret storage which supports environment variable resolution.
+ * For formal support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/19
+ * For Equo support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/20
+ */
 class SecretStorage(rootURI: String?) {
     private val node: ISecurePreferences = SecurePreferencesFactory.getDefault()
         .node("gitlab")
         .node("hosts")
         .node(rootURI)
 
-    fun getSecret(key: String?): String? {
-        return getSecret(key, null)
-    }
+    fun getSecret(key: String?) = try {
+        node.get(key, null)
+    } catch (e: StorageException) {
+        Platform.getLog(javaClass).error(e.message, e)
+        e.printStackTrace()
 
-    fun getSecret(key: String?, def: String?): String? {
-        try {
-            return node.get(key, def)
-        } catch (e: StorageException) {
-            e.printStackTrace()
-            return null
-        }
+        key?.split(Regex("[^a-zA-Z0-9]+"))
+           ?.joinToString("_")
+           ?.let { "GITLAB_ECLIPSE_${it.uppercase()}" }
+           ?.let { System.getenv(it) }
     }
 
     @Throws(StorageException::class)
     fun putSecret(key: String?, value: String?) {
-        node.put(key, value, true)
+        try {
+            node.put(key, value, true)
+        } catch (e: StorageException) {
+            Platform.getLog(javaClass).log(Status(ERROR, "gitlab-eclipse-plugin", e.message))
+            e.printStackTrace()
+        }
     }
 }
 
