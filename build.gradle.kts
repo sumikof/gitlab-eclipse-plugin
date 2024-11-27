@@ -39,15 +39,6 @@ val osgiPlatform = when (System.getProperty("os.name")) {
   "Windows 11" -> "win32.win32.$arch"
   else -> "gtk.linux.$arch"
 }
-val eclipseRelease = "4.33"
-p2deps {
-    into("compileOnly") {
-      p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
-      install("org.eclipse.swt")
-      install("org.eclipse.ui")
-    }
-}
-
 // Transform the string `${osgi.platform}` into an explicit artifactId
 // for transient Maven dependencies since Gradle does not support
 // properties inside of artifact name/versions.
@@ -65,12 +56,34 @@ configurations.all {
 dependencies {
     // See note below around manually packing the Kotlin Standard Library/Runtime classes into the GitLab for Eclipse plug-in bundle.
     runtimeOnly(kotlin("osgi-bundle"))
-    testImplementation(kotlin("test"))
 
     // 1. Must be available for compiling kotlin on linux.
     // 2. Must be available as a runtime dependency for running Equo on linux.
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
+
+    testImplementation(kotlin("test"))
+    testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
+    testImplementation("io.mockk:mockk:1.13.13")
+}
+
+val eclipseRelease = "4.33"
+// Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
+val eclipseDependencies = listOf(
+    "org.eclipse.core.runtime",
+    "org.eclipse.equinox.security",
+    "org.eclipse.osgi",
+    "org.eclipse.swt",
+    "org.eclipse.ui",
+)
+p2deps {
+    into(listOf("compileOnly", "testImplementation")) {
+        p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
+
+        eclipseDependencies.forEach {
+            install(it)
+        }
+    }
 }
 
 tasks.withType<Jar> {
@@ -98,13 +111,12 @@ tasks.withType<Jar> {
 
         attributes["Automatic-Module-Name"] = project.name
 
-        // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
-        val eclipseDependencies = listOf(
-           "org.eclipse.swt",
-           "org.eclipse.ui",
-        )
         attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
     }
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
 }
 
 publishing {
