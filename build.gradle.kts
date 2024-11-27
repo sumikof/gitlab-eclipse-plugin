@@ -68,15 +68,21 @@ dependencies {
 }
 
 val eclipseRelease = "4.33"
+// Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
+val eclipseDependencies = listOf(
+    "org.eclipse.core.runtime",
+    "org.eclipse.equinox.security",
+    "org.eclipse.osgi",
+    "org.eclipse.swt",
+    "org.eclipse.ui",
+)
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
 
-        install("org.eclipse.jdt.core")
-        install("org.eclipse.osgi")
-        install("org.eclipse.swt")
-        install("org.eclipse.equinox.security")
-        install("org.eclipse.ui")
+        eclipseDependencies.forEach {
+            install(it)
+        }
     }
 }
 
@@ -105,11 +111,6 @@ tasks.withType<Jar> {
 
         attributes["Automatic-Module-Name"] = project.name
 
-        // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
-        val eclipseDependencies = listOf(
-           "org.eclipse.swt",
-           "org.eclipse.ui",
-        )
         attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
     }
 }
