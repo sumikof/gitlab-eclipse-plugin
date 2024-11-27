@@ -30,22 +30,47 @@ kotlin {
     jvmToolchain(21)
 }
 
+val arch = when (System.getProperty("os.arch")) {
+  "aarch64" -> "aarch64"
+  else -> "x86_64"
+}
+val osgiPlatform = when (System.getProperty("os.name")) {
+  "Mac OS X" -> "cocoa.macosx.$arch"
+  "Windows 11" -> "win32.win32.$arch"
+  else -> "gtk.linux.$arch"
+}
+val eclipseRelease = "4.33"
+p2deps {
+    into("compileOnly") {
+      p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
+      install("org.eclipse.swt")
+      install("org.eclipse.ui")
+    }
+}
+
+// Transform the string `${osgi.platform}` into an explicit artifactId
+// for transient Maven dependencies since Gradle does not support
+// properties inside of artifact name/versions.
+//
+// See also https://github.com/jmini/ecentral/issues/21.
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.name.contains("\${osgi.platform}")) {
+            useTarget(requested.toString().replace("\${osgi.platform}", osgiPlatform))
+            because("prefer $osgiPlatform over \${osgi.platform}")
+        }
+    }
+}
+
 dependencies {
     // See note below around manually packing the Kotlin Standard Library/Runtime classes into the GitLab for Eclipse plug-in bundle.
     runtimeOnly(kotlin("osgi-bundle"))
     testImplementation(kotlin("test"))
-}
 
-val eclipseRelease = "4.33"
-p2deps {
-    into("compileOnly") {
-        p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
-
-        install("org.eclipse.jdt.core")
-        install("org.eclipse.osgi")
-        install("org.eclipse.swt")
-        install("org.eclipse.ui")
-    }
+    // 1. Must be available for compiling kotlin on linux.
+    // 2. Must be available as a runtime dependency for running Equo on linux.
+    // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
+    implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
 }
 
 tasks.withType<Jar> {
@@ -73,8 +98,9 @@ tasks.withType<Jar> {
 
         attributes["Automatic-Module-Name"] = project.name
 
-        // Declare OSGi bundles (Eclipse plug-ins) that are required in the our plug-in's manifest.
+        // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
         val eclipseDependencies = listOf(
+           "org.eclipse.swt",
            "org.eclipse.ui",
         )
         attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
@@ -140,6 +166,10 @@ equoIde {
     // Bundle Java Developer Tools (which helps testing Code Suggestions).
     jdt()
 
-    // Dogfood this project.
+    // Strangely required to start in our Ubuntu docker image but not on Mac OS...
+    // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
+    install("org.apache.felix.scr")
+
+    // Install the GitLab for Eclipse plug-in project.
     dogfood()
 }
