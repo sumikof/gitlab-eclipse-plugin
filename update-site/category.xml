@@ -8,9 +8,6 @@
 
     <bundle id="com.gitlab.eclipse.gitlab-eclipse-plugin">
         <category name="com.gitlab.eclipse.category"/>
-        <description>
-            Contains plugins for GitLab, GitLab Duo, GitLab Duo Workflow, and more.
-        </description>
     </bundle>
 
     <category-def name="com.gitlab.eclipse.lsp.category" label="GitLab Language Server">
