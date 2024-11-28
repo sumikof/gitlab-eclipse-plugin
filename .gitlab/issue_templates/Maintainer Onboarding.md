@@ -4,7 +4,7 @@
 
 ## Basic setup
 
-- [ ] Create a merge request updating [your team member entry](https://gitlab.com/gitlab-com/www-gitlab-com/blob/master/doc/team_database.md) adding yourself as a [`trainee_maintainer`](https://handbook.gitlab.com/handbook/engineering/workflow/code-review/#learning-to-be-a-maintainer) of the `gitlab-eclipse-plugin` project.
+- [ ] Create a merge request updating [your team member entry](https://gitlab.com/gitlab-com/www-gitlab-com/blob/master/doc/team_database.md) adding yourself as a [`trainee_maintainer`](https://handbook.gitlab.com/handbook/engineering/workflow/code-review/#learning-to-be-a-maintainer) of the `gitlab-eclipse-plugin` project. (example MR: [trainee maintainer MR](https://gitlab.com/gitlab-com/www-gitlab-com/-/merge_requests/137264/diffs))
 - [ ] Join the `#f_eclipse_plugin` Slack channel.
 - [ ] Read and understand the [maintainer responsibilities](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/blob/main/docs/dev/maintainer_responsibility.md) for this project.
 - [ ] Browse through the [development resources](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/blob/main/docs/dev/development_resources.md) to get an idea of how the plugin works.
