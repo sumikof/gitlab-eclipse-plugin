@@ -209,7 +209,7 @@ tasks.register("lspDownloadGenericPackageJson") {
 
     doLast {
         val url =
-            "https://gitlab.com/api/v4/projects/$gitlabEclipsePluginProjectId/packages?package_type=generic&sort=desc"
+            "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages?package_type=generic&sort=desc"
 
         URI(url).toURL().openStream().use { input ->
             outputFile.asFile.outputStream().use { output ->
@@ -250,7 +250,7 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
 
         val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion }
             ?.let { it["id"] as? Number }
-            ?.let { "https://gitlab.com/api/v4/projects/$gitlabEclipsePluginProjectId/packages/$it/package_files" }
+            ?.let { "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages/$it/package_files" }
             ?: error("Unable to find generic package for @gitlab-org/gitlab-lsp v$gitlabLspVersion.")
 
         // Download package_files.json
@@ -351,9 +351,6 @@ subprojects {
 
 
 tasks.create("publishToGitLab") {
-    // TODO: Define inputs of update-site relative to build directory:
-    inputs.files(file("update-site/target/repository"))
-
     val gitlabPublishDryRun = providers.gradleProperty("gitlabPublishDryRun")
     doLast {
         val apiUrl = URI(System.getenv("CI_API_V4_URL").removeSuffix("/"))
