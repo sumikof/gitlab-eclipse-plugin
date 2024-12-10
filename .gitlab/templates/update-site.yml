@@ -3,7 +3,7 @@
   variables:
     MAVEN_CLI_OPTS: "-s settings.xml --batch-mode --no-transfer-progress"
 
-publish update site (snapshot):
+deploy update site (snapshot):
   extends: .maven
   needs: ["publish plugin (snapshot)"]
   stage: deploy
@@ -12,8 +12,11 @@ publish update site (snapshot):
     - mvn $MAVEN_CLI_OPTS deploy
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
+  artifacts:
+    paths:
+      - update-site/target/repository/
 
-publish update site (release):
+deploy update site (release):
   extends: .maven
   needs: ["publish plugin (release)"]
   stage: release
@@ -21,5 +24,28 @@ publish update site (release):
     - cd update-site
     - mvn $MAVEN_CLI_OPTS versions:set -DnewVersion=${CI_COMMIT_TAG}
     - mvn $MAVEN_CLI_OPTS deploy
+  rules:
+    - if: $CI_COMMIT_TAG
+  artifacts:
+    paths:
+      - update-site/target/repository/
+
+publish eclipse repository:
+  needs: ["deploy update site (release)"]
+  stage: release
+  script:
+    - ./gradlew publishToGitLab
+  rules:
+    - if: $CI_COMMIT_TAG
+  artifacts:
+    paths:
+      - build/release/asset-links.json
+
+release eclipse repository:
+  image: gitlab/glab
+  needs: ["publish eclipse repository"]
+  stage: release
+  script:
+    - glab release create "${CI_COMMIT_TAG}" --assets-links "$(cat ./build/release/asset-links.json)" -F CHANGELOG.md
   rules:
     - if: $CI_COMMIT_TAG
