@@ -20,7 +20,7 @@ plugins {
 
 allprojects {
     group = "com.gitlab.eclipse"
-    version = "0.2.0-SNAPSHOT"
+    version = "0.2.0"
     ext["bundleVersion"] = "0.2.0.${Instant.now().toEpochMilli()}"
 }
 
