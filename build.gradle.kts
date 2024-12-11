@@ -31,8 +31,8 @@ plugins {
 
 allprojects {
     group = "com.gitlab.eclipse"
-    version = "0.2.0"
-    ext["bundleVersion"] = "0.2.0.${Instant.now().toEpochMilli()}"
+    version = "0.2.2"
+    ext["bundleVersion"] = "0.2.2.${Instant.now().toEpochMilli()}"
 }
 
 repositories {
