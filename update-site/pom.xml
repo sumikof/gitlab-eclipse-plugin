@@ -4,10 +4,14 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.gitlab.eclipse</groupId>
     <artifactId>update-site</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>0.3.0-SNAPSHOT</version>
     <packaging>eclipse-repository</packaging>
 
     <properties>
+        <!--suppress UnresolvedMavenProperty -->
+        <gitlabEclipsePluginProjectId>${env.CI_PROJECT_ID}</gitlabEclipsePluginProjectId>
+        <!--suppress UnresolvedMavenProperty -->
+        <gitlabGroupId>${env.CI_PROJECT_NAMESPACE_ID}</gitlabGroupId>
         <tycho.version>4.0.8</tycho.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>21</maven.compiler.source>
@@ -116,18 +120,34 @@
 
         <repository>
             <id>gitlab-maven</id>
-            <url>https://gitlab.com/api/v4/groups/67713089/-/packages/maven</url>
+            <url>https://gitlab.com/api/v4/groups/${gitlabGroupId}/packages/maven</url>
         </repository>
     </repositories>
 
     <distributionManagement>
-        <repository>
-            <id>gitlab-maven</id>
-            <url>https://gitlab.com/api/v4/projects/62043363/packages/maven</url>
-        </repository>
-        <snapshotRepository>
-            <id>gitlab-maven</id>
-            <url>https://gitlab.com/api/v4/projects/62043363/packages/maven</url>
-        </snapshotRepository>
+      <repository>
+        <id>gitlab-maven</id>
+        <url>https://gitlab.com/api/v4/projects/${gitlabEclipsePluginProjectId}/packages/maven</url>
+      </repository>
+
+      <snapshotRepository>
+        <id>gitlab-maven</id>
+        <url>https://gitlab.com/api/v4/projects/${gitlabEclipsePluginProjectId}/packages/maven</url>
+      </snapshotRepository>
     </distributionManagement>
+
+    <profiles>
+        <profile>
+            <id>local</id>
+            <activation>
+                <property>
+                    <name>!env.CI</name>
+                </property>
+            </activation>
+            <properties>
+                <gitlabEclipsePluginProjectId>gitlab-org%2Feditor-extensions%2Fgitlab-eclipse-plugin</gitlabEclipsePluginProjectId>
+                <gitlabGroupId>gitlab-org%2Feditor-extensions</gitlabGroupId>
+            </properties>
+        </profile>
+    </profiles>
 </project>
