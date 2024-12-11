@@ -1,22 +1,31 @@
+import groovy.json.JsonSlurper
 import java.time.Instant
+import java.net.URI
+import org.gradle.jvm.tasks.Jar
 
 plugins {
   kotlin("jvm") version "2.0.20"
+
+  // Deploy artifacts to this project's Maven repository (e.g. GitLab Package Registry).
+  `maven-publish`
+
+  id("com.github.node-gradle.node").version("7.1.0") apply false
 
   // Provide Equo IDE as a sandbox and support listing available Eclipse categories/features.
   id("dev.equo.ide") version "1.7.7"
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
   id("dev.equo.p2deps") version "1.7.7"
-
-  // Deploy artifacts to this project's Maven repository (e.g. GitLab Package Registry).
-  `maven-publish`
 }
 
-group = "com.gitlab.eclipse"
-version = "0.2.0-SNAPSHOT"
+allprojects {
+    group = "com.gitlab.eclipse"
+    version = "0.2.0-SNAPSHOT"
+    ext["bundleVersion"] = "0.2.0.${Instant.now().toEpochMilli()}"
+}
 
 repositories {
+    gradlePluginPortal()
     mavenLocal()
     mavenCentral()
     if (System.getenv("CI") == "true") {
@@ -103,13 +112,13 @@ tasks.withType<Jar> {
     manifest {
         attributes["Bundle-ActivationPolicy"] = "lazy"
         attributes["Bundle-ManifestVersion"] = "2"
-        attributes["Bundle-Name"] = "GitLab Eclipse Plugin"
+        attributes["Bundle-Name"] = "GitLab for Eclipse"
         attributes["Bundle-RequiredExecutionEnvironment"] = "JavaSE-21"
-        attributes["Bundle-SymbolicName"] = "${project.name};singleton:=true"
+        attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
         attributes["Bundle-Vendor"] = "GitLab Inc."
-        attributes["Bundle-Version"] = "0.2.0.${Instant.now().toEpochMilli()}"
+        attributes["Bundle-Version"] = ext["bundleVersion"]
 
-        attributes["Automatic-Module-Name"] = project.name
+        attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
 
         attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
     }
@@ -184,4 +193,152 @@ equoIde {
 
     // Install the GitLab for Eclipse plug-in project.
     dogfood()
+}
+
+tasks.register("lspDownloadGenericPackageJson") {
+    val outputDir = rootProject.layout.buildDirectory.dir("gitlab-lsp")
+    val outputFile = outputDir.get().file("generic_packages.json")
+
+    outputs.dir(outputDir)
+
+    doLast {
+        val url =
+            "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages?package_type=generic&sort=desc"
+
+        URI(url).toURL().openStream().use { input ->
+            outputFile.asFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+}
+
+tasks.register("lspDownloadGenericPackageFilesJson") {
+    dependsOn(":lspDownloadGenericPackageJson")
+
+    val buildDir = rootProject.layout.buildDirectory.get().asFile
+    val gitlabLspDir = buildDir.resolve("gitlab-lsp")
+
+    inputs.file(gitlabLspDir.resolve("generic_packages.json"))
+    outputs.dir(gitlabLspDir)
+
+    @Suppress("UNCHECKED_CAST")
+    doLast {
+        val slurper = JsonSlurper()
+
+        // Parse package.json to get gitlab-lsp version
+        val gitlabLspVersion = slurper.parse(file("${rootProject.projectDir}/package.json"))
+            .let { it as? Map<String, Any> ?: error("Unexpected format for package.json.") }
+            .let {
+                it["dependencies"] as? Map<String, String> ?: error("Invalid dependencies in package.json.")
+            }
+            .let {
+                it["@gitlab-org/gitlab-lsp"]
+                    ?: error("Unable to find @gitlab-org/gitlab-lsp under dependencies in package.json.")
+            }
+
+        // Parse generic_packages.json to find package URL
+        val lspPackages =
+            slurper.parse(gitlabLspDir.resolve("generic_packages.json")) as? List<Map<String, Any>>
+                ?: error("Unable to parse generic_packages.json")
+
+        val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion }
+            ?.let { it["id"] as? Number }
+            ?.let { "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages/$it/package_files" }
+            ?: error("Unable to find generic package for @gitlab-org/gitlab-lsp v$gitlabLspVersion.")
+
+        // Download package_files.json
+        URI(packageUrl).toURL().openStream().use { input ->
+            gitlabLspDir.resolve("package_files.json").outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+}
+
+subprojects {
+    if (project.name.startsWith("gitlab-language-server.")) {
+        extra["downloadPlatformDependentBinary"] = fun() {
+            val targetPlatform = project.name.replace("gitlab-language-server.", "")
+            val languageServerPlatform = when (targetPlatform) {
+                "cocoa.macosx.aarch64" -> "macos-arm64"
+                "cocoa.macosx.x86_64" -> "macos-x64"
+                "gtk.linux.x86_64" -> "linux-x64"
+                "win32.win32.x86_64" -> "win-x64.exe"
+                else -> error("Expected a Language Server binary to be declared for OSGi platform.")
+            }
+            val platformFilter = when (targetPlatform) {
+                "cocoa.macosx.aarch64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=aarch64))"
+                "cocoa.macosx.x86_64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=x86_64))"
+                "gtk.linux.x86_64" -> "(& (osgi.ws=gtk) (osgi.os=linux) (osgi.arch=x86_64))"
+                "win32.win32.x86_64" -> "(& (osgi.ws=win32) (osgi.os=win32) (osgi.arch=x86_64))"
+                else -> error("Expected a Language Server binary to be declared for OSGi platform.")
+            }
+
+            tasks.register("lspDownloadBinaries") {
+                dependsOn(":lspDownloadGenericPackageFilesJson")
+
+                val buildDir = rootProject.layout.buildDirectory.get().asFile
+                val gitlabLspDir = buildDir.resolve("gitlab-lsp")
+                val binDir = gitlabLspDir.resolve("bin")
+
+                inputs.file(gitlabLspDir.resolve("package_files.json"))
+                outputs.file(binDir.resolve("gitlab-lsp-${languageServerPlatform}"))
+
+                @Suppress("UNCHECKED_CAST")
+                doLast {
+                    val packageFiles =
+                        JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
+                            ?: error("Unexpected format for package_files.json")
+
+                    binDir.mkdirs()
+
+                    packageFiles.forEach { file ->
+                        val id = file["id"] as? Number ?: error("Invalid value for id for package file")
+                        val fileName =
+                            file["file_name"] as? String
+                                ?: error("Invalid value for file_name for package file with id $id")
+                        if (fileName == "gitlab-lsp-${languageServerPlatform}") {
+                            val output = binDir.resolve(fileName)
+                            val url =
+                                "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$id/download"
+
+                            println("Downloading $fileName...")
+
+                            ant.withGroovyBuilder {
+                                "get"(
+                                    "src" to url,
+                                    "dest" to output
+                                )
+                            }
+
+                            output.setExecutable(true, false)
+                            return@doLast
+                        }
+                    }
+                    error("No platform specific binary found for language server version.")
+                }
+            }
+
+            tasks.withType<Jar> {
+                dependsOn("lspDownloadBinaries")
+                from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
+                    include("bin/gitlab-lsp-${languageServerPlatform}")
+                    rename { "gitlab-lsp" }
+                }
+
+                manifest {
+                    attributes["Bundle-ManifestVersion"] = "2"
+                    attributes["Bundle-Name"] = "GitLab Language Server ($targetPlatform)"
+                    attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
+                    attributes["Bundle-Vendor"] = "GitLab Inc."
+                    attributes["Bundle-Version"] = ext["bundleVersion"]
+
+                    attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
+                    attributes["Fragment-Host"] = "com.gitlab.eclipse.gitlab-language-server"
+                    attributes["Eclipse-PlatformFilter"] = platformFilter
+                }
+            }
+        }
+    }
 }
