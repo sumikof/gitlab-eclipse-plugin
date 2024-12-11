@@ -2,6 +2,17 @@ import groovy.json.JsonSlurper
 import java.time.Instant
 import java.net.URI
 import org.gradle.jvm.tasks.Jar
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.nio.file.Path
+import kotlin.text.toBoolean
+import kotlin.io.path.ExperimentalPathApi
+import kotlin.io.path.Path
+import kotlin.io.path.pathString
+import kotlin.io.path.walk
+
+val gitlabEclipsePluginProjectId = System.getenv().getOrDefault("CI_PROJECT_ID", "62043363").toInt()
 
 plugins {
   kotlin("jvm") version "2.0.20"
@@ -20,19 +31,14 @@ plugins {
 
 allprojects {
     group = "com.gitlab.eclipse"
-    version = "0.2.0-SNAPSHOT"
-    ext["bundleVersion"] = "0.2.0.${Instant.now().toEpochMilli()}"
+    version = "0.3.0-SNAPSHOT"
+    ext["bundleVersion"] = "0.3.0.${Instant.now().toEpochMilli()}"
 }
 
 repositories {
     gradlePluginPortal()
     mavenLocal()
     mavenCentral()
-    if (System.getenv("CI") == "true") {
-        maven("https://gitlab.com/api/v4/groups/67713089/-/packages/maven") {
-            name = "gitlab-maven"
-        }
-    }
 }
 
 kotlin {
@@ -136,7 +142,7 @@ publishing {
     }
 
     repositories {
-        maven("https://gitlab.com/api/v4/projects/62043363/packages/maven") {
+        maven("https://gitlab.com/api/v4/projects/$gitlabEclipsePluginProjectId/packages/maven") {
             name = "gitlab-maven"
 
             if (System.getenv("CI") == "true") {
@@ -303,7 +309,7 @@ subprojects {
                             val url =
                                 "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$id/download"
 
-                            println("Downloading $fileName...")
+                            logger.quiet("Downloading $fileName...")
 
                             ant.withGroovyBuilder {
                                 "get"(
@@ -340,5 +346,70 @@ subprojects {
                 }
             }
         }
+    }
+}
+
+
+/**
+ * 1. Uploads Eclipse P2 repository/update site artifacts to a new
+ *    generic package registry version.
+ * 2. Creates assets-links.json which can be used to create
+ *    permalinks to the generic packages in a GitLab release
+ *    for the current `CI_COMMIT_TAG`.
+ */
+tasks.create("publishToGitLab") {
+    val gitlabPublishDryRun = providers.gradleProperty("gitlabPublishDryRun")
+    doLast {
+        val apiUrl = URI(System.getenv("CI_API_V4_URL").removeSuffix("/"))
+        val commitTag = System.getenv("CI_COMMIT_TAG").removePrefix("v")
+        val token = System.getenv("CI_JOB_TOKEN") ?: error("You must set CI_JOB_TOKEN to publish to the package registry.")
+
+        val projectUri: URI = apiUrl.resolve("${apiUrl.rawPath}/projects/$gitlabEclipsePluginProjectId")
+        val httpClient: HttpClient = HttpClient.newHttpClient()
+
+        val artifacts = mutableMapOf<String, Path>()
+        val eclipseRepository = Path("update-site/target/repository")
+        @OptIn(ExperimentalPathApi::class)
+        for (artifact in eclipseRepository.walk()) {
+            val relativePath = artifact.pathString.removePrefix("${eclipseRepository.pathString}/")
+            artifacts[relativePath] = artifact
+        }
+
+        if (artifacts.isNotEmpty()) {
+            logger.quiet("Saved asset links JSON as asset-links.json")
+        } else {
+            logger.quiet("No artifacts found for publishing")
+        }
+
+        artifacts.forEach { (relativePath, artifact) ->
+            if (gitlabPublishDryRun.getOrElse("false").toBoolean()) {
+                logger.quiet("Skipped publishing file $relativePath")
+            } else {
+                val artifactDestinationUri: URI =
+                    "${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath"
+                        .let(projectUri::resolve)
+                logger.quiet("Publishing file $artifactDestinationUri")
+                val request = HttpRequest.newBuilder()
+                    .uri(artifactDestinationUri)
+                    .header("JOB-TOKEN", token)
+                    .PUT(HttpRequest.BodyPublishers.ofFile(artifact))
+                    .build()
+                httpClient.send(request, HttpResponse.BodyHandlers.ofString()).apply {
+                    val status = statusCode()
+                    if (status >= 400) {
+                        error("Failed to publish file: Response Status: $status - Body: ${body()}")
+                    }
+                }
+            }
+        }
+
+        val releaseDir = rootProject.layout.buildDirectory.get().asFile.resolve("release")
+        releaseDir.mkdirs()
+
+        val assetLinksFile = releaseDir.resolve("asset-links.json")
+        assetLinksFile.writeText(artifacts.keys.joinToString(separator = ",", prefix = "[", postfix = "]") { relativePath ->
+            val url: URI = projectUri.resolve("${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath")
+            """{ "direct_asset_path": "/$relativePath", "name": "Eclipse Update Site ($relativePath)", "url": "$url" }"""
+        })
     }
 }
