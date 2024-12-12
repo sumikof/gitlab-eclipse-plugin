@@ -108,4 +108,5 @@ When a merge request is ready to merge:
 - [Code Review Values](https://about.gitlab.com/handbook/engineering/workflow/reviewer-values/) for how we balance priorities and
   communication during code review.
 
-[//]: # (- [Project members page]&#40;https://gitlab.com/gitlab-org/gitlab-jetbrains-plugin/-/project_members?with_inherited_permissions=exclude&sort=access_level_desc&#41; to find the current list of active maintainers.)
+- [Project members page](https://gitlab.com/gitlab-org/gitlab-eclipse-plugin/-/project_members?with_inherited_permissions=exclude&sort=access_level_desc) to find the current list of active maintainers.
+- [Reviewer Roulette](https://gitlab-org.gitlab.io/gitlab-roulette/?currentProject=gitlab-eclipse-plugin) to find available reviewers.
