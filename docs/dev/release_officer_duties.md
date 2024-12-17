@@ -13,7 +13,7 @@ An Eclipse Release Officer has three main duties:
 The Release Officer is responsible for creating the release schedule and including the release schedule in the planning
 issue for the milestone.
 
-A stable Eclipse release will ideally be created every 1st Tuesday of the milestone.
+A stable Eclipse release will ideally be created every 2nd and 4th Tuesday of the milestone.
 
 If a Release Officer is unable to create a release in line with the schedule that is created for the milestone, post in
 the `#f_eclipse_plugin` to assign someone. Make sure the schedule reflects the reassignment of responsibilities.
