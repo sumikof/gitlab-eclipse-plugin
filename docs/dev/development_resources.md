@@ -5,11 +5,8 @@ In this doc, you can find a list of useful resources related with building plugi
 ### Reference documentations
 
 - [Eclipse Plug-in Developer Guide](https://help.eclipse.org/latest/index.jsp?topic=%2Forg.eclipse.platform.doc.isv%2Fguide%2Ffirstplugin_create.htm)
-
-[//]: # (### Example codes)
-
-[//]: # ()
-[//]: # (- TODO)
+- [GitLab Language Server](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/)
+- [API reference](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist)
 
 ## Learning Kotlin
 
@@ -17,10 +14,6 @@ In this doc, you can find a list of useful resources related with building plugi
 - [Atomic Kotlin](https://www.atomickotlin.com/atomickotlin/) (Online Course + Ebook)
 - [DZone: Mockito](https://dzone.com/refcardz/mockito)
 - [Gradle Tips & Tricks](https://docs.google.com/presentation/d/10-px53GqXE3iM4hKeWbRk7Y5Hf6XFy_JjA-LJGIWZjg/edit#slide=id.g1300c038e5_1_70)
-
-## Code Suggestions API
-
-- [API reference](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist)
 
 ## Writing tests
 
