@@ -2,17 +2,6 @@
 
 In this doc, you can find a list of useful resources related with building plugins for Eclipse as well as references for learning Kotlin.
 
-[//]: # ( ## Plugin basics)
-
-[//]: # ()
-[//]: # (- TODO)
-
-[//]: # ()
-[//]: # (### UI Elements)
-
-[//]: # ()
-[//]: # (- TODO)
-
 ### Reference documentations
 
 - [Eclipse Plug-in Developer Guide](https://help.eclipse.org/latest/index.jsp?topic=%2Forg.eclipse.platform.doc.isv%2Fguide%2Ffirstplugin_create.htm)

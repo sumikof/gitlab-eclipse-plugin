@@ -51,57 +51,11 @@ When a merge request is ready to merge:
 1. Ensure that the last pipeline started no more than 24 hours ago. If the pipeline is older, start a new one.
 1. Select **Set to auto-merge**, which should enqueue the merge request for merging after the pipeline succeeds.
 
-[//]: # (## Release new versions of the plugin)
+## Release new versions of the plugin
 
-[//]: # ()
-[//]: # (Some of the steps required to release the plugin require the Maintainer role. You might be asked to help release a)
-
-[//]: # (new version of the plugin to the `Stable` or `Alpha` release channel. For detailed instructions on how to create a new)
-
-[//]: # (release, see [release process documentation]&#40;releases/release_process.md&#41;.)
-
-[//]: # (## Monitor IDE version compatibility)
-
-[//]: # ()
-[//]: # (Keep an eye on compatibility verification results. When JetBrains makes deprecations or breaking changes)
-
-[//]: # (that affect the JetBrains SDK, create issues for maintenance work. To see verification results for each version of the plugin:)
-
-[//]: # ()
-[//]: # (Prerequisites:)
-
-[//]: # ()
-[//]: # (- You must have the Developer role in the Marketplace listing.)
-
-[//]: # ()
-[//]: # (1. Either:)
-
-[//]: # (    - Go to the **Versions** tab of [the plugin's listing]&#40;https://plugins.jetbrains.com/plugin/22325-gitlab-duo/edit/versions&#41;)
-
-[//]: # (      in the JetBrains Marketplace.)
-
-[//]: # (    - Check for verification results emailed to `jetbrains@gitlab.com`, and developers with access to the Marketplace listing.)
-
-[//]: # ()
-[//]: # (## Stay informed)
-
-[//]: # ()
-[//]: # (To keep informed about changes, and communicate with JetBrains:)
-
-[//]: # ()
-[//]: # (- Join the `#ext-jetbrains-gitlab-plugins` Slack channel. This channel is a connection between GitLab and JetBrains)
-
-[//]: # (  Slack workspaces. Use it to directly communicate with the JetBrains team about plugin-related matters.)
-
-[//]: # (- Join the `JetBrains Platform` Slack workspace. This community is where plugin developers can communicate about)
-
-[//]: # (  plugin-related matters.)
-
-[//]: # (    - The `#announcements` and `#intellij-platform` channels are particularly relevant to join.)
-
-[//]: # (    - To request an invitation to the workspace, enter your email in the [Join The Community form]&#40;https://plugins.jetbrains.com/slack/&#41;)
-
-[//]: # (      on the JetBrains website.)
+Some of the steps required to release the plugin require the Maintainer role. You might be asked to help release a
+new version of the plugin to the `Stable` or `Alpha` release channel. For detailed instructions on how to create a new
+release, see [release process documentation](release_process.md).
 
 ## Related topics
 
