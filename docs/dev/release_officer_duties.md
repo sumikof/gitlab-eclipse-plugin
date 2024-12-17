@@ -18,7 +18,7 @@ A stable Eclipse release will ideally be created every 1st Tuesday of the milest
 If a Release Officer is unable to create a release in line with the schedule that is created for the milestone, post in
 the `#f_eclipse_plugin` to assign someone. Make sure the schedule reflects the reassignment of responsibilities.
 
-The format for the schedule looks like (this example is taken from [planning issue for 17.8](https://gitlab.com/gitlab-org/editor-extensions/meta/-/issues/181#eclipse-1)):
+The format for the schedule looks like (this example is taken from [planning issue for 17.7](https://gitlab.com/gitlab-org/editor-extensions/meta/-/issues/181#eclipse-1)):
 
 | Date | Release Officer | Shadow | Status | Comments |
 |------|-----------------|--------|--------|----------|
