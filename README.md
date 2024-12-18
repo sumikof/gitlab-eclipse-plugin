@@ -14,8 +14,8 @@ Use `./gradlew equoIde` to start a Equo instance with GitLab for Eclipse install
 
 ### Debug Equo Ide
 
-Use `./gradlew equoIde --debug-ide` or the `Debug Equo Ide` run configuration to start a Equo instance with GitLab for Eclipse installed.
-Run the `Attach IDE Debugger` run configuration or attach your debugger to `localhost:8000` to debug the plugin.
+1. Use `./gradlew equoIde --debug-ide` or the `Debug Equo Ide` run configuration to start a Equo instance with GitLab for Eclipse installed.
+1. Run the `Attach IDE Debugger` run configuration or attach your debugger to `localhost:8000` to debug the plugin.
 
 ## update-site
 
