@@ -12,7 +12,7 @@ Use `./gradlew publishToMavenLocal` to publish the latest artifact to your local
 
 Use `./gradlew equoIde` to start a Equo instance with GitLab for Eclipse installed.
 
-### Debug EquoIde
+### Debug Equo Ide
 
 Use `./gradlew equoIde --debug-ide` or the `Debug Equo Ide` run configuration to start a Equo instance with GitLab for Eclipse installed.
 Run the `Attach IDE Debugger` run configuration or attach your debugger to `localhost:8000` to debug the plugin.
