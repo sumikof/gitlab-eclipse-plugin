@@ -24,9 +24,7 @@ up during this process, reach out in the `#f_eclipse_plugin` Slack channel.
 
 Create a branch with a name like `yourname/prepare-0.5.5-release`. It should contain these changes:
 
-1. [ ] In `update-site/pom.xml`, update the project `<version>` number above the last stable version according to the 
-   [Semantic Version 2.0](https://semver.org/) guidelines.
-1. [ ] Update the allProjects `version` and `ext["bundleVersion"]` as well in `build.gradle.kts` with the above version. 
+1. [ ] Run `update_version.sh` with the version number as the parameter e.g. `./update_version.sh 0.5.5` 
 1. [ ] Move the changes in `CHANGELOG.md` from the `[Unreleased]` section to the section for the new version.
 1. [ ] Review the changes to `CHANGELOG.md`.
     - Do the changes look sensible?
