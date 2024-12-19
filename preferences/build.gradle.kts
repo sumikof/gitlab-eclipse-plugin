@@ -12,6 +12,12 @@ kotlin {
     jvmToolchain(21)
 }
 
+dependencies {
+    testImplementation(kotlin("test"))
+    testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
+    testImplementation("io.mockk:mockk:1.13.13")
+}
+
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(
