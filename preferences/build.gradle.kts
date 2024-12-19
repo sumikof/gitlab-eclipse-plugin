@@ -12,22 +12,15 @@ kotlin {
     jvmToolchain(21)
 }
 
-dependencies {
-    implementation(project(":preferences"))
-}
-
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(
-    "org.eclipse.lsp4e" to "0.18.12",
-    "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
-    "org.eclipse.lsp4j" to "0.23.1",
-    "org.eclipse.jface.text" to "3.25.200",
+    "org.eclipse.equinox.security" to "1.4.400",
+    "org.eclipse.ui" to "0.0.0",
 )
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
-        p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
 
         eclipseDependencies.forEach {
             install(it.key)
@@ -35,11 +28,10 @@ p2deps {
     }
 }
 
-// TODO: Use Eclipse-ExtensibleAPI: true?
 tasks.withType<Jar> {
     manifest {
         attributes["Bundle-ManifestVersion"] = "2"
-        attributes["Bundle-Name"] = "GitLab Language Server Client"
+        attributes["Bundle-Name"] = "GitLab Preferences"
         attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
         attributes["Bundle-Vendor"] = "GitLab Inc."
         attributes["Bundle-Version"] = ext["bundleVersion"]

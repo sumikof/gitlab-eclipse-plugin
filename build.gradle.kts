@@ -33,16 +33,12 @@ allprojects {
     group = "com.gitlab.eclipse"
     version = "0.3.0"
     ext["bundleVersion"] = "0.3.0.${Instant.now().toEpochMilli()}"
-}
 
-repositories {
-    gradlePluginPortal()
-    mavenLocal()
-    mavenCentral()
-}
-
-kotlin {
-    jvmToolchain(21)
+    repositories {
+        gradlePluginPortal()
+        mavenLocal()
+        mavenCentral()
+    }
 }
 
 val arch = when (System.getProperty("os.arch")) {
@@ -76,6 +72,8 @@ dependencies {
     // 2. Must be available as a runtime dependency for running Equo on linux.
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
+    implementation(project(":gitlab-language-server"))
+    implementation(project(":preferences"))
 
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")

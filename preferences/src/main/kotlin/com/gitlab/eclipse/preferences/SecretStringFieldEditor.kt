@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.preferences
 
-import com.gitlab.eclipse.storage.SecretStorage
+import com.gitlab.eclipse.preferences.storage.SecretStorage
 import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.swt.widgets.Composite
 import java.util.*

@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views
 
+import org.eclipse.core.runtime.Platform
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
@@ -29,10 +30,11 @@ class LanguageServerBrowserView : ViewPart() {
     private fun webviewContent(): String {
         var js: String? = null
         try {
-            javaClass.getResourceAsStream("/webviews/javascript/LanguageServerBrowserView.js").use { inputStream ->
+            javaClass.getResourceAsStream("/webviews/javascript/LanguageServerBrowserView.js")?.use { inputStream ->
                 js = String(inputStream.readAllBytes(), StandardCharsets.UTF_8)
             }
         } catch (e: IOException) {
+            Platform.getLog(javaClass).error(e.message, e)
         }
         val buffer = StringBuilder()
 
