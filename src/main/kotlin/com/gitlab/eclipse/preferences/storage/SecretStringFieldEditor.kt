@@ -1,9 +1,8 @@
-package com.gitlab.eclipse.preferences
+package com.gitlab.eclipse.preferences.storage
 
-import com.gitlab.eclipse.preferences.storage.SecretStorage
 import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.swt.widgets.Composite
-import java.util.*
+import java.util.Optional
 
 class SecretStringFieldEditor(
     private val secretStorage: SecretStorage,

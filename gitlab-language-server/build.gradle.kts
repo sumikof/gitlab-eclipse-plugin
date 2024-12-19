@@ -12,10 +12,6 @@ kotlin {
     jvmToolchain(21)
 }
 
-dependencies {
-    implementation(project(":preferences"))
-}
-
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(

@@ -73,7 +73,6 @@ dependencies {
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
     implementation(project(":gitlab-language-server"))
-    implementation(project(":preferences"))
 
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
@@ -82,19 +81,23 @@ dependencies {
 
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
-val eclipseDependencies = listOf(
-    "org.eclipse.core.runtime",
-    "org.eclipse.equinox.security",
-    "org.eclipse.osgi",
-    "org.eclipse.swt",
-    "org.eclipse.ui",
+val eclipseDependencies = mapOf(
+    "org.eclipse.core.runtime" to "0.0.0",
+    "org.eclipse.equinox.security" to "0.0.0",
+    "org.eclipse.lsp4e" to "0.18.12",
+    "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
+    "org.eclipse.lsp4j" to "0.23.1",
+    "org.eclipse.osgi" to "0.0.0",
+    "org.eclipse.swt" to "0.0.0",
+    "org.eclipse.ui" to "0.0.0",
 )
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
+        p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
 
         eclipseDependencies.forEach {
-            install(it)
+            install(it.key)
         }
     }
 }
@@ -124,7 +127,7 @@ tasks.withType<Jar> {
 
         attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
 
-        attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
+        attributes["Require-Bundle"] = eclipseDependencies.map { "${it.key};bundle-version=\"${it.value}\"" }.joinToString(separator = ",")
     }
 }
 
@@ -194,6 +197,11 @@ equoIde {
     // Strangely required to start in our Ubuntu docker image but not on Mac OS...
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     install("org.apache.felix.scr")
+
+    p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+    install("org.eclipse.lsp4e")
+    install("org.eclipse.lsp4j.jsonrpc")
+    install("org.eclipse.lsp4j")
 
     // Install the GitLab for Eclipse plug-in project.
     dogfood()

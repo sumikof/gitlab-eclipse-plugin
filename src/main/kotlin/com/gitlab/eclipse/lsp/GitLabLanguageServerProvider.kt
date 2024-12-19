@@ -2,26 +2,37 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.CodeCompletion
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.Telemetry
-import com.gitlab.eclipse.preferences.PreferenceConstants
-import com.gitlab.eclipse.preferences.PreferenceInitializer
+import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
+import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
+import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
+import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
+import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.preferences.storage.SecretStorage
+import org.eclipse.core.runtime.Platform
+import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
-import org.eclipse.lsp4e.server.StreamConnectionProvider
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.lsp4j.jsonrpc.messages.Message
 import org.eclipse.lsp4j.jsonrpc.messages.NotificationMessage
 import org.eclipse.lsp4j.services.LanguageServer
+import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.osgi.framework.FrameworkUtil
 import java.net.URI
 
-class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(), StreamConnectionProvider {
-    init {
-        // TODO: Support configurable language server binary.
-        commands = listOf(
-            "/Users/erran/gitlab-org/editor-extensions/gitlab-lsp/bin/gitlab-lsp-macos-arm64",
-            "--stdio"
-        )
-        // TODO: Make this workspace based.
-        workingDirectory = "/Users/erran/eclipse-workspace/gitlab-eclipse-plugin/lsp-sandbox"
+class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(
+     listOf(
+        "/Users/erran/gitlab-org/editor-extensions/gitlab-lsp/bin/gitlab-lsp-macos-arm64",
+        "--stdio"
+    ),
+    "/Users/erran/eclipse-workspace/gitlab-eclipse-plugin/lsp-sandbox"
+) {
+    override fun start() {
+        val server = InstallLanguageServer()
+        server.install()
+
+        // TODO: Ok, now start the dang thing!
+
+        super.start()
     }
 
     override fun handleMessage(message: Message, languageServer: LanguageServer, rootURI: URI?) {
@@ -41,7 +52,7 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(), StreamCo
             }
         }
 
-        super<ProcessStreamConnectionProvider>.handleMessage(message, languageServer, rootURI)
+        super.handleMessage(message, languageServer, rootURI)
     }
 
     override fun getInitializationOptions(rootUri: URI?): Any? {
@@ -68,20 +79,24 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(), StreamCo
                 return
             }
 
+            val preferenceStore = ScopedPreferenceStore(
+                InstanceScope.INSTANCE,
+                FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java).bundleId.toString()
+            )
             val params = GitLabLanguageServerConfigurationParams.builder()
-                .baseUrl(PreferenceInitializer.PREFERENCE_STORE.getString(PreferenceConstants.GITLAB_INSTANCE_URL))
+                .baseUrl(preferenceStore.getString(GITLAB_INSTANCE_URL))
                 .codeCompletion(CodeCompletion(true, listOf(), listOf()))
                 .featureFlags(
                     GitLabLanguageServerConfigurationParams.FeatureFlags.builder()
                         .remoteSecurityScans(false)
-                        .streamCodeGenerations(PreferenceInitializer.PREFERENCE_STORE.getBoolean(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS))
+                        .streamCodeGenerations(preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS))
                         .build()
                 )
-                .ignoreCertificateErrors(PreferenceInitializer.PREFERENCE_STORE.getBoolean(PreferenceConstants.IGNORE_CERTIFICATE_ERRORS))
-                .logLevel(PreferenceInitializer.PREFERENCE_STORE.getString(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL))
+                .ignoreCertificateErrors(preferenceStore.getBoolean(IGNORE_CERTIFICATE_ERRORS))
+                .logLevel(preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL))
                 .telemetry(
                     Telemetry(
-                        PreferenceInitializer.PREFERENCE_STORE.getBoolean(PreferenceConstants.TELEMETRY_ENABLED),
+                        preferenceStore.getBoolean(TELEMETRY_ENABLED),
                         "https://snowplow.trx.gitlab.net"
                     )
                 )

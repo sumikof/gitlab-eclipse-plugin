@@ -1,9 +1,7 @@
 package com.gitlab.eclipse.preferences
 
 import org.eclipse.core.runtime.preferences.AbstractPreferenceInitializer
-import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.ui.preferences.ScopedPreferenceStore
-import org.osgi.framework.FrameworkUtil
 
 class PreferenceInitializer(private val store: ScopedPreferenceStore) :
     AbstractPreferenceInitializer() {
@@ -14,12 +12,5 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) :
         store.setDefault(PreferenceConstants.TELEMETRY_ENABLED, true)
         store.setDefault(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL, "info")
         store.setDefault(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, true)
-    }
-
-    companion object {
-        val PREFERENCE_STORE: ScopedPreferenceStore = ScopedPreferenceStore(
-            InstanceScope.INSTANCE, FrameworkUtil.getBundle(
-                PreferenceInitializer::class.java
-            ).bundleId.toString())
     }
 }
