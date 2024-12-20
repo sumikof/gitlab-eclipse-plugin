@@ -80,6 +80,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
     testImplementation("io.mockk:mockk:1.13.13")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 }
 
 val eclipseRelease = "4.33"
@@ -90,6 +91,10 @@ val eclipseDependencies = listOf(
     "org.eclipse.osgi",
     "org.eclipse.swt",
     "org.eclipse.ui",
+    "org.eclipse.ui.editors",
+    "org.eclipse.jface.text",
+    "org.eclipse.jdt.core",
+    "org.eclipse.jdt.ui"
 )
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {

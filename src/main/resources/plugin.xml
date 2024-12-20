@@ -1,6 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?eclipse version="3.4"?>
 <plugin>
+    <extension point="org.eclipse.ui.commands">
+        <category id="gitlab-eclipse-plugin.commands.category" name="GitLab Duo Commands" />
+
+        <command
+                name="Open Quick Chat"
+                id="com.gitlab.eclipse.quickchat.openquickchat"
+                description="Open Quick Chat"
+                categoryId="gitlab-eclipse-plugin.commands.category"
+        />
+    </extension>
+
+    <extension point="org.eclipse.ui.handlers">
+        <handler
+            commandId="com.gitlab.eclipse.quickchat.openquickchat"
+            class="com.gitlab.eclipse.quickchat.OpenQuickChatActionHandler">
+        </handler>
+    </extension>
+
+    <extension point="org.eclipse.ui.bindings">
+        <key
+            commandId="com.gitlab.eclipse.quickchat.openquickchat"
+            sequence="M3+C"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+        />
+    </extension>
+
     <extension point="org.eclipse.ui.preferencePages">
         <page id="com.gitlab.eclipse.preferences.GitLabPreferencePage"
               name="GitLab"
