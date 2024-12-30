@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import java.util.function.Consumer
+import kotlin.jvm.functions.FunctionN
 
 class ChatAPI {
     companion object {
@@ -37,14 +39,10 @@ class ChatAPI {
         """.trimIndent()
     }
 
-     fun chat(): Flow<String> {
-        return flow {
-                HARD_CODED_RESPONSE.chunked(50) {
-                    runBlocking {
-                        emit(it.toString())
-                        delay(250)
-                    }
-                }
+     fun chat(callback: Consumer<String>) {
+        HARD_CODED_RESPONSE.chunked(50) {
+            callback.accept(it.toString())
+            Thread.sleep(250)
         }
     }
 }
