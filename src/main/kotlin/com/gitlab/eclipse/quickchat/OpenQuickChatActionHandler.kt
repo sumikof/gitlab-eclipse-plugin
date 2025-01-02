@@ -82,6 +82,8 @@ class OpenQuickChatActionHandler : AbstractHandler() {
             }
         }
 
+        // Create the chat history
+        // TODO: in actual implementation, make the height dynamic until it reaches the maximum
         val chatHistoryScroll = ScrolledComposite(composite, SWT.V_SCROLL or SWT.H_SCROLL).apply {
             layoutData = GridData(SWT.FILL, SWT.FILL, true, true).apply {
                 heightHint = 300
@@ -103,7 +105,7 @@ class OpenQuickChatActionHandler : AbstractHandler() {
 
         chatHistoryScroll.content = chatHistoryComposite
 
-//
+//        Syntax highlighting for Java code!
 //        val document = Document().apply {
 //            set("public class Example {\n\tpublic static void main(String[] args) {\n\t\t// Your code here\n\t}\n}")
 //        }
@@ -184,7 +186,7 @@ class OpenQuickChatActionHandler : AbstractHandler() {
         inputField.addKeyListener(
             object : KeyAdapter() {
                 override fun keyPressed(event: KeyEvent) {
-                    // handle press arrow down or up
+                    // We should handler arrow up as well
                     if (event.keyCode == SWT.ARROW_DOWN) {
                         if (!commandList.visible) {
                             return
@@ -199,7 +201,8 @@ class OpenQuickChatActionHandler : AbstractHandler() {
                         event.doit = false
                     }
 
-                    // We need to manually implement the 'command-a' shortcut (select all)
+                    // We need to manually implement the 'command-a' shortcut (select all) and others.
+                    // They're not supported by default by text fields.
                     if (event.stateMask == SWT.COMMAND && event.keyCode == 'a'.code) {
                         inputField.selectAll()
                         event.doit = false
@@ -232,7 +235,9 @@ class OpenQuickChatActionHandler : AbstractHandler() {
                             widthHint = 660
                         }
 
+                        // Ensure scroll is propagated to the scroll composite
                         addListener(SWT.MouseVerticalWheel) { event ->
+                            // Consider making the * 30 smaller for a smoother scroll
                             val scrollAmount = -(event.count * 30)
                             val origin = chatHistoryScroll.origin
 
@@ -247,6 +252,7 @@ class OpenQuickChatActionHandler : AbstractHandler() {
                         }
                     }
 
+                    // Simulation of a long chat response. Will be replaced by actual response from the Chat API.
                     Thread.ofVirtual().start {
                         chatApi.chat { chunk ->
                             Display.getDefault().asyncExec { // Update your UI components here, safely on the UI thread
@@ -271,12 +277,16 @@ class OpenQuickChatActionHandler : AbstractHandler() {
         inputField.setFocus()
 
         composite.addPaintListener {
+            // Adds vertical indentation so that the chat widget is below the current line.
+            // This allows a user to open the chat at the bottom of a file and be able to scroll to see the chat.
             textWidget.setLineVerticalIndent(
                 selection.startLine + 1,
                 composite.computeSize(SWT.DEFAULT, SWT.DEFAULT).y
             )
 
-//            chatHistoryScroll.background = Display.getCurrent().getSystemColor(SWT.COLOR_RED)
+            // Colors set on an widget will likely only be applied during the first paint event after applying the color.
+            // I found that we can work around this by applying the color when painting the main component.
+            // chatHistoryScroll.background = Display.getCurrent().getSystemColor(SWT.COLOR_RED)
         }
 
         textWidget.redraw()
