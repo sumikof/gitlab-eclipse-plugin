@@ -1,10 +1,14 @@
 package com.gitlab.eclipse.preferences
 
+import GitLabOAuthService
 import com.gitlab.eclipse.storage.SecretStorage
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage
 import org.eclipse.jface.preference.StringFieldEditor
+import org.eclipse.swt.SWT
+import org.eclipse.swt.layout.GridData
+import org.eclipse.swt.widgets.Button
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
 import org.eclipse.ui.preferences.ScopedPreferenceStore
@@ -33,6 +37,15 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
                 fieldEditorParent
             )
         )
+
+        // Add a button for OAuth
+        val button = Button(fieldEditorParent, SWT.PUSH)
+        button.text = "Login with OAuth"
+        button.layoutData = GridData(GridData.FILL_HORIZONTAL)
+        button.addListener(SWT.Selection) {
+            val gitLabOAuthService = GitLabOAuthService()
+            gitLabOAuthService.startOAuthFlow()
+        }
 
         // Language Server
         addField(
