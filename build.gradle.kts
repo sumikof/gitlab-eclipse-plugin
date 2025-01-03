@@ -90,7 +90,10 @@ val eclipseDependencies = listOf(
     "org.eclipse.osgi",
     "org.eclipse.swt",
     "org.eclipse.ui",
+    "org.eclipse.ui.editors",
+    "org.eclipse.jface.text"
 )
+
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
