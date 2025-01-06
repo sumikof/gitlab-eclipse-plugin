@@ -2,11 +2,15 @@ package com.gitlab.eclipse.views
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProvider
 import com.gitlab.eclipse.lsp.WebviewInfo
+import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
+import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_HTTP_URL
 import org.eclipse.core.runtime.Platform
+import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.part.ViewPart
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.osgi.framework.FrameworkUtil
 import java.io.IOException
 import java.nio.charset.StandardCharsets
@@ -57,19 +61,27 @@ class LanguageServerBrowserView : ViewPart() {
             webviews.addAll(
                 GitLabLanguageServerProvider.languageServer
                     ?.webviewMetadata()
+                    // TODO: This causes Eclipse to hang until the timeout is reached if the return hasn't occurred. We should make this async.
                     ?.completeOnTimeout(ArrayList<WebviewInfo?>(), 10L, TimeUnit.SECONDS)
                     ?.join()
                     ?: emptyList()
             )
 
             Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("webview: $webviews")
+            val preferenceStore = ScopedPreferenceStore(
+                InstanceScope.INSTANCE,
+                FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java).bundleId.toString()
+            )
+            val lspUrl = preferenceStore.getString(LANGUAGE_SERVER_HTTP_URL);
             val redirect = webviews.stream()
                 .filter { w: WebviewInfo? -> "duo-chat" == w!!.id }
                 .findFirst()
                 .map { it!!.uris[0] }
-                .orElse(null)
+                .orElse(lspUrl)
             if (redirect != null) {
                 buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$redirect'\" />")
+            } else {
+                buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$lspUrl'\" />")
             }
             Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("webview: ${redirect ?: "no redirect"}")
         } else {

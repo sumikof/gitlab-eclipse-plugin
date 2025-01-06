@@ -43,6 +43,12 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
             )
         )
         addField(
+            StringFieldEditor(
+                PreferenceConstants.LANGUAGE_SERVER_HTTP_URL, "Language Server HTTP URL",
+                fieldEditorParent
+            )
+        )
+        addField(
             BooleanFieldEditor(
                 PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, "Stream Code Generations",
                 fieldEditorParent
