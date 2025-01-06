@@ -1,0 +1,22 @@
+config:
+  validation: true
+
+style:
+  WildcardImport:
+    active: false
+  MaxLineLength:
+    maxLineLength: 150
+  ReturnCount:
+    active: false
+
+formatting:
+  Indentation:
+    indentSize: 2
+  NoWildcardImports:
+    active: false
+  MaximumLineLength:
+    maxLineLength: 150
+
+complexity:
+  LongParameterList:
+    active: false
