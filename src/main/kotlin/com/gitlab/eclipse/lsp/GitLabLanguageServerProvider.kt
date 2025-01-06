@@ -33,6 +33,14 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(
         // TODO: Ok, now start the dang thing!
 
         super.start()
+        getAdapter(ProcessHandle::class.java)?.apply {
+            Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("Language server exit bindings defined")
+            onExit().thenApply {
+                Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("Language server process exited")
+                Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("LSP STDOUT: " + inputStream?.readAllBytes()?.decodeToString())
+                Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("LSP STDERR: " + errorStream?.readAllBytes()?.decodeToString())
+            }
+        }
     }
 
     override fun handleMessage(message: Message, languageServer: LanguageServer, rootURI: URI?) {
@@ -45,6 +53,9 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(
                 "initialized" -> {
                     // TODO: Trigger through initialized rpc method?
                     onDidChangeConfiguration()
+                    Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("xxxLSP STDOUT: " + inputStream?.readAllBytes()?.decodeToString())
+                    Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("xxxLSP STDERR: " + errorStream?.readAllBytes()?.decodeToString())
+
                     return
                 }
 
