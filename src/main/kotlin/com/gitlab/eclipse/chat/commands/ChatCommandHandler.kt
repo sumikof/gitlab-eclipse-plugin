@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.lsp.NOOPLspClient
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
 import org.eclipse.core.commands.AbstractHandler
@@ -10,7 +11,8 @@ import org.eclipse.jface.text.ITextSelection
 
 abstract class ChatCommandHandler(
     private val command: String,
-    private val textEditorProvider: TextEditorProvider = TextEditorProvider()
+    private val lspClient: NOOPLspClient,
+    private val textEditorProvider: TextEditorProvider
 ) : AbstractHandler() {
     override fun execute(event: ExecutionEvent) {
         val textEditor = textEditorProvider.getActiveTextEditor() ?: return
@@ -35,8 +37,7 @@ abstract class ChatCommandHandler(
             )
         )
 
-        // TODO: Actually send a request to the language server
-        println(request)
+        lspClient.send(request)
     }
 
     override fun isEnabled(): Boolean {
