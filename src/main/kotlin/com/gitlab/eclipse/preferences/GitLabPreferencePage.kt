@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.preferences
 
-import GitLabOAuthService
+import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.storage.SecretStorage
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.jface.preference.BooleanFieldEditor
