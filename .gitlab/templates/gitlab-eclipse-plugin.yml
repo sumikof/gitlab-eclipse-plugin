@@ -3,6 +3,19 @@ build plugin:
   script:
      - ./gradlew assemble
 
+detekt:
+  stage: lint
+  needs: [ ]
+  script:
+    - gradle --continue detektMain detektTest
+  artifacts:
+    paths:
+      - build/reports/detekt/main.html
+      - build/reports/detekt/test.html
+    expose_as: Detekt HTML reports
+    when: always
+    expire_in: 2 weeks
+
 check plugin:
   stage: test
   script:
@@ -27,4 +40,3 @@ publish plugin (release):
     - ./gradlew publish publishToMavenLocal
   rules:
     - if: $CI_COMMIT_TAG
-
