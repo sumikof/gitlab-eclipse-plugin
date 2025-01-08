@@ -1,14 +1,14 @@
 package com.gitlab.eclipse.telemetry
 
 data class TelemetryContext(
-    val trackingId: String,
-    val optionId: Int? = null
+  val trackingId: String,
+  val optionId: Int? = null
 ) {
-    override fun toString() = buildString {
-        append("{trackingId:'$trackingId'")
+  override fun toString() = buildString {
+    append("{trackingId:'$trackingId'")
 
-        optionId?.let {
-            append(",optionId:$optionId")
-        }
+    optionId?.let {
+      append(",optionId:$optionId")
     }
+  }
 }

@@ -24,4 +24,68 @@
               inject="true">
         </view>
     </extension>
+
+    <extension point="org.eclipse.ui.handlers">
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                class="com.gitlab.eclipse.chat.commands.OpenDuoChatCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ExplainCode"
+                class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.FixCode"
+                class="com.gitlab.eclipse.chat.commands.FixCodeCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ExplainCode"
+                class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.GenerateTests"
+                class="com.gitlab.eclipse.chat.commands.GenerateTestsCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.RefactorCode"
+                class="com.gitlab.eclipse.chat.commands.RefactorCodeCommandHandler"
+        />
+    </extension>
+
+    <extension point="org.eclipse.ui.menus">
+        <menuContribution locationURI="popup:#AbstractTextEditorContext">
+            <menu id="com.gitlab.eclipse.chat.menu" label="GitLab Duo Chat" icon="icons/notification.png">
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                        label="Open Chat Window"
+                        tooltip="Open Duo Chat Window"
+                        icon="icons/duo-chat.png" />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.ExplainCode"
+                        label="Explain Code"
+                        tooltip="Explain the selected snippet" />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.FixCode"
+                        label="Fix Code"
+                        tooltip="Fix the selected code snippet" />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.GenerateTests"
+                        label="Generate Tests"
+                        tooltip="Write tests for the selected snippet" />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.RefactorCode"
+                        label="Refactor Code"
+                        tooltip="Refactor the selected snippet" />
+            </menu>
+        </menuContribution>
+    </extension>
 </plugin>
