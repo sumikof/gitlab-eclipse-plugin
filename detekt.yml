@@ -8,8 +8,6 @@ style:
     maxLineLength: 150
   ReturnCount:
     active: false
-  UnnecessaryAbstractClass:
-    active: false
 
 formatting:
   Indentation:

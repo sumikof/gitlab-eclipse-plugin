@@ -15,6 +15,7 @@ import org.eclipse.jface.text.ITextSelection
 import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.editors.text.TextEditor
 
+@Suppress("UnnecessaryAbstractClass")
 abstract class ChatCommandHandlerTest(
   val commandUnderTest: String,
   val createCommandHandler: (NOOPLspClient, TextEditorProvider) -> ChatCommandHandler
