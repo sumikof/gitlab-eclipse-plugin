@@ -1,3 +1,4 @@
+import dev.equo.ide.gradle.EquoIdeTask
 import groovy.json.JsonSlurper
 import java.time.Instant
 import java.net.URI
@@ -185,6 +186,16 @@ tasks.register("checkSnapshotVersion") {
             error("The project version '${project.version}' must contain -SNAPSHOT.")
         }
     }
+}
+
+tasks.withType<EquoIdeTask> {
+    dependsOn(
+        provider {
+            subprojects.map { subproject ->
+                subproject.tasks.named("jar")
+            }
+        }
+    )
 }
 
 // Configure Equo IDE with basic to provide the GitLab for Eclipse plug-in.

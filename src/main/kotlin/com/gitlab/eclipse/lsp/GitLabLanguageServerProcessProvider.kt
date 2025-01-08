@@ -30,9 +30,12 @@ class GitLabLanguageServerProcessProvider(
 
     init {
         val languageServerInstallationPath = languageServerInstaller.install()
-        commands = listOf(languageServerInstallationPath, "--stdio")
 
-        workingDirectory = ResourcesPlugin.getWorkspace().root.location.toPath().toString()
+        if (languageServerInstallationPath != null) {
+            commands = listOf(languageServerInstallationPath, "--stdio")
+        } else {
+            logger.error("Language server installation failed")
+        }
     }
 
     override fun start() {
