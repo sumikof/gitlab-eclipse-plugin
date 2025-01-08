@@ -11,29 +11,28 @@ import org.eclipse.equinox.security.storage.StorageException
  * For Equo support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/20
  */
 class SecretStorage(rootURI: String?) {
-    private val node: ISecurePreferences = SecurePreferencesFactory.getDefault()
-        .node("gitlab")
-        .node("hosts")
-        .node(rootURI)
+  private val node: ISecurePreferences = SecurePreferencesFactory.getDefault()
+    .node("gitlab")
+    .node("hosts")
+    .node(rootURI)
 
-    fun getSecret(key: String?) = try {
-        node.get(key, null)
+  fun getSecret(key: String?) = try {
+    node.get(key, null)
+  } catch (e: StorageException) {
+    Platform.getLog(javaClass).error(e.message, e)
+
+    key?.split(Regex("[^a-zA-Z0-9]+"))
+      ?.joinToString("_")
+      ?.let { "GITLAB_ECLIPSE_${it.uppercase()}" }
+      ?.let { System.getenv(it) }
+  }
+
+  @Throws(StorageException::class)
+  fun putSecret(key: String?, value: String?) {
+    try {
+      node.put(key, value, true)
     } catch (e: StorageException) {
-        Platform.getLog(javaClass).error(e.message, e)
-
-        key?.split(Regex("[^a-zA-Z0-9]+"))
-           ?.joinToString("_")
-           ?.let { "GITLAB_ECLIPSE_${it.uppercase()}" }
-           ?.let { System.getenv(it) }
+      Platform.getLog(javaClass).error(e.message, e)
     }
-
-    @Throws(StorageException::class)
-    fun putSecret(key: String?, value: String?) {
-        try {
-            node.put(key, value, true)
-        } catch (e: StorageException) {
-        Platform.getLog(javaClass).error(e.message, e)
-        }
-    }
+  }
 }
-

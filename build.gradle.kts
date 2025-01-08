@@ -1,5 +1,6 @@
 import dev.equo.ide.gradle.EquoIdeTask
 import groovy.json.JsonSlurper
+import io.gitlab.arturbosch.detekt.Detekt
 import java.time.Instant
 import java.net.URI
 import org.gradle.jvm.tasks.Jar
@@ -28,6 +29,8 @@ plugins {
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
   id("dev.equo.p2deps") version "1.7.7"
+
+  id("io.gitlab.arturbosch.detekt") version "1.23.7"
 }
 
 allprojects {
@@ -39,6 +42,20 @@ allprojects {
         gradlePluginPortal()
         mavenLocal()
         mavenCentral()
+    }
+}
+
+detekt {
+    buildUponDefaultConfig = true // preconfigure defaults
+    allRules = true // activate all available (even unstable) rules.
+    config.setFrom("detekt.yml")
+}
+
+tasks.withType<Detekt>().configureEach {
+    jvmTarget = JavaVersion.VERSION_17.toString()
+
+    reports {
+        html.required.set(true) // observe findings in your browser with structure and code snippets
     }
 }
 
@@ -81,6 +98,11 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
     testImplementation("io.mockk:mockk:1.13.13")
+    testImplementation("org.eclipse.platform:org.eclipse.text:3.14.0")
+    testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.134.0")
+    testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
+
+    detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
 }
 
 val eclipseRelease = "4.33"
@@ -94,7 +116,10 @@ val eclipseDependencies = mapOf(
     "org.eclipse.osgi" to "0.0.0",
     "org.eclipse.swt" to "0.0.0",
     "org.eclipse.ui" to "0.0.0",
+    "org.eclipse.ui.editors" to "0.0.0",
+    "org.eclipse.jface.text" to "0.0.0"
 )
+
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
