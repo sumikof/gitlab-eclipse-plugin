@@ -1,41 +1,25 @@
 package com.gitlab.eclipse.chat.commands
 
-import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.lsp.NOOPLspClient
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
-import com.gitlab.eclipse.utils.relativePath
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
-import org.eclipse.core.resources.IFile
 import org.eclipse.jface.text.ITextSelection
 
 open class ChatCommandHandler(
   private val command: String,
   private val lspClient: NOOPLspClient,
-  private val textEditorProvider: TextEditorProvider
+  private val textEditorProvider: TextEditorProvider,
+  private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider(textEditorProvider)
 ) : AbstractHandler() {
   override fun execute(event: ExecutionEvent) {
-    val textEditor = textEditorProvider.getActiveTextEditor() ?: return
-
-    val editorInput = textEditor.editorInput
-    val file = editorInput.getAdapter(IFile::class.java) ?: return
-
-    val selection = textEditor.selectionProvider.selection as? ITextSelection? ?: return
-    val selectedText = selection.text
-
-    val startOffset = selection.offset
-    val endOffset = selection.let { it.offset + it.length }
-    val text = textEditor.documentProvider.getDocument(editorInput).get()
+    val context = currentFileContextProvider.provide() ?: return
 
     val request = NewPromptRequest(
       content = command,
-      fileContext = FileContext(
-        fileName = file.relativePath.toString(),
-        selectedText = selectedText,
-        contentAboveCursor = startOffset.let { text.take(it) },
-        contentBelowCursor = endOffset.let { text.drop(it) }
-      )
+      fileContext = context
     )
 
     lspClient.send(request)
