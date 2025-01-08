@@ -12,10 +12,11 @@ open class ChatCommandHandler(
   private val command: String,
   private val lspClient: NOOPLspClient,
   private val textEditorProvider: TextEditorProvider,
-  private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider(textEditorProvider)
+  private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
 ) : AbstractHandler() {
   override fun execute(event: ExecutionEvent) {
-    val context = currentFileContextProvider.provide() ?: return
+    val textEditor = textEditorProvider.getActiveTextEditor() ?: return
+    val context = currentFileContextProvider.provide(textEditor) ?: return
 
     val request = NewPromptRequest(
       content = command,

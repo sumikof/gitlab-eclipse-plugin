@@ -1,17 +1,13 @@
 package com.gitlab.eclipse.chat.context
 
 import com.gitlab.eclipse.lsp.FileContext
-import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.relativePath
 import org.eclipse.core.resources.IFile
 import org.eclipse.jface.text.ITextSelection
+import org.eclipse.ui.texteditor.ITextEditor
 
-class CurrentFileContextProvider(
-  private val textEditorProvider: TextEditorProvider,
-) {
-  fun provide(): FileContext? {
-    val textEditor = textEditorProvider.getActiveTextEditor() ?: return null
-
+class CurrentFileContextProvider {
+  fun provide(textEditor: ITextEditor): FileContext? {
     val editorInput = textEditor.editorInput
     val file = editorInput.getAdapter(IFile::class.java) ?: return null
 
@@ -25,8 +21,8 @@ class CurrentFileContextProvider(
     return FileContext(
       fileName = file.relativePath.toString(),
       selectedText = selectedText,
-      contentAboveCursor = startOffset.let { text.take(it) },
-      contentBelowCursor = endOffset.let { text.drop(it) }
+      contentAboveCursor = text.take(startOffset),
+      contentBelowCursor = text.drop(endOffset)
     )
   }
 }

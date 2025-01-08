@@ -8,6 +8,6 @@ data class NewPromptRequest(
 data class FileContext(
   val fileName: String,
   val selectedText: String,
-  val contentAboveCursor: String?,
-  val contentBelowCursor: String?
+  val contentAboveCursor: String,
+  val contentBelowCursor: String
 )
