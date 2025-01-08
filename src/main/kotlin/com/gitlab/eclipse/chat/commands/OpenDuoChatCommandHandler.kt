@@ -7,6 +7,6 @@ import org.eclipse.ui.PlatformUI
 class OpenDuoChatCommandHandler : AbstractHandler() {
   override fun execute(event: ExecutionEvent) {
     val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage ?: return
-    page.showView("TODO_ADD_VIEW_ID_HERE")
+    page.showView("com.gitlab.eclipse.views.LanguageServerBrowserView")
   }
 }
