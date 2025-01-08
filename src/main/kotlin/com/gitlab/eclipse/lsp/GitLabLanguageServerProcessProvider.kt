@@ -101,7 +101,7 @@ class GitLabLanguageServerProcessProvider(
       .telemetry(
         Telemetry(
           preferenceStore.getBoolean(TELEMETRY_ENABLED),
-          "https://snowplow.trx.gitlab.net"
+          "https://snowplowprd.trx.gitlab.net"
         )
       )
 
