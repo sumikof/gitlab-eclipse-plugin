@@ -77,6 +77,9 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
     testImplementation("io.mockk:mockk:1.13.13")
+
+    // TODO: Remove this dep that ius needed for equoIde
+    implementation("com.google.guava:guava:32.1.3-jre")
 }
 
 val eclipseRelease = "4.33"

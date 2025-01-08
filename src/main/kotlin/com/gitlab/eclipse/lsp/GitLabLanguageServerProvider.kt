@@ -7,6 +7,7 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERR
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
+import com.gitlab.eclipse.preferences.PreferenceInitializer
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import org.eclipse.core.runtime.Platform
 import org.eclipse.core.runtime.preferences.InstanceScope
@@ -53,9 +54,6 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(
                 "initialized" -> {
                     // TODO: Trigger through initialized rpc method?
                     onDidChangeConfiguration()
-                    Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("xxxLSP STDOUT: " + inputStream?.readAllBytes()?.decodeToString())
-                    Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("xxxLSP STDERR: " + errorStream?.readAllBytes()?.decodeToString())
-
                     return
                 }
 
@@ -94,6 +92,8 @@ class GitLabLanguageServerProvider : ProcessStreamConnectionProvider(
                 InstanceScope.INSTANCE,
                 FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java).bundleId.toString()
             )
+            // TODO: Stop this dupe init
+            PreferenceInitializer(preferenceStore).initializeDefaultPreferences()
             val params = GitLabLanguageServerConfigurationParams.builder()
                 .baseUrl(preferenceStore.getString(GITLAB_INSTANCE_URL))
                 .codeCompletion(CodeCompletion(true, listOf(), listOf()))

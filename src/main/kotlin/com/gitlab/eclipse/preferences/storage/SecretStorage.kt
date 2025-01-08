@@ -4,7 +4,6 @@ import org.eclipse.core.runtime.Platform
 import org.eclipse.equinox.security.storage.ISecurePreferences
 import org.eclipse.equinox.security.storage.SecurePreferencesFactory
 import org.eclipse.equinox.security.storage.StorageException
-import org.eclipse.osgi.storage.Storage
 
 /**
  * Stubbed secret storage which supports environment variable resolution.
@@ -19,7 +18,7 @@ class SecretStorage(rootURI: String?) {
 
     fun getSecret(key: String?) = try {
         node.get(key, null)
-    } catch (e: Storage.StorageException) {
+    } catch (e: StorageException) {
         Platform.getLog(javaClass).error(e.message, e)
 
         key?.split(Regex("[^a-zA-Z0-9]+"))
