@@ -4,19 +4,18 @@ import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NOOPLspClient
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.relativePath
 import io.kotest.core.spec.style.DescribeSpec
-import io.mockk.clearAllMocks
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.verify
+import io.mockk.*
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.core.resources.IFile
+import org.eclipse.core.runtime.Path
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.ITextSelection
 import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.editors.text.TextEditor
 
-open class ChatCommandHandlerTest(
+abstract class ChatCommandHandlerTest(
   val commandUnderTest: String,
   val createCommandHandler: (NOOPLspClient, TextEditorProvider) -> ChatCommandHandler
 ) : DescribeSpec({
@@ -33,6 +32,8 @@ open class ChatCommandHandlerTest(
 
   val handler = createCommandHandler(lspClient, textEditorProvider)
 
+  beforeSpec { mockkStatic("com.gitlab.eclipse.utils.FileKt") }
+
   beforeEach {
     every { textEditorProvider.getActiveTextEditor() } returns textEditor
 
@@ -43,9 +44,9 @@ open class ChatCommandHandlerTest(
     every { textEditor.documentProvider.getDocument(editorInput) } returns document
   }
 
-  afterEach {
-    clearAllMocks()
-  }
+  afterEach { clearAllMocks() }
+
+  afterSpec { unmockkAll() }
 
   it("should not send prompt if no files are open") {
     every { editorInput.getAdapter(IFile::class.java) } returns null
@@ -64,7 +65,7 @@ open class ChatCommandHandlerTest(
   }
 
   it("should send prompt including current file context") {
-    every { file.name } returns "main.kt"
+    every { file.relativePath } returns Path.fromPortableString("a/main.kt")
     every { document.get() } returns "abc\ndef\nijk"
     every { selection.offset } returns 4
     every { selection.length } returns 3
@@ -77,7 +78,7 @@ open class ChatCommandHandlerTest(
         NewPromptRequest(
           content = commandUnderTest,
           fileContext = FileContext(
-            fileName = "main.kt",
+            fileName = "a/main.kt",
             selectedText = "def",
             contentAboveCursor = "abc\n",
             contentBelowCursor = "\nijk"

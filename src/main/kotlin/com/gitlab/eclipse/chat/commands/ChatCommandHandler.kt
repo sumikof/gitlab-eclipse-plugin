@@ -4,6 +4,7 @@ import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NOOPLspClient
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.relativePath
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.core.resources.IFile
@@ -30,7 +31,7 @@ open class ChatCommandHandler(
     val request = NewPromptRequest(
       content = command,
       fileContext = FileContext(
-        fileName = file.name,
+        fileName = file.relativePath.toString(),
         selectedText = selectedText,
         contentAboveCursor = startOffset.let { text.take(it) },
         contentBelowCursor = endOffset.let { text.drop(it) }
