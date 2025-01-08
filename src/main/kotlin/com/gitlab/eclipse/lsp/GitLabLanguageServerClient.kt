@@ -4,8 +4,7 @@ import org.eclipse.lsp4e.LanguageClientImpl
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 
-// NOTE: For some reason Eclipse tries to cast to this non-API default implementation.
-class GitLabLanguageClient : LanguageClientImpl() {
+class GitLabLanguageServerClient : LanguageClientImpl() {
     @JsonNotification("$/gitlab/featureStateChange")
     fun gitlabFeatureStateChange(params: List<FeatureStateChange?>?, _reserved: Any? = null) {
         return

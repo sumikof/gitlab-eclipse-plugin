@@ -1,8 +1,8 @@
 package com.gitlab.eclipse.views
 
-import com.gitlab.eclipse.lsp.GitLabLanguageServerProvider
+import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
+import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.WebviewInfo
-import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_HTTP_URL
 import org.eclipse.core.runtime.Platform
 import org.eclipse.core.runtime.preferences.InstanceScope
@@ -20,7 +20,12 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 class LanguageServerBrowserView : ViewPart() {
+    private val logger by lazy {
+        Platform.getLog(FrameworkUtil.getBundle(LanguageServerBrowserView::class.java))
+    }
+
     private var browser: Browser? = null
+    private val languageServerWrapper by lazy { GitLabLanguageServerWrapper() }
 
     override fun createPartControl(parent: Composite?) {
         browser = Browser(parent, SWT.WEBKIT)
@@ -56,36 +61,38 @@ class LanguageServerBrowserView : ViewPart() {
         buffer.append("</head>")
 
         val webviews = ArrayList<WebviewInfo?>()
+
         // TODO: Trigger a browser event instead of synchronously handling this event?
-        if (GitLabLanguageServerProvider.languageServer != null) {
+        if (languageServerWrapper.languageServer != null) {
             webviews.addAll(
-                GitLabLanguageServerProvider.languageServer
+                languageServerWrapper.languageServer
                     ?.webviewMetadata()
-                    // TODO: This causes Eclipse to hang until the timeout is reached if the return hasn't occurred. We should make this async.
                     ?.completeOnTimeout(ArrayList<WebviewInfo?>(), 10L, TimeUnit.SECONDS)
                     ?.join()
                     ?: emptyList()
             )
 
-            Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("webview: $webviews")
+            logger.warn("webview: $webviews")
             val preferenceStore = ScopedPreferenceStore(
                 InstanceScope.INSTANCE,
-                FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java).bundleId.toString()
+                FrameworkUtil.getBundle(GitLabLanguageServerProcessProvider::class.java).bundleId.toString()
             )
-            val lspUrl = preferenceStore.getString(LANGUAGE_SERVER_HTTP_URL);
+
+            val lspUrl = preferenceStore.getString(LANGUAGE_SERVER_HTTP_URL)
             val redirect = webviews.stream()
-                .filter { w: WebviewInfo? -> "duo-chat" == w!!.id }
+                .filter { it?.id == "duo-chat" }
                 .findFirst()
                 .map { it!!.uris[0] }
                 .orElse(lspUrl)
+
             if (redirect != null) {
                 buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$redirect'\" />")
             } else {
                 buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$lspUrl'\" />")
             }
-            Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("webview: ${redirect ?: "no redirect"}")
+            logger.warn("webview: ${redirect ?: "no redirect"}")
         } else {
-            Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProvider::class.java)).warn("webview: no redirect available")
+            logger.warn("webview: no redirect available")
         }
 
         buffer.append("<body>")
@@ -96,12 +103,5 @@ class LanguageServerBrowserView : ViewPart() {
         buffer.append("</body>")
         buffer.append("</html>")
         return buffer.toString()
-    }
-
-    companion object {
-        /**
-         * The ID of the view as specified by the extension.
-         */
-        const val ID: String = "com.gitlab.eclipse.views.LanguageServerBrowserView"
     }
 }

@@ -74,12 +74,12 @@ dependencies {
     implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
     implementation(project(":gitlab-language-server"))
 
+    // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
+    implementation("com.google.guava:guava:32.1.3-jre")
+
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
     testImplementation("io.mockk:mockk:1.13.13")
-
-    // TODO: Remove this dep that ius needed for equoIde
-    implementation("com.google.guava:guava:32.1.3-jre")
 }
 
 val eclipseRelease = "4.33"

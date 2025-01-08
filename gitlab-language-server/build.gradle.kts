@@ -31,7 +31,7 @@ p2deps {
     }
 }
 
-// TODO: Use Eclipse-ExtensibleAPI: true?
+// TODO: Explore using Eclipse-ExtensibleAPI?
 tasks.withType<Jar> {
     manifest {
         attributes["Bundle-ManifestVersion"] = "2"

@@ -7,26 +7,32 @@ import org.osgi.framework.Bundle
 import org.osgi.framework.FrameworkUtil
 import java.net.URL
 
-class InstallLanguageServer {
-    fun install() {
+class LanguageServerInstaller {
+    private val logger by lazy { Platform.getLog(FrameworkUtil.getBundle(javaClass)) }
+
+    fun install(): String? {
         try {
+            // TODO: Allow to load platform dependent binaries.
             val bundle: Bundle? = Platform.getBundle("com.gitlab.eclipse.gitlab-language-server.cocoa.macosx.aarch64")
             if (bundle != null) {
                 val bin: URL? = FileLocator.find(bundle, Path.fromOSString("/bin/gitlab-lsp"))
-                bin?.let { binary ->
+
+                return bin?.let { binary ->
                     val destination = bundle.getDataFile("gitlab-lsp")
                     if (destination.createNewFile()) {
                         destination.writeText(binary.readText())
                     } else {
-                        Platform.getLog(FrameworkUtil.getBundle(javaClass)).warn("Unable to create language server binary in data path")
+                        logger.warn("Unable to create language server binary in data path")
                     }
                     destination.setExecutable(true)
-                    Platform.getLog(FrameworkUtil.getBundle(javaClass)).info("Successfully installed language server from package")
+                    logger.info("Successfully installed language server from package")
+                    return@let destination.absolutePath
                 }
-//            commands = listOf(destination.canonicalPath)
             }
         } catch (e: Throwable) {
-            Platform.getLog(FrameworkUtil.getBundle(javaClass)).error(e.message, e)
+            logger.error(e.message, e)
         }
+
+        return null
     }
 }

@@ -1,3 +1,3 @@
 package com.gitlab.eclipse.lsp
 
-class FeatureStateChangeCheck(var checkId: String, var details: String)
+data class FeatureStateChangeCheck(val checkId: String, val details: String)

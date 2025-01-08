@@ -14,9 +14,9 @@
 
     <extension point="org.eclipse.lsp4e.languageServer">
       <server
-        class="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
-        clientImpl="com.gitlab.eclipse.lsp.GitLabLanguageClient"
-        id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+        class="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+        clientImpl="com.gitlab.eclipse.lsp.GitLabLanguageServerClient"
+        id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
         label="GitLab Duo"
         serverInterface="com.gitlab.eclipse.lsp.GitLabLanguageServer"
         singleton="true">
@@ -36,33 +36,33 @@
       <!-- NOTE: Support Code Suggestions in any editors created descended from the Text or XML content types. -->
       <!-- TODO: Normalize languageId to match the VS Code language client standard. -->
       <contentTypeMapping contentType="org.eclipse.core.runtime.text"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider">
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider">
       </contentTypeMapping>
 
       <contentTypeMapping contentType="org.eclipse.core.runtime.xml"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
                 languageId="xml">
       </contentTypeMapping>
 
       <!-- TODO: Use aliases for JDT core sources. -->
       <contentTypeMapping contentType="org.eclipse.jdt.core.javaSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
                 languageId="java">
       </contentTypeMapping>
 
       <!-- TODO: Use aliases for Web Tools sources. -->
       <contentTypeMapping contentType="org.eclipse.wst.css.core.csssource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
                 languageId="css">
       </contentTypeMapping>
 
       <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
                 languageId="javascript">
       </contentTypeMapping>
 
       <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsonSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProvider"
+                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
                 languageId="json">
       </contentTypeMapping>
     </extension>
