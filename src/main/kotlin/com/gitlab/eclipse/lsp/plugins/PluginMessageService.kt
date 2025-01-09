@@ -31,7 +31,7 @@ class PluginMessageService {
           return@supplyAsync logger.warn("Could not parse payload ($payload) for $route. Skipping.", e)
         }
       } else {
-        return@supplyAsync logger.warn("Could handle message for $route with payload ($payload) . Skipping.")
+        return@supplyAsync logger.warn("Could handle message for $route with payload ($payload). Skipping.")
       }
     }
   }
