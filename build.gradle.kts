@@ -45,6 +45,10 @@ allprojects {
   }
 }
 
+tasks.test {
+  useJUnitPlatform()
+}
+
 detekt {
   buildUponDefaultConfig = true // preconfigure defaults
   allRules = true // activate all available (even unstable) rules.
