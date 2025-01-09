@@ -1,3 +1,4 @@
+import dev.equo.ide.gradle.EquoIdeTask
 import groovy.json.JsonSlurper
 import io.gitlab.arturbosch.detekt.Detekt
 import java.time.Instant
@@ -36,16 +37,12 @@ allprojects {
     group = "com.gitlab.eclipse"
     version = "0.3.0"
     ext["bundleVersion"] = "0.3.0.${Instant.now().toEpochMilli()}"
-}
 
-repositories {
-    gradlePluginPortal()
-    mavenLocal()
-    mavenCentral()
-}
-
-kotlin {
-    jvmToolchain(21)
+    repositories {
+        gradlePluginPortal()
+        mavenLocal()
+        mavenCentral()
+    }
 }
 
 detekt {
@@ -93,6 +90,10 @@ dependencies {
     // 2. Must be available as a runtime dependency for running Equo on linux.
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
+    implementation(project(":gitlab-language-server"))
+
+    // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
+    implementation("com.google.guava:guava:32.1.3-jre")
 
     testImplementation(kotlin("test"))
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
@@ -106,22 +107,26 @@ dependencies {
 
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
-val eclipseDependencies = listOf(
-    "org.eclipse.core.runtime",
-    "org.eclipse.equinox.security",
-    "org.eclipse.osgi",
-    "org.eclipse.swt",
-    "org.eclipse.ui",
-    "org.eclipse.ui.editors",
-    "org.eclipse.jface.text"
+val eclipseDependencies = mapOf(
+    "org.eclipse.core.runtime" to "0.0.0",
+    "org.eclipse.equinox.security" to "0.0.0",
+    "org.eclipse.lsp4e" to "0.18.12",
+    "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
+    "org.eclipse.lsp4j" to "0.23.1",
+    "org.eclipse.osgi" to "0.0.0",
+    "org.eclipse.swt" to "0.0.0",
+    "org.eclipse.ui" to "0.0.0",
+    "org.eclipse.ui.editors" to "0.0.0",
+    "org.eclipse.jface.text" to "0.0.0"
 )
 
 p2deps {
     into(listOf("compileOnly", "testImplementation")) {
         p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
+        p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
 
         eclipseDependencies.forEach {
-            install(it)
+            install(it.key)
         }
     }
 }
@@ -151,7 +156,7 @@ tasks.withType<Jar> {
 
         attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
 
-        attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
+        attributes["Require-Bundle"] = eclipseDependencies.map { "${it.key};bundle-version=\"${it.value}\"" }.joinToString(separator = ",")
     }
 }
 
@@ -208,6 +213,16 @@ tasks.register("checkSnapshotVersion") {
     }
 }
 
+tasks.withType<EquoIdeTask> {
+    dependsOn(
+        provider {
+            subprojects.map { subproject ->
+                subproject.tasks.named("jar")
+            }
+        }
+    )
+}
+
 // Configure Equo IDE with basic to provide the GitLab for Eclipse plug-in.
 equoIde {
     equoIde.branding.title("GitLab for Eclipse Equo Sandbox")
@@ -221,6 +236,11 @@ equoIde {
     // Strangely required to start in our Ubuntu docker image but not on Mac OS...
     // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
     install("org.apache.felix.scr")
+
+    p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+    install("org.eclipse.lsp4e")
+    install("org.eclipse.lsp4j.jsonrpc")
+    install("org.eclipse.lsp4j")
 
     // Install the GitLab for Eclipse plug-in project.
     dogfood()

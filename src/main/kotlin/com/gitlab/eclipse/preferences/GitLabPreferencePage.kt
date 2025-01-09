@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.preferences
 
-import com.gitlab.eclipse.storage.SecretStorage
+import com.gitlab.eclipse.preferences.storage.SecretStorage
+import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage
@@ -47,6 +48,13 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
       )
     )
     addField(
+      StringFieldEditor(
+        PreferenceConstants.LANGUAGE_SERVER_HTTP_URL,
+        "Language Server HTTP URL",
+        fieldEditorParent
+      )
+    )
+    addField(
       BooleanFieldEditor(
         PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS,
         "Stream Code Generations",
@@ -56,6 +64,7 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
   }
 
   override fun init(workbench: IWorkbench) {
+    // TODO: Confirm intended storage bundle ID
     val bundleId = FrameworkUtil.getBundle(javaClass).bundleId.toString()
     val store = ScopedPreferenceStore(InstanceScope.INSTANCE, bundleId)
     preferenceStore = store

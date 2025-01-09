@@ -8,6 +8,8 @@ style:
     maxLineLength: 150
   ReturnCount:
     active: false
+  ForbiddenComment:
+    active: false
 
 formatting:
   Indentation:
@@ -19,4 +21,8 @@ formatting:
 
 complexity:
   LongParameterList:
+    active: false
+
+exceptions:
+  TooGenericExceptionCaught:
     active: false

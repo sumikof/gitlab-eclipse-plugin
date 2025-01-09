@@ -1,4 +1,4 @@
-package com.gitlab.eclipse.storage
+package com.gitlab.eclipse.preferences.storage
 
 import org.eclipse.core.runtime.Platform
 import org.eclipse.equinox.security.storage.ISecurePreferences

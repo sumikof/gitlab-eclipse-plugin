@@ -1,23 +1,10 @@
 package com.gitlab.eclipse.preferences
 
 import org.eclipse.core.runtime.preferences.AbstractPreferenceInitializer
-import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.ui.preferences.ScopedPreferenceStore
-import org.osgi.framework.FrameworkUtil
 
-@Suppress("ForbiddenComment")
 class PreferenceInitializer(private val store: ScopedPreferenceStore) :
   AbstractPreferenceInitializer() {
-
-  // TODO: Used by initializer in plugin.xml?
-  constructor() : this(
-    ScopedPreferenceStore(
-      InstanceScope.INSTANCE,
-      FrameworkUtil.getBundle(
-        PreferenceInitializer::class.java
-      ).bundleId.toString()
-    )
-  )
 
   override fun initializeDefaultPreferences() {
     store.setDefault(PreferenceConstants.GITLAB_INSTANCE_URL, "https://gitlab.com")
