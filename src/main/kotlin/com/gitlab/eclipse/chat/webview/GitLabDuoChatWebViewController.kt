@@ -5,7 +5,7 @@ import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
-import org.eclipse.ui.PlatformUI
+import com.gitlab.eclipse.utils.currentDisplay
 
 @PluginController("duo-chat")
 class GitLabDuoChatWebViewController {
@@ -17,10 +17,8 @@ class GitLabDuoChatWebViewController {
     val textEditor = textEditorProvider.getActiveTextEditor()
       ?: return null
 
-    val result = PlatformUI.getWorkbench().display.syncCall<FileContext, Exception> {
+    return currentDisplay.syncCall<FileContext, Exception> {
       currentFileContextProvider.provide(textEditor)
     }
-
-    return result
   }
 }
