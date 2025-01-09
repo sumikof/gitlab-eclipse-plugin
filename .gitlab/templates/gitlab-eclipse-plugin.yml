@@ -16,6 +16,18 @@ detekt:
     when: always
     expire_in: 2 weeks
 
+test:
+  stage: test
+  needs: [ ]
+  script:
+    - gradle test
+  artifacts:
+    when: always
+    name: test-reports
+    reports:
+      junit: build/test-results/test/**/TEST-*.xml
+    expire_in: 2 weeks
+
 check plugin:
   stage: test
   script:
