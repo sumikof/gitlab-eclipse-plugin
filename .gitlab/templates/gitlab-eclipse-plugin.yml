@@ -26,7 +26,7 @@ publish plugin (snapshot):
   script:
     - |-
       if ./gradlew checkSnapshotVersion; then
-        ./gradlew publish
+        ./gradlew publish publishToMavenLocal
       else
         echo 'WARNING: Skipping publish to package registry due to project version missing -SNAPSHOT suffix. If this is an error please amend build.gradle.kts.'
       fi
