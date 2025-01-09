@@ -100,9 +100,11 @@ dependencies {
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
   testImplementation("io.mockk:mockk:1.13.13")
+
   testImplementation("org.eclipse.platform:org.eclipse.text:3.14.0")
   testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.134.0")
   testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
+  testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
 
   detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
 }

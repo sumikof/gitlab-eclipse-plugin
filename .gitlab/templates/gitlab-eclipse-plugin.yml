@@ -20,6 +20,12 @@ check plugin:
   stage: test
   script:
      - ./gradlew check
+  artifacts:
+    paths:
+      - /build/reports/tests/test/index.html
+    expose_as: Check HTML report
+    when: always
+    expire_in: 2 weeks
 
 publish plugin (snapshot):
   stage: deploy
