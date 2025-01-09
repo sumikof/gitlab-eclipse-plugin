@@ -6,7 +6,7 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.WebviewInfo
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_HTTP_URL
-import org.eclipse.core.runtime.Platform
+import com.gitlab.eclipse.utils.Logger
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
@@ -22,9 +22,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 class LanguageServerBrowserView : ViewPart() {
-  private val logger by lazy {
-    Platform.getLog(FrameworkUtil.getBundle(LanguageServerBrowserView::class.java))
-  }
+  companion object : Logger
 
   private var browser: Browser? = null
   private val languageServerWrapper by lazy { GitLabLanguageServerWrapper() }
@@ -49,7 +47,7 @@ class LanguageServerBrowserView : ViewPart() {
         js = String(inputStream.readAllBytes(), StandardCharsets.UTF_8)
       }
     } catch (e: IOException) {
-      Platform.getLog(javaClass).error(e.message, e)
+      logger.error(e.message, e)
     }
     val buffer = StringBuilder()
 
