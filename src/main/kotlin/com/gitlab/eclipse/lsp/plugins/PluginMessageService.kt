@@ -4,7 +4,6 @@ import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageHandler
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.google.gson.Gson
 import com.google.gson.JsonElement
-import com.google.gson.JsonSyntaxException
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.FrameworkUtil
 import java.util.concurrent.CompletableFuture

@@ -18,7 +18,7 @@ class PluginCommunicationModule {
 
   val service: PluginMessageService = PluginMessageService()
 
-  fun start() {
+  init {
     val reflections = Reflections("com.gitlab.eclipse")
 
     val controllers = reflections.getTypesAnnotatedWith(PluginController::class.java)
@@ -48,7 +48,6 @@ class PluginCommunicationModule {
     }
 
     val payloadType = method.parameters.firstOrNull()?.type
-
     val handler = PluginMessageHandler(payloadType) { payload ->
       when {
         payload == null -> method.invoke(controller)

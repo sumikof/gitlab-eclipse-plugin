@@ -14,10 +14,6 @@ import java.util.concurrent.CompletableFuture
 class GitLabLanguageServerClient : LanguageClientImpl() {
   private val pluginCommunicationModule by lazy { PluginCommunicationModule() }
 
-  init {
-    pluginCommunicationModule.start()
-  }
-
   @JsonNotification("$/gitlab/featureStateChange")
   fun gitlabFeatureStateChange(params: List<FeatureStateChange?>?, reserved: Any? = null) {
     return
