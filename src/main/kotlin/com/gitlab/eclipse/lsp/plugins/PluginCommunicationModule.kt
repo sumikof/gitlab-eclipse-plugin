@@ -11,7 +11,7 @@ import org.osgi.framework.FrameworkUtil
 import org.reflections.Reflections
 import java.lang.reflect.Method
 
-class PluginCommunicationModule {
+class PluginCommunicationModule(pkgName: String = "com.gitlab.eclipse") {
   private val logger by lazy {
     Platform.getLog(FrameworkUtil.getBundle(PluginCommunicationModule::class.java))
   }
@@ -19,7 +19,7 @@ class PluginCommunicationModule {
   val service: PluginMessageService = PluginMessageService()
 
   init {
-    val reflections = Reflections("com.gitlab.eclipse")
+    val reflections = Reflections(pkgName)
 
     val controllers = reflections.getTypesAnnotatedWith(PluginController::class.java)
     controllers.forEach { controller ->
