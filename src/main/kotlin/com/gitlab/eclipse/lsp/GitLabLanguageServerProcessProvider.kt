@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.CodeCompletion
+import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.FeatureFlags
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.Telemetry
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
@@ -87,29 +88,22 @@ class GitLabLanguageServerProcessProvider(
       FrameworkUtil.getBundle(GitLabLanguageServerProcessProvider::class.java).bundleId.toString()
     )
 
-    val params = GitLabLanguageServerConfigurationParams.builder()
-      .baseUrl(preferenceStore.getString(GITLAB_INSTANCE_URL))
-      .codeCompletion(CodeCompletion(true, listOf(), listOf()))
-      .featureFlags(
-        GitLabLanguageServerConfigurationParams.FeatureFlags.builder()
-          .remoteSecurityScans(false)
-          .streamCodeGenerations(preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS))
-          .build()
-      )
-      .ignoreCertificateErrors(preferenceStore.getBoolean(IGNORE_CERTIFICATE_ERRORS))
-      .logLevel(preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL))
-      .telemetry(
-        Telemetry(
-          preferenceStore.getBoolean(TELEMETRY_ENABLED),
-          "https://snowplowprd.trx.gitlab.net"
-        )
-      )
+    val params = GitLabLanguageServerConfigurationParams(
+      baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
+      codeCompletion = CodeCompletion(enableSecretRedaction = true),
+      featureFlags = FeatureFlags(
+        remoteSecurityScans = false,
+        streamCodeGenerations = preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS)
+      ),
+      ignoreCertificateErrors = preferenceStore.getBoolean(IGNORE_CERTIFICATE_ERRORS),
+      logLevel = preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL),
+      telemetry = Telemetry(
+        preferenceStore.getBoolean(TELEMETRY_ENABLED),
+        "https://snowplowprd.trx.gitlab.net"
+      ),
+      token = SecretStorage("gitlab.com").getSecret("personal_access_token")
+    )
 
-    SecretStorage("gitlab.com")
-      .getSecret("personal_access_token")
-      ?.takeIf { it.isNotBlank() }
-      ?.let { personalAccessToken -> params.token(personalAccessToken) }
-
-    languageServer.workspaceService.didChangeConfiguration(DidChangeConfigurationParams(params.build()))
+    languageServer.workspaceService.didChangeConfiguration(DidChangeConfigurationParams(params))
   }
 }
