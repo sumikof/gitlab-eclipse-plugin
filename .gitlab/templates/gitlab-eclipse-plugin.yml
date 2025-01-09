@@ -20,7 +20,8 @@ test:
   stage: test
   needs: [ ]
   before_script:
-    - apt-get install libgtk-3-0 libgtk-3-dev libswt-gtk-4-java
+    - apt-get -qq update
+    - apt-get -qq install libgtk-3-0 libgtk-3-dev libswt-gtk-4-java
   script:
     - gradle test
   artifacts:
@@ -33,7 +34,8 @@ test:
 check plugin:
   stage: test
   before_script:
-    - apt-get install libgtk-3-0 libgtk-3-dev libswt-gtk-4-java
+    - apt-get -qq update
+    - apt-get -qq install libgtk-3-0 libgtk-3-dev libswt-gtk-4-java
   script:
      - ./gradlew check
 
