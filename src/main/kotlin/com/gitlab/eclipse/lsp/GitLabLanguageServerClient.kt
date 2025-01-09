@@ -1,11 +1,23 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.lsp.plugins.PluginCommunicationModule
+import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
+import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
+import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
+import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
 import org.eclipse.lsp4e.LanguageClientImpl
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
+import java.util.concurrent.CompletableFuture
 
 @Suppress("UnusedParameter")
 class GitLabLanguageServerClient : LanguageClientImpl() {
+  private val pluginCommunicationModule by lazy { PluginCommunicationModule() }
+
+  init {
+    pluginCommunicationModule.start()
+  }
+
   @JsonNotification("$/gitlab/featureStateChange")
   fun gitlabFeatureStateChange(params: List<FeatureStateChange?>?, reserved: Any? = null) {
     return
@@ -26,23 +38,75 @@ class GitLabLanguageServerClient : LanguageClientImpl() {
     return
   }
 
+  @JsonNotification("$/gitlab/plugin/notification")
+  fun gitlabPluginNotification(message: PluginMessage) {
+    pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.pluginId,
+        type = PluginMessageType.NOTIFICATION
+      ),
+      payload = message.payload
+    )
+  }
+
+  @JsonRequest("$/gitlab/plugin/request")
+  fun gitlabPluginRequest(message: PluginMessage): CompletableFuture<Any?> {
+    return pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.pluginId,
+        type = PluginMessageType.REQUEST
+      ),
+      payload = message.payload
+    )
+  }
+
   @JsonNotification("$/gitlab/webview/notification")
-  fun gitlabWebviewNotification(params: Any?) {
-    return
+  fun gitlabWebviewNotification(message: WebViewMessage) {
+    pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.webviewId,
+        type = PluginMessageType.NOTIFICATION
+      ),
+      payload = message.payload
+    )
   }
 
   @JsonRequest("$/gitlab/webview/request")
-  fun gitlabWebviewRequest(params: Any?): java.util.concurrent.CompletableFuture<Any> {
-    return java.util.concurrent.CompletableFuture.completedFuture<Any>(null)
+  fun gitlabWebviewRequest(message: WebViewMessage): CompletableFuture<Any?> {
+    return pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.webviewId,
+        type = PluginMessageType.REQUEST
+      ),
+      payload = message.payload
+    )
   }
 
   @JsonNotification("\$gitlab/webview/notification")
-  fun deprecatedGitlabWebviewNotification(params: Any?) {
-    gitlabWebviewNotification(params)
+  fun deprecatedGitlabWebviewNotification(message: WebViewMessage) {
+    pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.webviewId,
+        type = PluginMessageType.NOTIFICATION
+      ),
+      payload = message.payload
+    )
   }
 
   @JsonRequest("\$gitlab/webview/request")
-  fun deprecatedGitlabWebviewRequest(params: Any?): java.util.concurrent.CompletableFuture<Any> {
-    return gitlabWebviewRequest(params)
+  fun deprecatedGitlabWebviewRequest(message: WebViewMessage): java.util.concurrent.CompletableFuture<Any?> {
+    return pluginCommunicationModule.service.dispatch(
+      route = PluginMessageRoute(
+        method = message.type,
+        pluginId = message.webviewId,
+        type = PluginMessageType.REQUEST
+      ),
+      payload = message.payload
+    )
   }
 }
