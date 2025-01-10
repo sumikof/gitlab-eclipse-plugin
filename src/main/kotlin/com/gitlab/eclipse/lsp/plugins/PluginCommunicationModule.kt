@@ -6,16 +6,10 @@ import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageHandler
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
-import org.eclipse.core.runtime.Platform
-import org.osgi.framework.FrameworkUtil
 import org.reflections.Reflections
 import java.lang.reflect.Method
 
 class PluginCommunicationModule(pkgName: String = "com.gitlab.eclipse") {
-  private val logger by lazy {
-    Platform.getLog(FrameworkUtil.getBundle(PluginCommunicationModule::class.java))
-  }
-
   val service: PluginMessageService = PluginMessageService()
 
   init {
@@ -35,8 +29,7 @@ class PluginCommunicationModule(pkgName: String = "com.gitlab.eclipse") {
 
   private fun List<Method>.register(pluginId: String, controller: Any) = forEach { method ->
     if (method.parameterCount > 1) {
-      logger.error("Method ${method.name} is not a valid request handler, multiple arguments found.")
-      return@forEach
+      error("Method ${method.name} is not a valid request handler, multiple arguments found.")
     }
 
     val route = if (method.isAnnotationPresent(PluginRequest::class.java)) {
