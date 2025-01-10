@@ -18,8 +18,17 @@ detekt:
 
 check plugin:
   stage: test
+  before_script:
+    - apt-get -qq update
+    - apt-get -qq install libgtk-3-0 libgtk-3-dev libswt-gtk-4-java
   script:
      - ./gradlew check
+  artifacts:
+    when: always
+    name: test-reports
+    reports:
+      junit: build/test-results/test/**/TEST-*.xml
+    expire_in: 2 weeks
 
 publish plugin (snapshot):
   stage: deploy
