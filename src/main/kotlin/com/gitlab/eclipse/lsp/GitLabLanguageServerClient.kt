@@ -81,28 +81,4 @@ class GitLabLanguageServerClient : LanguageClientImpl() {
       payload = message.payload
     )
   }
-
-  @JsonNotification("\$gitlab/webview/notification")
-  fun deprecatedGitlabWebviewNotification(message: WebViewMessage) {
-    pluginCommunicationModule.service.dispatch(
-      route = PluginMessageRoute(
-        method = message.type,
-        pluginId = message.webviewId,
-        type = PluginMessageType.NOTIFICATION
-      ),
-      payload = message.payload
-    )
-  }
-
-  @JsonRequest("\$gitlab/webview/request")
-  fun deprecatedGitlabWebviewRequest(message: WebViewMessage): java.util.concurrent.CompletableFuture<Any?> {
-    return pluginCommunicationModule.service.dispatch(
-      route = PluginMessageRoute(
-        method = message.type,
-        pluginId = message.webviewId,
-        type = PluginMessageType.REQUEST
-      ),
-      payload = message.payload
-    )
-  }
 }
