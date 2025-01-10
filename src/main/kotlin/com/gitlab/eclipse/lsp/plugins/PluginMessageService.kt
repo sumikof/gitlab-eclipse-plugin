@@ -5,8 +5,6 @@ import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.Gson
 import com.google.gson.JsonElement
-import org.eclipse.core.runtime.Platform
-import org.osgi.framework.FrameworkUtil
 import java.util.concurrent.CompletableFuture
 
 class PluginMessageService {
