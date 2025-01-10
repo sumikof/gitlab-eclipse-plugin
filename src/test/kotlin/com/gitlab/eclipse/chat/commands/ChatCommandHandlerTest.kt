@@ -1,8 +1,10 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.lsp.FileContext
-import com.gitlab.eclipse.lsp.NOOPLspClient
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
+import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.relativePath
 import io.kotest.core.spec.style.DescribeSpec
@@ -18,7 +20,7 @@ import org.eclipse.ui.editors.text.TextEditor
 @Suppress("UnnecessaryAbstractClass")
 abstract class ChatCommandHandlerTest(
   val commandUnderTest: String,
-  val createCommandHandler: (NOOPLspClient, TextEditorProvider) -> ChatCommandHandler
+  val createCommandHandler: (GitLabLanguageServerWrapper, TextEditorProvider) -> ChatCommandHandler
 ) : DescribeSpec({
   val event = mockk<ExecutionEvent>()
 
@@ -29,9 +31,13 @@ abstract class ChatCommandHandlerTest(
   val selection = mockk<ITextSelection>()
 
   val textEditorProvider = mockk<TextEditorProvider>()
-  val lspClient = mockk<NOOPLspClient>(relaxUnitFun = true)
 
-  val handler = createCommandHandler(lspClient, textEditorProvider)
+  val languageServerProxy = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+  val languageServerWrapper = GitLabLanguageServerWrapper().apply {
+    registerLanguageServer(languageServerProxy)
+  }
+
+  val handler = createCommandHandler(languageServerWrapper, textEditorProvider)
 
   beforeSpec { mockkStatic("com.gitlab.eclipse.utils.FileKt") }
 
@@ -54,7 +60,7 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
-    verify(exactly = 0) { lspClient.send(any()) }
+    verify(exactly = 0) { languageServerProxy.pluginNotification(any()) }
   }
 
   it("should not send prompt if no text is selected") {
@@ -62,7 +68,7 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
-    verify(exactly = 0) { lspClient.send(any()) }
+    verify(exactly = 0) { languageServerProxy.pluginNotification(any()) }
   }
 
   it("should send prompt including current file context") {
@@ -74,15 +80,34 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
+    /*
+        ExtensionToPluginNotification(
+          pluginId = "duo-chat",
+          type = "newPrompt",
+          payload = NewPromptRequest(
+            prompt = commandUnderTest,
+            fileContext = FileContext(
+              fileName = "a/main.kt",
+              selectedText = "def",
+              contentAboveCursor = "abc\n",
+              contentBelowCursor = "\nijk"
+            )
+          )
+        )
+     */
     verify(exactly = 1) {
-      lspClient.send(
-        NewPromptRequest(
-          content = commandUnderTest,
-          fileContext = FileContext(
-            fileName = "a/main.kt",
-            selectedText = "def",
-            contentAboveCursor = "abc\n",
-            contentBelowCursor = "\nijk"
+      languageServerProxy.pluginNotification(
+        ExtensionToPluginNotification(
+          pluginId = "duo-chat",
+          type = "newPrompt",
+          payload = NewPromptRequest(
+            prompt = commandUnderTest,
+            fileContext = FileContext(
+              fileName = "a/main.kt",
+              selectedText = "def",
+              contentAboveCursor = "abc\n",
+              contentBelowCursor = "\nijk"
+            )
           )
         )
       )

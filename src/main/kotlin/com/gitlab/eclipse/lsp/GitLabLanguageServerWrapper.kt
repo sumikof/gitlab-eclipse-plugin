@@ -11,7 +11,7 @@ class GitLabLanguageServerWrapper {
     get() = languageServerProxy
 
   fun registerLanguageServer(newLanguageServerProxy: LanguageServer) {
-    if (languageServerProxy != null || newLanguageServerProxy !is GitLabLanguageServer) {
+    if (newLanguageServerProxy !is GitLabLanguageServer) {
       return
     }
 

@@ -1,7 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 data class NewPromptRequest(
-  val content: String,
+  val prompt: String,
   val fileContext: FileContext
 )
 
