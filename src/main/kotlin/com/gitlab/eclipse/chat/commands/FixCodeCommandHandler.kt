@@ -10,8 +10,8 @@ class FixCodeCommandHandler(
   languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   textEditorProvider: TextEditorProvider = TextEditorProvider(),
 ) : ChatCommandHandler(
-  command = "/fix",
-  coroutineScope,
+  promptType = "fixCode",
+  coroutineScope = coroutineScope,
   languageServerWrapper = languageServerWrapper,
   textEditorProvider = textEditorProvider
 )

@@ -80,7 +80,7 @@ class LanguageServerBrowserView : ViewPart() {
 
       val lspUrl = preferenceStore.getString(LANGUAGE_SERVER_HTTP_URL)
       val redirect = webviews.stream()
-        .filter { it?.id == "duo-chat" }
+        .filter { it?.id == "duo-chat-v2" }
         .findFirst()
         .map { it?.uris?.get(0) ?: lspUrl }
         .orElse(lspUrl)

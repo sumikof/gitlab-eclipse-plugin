@@ -10,7 +10,7 @@ class RefactorCodeCommandHandler(
   languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   textEditorProvider: TextEditorProvider = TextEditorProvider(),
 ) : ChatCommandHandler(
-  command = "/refactor",
+  promptType = "refactorCode",
   coroutineScope = coroutineScope,
   languageServerWrapper = languageServerWrapper,
   textEditorProvider = textEditorProvider

@@ -12,7 +12,7 @@ import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.jface.text.ITextSelection
 
 open class ChatCommandHandler(
-  private val command: String,
+  private val promptType: String,
   private val coroutineScope: CoroutineScope,
   private val languageServerWrapper: GitLabLanguageServerWrapper,
   private val textEditorProvider: TextEditorProvider,
@@ -23,10 +23,10 @@ open class ChatCommandHandler(
     val context = currentFileContextProvider.provide(textEditor) ?: return
 
     val request = ExtensionToPluginNotification(
-      pluginId = "duo-chat",
+      pluginId = "duo-chat-v2",
       type = "newPrompt",
       payload = NewPromptRequest(
-        prompt = command,
+        prompt = promptType,
         fileContext = context
       )
     )

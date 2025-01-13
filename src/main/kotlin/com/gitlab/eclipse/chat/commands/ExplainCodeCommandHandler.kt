@@ -10,7 +10,7 @@ class ExplainCodeCommandHandler(
   languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   textEditorProvider: TextEditorProvider = TextEditorProvider(),
 ) : ChatCommandHandler(
-  command = "/explain",
+  promptType = "explainCode",
   coroutineScope = coroutineScope,
   languageServerWrapper = languageServerWrapper,
   textEditorProvider = textEditorProvider

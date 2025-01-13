@@ -10,7 +10,7 @@ class GenerateTestsCommandHandler(
   languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   textEditorProvider: TextEditorProvider = TextEditorProvider(),
 ) : ChatCommandHandler(
-  command = "/tests",
+  promptType = "generateTests",
   coroutineScope = coroutineScope,
   languageServerWrapper = languageServerWrapper,
   textEditorProvider = textEditorProvider
