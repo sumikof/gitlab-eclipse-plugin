@@ -54,8 +54,8 @@ class GitLabLanguageServerProcessProvider(
     if (message is NotificationMessage) {
       when (message.method) {
         "initialized" -> {
-          onDidChangeConfiguration(languageServer)
           languageServerWrapper.registerLanguageServer(languageServer)
+          onDidChangeConfiguration(languageServer)
         }
         else -> {}
       }

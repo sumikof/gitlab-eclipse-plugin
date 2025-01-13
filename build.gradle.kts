@@ -97,6 +97,7 @@ dependencies {
   implementation(project(":gitlab-language-server"))
 
   implementation("org.reflections:reflections:0.10.2")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:32.1.3-jre")
@@ -147,7 +148,9 @@ tasks.withType<Jar> {
   val kotlinLibraries = listOf(
     "kotlin-runtime-2.0.20.jar",
     "kotlin-stdlib-2.0.20.jar",
+    "kotlinx-coroutines-core-jvm-1.10.1.jar"
   )
+
   configurations.runtimeClasspath.get()
     .filter { kotlinLibraries.contains(it.name) }
     .map { zipTree(it) }

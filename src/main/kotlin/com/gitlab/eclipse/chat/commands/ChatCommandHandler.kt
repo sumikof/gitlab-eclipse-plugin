@@ -1,16 +1,20 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.lsp.NOOPLspClient
+import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.utils.TextEditorProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.jface.text.ITextSelection
 
 open class ChatCommandHandler(
   private val command: String,
-  private val lspClient: NOOPLspClient,
+  private val coroutineScope: CoroutineScope,
+  private val languageServerWrapper: GitLabLanguageServerWrapper,
   private val textEditorProvider: TextEditorProvider,
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
 ) : AbstractHandler() {
@@ -18,12 +22,18 @@ open class ChatCommandHandler(
     val textEditor = textEditorProvider.getActiveTextEditor() ?: return
     val context = currentFileContextProvider.provide(textEditor) ?: return
 
-    val request = NewPromptRequest(
-      content = command,
-      fileContext = context
+    val request = ExtensionToPluginNotification(
+      pluginId = "duo-chat",
+      type = "newPrompt",
+      payload = NewPromptRequest(
+        prompt = command,
+        fileContext = context
+      )
     )
 
-    lspClient.send(request)
+    coroutineScope.launch {
+      languageServerWrapper.languageServer?.pluginNotification(request)
+    }
   }
 
   override fun isEnabled(): Boolean {
