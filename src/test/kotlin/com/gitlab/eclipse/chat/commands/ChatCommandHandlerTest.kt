@@ -19,7 +19,7 @@ import org.eclipse.ui.editors.text.TextEditor
 
 @Suppress("UnnecessaryAbstractClass")
 abstract class ChatCommandHandlerTest(
-  val commandUnderTest: String,
+  val promptTypeUnderTest: String,
   val createCommandHandler: (GitLabLanguageServerWrapper, TextEditorProvider) -> ChatCommandHandler
 ) : DescribeSpec({
   val event = mockk<ExecutionEvent>()
@@ -83,10 +83,10 @@ abstract class ChatCommandHandlerTest(
     verify(exactly = 1) {
       languageServerProxy.pluginNotification(
         ExtensionToPluginNotification(
-          pluginId = "duo-chat",
+          pluginId = "duo-chat-v2",
           type = "newPrompt",
           payload = NewPromptRequest(
-            prompt = commandUnderTest,
+            prompt = promptTypeUnderTest,
             fileContext = FileContext(
               fileName = "a/main.kt",
               selectedText = "def",

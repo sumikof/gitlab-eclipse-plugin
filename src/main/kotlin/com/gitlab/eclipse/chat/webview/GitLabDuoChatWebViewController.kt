@@ -7,7 +7,7 @@ import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.currentDisplay
 
-@PluginController("duo-chat")
+@PluginController("duo-chat-v2")
 class GitLabDuoChatWebViewController(
   private val textEditorProvider: TextEditorProvider = TextEditorProvider(),
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()

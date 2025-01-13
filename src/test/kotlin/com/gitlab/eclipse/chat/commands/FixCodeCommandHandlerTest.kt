@@ -6,7 +6,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class FixCodeCommandHandlerTest : ChatCommandHandlerTest(
-  commandUnderTest = "/fix",
+  promptTypeUnderTest = "fixCode",
   createCommandHandler = { languageServerWrapper, textEditorProvider ->
     FixCodeCommandHandler(TestScope(UnconfinedTestDispatcher()), languageServerWrapper, textEditorProvider)
   }
