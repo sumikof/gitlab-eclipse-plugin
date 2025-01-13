@@ -80,21 +80,6 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
-    /*
-        ExtensionToPluginNotification(
-          pluginId = "duo-chat",
-          type = "newPrompt",
-          payload = NewPromptRequest(
-            prompt = commandUnderTest,
-            fileContext = FileContext(
-              fileName = "a/main.kt",
-              selectedText = "def",
-              contentAboveCursor = "abc\n",
-              contentBelowCursor = "\nijk"
-            )
-          )
-        )
-     */
     verify(exactly = 1) {
       languageServerProxy.pluginNotification(
         ExtensionToPluginNotification(
