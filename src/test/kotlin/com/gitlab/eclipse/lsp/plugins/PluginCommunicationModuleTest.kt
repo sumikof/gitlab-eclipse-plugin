@@ -2,6 +2,7 @@
 
 package com.gitlab.eclipse.lsp.plugins
 
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
@@ -14,6 +15,8 @@ import io.kotest.matchers.shouldBe
 
 class PluginCommunicationModuleTest : DescribeSpec({
   val module by lazy { PluginCommunicationModule("com.gitlab.eclipse.lsp.plugins") }
+
+  extensions(LoggingKotestExtension)
 
   it("should register all controllers") {
     val route1 = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request")
