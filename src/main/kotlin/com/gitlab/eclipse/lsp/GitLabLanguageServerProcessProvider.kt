@@ -9,7 +9,7 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LE
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.preferences.storage.SecretStorage
-import org.eclipse.core.runtime.Platform
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
 import org.eclipse.lsp4j.DidChangeConfigurationParams
@@ -24,9 +24,7 @@ class GitLabLanguageServerProcessProvider(
   private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   languageServerInstaller: LanguageServerInstaller = LanguageServerInstaller(),
 ) : ProcessStreamConnectionProvider() {
-  private val logger by lazy {
-    Platform.getLog(FrameworkUtil.getBundle(GitLabLanguageServerProcessProvider::class.java))
-  }
+  private val logger = logger<GitLabLanguageServerProcessProvider>()
 
   init {
     val languageServerInstallationPath = languageServerInstaller.install()

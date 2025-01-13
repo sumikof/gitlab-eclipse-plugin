@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.preferences.storage
 
-import org.eclipse.core.runtime.Platform
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.equinox.security.storage.ISecurePreferences
 import org.eclipse.equinox.security.storage.SecurePreferencesFactory
 import org.eclipse.equinox.security.storage.StorageException
@@ -11,6 +11,8 @@ import org.eclipse.equinox.security.storage.StorageException
  * For Equo support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/20
  */
 class SecretStorage(rootURI: String?) {
+  private val logger = logger<SecretStorage>()
+
   private val node: ISecurePreferences = SecurePreferencesFactory.getDefault()
     .node("gitlab")
     .node("hosts")
@@ -19,7 +21,7 @@ class SecretStorage(rootURI: String?) {
   fun getSecret(key: String?) = try {
     node.get(key, null)
   } catch (e: StorageException) {
-    Platform.getLog(javaClass).error(e.message, e)
+    logger.error(e.message, e)
 
     key?.split(Regex("[^a-zA-Z0-9]+"))
       ?.joinToString("_")
@@ -32,7 +34,7 @@ class SecretStorage(rootURI: String?) {
     try {
       node.put(key, value, true)
     } catch (e: StorageException) {
-      Platform.getLog(javaClass).error(e.message, e)
+      logger.error(e.message, e)
     }
   }
 }

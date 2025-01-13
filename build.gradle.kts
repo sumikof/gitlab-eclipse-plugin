@@ -100,6 +100,7 @@ dependencies {
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:32.1.3-jre")
+    implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
 
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")

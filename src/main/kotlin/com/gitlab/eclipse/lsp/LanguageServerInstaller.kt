@@ -1,13 +1,13 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.FileLocator
 import org.eclipse.core.runtime.Path
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
-import org.osgi.framework.FrameworkUtil
 
 class LanguageServerInstaller {
-  private val logger by lazy { Platform.getLog(FrameworkUtil.getBundle(javaClass)) }
+  private val logger = logger<LanguageServerInstaller>()
 
   // TODO: Allow to load platform dependent binaries.
   fun install(): String? {
