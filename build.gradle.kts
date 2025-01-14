@@ -31,6 +31,8 @@ plugins {
   id("dev.equo.p2deps") version "1.7.7"
 
   id("io.gitlab.arturbosch.detekt") version "1.23.7"
+
+  id("com.github.gmazzo.buildconfig") version "5.5.1"
 }
 
 allprojects {
@@ -61,6 +63,16 @@ tasks.withType<Detekt>().configureEach {
   reports {
     html.required.set(true) // observe findings in your browser with structure and code snippets
   }
+}
+
+buildConfig {
+  packageName(group.toString())
+
+  buildConfigField(
+    "Boolean",
+    "IS_EQUO_IDE",
+    System.getenv().getOrDefault("EQUO_IDE", "false").toBoolean()
+  )
 }
 
 val arch = when (System.getProperty("os.arch")) {
@@ -101,7 +113,7 @@ dependencies {
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:32.1.3-jre")
-    implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
+  implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
 
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
@@ -127,7 +139,8 @@ val eclipseDependencies = mapOf(
   "org.eclipse.swt" to "0.0.0",
   "org.eclipse.ui" to "0.0.0",
   "org.eclipse.ui.editors" to "0.0.0",
-  "org.eclipse.jface.text" to "0.0.0"
+  "org.eclipse.jface.text" to "0.0.0",
+  "org.eclipse.core.resources" to "0.0.0"
 )
 
 p2deps {
@@ -146,13 +159,15 @@ tasks.withType<Jar> {
   // The kotlin-osgi-bundle packages these as valid bundles but Erran couldn't figure out how to use pure OSGi to depend on Kotlin Standard Library/Runtime.
   // We could ship a separate Eclipse plug-in to expose Kotlin libraries on the classpath and require that the usual OSGi way.
   val kotlinLibraries = listOf(
-    "kotlin-runtime-2.0.20.jar",
-    "kotlin-stdlib-2.0.20.jar",
-    "kotlinx-coroutines-core-jvm-1.10.1.jar"
+    "kotlin-reflect",
+    "kotlin-stdlib",
+    "kotlinx-coroutines-core-jvm"
   )
 
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
   configurations.runtimeClasspath.get()
-    .filter { kotlinLibraries.contains(it.name) }
+    .filter { runtimeLib -> kotlinLibraries.any { lib -> runtimeLib.name.startsWith(lib) } }
     .map { zipTree(it) }
     .also { from(it) }
 

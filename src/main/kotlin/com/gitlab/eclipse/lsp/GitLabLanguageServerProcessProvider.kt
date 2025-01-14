@@ -1,8 +1,7 @@
 package com.gitlab.eclipse.lsp
 
-import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.CodeCompletion
-import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.FeatureFlags
-import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.Telemetry
+import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
@@ -10,6 +9,7 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.core.runtime.Platform
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
 import org.eclipse.lsp4j.DidChangeConfigurationParams
@@ -36,16 +36,34 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
+  override fun createProcessBuilder(): ProcessBuilder {
+    val builder = super.createProcessBuilder()
+
+    if (!BuildConfig.IS_EQUO_IDE) {
+      val metadataDirectory = Platform.getLogFileLocation().toFile().parentFile
+        ?: return builder
+
+      val lsLogFile = metadataDirectory.resolve("language-server.log")
+
+      if (!lsLogFile.exists()) {
+        lsLogFile.createNewFile()
+      }
+
+      builder.redirectError(lsLogFile)
+      logger.info("Language server logs saved to: ${lsLogFile.absolutePath}.")
+    }
+
+    return builder
+  }
+
   override fun start() {
     super.start()
 
     getAdapter(ProcessHandle::class.java)?.apply {
-      logger.warn("Language server exit bindings defined")
+      logger.info("Language server exit bindings defined.")
 
       onExit().thenApply {
-        logger.warn("Language server process exited")
-        logger.warn("LSP STDOUT: " + inputStream?.readAllBytes()?.decodeToString())
-        logger.warn("LSP STDERR: " + errorStream?.readAllBytes()?.decodeToString())
+        logger.warn("Language server process exited.")
       }
     }
   }
