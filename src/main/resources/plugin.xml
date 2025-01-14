@@ -97,11 +97,6 @@
         />
 
         <handler
-                commandId="gitlab-eclipse-plugin.commands.ExplainCode"
-                class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
-        />
-
-        <handler
                 commandId="gitlab-eclipse-plugin.commands.GenerateTests"
                 class="com.gitlab.eclipse.chat.commands.GenerateTestsCommandHandler"
         />
