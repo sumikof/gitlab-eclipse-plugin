@@ -12,7 +12,6 @@ import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.Path
 import kotlin.io.path.pathString
 import kotlin.io.path.walk
-import kotlin.text.toBoolean
 
 val gitlabEclipsePluginProjectId = System.getenv().getOrDefault("CI_PROJECT_ID", "62043363").toInt()
 
