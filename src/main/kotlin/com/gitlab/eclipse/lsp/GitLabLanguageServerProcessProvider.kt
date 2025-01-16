@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.*
+import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
@@ -22,6 +23,7 @@ import java.net.URI
 
 class GitLabLanguageServerProcessProvider(
   private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
+  private val languageServerProxyManager: LanguageServerProxyManager = LanguageServerProxyManager(),
   languageServerInstaller: LanguageServerInstaller = LanguageServerInstaller(),
 ) : ProcessStreamConnectionProvider() {
   private val logger = logger<GitLabLanguageServerProcessProvider>()
@@ -53,6 +55,7 @@ class GitLabLanguageServerProcessProvider(
       logger.info("Language server logs saved to: ${lsLogFile.absolutePath}.")
     }
 
+    builder.injectHttpProxyEnvironmentVariables()
     return builder
   }
 
@@ -121,5 +124,20 @@ class GitLabLanguageServerProcessProvider(
     )
 
     languageServer.workspaceService.didChangeConfiguration(DidChangeConfigurationParams(params))
+  }
+
+  private fun ProcessBuilder.injectHttpProxyEnvironmentVariables() {
+    val proxySettings = mapOf(
+      "http_proxy" to languageServerProxyManager.getHttpProxyUrl(),
+      "HTTPS_PROXY" to languageServerProxyManager.getHttpsProxyUrl(),
+      "NO_PROXY" to languageServerProxyManager.getBypassHosts()
+    )
+
+    proxySettings.forEach { (key, value) ->
+      if (value != null) {
+        logger.info("Passing through $key to the language server.")
+        environment()[key] = value
+      }
+    }
   }
 }
