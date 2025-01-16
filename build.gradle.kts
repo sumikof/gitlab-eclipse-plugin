@@ -139,7 +139,8 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui" to "0.0.0",
   "org.eclipse.ui.editors" to "0.0.0",
   "org.eclipse.jface.text" to "0.0.0",
-  "org.eclipse.core.resources" to "0.0.0"
+  "org.eclipse.core.resources" to "0.0.0",
+  "org.eclipse.core.net" to "0.0.0"
 )
 
 p2deps {
@@ -337,6 +338,7 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
 
 subprojects {
   if (project.name.startsWith("gitlab-language-server.")) {
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     extra["downloadPlatformDependentBinary"] = fun() {
       val targetPlatform = project.name.replace("gitlab-language-server.", "")
       val languageServerPlatform = when (targetPlatform) {

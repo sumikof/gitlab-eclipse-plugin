@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add support for HTTP and HTTPS proxies ([!31](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/31))
+
 ### Changed
 
 ### Removed
@@ -23,4 +25,3 @@
 ### Removed
 
 ### Fixed
-
