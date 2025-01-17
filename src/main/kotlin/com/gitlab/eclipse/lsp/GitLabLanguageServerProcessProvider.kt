@@ -3,6 +3,7 @@ package com.gitlab.eclipse.lsp
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
@@ -120,7 +121,10 @@ class GitLabLanguageServerProcessProvider(
         preferenceStore.getBoolean(TELEMETRY_ENABLED),
         "https://snowplowprd.trx.gitlab.net"
       ),
-      token = SecretStorage("gitlab.com").getSecret("personal_access_token")
+      token = SecretStorage("gitlab.com").getSecret("personal_access_token"),
+      httpAgentOptions = HttpAgentOptions(
+        ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() }
+      )
     )
 
     languageServer.workspaceService.didChangeConfiguration(DidChangeConfigurationParams(params))
