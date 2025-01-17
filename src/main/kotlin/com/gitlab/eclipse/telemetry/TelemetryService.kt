@@ -14,6 +14,9 @@ class TelemetryService(
   // The rest are handled by the language server for us.
   // [Reference](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/blob/main/docs/telemetry.md)
 
+  // TODO: Confirm telemetry events are sent by LS once Code Suggestions is added.
+  // [Issue](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/90)
+
   fun sendCodeSuggestionAcceptedTelemetry(trackingId: String, optionId: Int) {
     gitLabLanguageServer?.telemetry(
       TelemetryParams(
