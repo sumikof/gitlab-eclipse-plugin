@@ -5,6 +5,7 @@ import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage
+import org.eclipse.jface.preference.FileFieldEditor
 import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
@@ -20,13 +21,6 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
   public override fun createFieldEditors() {
     // Connection
     addField(StringFieldEditor(PreferenceConstants.GITLAB_INSTANCE_URL, "Connection URL", fieldEditorParent))
-    addField(
-      BooleanFieldEditor(
-        PreferenceConstants.IGNORE_CERTIFICATE_ERRORS,
-        "Ignore Certificate Errors",
-        fieldEditorParent
-      )
-    )
 
     // Authentication
     // TODO: Ensure first-time load succeeds given empty value does not break the entire page.
@@ -58,6 +52,28 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
       BooleanFieldEditor(
         PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS,
         "Stream Code Generations",
+        fieldEditorParent
+      )
+    )
+
+    // Certificate
+    addField(
+      FileFieldEditor(
+        PreferenceConstants.CA_CERTIFICATE,
+        "CA certificate",
+        true,
+        StringFieldEditor.VALIDATE_ON_KEY_STROKE,
+        fieldEditorParent
+      ).apply {
+        setFileExtensions(arrayOf("*.pem"))
+        errorMessage = "Please select a .pem file."
+      }
+    )
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.IGNORE_CERTIFICATE_ERRORS,
+        "Ignore Certificate Errors",
         fieldEditorParent
       )
     )

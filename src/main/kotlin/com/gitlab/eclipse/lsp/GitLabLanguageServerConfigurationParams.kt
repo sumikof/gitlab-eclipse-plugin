@@ -8,6 +8,7 @@ data class GitLabLanguageServerConfigurationParams(
   val codeCompletion: CodeCompletion? = null,
   val featureFlags: FeatureFlags? = null,
   val ignoreCertificateErrors: Boolean = false,
+  val httpAgentOptions: HttpAgentOptions? = null
 ) {
   data class CodeCompletion(
     val enableSecretRedaction: Boolean = true,
@@ -17,7 +18,7 @@ data class GitLabLanguageServerConfigurationParams(
 
   data class FeatureFlags(val remoteSecurityScans: Boolean, val streamCodeGenerations: Boolean)
 
-  data class HttpAgentOptions(val ca: String, val cert: String, val certKey: String)
+  data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null)
 
   data class Telemetry(val enabled: Boolean, val trackingUrl: String)
 }
