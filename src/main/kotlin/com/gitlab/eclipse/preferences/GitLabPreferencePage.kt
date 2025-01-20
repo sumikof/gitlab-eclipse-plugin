@@ -3,8 +3,6 @@ package com.gitlab.eclipse.preferences
 import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
-import com.gitlab.eclipse.authentication.GitLabOAuthService
-import com.gitlab.eclipse.storage.SecretStorage
 import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage

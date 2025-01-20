@@ -13,8 +13,8 @@ import java.util.*
 import java.util.concurrent.CompletableFuture
 
 class GitLabOAuthService {
-    private val clientId = "b5f152d05b136c3e70f1277144429a339a9b1011df3b34157e401e2a899cb163"
-    private val redirectUri = "http://127.0.0.1:63343/api/oauth/gitlab/authorization_code"
+    private val clientId = "ee276bb6507af1f6a7eb086d1a07c5cd1bc3c192b631a214d9f8bba35fb9178a"
+    private val redirectUri = "http://127.0.0.1:63343/api/oauth/gitlab/authorization"
     private val authorizationEndpoint = "https://gitlab.com/oauth/authorize"
     private val tokenEndpoint = "https://gitlab.com/oauth/token"
 
