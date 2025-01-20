@@ -12,6 +12,7 @@
         <initializer class="com.gitlab.eclipse.preferences.PreferenceInitializer"/>
     </extension>
 
+    <!--  Schema: https://github.com/eclipse-lsp4e/lsp4e/blob/main/org.eclipse.lsp4e/schema/languageServer.exsd  -->
     <extension point="org.eclipse.lsp4e.languageServer">
       <server
         class="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
