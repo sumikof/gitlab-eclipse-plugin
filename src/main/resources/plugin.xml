@@ -19,7 +19,9 @@
         id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
         label="GitLab Duo"
         serverInterface="com.gitlab.eclipse.lsp.GitLabLanguageServer"
-        singleton="true">
+        singleton="true"
+        lastDocumentDisconnectedTimeout="10000000"
+      >
       </server>
 
       <!--
