@@ -28,3 +28,19 @@ Learn more in the [update site project README](./gitlab-eclipse-plugin.site/READ
 ## Releasing
 
 Follow the release process issue template to create and distribute a new plugin release.
+
+### Certificate errors
+
+If your machine connects to your GitLab instance through a proxy, you might encounter
+certificate errors. If you see errors from the Language Server
+about certificates, try manually specifying a CA certificate:
+
+To do this:
+
+1. In your IDE, select **Eclipse > Settings**.
+1. On the left sidebar, select **GitLab**.
+1. For **CA certificate** enter the absolute path of your CA certificate file.
+You can also use the **Browse...** button to search and select the file on your computer.
+1. Under the GitLab settings, select **Apply**.
+1. Select **Apply and Close**.
+1. Restart your IDE.

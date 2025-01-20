@@ -1,10 +1,37 @@
 import org.gradle.jvm.tasks.Jar
 
 plugins {
-    java
+    kotlin("jvm") version "2.0.20"
     `maven-publish`
+
+    // Support resolving Eclipse plug-ins as Maven dependencies.
+    id("dev.equo.p2deps") version "1.7.7"
 }
 
+kotlin {
+    jvmToolchain(21)
+}
+
+val eclipseRelease = "4.33"
+// Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
+val eclipseDependencies = mapOf(
+    "org.eclipse.lsp4e" to "0.18.12",
+    "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
+    "org.eclipse.lsp4j" to "0.23.1",
+    "org.eclipse.jface.text" to "3.25.200",
+)
+p2deps {
+    into(listOf("compileOnly", "testImplementation")) {
+        p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
+        p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+
+        eclipseDependencies.forEach {
+            install(it.key)
+        }
+    }
+}
+
+// TODO: Explore using Eclipse-ExtensibleAPI?
 tasks.withType<Jar> {
     manifest {
         attributes["Bundle-ManifestVersion"] = "2"
@@ -14,6 +41,8 @@ tasks.withType<Jar> {
         attributes["Bundle-Version"] = ext["bundleVersion"]
 
         attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
+
+        attributes["Require-Bundle"] = eclipseDependencies.map { "${it.key};bundle-version=\"${it.value}\"" }.joinToString(separator = ",")
     }
 }
 

@@ -1,12 +1,13 @@
+import dev.equo.ide.gradle.EquoIdeTask
 import groovy.json.JsonSlurper
-import java.time.Instant
-import java.net.URI
+import io.gitlab.arturbosch.detekt.Detekt
 import org.gradle.jvm.tasks.Jar
+import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Path
-import kotlin.text.toBoolean
+import java.time.Instant
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.Path
 import kotlin.io.path.pathString
@@ -27,22 +28,50 @@ plugins {
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
   id("dev.equo.p2deps") version "1.7.7"
+
+  id("io.gitlab.arturbosch.detekt") version "1.23.7"
+
+  id("com.github.gmazzo.buildconfig") version "5.5.1"
 }
 
 allprojects {
-    group = "com.gitlab.eclipse"
-    version = "0.3.0"
-    ext["bundleVersion"] = "0.3.0.${Instant.now().toEpochMilli()}"
-}
+  group = "com.gitlab.eclipse"
+  version = "0.3.1-SNAPSHOT"
+  ext["bundleVersion"] = "0.3.1.${Instant.now().toEpochMilli()}"
 
-repositories {
+  repositories {
     gradlePluginPortal()
     mavenLocal()
     mavenCentral()
+  }
 }
 
-kotlin {
-    jvmToolchain(21)
+tasks.test {
+  useJUnitPlatform()
+}
+
+detekt {
+  buildUponDefaultConfig = true // preconfigure defaults
+  allRules = true // activate all available (even unstable) rules.
+  config.setFrom("detekt.yml")
+}
+
+tasks.withType<Detekt>().configureEach {
+  jvmTarget = JavaVersion.VERSION_17.toString()
+
+  reports {
+    html.required.set(true) // observe findings in your browser with structure and code snippets
+  }
+}
+
+buildConfig {
+  packageName(group.toString())
+
+  buildConfigField(
+    "Boolean",
+    "IS_EQUO_IDE",
+    System.getenv().getOrDefault("EQUO_IDE", "false").toBoolean()
+  )
 }
 
 val arch = when (System.getProperty("os.arch")) {
@@ -60,299 +89,343 @@ val osgiPlatform = when (System.getProperty("os.name")) {
 //
 // See also https://github.com/jmini/ecentral/issues/21.
 configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.name.contains("\${osgi.platform}")) {
-            useTarget(requested.toString().replace("\${osgi.platform}", osgiPlatform))
-            because("prefer $osgiPlatform over \${osgi.platform}")
-        }
+  resolutionStrategy.eachDependency {
+    if (requested.name.contains("\${osgi.platform}")) {
+      useTarget(requested.toString().replace("\${osgi.platform}", osgiPlatform))
+      because("prefer $osgiPlatform over \${osgi.platform}")
     }
+  }
 }
 
 dependencies {
-    // See note below around manually packing the Kotlin Standard Library/Runtime classes into the GitLab for Eclipse plug-in bundle.
-    runtimeOnly(kotlin("osgi-bundle"))
+  // See note below around manually packing the Kotlin Standard Library/Runtime classes into the GitLab for Eclipse plug-in bundle.
+  runtimeOnly(kotlin("osgi-bundle"))
 
-    // 1. Must be available for compiling kotlin on linux.
-    // 2. Must be available as a runtime dependency for running Equo on linux.
-    // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
-    implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
+  // 1. Must be available for compiling kotlin on linux.
+  // 2. Must be available as a runtime dependency for running Equo on linux.
+  // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
+  implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
+  implementation(project(":gitlab-language-server"))
 
-    testImplementation(kotlin("test"))
-    testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
-    testImplementation("io.mockk:mockk:1.13.13")
+  implementation("org.reflections:reflections:0.10.2")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
-    implementation("com.github.scribejava:scribejava-core:8.3.3")
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
+  // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
+  implementation("com.google.guava:guava:32.1.3-jre")
+  implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
 
+  testImplementation(kotlin("test"))
+  testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
+  testImplementation("io.mockk:mockk:1.13.13")
+
+  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.0")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.134.0")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
+  testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
+
+  detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
+
+  implementation("com.github.scribejava:scribejava-core:8.3.3")
+  implementation("org.nanohttpd:nanohttpd:2.3.1")
 }
 
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
-val eclipseDependencies = listOf(
-    "org.eclipse.core.runtime",
-    "org.eclipse.equinox.security",
-    "org.eclipse.osgi",
-    "org.eclipse.swt",
-    "org.eclipse.ui",
+val eclipseDependencies = mapOf(
+  "org.eclipse.core.runtime" to "0.0.0",
+  "org.eclipse.equinox.security" to "0.0.0",
+  "org.eclipse.lsp4e" to "0.18.12",
+  "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
+  "org.eclipse.lsp4j" to "0.23.1",
+  "org.eclipse.osgi" to "0.0.0",
+  "org.eclipse.swt" to "0.0.0",
+  "org.eclipse.ui" to "0.0.0",
+  "org.eclipse.ui.editors" to "0.0.0",
+  "org.eclipse.jface.text" to "0.0.0",
+  "org.eclipse.core.resources" to "0.0.0",
+  "org.eclipse.core.net" to "0.0.0"
 )
-p2deps {
-    into(listOf("compileOnly", "testImplementation")) {
-        p2repo("https://download.eclipse.org/eclipse/updates/${eclipseRelease}/")
 
-        eclipseDependencies.forEach {
-            install(it)
-        }
+p2deps {
+  into(listOf("compileOnly", "testImplementation")) {
+    p2repo("https://download.eclipse.org/eclipse/updates/$eclipseRelease/")
+    p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+
+    eclipseDependencies.forEach {
+      install(it.key)
     }
+  }
 }
 
 tasks.withType<Jar> {
-    // NOTE: Ensure Kotlin available in the Eclipse OSGi bundle by packing it into our Jar.
-    // The kotlin-osgi-bundle packages these as valid bundles but Erran couldn't figure out how to use pure OSGi to depend on Kotlin Standard Library/Runtime.
-    // We could ship a separate Eclipse plug-in to expose Kotlin libraries on the classpath and require that the usual OSGi way.
-    val kotlinLibraries = listOf(
-        "kotlin-runtime-2.0.20.jar",
-        "kotlin-stdlib-2.0.20.jar",
-    )
-    configurations.runtimeClasspath.get()
-        .filter { kotlinLibraries.contains(it.name) }
-        .map { zipTree(it) }
-        .also { from(it) }
+  // NOTE: Ensure Kotlin available in the Eclipse OSGi bundle by packing it into our Jar.
+  // The kotlin-osgi-bundle packages these as valid bundles but Erran couldn't figure out how to use pure OSGi to depend on Kotlin Standard Library/Runtime.
+  // We could ship a separate Eclipse plug-in to expose Kotlin libraries on the classpath and require that the usual OSGi way.
+  val kotlinLibraries = listOf(
+    "kotlin-reflect",
+    "kotlin-stdlib",
+    "kotlinx-coroutines-core-jvm"
+  )
 
-    // Tweak the plug-in project's to generate a valid OSGi bundle which is a requirement for shipping an Eclipse plug-in Jar.
-    manifest {
-        attributes["Bundle-ActivationPolicy"] = "lazy"
-        attributes["Bundle-ManifestVersion"] = "2"
-        attributes["Bundle-Name"] = "GitLab for Eclipse"
-        attributes["Bundle-RequiredExecutionEnvironment"] = "JavaSE-21"
-        attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
-        attributes["Bundle-Vendor"] = "GitLab Inc."
-        attributes["Bundle-Version"] = ext["bundleVersion"]
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
-        attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
+  configurations.runtimeClasspath.get()
+    .filter { runtimeLib -> kotlinLibraries.any { lib -> runtimeLib.name.startsWith(lib) } }
+    .map { zipTree(it) }
+    .also { from(it) }
 
-        attributes["Require-Bundle"] = eclipseDependencies.joinToString(separator = ",")
-    }
+  // Tweak the plug-in project's to generate a valid OSGi bundle which is a requirement for shipping an Eclipse plug-in Jar.
+  manifest {
+    attributes["Bundle-ActivationPolicy"] = "lazy"
+    attributes["Bundle-ManifestVersion"] = "2"
+    attributes["Bundle-Name"] = "GitLab for Eclipse"
+    attributes["Bundle-RequiredExecutionEnvironment"] = "JavaSE-21"
+    attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
+    attributes["Bundle-Vendor"] = "GitLab Inc."
+    attributes["Bundle-Version"] = ext["bundleVersion"]
+
+    attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
+
+    attributes["Require-Bundle"] = eclipseDependencies.map {
+      "${it.key};bundle-version=\"${it.value}\""
+    }.joinToString(separator = ",")
+  }
 }
 
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+  useJUnitPlatform()
 }
 
 publishing {
-    publications {
-        create<MavenPublication>("library") {
-            from(components["java"])
-        }
+  publications {
+    create<MavenPublication>("library") {
+      from(components["java"])
     }
+  }
 
-    repositories {
-        maven("https://gitlab.com/api/v4/projects/$gitlabEclipsePluginProjectId/packages/maven") {
-            name = "gitlab-maven"
+  repositories {
+    maven("https://gitlab.com/api/v4/projects/$gitlabEclipsePluginProjectId/packages/maven") {
+      name = "gitlab-maven"
 
-            if (System.getenv("CI") == "true") {
-                credentials(HttpHeaderCredentials::class) {
-                    name = "Job-Token"
-                    value = System.getenv("CI_JOB_TOKEN") ?: error("CI_JOB_TOKEN must be set to deploy artifacts in CI")
-                }
-
-                authentication {
-                    create("header", HttpHeaderAuthentication::class)
-                }
-            }
+      if (System.getenv("CI") == "true") {
+        credentials(HttpHeaderCredentials::class) {
+          name = "Job-Token"
+          value = System.getenv("CI_JOB_TOKEN") ?: error("CI_JOB_TOKEN must be set to deploy artifacts in CI")
         }
+
+        authentication {
+          create("header", HttpHeaderAuthentication::class)
+        }
+      }
     }
+  }
 }
 
 tasks.register("checkReleaseVersion") {
-    doLast {
-        val commitTag = System.getenv("CI_COMMIT_TAG") ?: null
-        val isTagPipeline = !commitTag.isNullOrEmpty()
-        if (isTagPipeline) {
-            if (project.version.toString().endsWith("-SNAPSHOT")) {
-                error("The project version '${project.version}' must not contain -SNAPSHOT.")
-            }
+  doLast {
+    val commitTag = System.getenv("CI_COMMIT_TAG") ?: null
+    val isTagPipeline = !commitTag.isNullOrEmpty()
+    if (isTagPipeline) {
+      if (project.version.toString().endsWith("-SNAPSHOT")) {
+        error("The project version '${project.version}' must not contain -SNAPSHOT.")
+      }
 
-            if (commitTag != "v${project.version}") {
-                error("The commit tag '$commitTag' did not match semantic version: v${project.version}")
-            }
-        }
+      if (commitTag != "v${project.version}") {
+        error("The commit tag '$commitTag' did not match semantic version: v${project.version}")
+      }
     }
+  }
 }
 
 tasks.register("checkSnapshotVersion") {
-    doLast {
-        if (!project.version.toString().endsWith("-SNAPSHOT")) {
-            error("The project version '${project.version}' must contain -SNAPSHOT.")
-        }
+  doLast {
+    if (!project.version.toString().endsWith("-SNAPSHOT")) {
+      error("The project version '${project.version}' must contain -SNAPSHOT.")
     }
+  }
+}
+
+tasks.withType<EquoIdeTask> {
+  dependsOn(
+    provider {
+      subprojects.map { subproject ->
+        subproject.tasks.named("jar")
+      }
+    }
+  )
 }
 
 // Configure Equo IDE with basic to provide the GitLab for Eclipse plug-in.
 equoIde {
-    equoIde.branding.title("GitLab for Eclipse Equo Sandbox")
+  equoIde.branding.title("GitLab for Eclipse Equo Sandbox")
 
-    // Bundle Eclipse Platform.
-    platform()
+  // Bundle Eclipse Platform.
+  platform()
 
-    // Bundle Java Developer Tools (which helps testing Code Suggestions).
-    jdt()
+  // Bundle Java Developer Tools (which helps testing Code Suggestions).
+  jdt()
 
-    // Strangely required to start in our Ubuntu docker image but not on Mac OS...
-    // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
-    install("org.apache.felix.scr")
+  // Strangely required to start in our Ubuntu docker image but not on Mac OS...
+  // See also https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/15
+  install("org.apache.felix.scr")
 
-    // Install the GitLab for Eclipse plug-in project.
-    dogfood()
+  p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+  install("org.eclipse.lsp4e")
+  install("org.eclipse.lsp4j.jsonrpc")
+  install("org.eclipse.lsp4j")
+
+  // Install the GitLab for Eclipse plug-in project.
+  dogfood()
 }
 
 tasks.register("lspDownloadGenericPackageJson") {
-    val outputDir = rootProject.layout.buildDirectory.dir("gitlab-lsp")
-    val outputFile = outputDir.get().file("generic_packages.json")
+  val outputDir = rootProject.layout.buildDirectory.dir("gitlab-lsp")
+  val outputFile = outputDir.get().file("generic_packages.json")
 
-    outputs.dir(outputDir)
+  outputs.dir(outputDir)
 
-    doLast {
-        val url =
-            "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages?package_type=generic&sort=desc"
+  doLast {
+    val url =
+      "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages?package_type=generic&sort=desc"
 
-        URI(url).toURL().openStream().use { input ->
-            outputFile.asFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
+    URI(url).toURL().openStream().use { input ->
+      outputFile.asFile.outputStream().use { output ->
+        input.copyTo(output)
+      }
     }
+  }
 }
 
 tasks.register("lspDownloadGenericPackageFilesJson") {
-    dependsOn(":lspDownloadGenericPackageJson")
+  dependsOn(":lspDownloadGenericPackageJson")
 
-    val buildDir = rootProject.layout.buildDirectory.get().asFile
-    val gitlabLspDir = buildDir.resolve("gitlab-lsp")
+  val buildDir = rootProject.layout.buildDirectory.get().asFile
+  val gitlabLspDir = buildDir.resolve("gitlab-lsp")
 
-    inputs.file(gitlabLspDir.resolve("generic_packages.json"))
-    outputs.dir(gitlabLspDir)
+  inputs.file(gitlabLspDir.resolve("generic_packages.json"))
+  outputs.dir(gitlabLspDir)
 
-    @Suppress("UNCHECKED_CAST")
-    doLast {
-        val slurper = JsonSlurper()
+  @Suppress("UNCHECKED_CAST")
+  doLast {
+    val slurper = JsonSlurper()
 
-        // Parse package.json to get gitlab-lsp version
-        val gitlabLspVersion = slurper.parse(file("${rootProject.projectDir}/package.json"))
-            .let { it as? Map<String, Any> ?: error("Unexpected format for package.json.") }
-            .let {
-                it["dependencies"] as? Map<String, String> ?: error("Invalid dependencies in package.json.")
-            }
-            .let {
-                it["@gitlab-org/gitlab-lsp"]
-                    ?: error("Unable to find @gitlab-org/gitlab-lsp under dependencies in package.json.")
-            }
+    // Parse package.json to get gitlab-lsp version
+    val gitlabLspVersion = slurper.parse(file("${rootProject.projectDir}/package.json"))
+      .let { it as? Map<String, Any> ?: error("Unexpected format for package.json.") }
+      .let {
+        it["dependencies"] as? Map<String, String> ?: error("Invalid dependencies in package.json.")
+      }
+      .let {
+        it["@gitlab-org/gitlab-lsp"]
+          ?: error("Unable to find @gitlab-org/gitlab-lsp under dependencies in package.json.")
+      }
 
-        // Parse generic_packages.json to find package URL
-        val lspPackages =
-            slurper.parse(gitlabLspDir.resolve("generic_packages.json")) as? List<Map<String, Any>>
-                ?: error("Unable to parse generic_packages.json")
+    // Parse generic_packages.json to find package URL
+    val lspPackages =
+      slurper.parse(gitlabLspDir.resolve("generic_packages.json")) as? List<Map<String, Any>>
+        ?: error("Unable to parse generic_packages.json")
 
-        val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion }
-            ?.let { it["id"] as? Number }
-            ?.let { "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages/$it/package_files" }
-            ?: error("Unable to find generic package for @gitlab-org/gitlab-lsp v$gitlabLspVersion.")
+    val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion }
+      ?.let { it["id"] as? Number }
+      ?.let { "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages/$it/package_files" }
+      ?: error("Unable to find generic package for @gitlab-org/gitlab-lsp v$gitlabLspVersion.")
 
-        // Download package_files.json
-        URI(packageUrl).toURL().openStream().use { input ->
-            gitlabLspDir.resolve("package_files.json").outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
+    // Download package_files.json
+    URI(packageUrl).toURL().openStream().use { input ->
+      gitlabLspDir.resolve("package_files.json").outputStream().use { output ->
+        input.copyTo(output)
+      }
     }
+  }
 }
 
 subprojects {
-    if (project.name.startsWith("gitlab-language-server.")) {
-        extra["downloadPlatformDependentBinary"] = fun() {
-            val targetPlatform = project.name.replace("gitlab-language-server.", "")
-            val languageServerPlatform = when (targetPlatform) {
-                "cocoa.macosx.aarch64" -> "macos-arm64"
-                "cocoa.macosx.x86_64" -> "macos-x64"
-                "gtk.linux.x86_64" -> "linux-x64"
-                "win32.win32.x86_64" -> "win-x64.exe"
-                else -> error("Expected a Language Server binary to be declared for OSGi platform.")
+  if (project.name.startsWith("gitlab-language-server.")) {
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
+    extra["downloadPlatformDependentBinary"] = fun() {
+      val targetPlatform = project.name.replace("gitlab-language-server.", "")
+      val languageServerPlatform = when (targetPlatform) {
+        "cocoa.macosx.aarch64" -> "macos-arm64"
+        "cocoa.macosx.x86_64" -> "macos-x64"
+        "gtk.linux.x86_64" -> "linux-x64"
+        "win32.win32.x86_64" -> "win-x64.exe"
+        else -> error("Expected a Language Server binary to be declared for OSGi platform.")
+      }
+      val platformFilter = when (targetPlatform) {
+        "cocoa.macosx.aarch64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=aarch64))"
+        "cocoa.macosx.x86_64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=x86_64))"
+        "gtk.linux.x86_64" -> "(& (osgi.ws=gtk) (osgi.os=linux) (osgi.arch=x86_64))"
+        "win32.win32.x86_64" -> "(& (osgi.ws=win32) (osgi.os=win32) (osgi.arch=x86_64))"
+        else -> error("Expected a Language Server binary to be declared for OSGi platform.")
+      }
+
+      tasks.register("lspDownloadBinaries") {
+        dependsOn(":lspDownloadGenericPackageFilesJson")
+
+        val buildDir = rootProject.layout.buildDirectory.get().asFile
+        val gitlabLspDir = buildDir.resolve("gitlab-lsp")
+        val binDir = gitlabLspDir.resolve("bin")
+
+        inputs.file(gitlabLspDir.resolve("package_files.json"))
+        outputs.file(binDir.resolve("gitlab-lsp-$languageServerPlatform"))
+
+        @Suppress("UNCHECKED_CAST")
+        doLast {
+          val packageFiles =
+            JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
+              ?: error("Unexpected format for package_files.json")
+
+          binDir.mkdirs()
+
+          packageFiles.forEach { file ->
+            val id = file["id"] as? Number ?: error("Invalid value for id for package file")
+            val fileName =
+              file["file_name"] as? String
+                ?: error("Invalid value for file_name for package file with id $id")
+            if (fileName == "gitlab-lsp-$languageServerPlatform") {
+              val output = binDir.resolve(fileName)
+              val url =
+                "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$id/download"
+
+              logger.quiet("Downloading $fileName...")
+
+              ant.withGroovyBuilder {
+                "get"(
+                  "src" to url,
+                  "dest" to output
+                )
+              }
+
+              output.setExecutable(true, false)
+              return@doLast
             }
-            val platformFilter = when (targetPlatform) {
-                "cocoa.macosx.aarch64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=aarch64))"
-                "cocoa.macosx.x86_64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=x86_64))"
-                "gtk.linux.x86_64" -> "(& (osgi.ws=gtk) (osgi.os=linux) (osgi.arch=x86_64))"
-                "win32.win32.x86_64" -> "(& (osgi.ws=win32) (osgi.os=win32) (osgi.arch=x86_64))"
-                else -> error("Expected a Language Server binary to be declared for OSGi platform.")
-            }
-
-            tasks.register("lspDownloadBinaries") {
-                dependsOn(":lspDownloadGenericPackageFilesJson")
-
-                val buildDir = rootProject.layout.buildDirectory.get().asFile
-                val gitlabLspDir = buildDir.resolve("gitlab-lsp")
-                val binDir = gitlabLspDir.resolve("bin")
-
-                inputs.file(gitlabLspDir.resolve("package_files.json"))
-                outputs.file(binDir.resolve("gitlab-lsp-${languageServerPlatform}"))
-
-                @Suppress("UNCHECKED_CAST")
-                doLast {
-                    val packageFiles =
-                        JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
-                            ?: error("Unexpected format for package_files.json")
-
-                    binDir.mkdirs()
-
-                    packageFiles.forEach { file ->
-                        val id = file["id"] as? Number ?: error("Invalid value for id for package file")
-                        val fileName =
-                            file["file_name"] as? String
-                                ?: error("Invalid value for file_name for package file with id $id")
-                        if (fileName == "gitlab-lsp-${languageServerPlatform}") {
-                            val output = binDir.resolve(fileName)
-                            val url =
-                                "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$id/download"
-
-                            logger.quiet("Downloading $fileName...")
-
-                            ant.withGroovyBuilder {
-                                "get"(
-                                    "src" to url,
-                                    "dest" to output
-                                )
-                            }
-
-                            output.setExecutable(true, false)
-                            return@doLast
-                        }
-                    }
-                    error("No platform specific binary found for language server version.")
-                }
-            }
-
-            tasks.withType<Jar> {
-                dependsOn("lspDownloadBinaries")
-                from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
-                    include("bin/gitlab-lsp-${languageServerPlatform}")
-                    rename { "gitlab-lsp" }
-                }
-
-                manifest {
-                    attributes["Bundle-ManifestVersion"] = "2"
-                    attributes["Bundle-Name"] = "GitLab Language Server ($targetPlatform)"
-                    attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
-                    attributes["Bundle-Vendor"] = "GitLab Inc."
-                    attributes["Bundle-Version"] = ext["bundleVersion"]
-
-                    attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
-                    attributes["Fragment-Host"] = "com.gitlab.eclipse.gitlab-language-server"
-                    attributes["Eclipse-PlatformFilter"] = platformFilter
-                }
-            }
+          }
+          error("No platform specific binary found for language server version.")
         }
-    }
-}
+      }
 
+      tasks.withType<Jar> {
+        dependsOn("lspDownloadBinaries")
+        from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
+          include("bin/gitlab-lsp-$languageServerPlatform")
+          rename { "gitlab-lsp" }
+        }
+
+        manifest {
+          attributes["Bundle-ManifestVersion"] = "2"
+          attributes["Bundle-Name"] = "GitLab Language Server ($targetPlatform)"
+          attributes["Bundle-SymbolicName"] = "com.gitlab.eclipse.${project.name};singleton:=true"
+          attributes["Bundle-Vendor"] = "GitLab Inc."
+          attributes["Bundle-Version"] = ext["bundleVersion"]
+
+          attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
+          attributes["Fragment-Host"] = "com.gitlab.eclipse.gitlab-language-server"
+          attributes["Eclipse-PlatformFilter"] = platformFilter
+        }
+      }
+    }
+  }
+}
 
 /**
  * 1. Uploads Eclipse P2 repository/update site artifacts to a new
@@ -362,58 +435,62 @@ subprojects {
  *    for the current `CI_COMMIT_TAG`.
  */
 tasks.create("publishToGitLab") {
-    val gitlabPublishDryRun = providers.gradleProperty("gitlabPublishDryRun")
-    doLast {
-        val apiUrl = URI(System.getenv("CI_API_V4_URL").removeSuffix("/"))
-        val commitTag = System.getenv("CI_COMMIT_TAG").removePrefix("v")
-        val token = System.getenv("CI_JOB_TOKEN") ?: error("You must set CI_JOB_TOKEN to publish to the package registry.")
+  val gitlabPublishDryRun = providers.gradleProperty("gitlabPublishDryRun")
+  doLast {
+    val apiUrl = URI(System.getenv("CI_API_V4_URL").removeSuffix("/"))
+    val commitTag = System.getenv("CI_COMMIT_TAG").removePrefix("v")
+    val token = System.getenv("CI_JOB_TOKEN") ?: error("You must set CI_JOB_TOKEN to publish to the package registry.")
 
-        val projectUri: URI = apiUrl.resolve("${apiUrl.rawPath}/projects/$gitlabEclipsePluginProjectId")
-        val httpClient: HttpClient = HttpClient.newHttpClient()
+    val projectUri: URI = apiUrl.resolve("${apiUrl.rawPath}/projects/$gitlabEclipsePluginProjectId")
+    val httpClient: HttpClient = HttpClient.newHttpClient()
 
-        val artifacts = mutableMapOf<String, Path>()
-        val eclipseRepository = Path("update-site/target/repository")
-        @OptIn(ExperimentalPathApi::class)
-        for (artifact in eclipseRepository.walk()) {
-            val relativePath = artifact.pathString.removePrefix("${eclipseRepository.pathString}/")
-            artifacts[relativePath] = artifact
-        }
-
-        if (artifacts.isNotEmpty()) {
-            logger.quiet("Saved asset links JSON as asset-links.json")
-        } else {
-            logger.quiet("No artifacts found for publishing")
-        }
-
-        artifacts.forEach { (relativePath, artifact) ->
-            if (gitlabPublishDryRun.getOrElse("false").toBoolean()) {
-                logger.quiet("Skipped publishing file $relativePath")
-            } else {
-                val artifactDestinationUri: URI =
-                    "${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath"
-                        .let(projectUri::resolve)
-                logger.quiet("Publishing file $artifactDestinationUri")
-                val request = HttpRequest.newBuilder()
-                    .uri(artifactDestinationUri)
-                    .header("JOB-TOKEN", token)
-                    .PUT(HttpRequest.BodyPublishers.ofFile(artifact))
-                    .build()
-                httpClient.send(request, HttpResponse.BodyHandlers.ofString()).apply {
-                    val status = statusCode()
-                    if (status >= 400) {
-                        error("Failed to publish file: Response Status: $status - Body: ${body()}")
-                    }
-                }
-            }
-        }
-
-        val releaseDir = rootProject.layout.buildDirectory.get().asFile.resolve("release")
-        releaseDir.mkdirs()
-
-        val assetLinksFile = releaseDir.resolve("asset-links.json")
-        assetLinksFile.writeText(artifacts.keys.joinToString(separator = ",", prefix = "[", postfix = "]") { relativePath ->
-            val url: URI = projectUri.resolve("${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath")
-            """{ "direct_asset_path": "/$relativePath", "name": "Eclipse Update Site ($relativePath)", "url": "$url" }"""
-        })
+    val artifacts = mutableMapOf<String, Path>()
+    val eclipseRepository = Path("update-site/target/repository")
+    @OptIn(ExperimentalPathApi::class)
+    for (artifact in eclipseRepository.walk()) {
+      val relativePath = artifact.pathString.removePrefix("${eclipseRepository.pathString}/")
+      artifacts[relativePath] = artifact
     }
+
+    if (artifacts.isNotEmpty()) {
+      logger.quiet("Saved asset links JSON as asset-links.json")
+    } else {
+      logger.quiet("No artifacts found for publishing")
+    }
+
+    artifacts.forEach { (relativePath, artifact) ->
+      if (gitlabPublishDryRun.getOrElse("false").toBoolean()) {
+        logger.quiet("Skipped publishing file $relativePath")
+      } else {
+        val artifactDestinationUri: URI =
+          "${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath"
+            .let(projectUri::resolve)
+        logger.quiet("Publishing file $artifactDestinationUri")
+        val request = HttpRequest.newBuilder()
+          .uri(artifactDestinationUri)
+          .header("JOB-TOKEN", token)
+          .PUT(HttpRequest.BodyPublishers.ofFile(artifact))
+          .build()
+        httpClient.send(request, HttpResponse.BodyHandlers.ofString()).apply {
+          val status = statusCode()
+          if (status >= 400) {
+            error("Failed to publish file: Response Status: $status - Body: ${body()}")
+          }
+        }
+      }
+    }
+
+    val releaseDir = rootProject.layout.buildDirectory.get().asFile.resolve("release")
+    releaseDir.mkdirs()
+
+    val assetLinksFile = releaseDir.resolve("asset-links.json")
+    assetLinksFile.writeText(
+      artifacts.keys.joinToString(separator = ",", prefix = "[", postfix = "]") { relativePath ->
+        val url: URI = projectUri.resolve(
+          "${projectUri.rawPath}/packages/generic/gitlab-eclipse-plugin/$commitTag/$relativePath"
+        )
+        """{ "direct_asset_path": "/$relativePath", "name": "Eclipse Update Site ($relativePath)", "url": "$url" }"""
+      }
+    )
+  }
 }
