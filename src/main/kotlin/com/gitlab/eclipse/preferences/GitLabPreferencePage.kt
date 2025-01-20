@@ -77,6 +77,14 @@ class GitLabPreferencePage : FieldEditorPreferencePage(GRID), IWorkbenchPreferen
         fieldEditorParent
       )
     )
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.TELEMETRY_ENABLED,
+        "Enable Telemetry",
+        fieldEditorParent
+      )
+    )
   }
 
   override fun init(workbench: IWorkbench) {
