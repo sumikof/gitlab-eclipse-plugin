@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.webview
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.currentDisplay
@@ -20,6 +21,8 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
 
   val controller = GitLabDuoChatWebViewController(textEditorProvider, currentFileContextProvider)
+
+  extensions(LoggingKotestExtension)
 
   beforeSpec { mockkStatic("com.gitlab.eclipse.utils.DisplayKt") }
 
