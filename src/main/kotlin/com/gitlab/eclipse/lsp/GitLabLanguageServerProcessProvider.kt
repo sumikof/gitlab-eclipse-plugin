@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.di.service
+import com.gitlab.eclipse.di.Workspace
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.utils.logger
@@ -12,7 +14,7 @@ import org.eclipse.lsp4j.services.LanguageServer
 import java.net.URI
 
 class GitLabLanguageServerProcessProvider(
-  private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
+  private val languageServerWrapper: GitLabLanguageServerWrapper = Workspace.service(),
   private val languageServerProxyManager: LanguageServerProxyManager = LanguageServerProxyManager(),
   private val languageServerConfigurationService: GitLabLanguageServerConfigurationService =
     GitLabLanguageServerConfigurationService(),

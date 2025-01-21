@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.preferences
 
+import com.gitlab.eclipse.di.Workspace
+import com.gitlab.eclipse.di.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
@@ -9,10 +11,10 @@ import org.eclipse.jface.preference.FileFieldEditor
 import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 @Suppress("ForbiddenComment")
 class GitLabPreferencePage(
-  private val preferenceStoreProvider: PreferenceStoreProvider = PreferenceStoreProvider(),
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService =
     GitLabLanguageServerConfigurationService()
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
@@ -90,7 +92,7 @@ class GitLabPreferencePage(
   }
 
   override fun init(workbench: IWorkbench) {
-    preferenceStore = preferenceStoreProvider.get()
+    preferenceStore = Workspace.service()
   }
 
   override fun performOk(): Boolean {

@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.di.service
+import com.gitlab.eclipse.di.Workspace
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -8,24 +10,22 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERR
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
-import com.gitlab.eclipse.preferences.PreferenceStoreProvider
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.eclipse.lsp4j.DidChangeConfigurationParams
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 class GitLabLanguageServerConfigurationService(
-  private val preferenceStoreProvider: PreferenceStoreProvider = PreferenceStoreProvider(),
-  private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
+  private val preferenceStore: ScopedPreferenceStore = Workspace.service(),
+  private val languageServerWrapper: GitLabLanguageServerWrapper = Workspace.service(),
   private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
   private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
 
   fun sendConfiguration() {
-    val preferenceStore = preferenceStoreProvider.get()
-
     val params = GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(enableSecretRedaction = true),
