@@ -1,4 +1,4 @@
-package com.gitlab.eclipse.lsp
+package com.gitlab.eclipse.lsp.configuration
 
 data class GitLabLanguageServerConfigurationParams(
   val baseUrl: String? = null,
