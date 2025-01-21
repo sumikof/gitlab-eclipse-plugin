@@ -9,6 +9,7 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LE
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.preferences.storage.SecretStorage
+import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -21,6 +22,8 @@ class GitLabLanguageServerConfigurationService(
   private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
   private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
+  private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
+
   fun sendConfiguration() {
     val preferenceStore = ScopedPreferenceStore(
       InstanceScope.INSTANCE,
@@ -46,6 +49,7 @@ class GitLabLanguageServerConfigurationService(
       )
     )
 
+    logger.info("Sending configuration change notification to Language Server.")
     coroutineScope.launch {
       languageServerWrapper.languageServer?.workspaceService?.didChangeConfiguration(
         DidChangeConfigurationParams(params)
