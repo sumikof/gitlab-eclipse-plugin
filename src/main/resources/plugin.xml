@@ -14,60 +14,60 @@
 
     <!--  Schema: https://github.com/eclipse-lsp4e/lsp4e/blob/main/org.eclipse.lsp4e/schema/languageServer.exsd  -->
     <extension point="org.eclipse.lsp4e.languageServer">
-      <server
-        class="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-        clientImpl="com.gitlab.eclipse.lsp.GitLabLanguageServerClient"
-        id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-        label="GitLab Duo"
-        serverInterface="com.gitlab.eclipse.lsp.GitLabLanguageServer"
-        singleton="true"
-        lastDocumentDisconnectedTimeout="10000000"
-      >
-      </server>
-
-      <!--
-        Wondering where the content types come from?
-          1. Under "Preferences > Content Types", expand "Text".
-          2. Select a language, select "Add Child".
-            3. Export your preferences.
-            4. Search for the "baseTypeId" of newly created userCreated preferences in this format:
-            /instance/userCreated1726669809672/baseTypeId=org.eclipse.jdt.core.javaSource
-            /instance/userCreated1726669809672/name=Custom Sub-type of Java Source File
-          5. Create new content-type elements under the contentTypes extension point with the specified alias-for call.
-        -->
-
-      <!-- NOTE: Support Code Suggestions in any editors created descended from the Text or XML content types. -->
-      <!-- TODO: Normalize languageId to match the VS Code language client standard. -->
-      <contentTypeMapping contentType="org.eclipse.core.runtime.text"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider">
-      </contentTypeMapping>
-
-      <contentTypeMapping contentType="org.eclipse.core.runtime.xml"
+        <server
+                class="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                clientImpl="com.gitlab.eclipse.lsp.GitLabLanguageServerClient"
                 id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-                languageId="xml">
-      </contentTypeMapping>
+                label="GitLab Duo"
+                serverInterface="com.gitlab.eclipse.lsp.GitLabLanguageServer"
+                singleton="true"
+                lastDocumentDisconnectedTimeout="10000000"
+        >
+        </server>
 
-      <!-- TODO: Use aliases for JDT core sources. -->
-      <contentTypeMapping contentType="org.eclipse.jdt.core.javaSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-                languageId="java">
-      </contentTypeMapping>
+        <!--
+          Wondering where the content types come from?
+            1. Under "Preferences > Content Types", expand "Text".
+            2. Select a language, select "Add Child".
+              3. Export your preferences.
+              4. Search for the "baseTypeId" of newly created userCreated preferences in this format:
+              /instance/userCreated1726669809672/baseTypeId=org.eclipse.jdt.core.javaSource
+              /instance/userCreated1726669809672/name=Custom Sub-type of Java Source File
+            5. Create new content-type elements under the contentTypes extension point with the specified alias-for call.
+          -->
 
-      <!-- TODO: Use aliases for Web Tools sources. -->
-      <contentTypeMapping contentType="org.eclipse.wst.css.core.csssource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-                languageId="css">
-      </contentTypeMapping>
+        <!-- NOTE: Support Code Suggestions in any editors created descended from the Text or XML content types. -->
+        <!-- TODO: Normalize languageId to match the VS Code language client standard. -->
+        <contentTypeMapping contentType="org.eclipse.core.runtime.text"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider">
+        </contentTypeMapping>
 
-      <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-                languageId="javascript">
-      </contentTypeMapping>
+        <contentTypeMapping contentType="org.eclipse.core.runtime.xml"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                            languageId="xml">
+        </contentTypeMapping>
 
-      <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsonSource"
-                id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
-                languageId="json">
-      </contentTypeMapping>
+        <!-- TODO: Use aliases for JDT core sources. -->
+        <contentTypeMapping contentType="org.eclipse.jdt.core.javaSource"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                            languageId="java">
+        </contentTypeMapping>
+
+        <!-- TODO: Use aliases for Web Tools sources. -->
+        <contentTypeMapping contentType="org.eclipse.wst.css.core.csssource"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                            languageId="css">
+        </contentTypeMapping>
+
+        <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsSource"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                            languageId="javascript">
+        </contentTypeMapping>
+
+        <contentTypeMapping contentType="org.eclipse.wst.jsdt.core.jsonSource"
+                            id="com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider"
+                            languageId="json">
+        </contentTypeMapping>
     </extension>
 
     <extension point="org.eclipse.ui.views">
@@ -117,27 +117,27 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
                         tooltip="Open Duo Chat Window"
-                        icon="icons/duo-chat.png" />
+                        icon="icons/duo-chat.png"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                         label="Explain Code"
-                        tooltip="Explain the selected snippet" />
+                        tooltip="Explain the selected snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FixCode"
                         label="Fix Code"
-                        tooltip="Fix the selected code snippet" />
+                        tooltip="Fix the selected code snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.GenerateTests"
                         label="Generate Tests"
-                        tooltip="Write tests for the selected snippet" />
+                        tooltip="Write tests for the selected snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                         label="Refactor Code"
-                        tooltip="Refactor the selected snippet" />
+                        tooltip="Refactor the selected snippet"/>
             </menu>
         </menuContribution>
     </extension>

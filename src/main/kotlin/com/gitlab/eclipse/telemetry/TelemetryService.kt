@@ -1,14 +1,17 @@
 package com.gitlab.eclipse.telemetry
 
-import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.telemetry.params.TelemetryContext
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
+import com.gitlab.eclipse.utils.logger
 
 class TelemetryService(
-  private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper
+  private val gitLabLanguageServer: GitLabLanguageServer?
 ) {
 
-  private val gitLabLanguageServer get() = gitLabLanguageServerWrapper.languageServer
+  init {
+    logger<TelemetryService>().info("Telemetry service started.")
+  }
 
   // The following code suggestions telemetry can be handled by the language client (i.e. this Eclipse extension).
   // The rest are handled by the language server for us.

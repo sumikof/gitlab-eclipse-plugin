@@ -8,6 +8,6 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 class FixCodeCommandHandlerTest : ChatCommandHandlerTest(
   promptTypeUnderTest = "fixCode",
   createCommandHandler = { languageServerWrapper, textEditorProvider ->
-    FixCodeCommandHandler(TestScope(UnconfinedTestDispatcher()), languageServerWrapper, textEditorProvider)
+    FixCodeCommandHandler(TestScope(UnconfinedTestDispatcher()), textEditorProvider)
   }
 )

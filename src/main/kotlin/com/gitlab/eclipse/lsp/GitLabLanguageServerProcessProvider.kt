@@ -9,16 +9,18 @@ import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
 import org.eclipse.lsp4j.jsonrpc.messages.Message
 import org.eclipse.lsp4j.jsonrpc.messages.NotificationMessage
 import org.eclipse.lsp4j.services.LanguageServer
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.net.URI
 
-class GitLabLanguageServerProcessProvider(
-  private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
-  private val languageServerProxyManager: LanguageServerProxyManager = LanguageServerProxyManager(),
-  private val languageServerConfigurationService: GitLabLanguageServerConfigurationService =
-    GitLabLanguageServerConfigurationService(),
-  languageServerInstaller: LanguageServerInstaller = LanguageServerInstaller(),
-) : ProcessStreamConnectionProvider() {
+class GitLabLanguageServerProcessProvider : KoinComponent, ProcessStreamConnectionProvider() {
   private val logger = logger<GitLabLanguageServerProcessProvider>()
+
+  private val languageServerConfigurationService by inject<GitLabLanguageServerConfigurationService>()
+
+  private val languageServerProxyManager by inject<LanguageServerProxyManager>()
+
+  private val languageServerInstaller by inject<LanguageServerInstaller>()
 
   init {
     val languageServerInstallationPath = languageServerInstaller.install()
@@ -64,12 +66,17 @@ class GitLabLanguageServerProcessProvider(
   }
 
   override fun handleMessage(message: Message, languageServer: LanguageServer, rootURI: URI?) {
+    if (languageServer !is GitLabLanguageServer) {
+      error("Language server should be a GitLabLanguageServer")
+    }
+
     if (message is NotificationMessage) {
       when (message.method) {
         "initialized" -> {
-          languageServerWrapper.registerLanguageServer(languageServer)
+          getKoin().setProperty(PROPERTY_LANGUAGE_SERVER, languageServer)
           languageServerConfigurationService.sendConfiguration()
         }
+
         else -> {}
       }
     }

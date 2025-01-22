@@ -11,16 +11,17 @@ import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import org.osgi.framework.FrameworkUtil
 
 @Suppress("ForbiddenComment")
-class GitLabPreferencePage(
-  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService =
-    GitLabLanguageServerConfigurationService()
-) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
+class GitLabPreferencePage : KoinComponent, FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
   init {
     description = "GitLab Duo plugin preferences"
   }
+
+  private val languageServerConfigurationService by inject<GitLabLanguageServerConfigurationService>()
 
   public override fun createFieldEditors() {
     // Connection
@@ -102,7 +103,7 @@ class GitLabPreferencePage(
 
   override fun performOk(): Boolean {
     super.performOk()
-    languageServiceConfigurationService.sendConfiguration()
+    languageServerConfigurationService.sendConfiguration()
     return true // super.performOk() always returns true
   }
 }

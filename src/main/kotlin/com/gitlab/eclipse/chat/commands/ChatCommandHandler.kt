@@ -1,7 +1,7 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.utils.TextEditorProvider
@@ -10,14 +10,18 @@ import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.jface.text.ITextSelection
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 
 open class ChatCommandHandler(
   private val promptType: String,
   private val coroutineScope: CoroutineScope,
-  private val languageServerWrapper: GitLabLanguageServerWrapper,
   private val textEditorProvider: TextEditorProvider,
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
-) : AbstractHandler() {
+) : KoinComponent, AbstractHandler() {
+
+  private val languageServer: GitLabLanguageServer by inject()
+
   override fun execute(event: ExecutionEvent) {
     val textEditor = textEditorProvider.getActiveTextEditor() ?: return
     val context = currentFileContextProvider.provide(textEditor) ?: return
@@ -32,7 +36,7 @@ open class ChatCommandHandler(
     )
 
     coroutineScope.launch {
-      languageServerWrapper.languageServer?.pluginNotification(request)
+      languageServer.pluginNotification(request)
     }
   }
 

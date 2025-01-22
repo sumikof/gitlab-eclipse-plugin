@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.lsp.configuration
 
-import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
@@ -19,7 +19,7 @@ import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.osgi.framework.FrameworkUtil
 
 class GitLabLanguageServerConfigurationService(
-  private val languageServerWrapper: GitLabLanguageServerWrapper = GitLabLanguageServerWrapper(),
+  private val languageServer: GitLabLanguageServer,
   private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
   private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
@@ -51,7 +51,7 @@ class GitLabLanguageServerConfigurationService(
 
     logger.info("Sending configuration change notification to Language Server.")
     coroutineScope.launch {
-      languageServerWrapper.languageServer?.workspaceService?.didChangeConfiguration(
+      languageServer.workspaceService?.didChangeConfiguration(
         DidChangeConfigurationParams(params)
       )
     }

@@ -110,9 +110,13 @@ dependencies {
   implementation("org.reflections:reflections:0.10.2")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
+  implementation("io.insert-koin:koin-core:4.0.1")
+
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:32.1.3-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
+
+  implementation("ch.qos.logback:logback-classic:1.5.16")
 
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
@@ -174,6 +178,7 @@ tasks.withType<Jar> {
   // Tweak the plug-in project's to generate a valid OSGi bundle which is a requirement for shipping an Eclipse plug-in Jar.
   manifest {
     attributes["Bundle-ActivationPolicy"] = "lazy"
+    attributes["Bundle-Activator"] = "com.gitlab.eclipse.GitLabEclipseStartup"
     attributes["Bundle-ManifestVersion"] = "2"
     attributes["Bundle-Name"] = "GitLab for Eclipse"
     attributes["Bundle-RequiredExecutionEnvironment"] = "JavaSE-21"
