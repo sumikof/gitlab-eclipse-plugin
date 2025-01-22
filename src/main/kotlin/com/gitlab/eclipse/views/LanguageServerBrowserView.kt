@@ -11,6 +11,8 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.part.ViewPart
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.text.DateFormat
@@ -18,12 +20,12 @@ import java.time.Instant
 import java.util.*
 import java.util.concurrent.TimeUnit
 
-class LanguageServerBrowserView : ViewPart() {
+class LanguageServerBrowserView : ViewPart(), KoinComponent {
   private val logger = logger<LanguageServerBrowserView>()
 
   private var browser: Browser? = null
   private val preferenceStoreProvider by lazy { PreferenceStoreProvider() }
-  private val languageServerWrapper by lazy { GitLabLanguageServerWrapper() }
+  private val languageServerWrapper: GitLabLanguageServerWrapper by inject()
 
   override fun createPartControl(parent: Composite?) {
     browser = Browser(parent, SWT.WEBKIT)

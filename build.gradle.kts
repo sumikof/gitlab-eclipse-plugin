@@ -2,6 +2,7 @@ import dev.equo.ide.gradle.EquoIdeTask
 import groovy.json.JsonSlurper
 import io.gitlab.arturbosch.detekt.Detekt
 import org.gradle.jvm.tasks.Jar
+import org.jetbrains.kotlin.ir.backend.js.compile
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -109,6 +110,9 @@ dependencies {
 
   implementation("org.reflections:reflections:0.10.2")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+  implementation("com.google.code.gson:gson:2.10.1")
+
+  implementation("io.insert-koin:koin-core:4.0.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:32.1.3-jre")
@@ -161,7 +165,8 @@ tasks.withType<Jar> {
   val kotlinLibraries = listOf(
     "kotlin-reflect",
     "kotlin-stdlib",
-    "kotlinx-coroutines-core-jvm"
+    "kotlinx-coroutines-core-jvm",
+    "koin-core-jvm"
   )
 
   duplicatesStrategy = DuplicatesStrategy.EXCLUDE
