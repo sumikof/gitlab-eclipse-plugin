@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.preferences
 
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
@@ -9,12 +10,11 @@ import org.eclipse.jface.preference.FileFieldEditor
 import org.eclipse.jface.preference.StringFieldEditor
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 @Suppress("ForbiddenComment")
 class GitLabPreferencePage(
-  private val preferenceStoreProvider: PreferenceStoreProvider = PreferenceStoreProvider(),
-  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService =
-    GitLabLanguageServerConfigurationService()
+  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service()
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
   init {
     description = "GitLab Duo plugin preferences"
@@ -90,7 +90,7 @@ class GitLabPreferencePage(
   }
 
   override fun init(workbench: IWorkbench) {
-    preferenceStore = preferenceStoreProvider.get()
+    preferenceStore = service<ScopedPreferenceStore>()
   }
 
   override fun performOk(): Boolean {
