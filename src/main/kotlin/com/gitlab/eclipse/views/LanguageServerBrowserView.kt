@@ -2,18 +2,15 @@
 
 package com.gitlab.eclipse.views
 
-import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.WebviewInfo
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_HTTP_URL
+import com.gitlab.eclipse.preferences.PreferenceStoreProvider
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.core.runtime.preferences.InstanceScope
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.part.ViewPart
-import org.eclipse.ui.preferences.ScopedPreferenceStore
-import org.osgi.framework.FrameworkUtil
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.text.DateFormat
@@ -25,6 +22,7 @@ class LanguageServerBrowserView : ViewPart() {
   private val logger = logger<LanguageServerBrowserView>()
 
   private var browser: Browser? = null
+  private val preferenceStoreProvider by lazy { PreferenceStoreProvider() }
   private val languageServerWrapper by lazy { GitLabLanguageServerWrapper() }
 
   override fun createPartControl(parent: Composite?) {
@@ -73,12 +71,7 @@ class LanguageServerBrowserView : ViewPart() {
       )
 
       logger.warn("webview: $webviews")
-      val preferenceStore = ScopedPreferenceStore(
-        InstanceScope.INSTANCE,
-        FrameworkUtil.getBundle(GitLabLanguageServerProcessProvider::class.java).bundleId.toString()
-      )
-
-      val lspUrl = preferenceStore.getString(LANGUAGE_SERVER_HTTP_URL)
+      val lspUrl = preferenceStoreProvider.get().getString(LANGUAGE_SERVER_HTTP_URL)
       val redirect = webviews.stream()
         .filter { it?.id == "duo-chat-v2" }
         .findFirst()
