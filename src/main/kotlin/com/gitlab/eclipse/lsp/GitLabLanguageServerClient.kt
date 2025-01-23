@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.plugins.PluginCommunicationModule
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
@@ -11,7 +12,9 @@ import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import java.util.concurrent.CompletableFuture
 
 @Suppress("UnusedParameter")
-class GitLabLanguageServerClient : LanguageClientImpl() {
+class GitLabLanguageServerClient(
+  private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service()
+) : LanguageClientImpl() {
   private val pluginCommunicationModule by lazy { PluginCommunicationModule() }
 
   @JsonNotification("$/gitlab/featureStateChange")
@@ -80,5 +83,15 @@ class GitLabLanguageServerClient : LanguageClientImpl() {
       ),
       payload = message.payload
     )
+  }
+
+  @JsonNotification("$/gitlab/api/error")
+  fun gitLabApiError() {
+    codeSuggestionsApiStatusMonitor.reportError()
+  }
+
+  @JsonNotification("$/gitlab/api/recovery")
+  fun gitLabApiRecovery() {
+    codeSuggestionsApiStatusMonitor.reportRecovery()
   }
 }
