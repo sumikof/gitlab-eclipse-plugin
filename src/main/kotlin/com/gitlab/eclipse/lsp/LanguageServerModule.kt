@@ -6,4 +6,5 @@ import org.koin.dsl.module
 fun languageServerModule() = module {
   single<GitLabLanguageServerWrapper> { GitLabLanguageServerWrapper() }
   single<GitLabLanguageServerConfigurationService> { GitLabLanguageServerConfigurationService(get(), get(), get()) }
+  single<CodeSuggestionsApiStatusService> { CodeSuggestionsApiStatusService(get()) }
 }
