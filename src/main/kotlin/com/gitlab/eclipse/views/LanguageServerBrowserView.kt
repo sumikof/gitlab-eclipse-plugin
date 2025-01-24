@@ -25,7 +25,10 @@ class LanguageServerBrowserView : ViewPart() {
   private val languageServerWrapper by lazyService<GitLabLanguageServerWrapper>()
 
   override fun createPartControl(parent: Composite?) {
-    browser = Browser(parent, SWT.WEBKIT)
+    val osName = System.getProperty("os.name")
+    val browserStyle = if (osName.contains("Windows", ignoreCase = true)) SWT.EDGE else SWT.WEBKIT
+
+    browser = Browser(parent, browserStyle)
     browser?.setText(webviewContent())
   }
 
