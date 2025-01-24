@@ -6,15 +6,18 @@ import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
-import org.eclipse.lsp4e.LanguageClientImpl
+import com.gitlab.eclipse.utils.logger
+import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
+import org.eclipse.lsp4j.services.LanguageClient
 import java.util.concurrent.CompletableFuture
 
-@Suppress("UnusedParameter")
+@Suppress("UnusedParameter", "TooManyFunctions")
 class GitLabLanguageServerClient(
   private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service()
-) : LanguageClientImpl() {
+) : LanguageClient {
+  private val logger by lazy { logger<GitLabLanguageServerClient>() }
   private val pluginCommunicationModule by lazy { PluginCommunicationModule() }
 
   @JsonNotification("$/gitlab/featureStateChange")
@@ -93,5 +96,38 @@ class GitLabLanguageServerClient(
   @JsonNotification("$/gitlab/api/recovery")
   fun gitLabApiRecovery() {
     codeSuggestionsApiStatusMonitor.reportRecovery()
+  }
+
+  override fun telemetryEvent(event: Any) {
+    logger.info("telemetryEvent: $event")
+  }
+
+  override fun publishDiagnostics(diagnostic: PublishDiagnosticsParams) {
+    logger.info("publishDiagnostics: $diagnostic")
+  }
+
+  override fun showMessage(message: MessageParams) {
+    logger.info("showMessage: $message")
+  }
+
+  override fun showMessageRequest(message: ShowMessageRequestParams): CompletableFuture<MessageActionItem> {
+    logger.info("showMessageRequest: $message")
+    return CompletableFuture.completedFuture(MessageActionItem())
+  }
+
+  override fun logMessage(message: MessageParams) {
+    logger.info("logMessage: $message")
+  }
+
+  @Suppress("ForbiddenVoid")
+  override fun registerCapability(params: RegistrationParams?): CompletableFuture<Void> {
+    logger.info("registerCapability: $params")
+    return CompletableFuture()
+  }
+
+  @Suppress("ForbiddenVoid")
+  override fun unregisterCapability(params: UnregistrationParams?): CompletableFuture<Void> {
+    logger.info("unregisterCapability: $params")
+    return CompletableFuture()
   }
 }

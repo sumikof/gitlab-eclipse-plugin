@@ -17,4 +17,8 @@ class GitLabLanguageServerWrapper {
 
     languageServerProxy = newLanguageServerProxy
   }
+
+  fun unregisterLanguageServer() {
+    languageServerProxy = null
+  }
 }

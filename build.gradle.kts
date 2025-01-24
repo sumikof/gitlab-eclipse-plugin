@@ -135,7 +135,6 @@ val eclipseDependencies = mapOf(
   "org.osgi.service.event" to "1.4.1",
   "org.eclipse.core.runtime" to "0.0.0",
   "org.eclipse.equinox.security" to "0.0.0",
-  "org.eclipse.lsp4e" to "0.18.12",
   "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
   "org.eclipse.lsp4j" to "0.23.1",
   "org.eclipse.osgi" to "0.0.0",
@@ -273,7 +272,6 @@ equoIde {
   install("org.apache.felix.scr")
 
   p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
-  install("org.eclipse.lsp4e")
   install("org.eclipse.lsp4j.jsonrpc")
   install("org.eclipse.lsp4j")
 
