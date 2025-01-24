@@ -70,6 +70,11 @@
       </contentTypeMapping>
     </extension>
 
+    <extension point="org.eclipse.ui.commands">
+        <category id="gitlab-eclipse-plugin.commands.category" name="GitLab Duo Commands">
+        </category>
+    </extension>
+
     <extension point="org.eclipse.ui.views">
         <category name="GitLab" id="gitlab-eclipse-plugin"/>
 
