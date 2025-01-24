@@ -46,7 +46,7 @@ public class GitLabLanguageServerProvider extends ProcessStreamConnectionProvide
 				.logLevel(preferenceStore.getString(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL))
 				.telemetry(new Telemetry(
 					preferenceStore.getBoolean(PreferenceConstants.TELEMETRY_ENABLED),
-					"https://snowplow.trx.gitlab.net")
+					"https://snowplowprd.trx.gitlab.net")
 				);
 
 		var secretStorage = new SecretStorage("gitlab.com");
