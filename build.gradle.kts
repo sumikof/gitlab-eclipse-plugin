@@ -130,6 +130,9 @@ dependencies {
 val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(
+  "org.eclipse.e4.core.services" to "2.4.400",
+  "org.eclipse.e4.ui.css.swt.theme" to "0.14.400",
+  "org.osgi.service.event" to "1.4.1",
   "org.eclipse.core.runtime" to "0.0.0",
   "org.eclipse.equinox.security" to "0.0.0",
   "org.eclipse.lsp4e" to "0.18.12",
