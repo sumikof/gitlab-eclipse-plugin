@@ -4,6 +4,7 @@ import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
+import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
@@ -16,6 +17,7 @@ class GitLabLanguageServerProcessProvider(
   private val languageServerWrapper: GitLabLanguageServerWrapper = service(),
   private val languageServerConfigurationService: GitLabLanguageServerConfigurationService = service(),
   private val languageServerProxyManager: LanguageServerProxyManager = LanguageServerProxyManager(),
+  private val languageServerWebviewService: LanguageServerWebviewService = service(),
   languageServerInstaller: LanguageServerInstaller = LanguageServerInstaller(),
 ) : ProcessStreamConnectionProvider() {
   private val logger = logger<GitLabLanguageServerProcessProvider>()
@@ -69,6 +71,8 @@ class GitLabLanguageServerProcessProvider(
         "initialized" -> {
           languageServerWrapper.registerLanguageServer(languageServer)
           languageServerConfigurationService.sendConfiguration()
+          languageServerWebviewService.sendThemeChange()
+          languageServerWebviewService.subscribeToThemeChanges()
         }
         else -> {}
       }

@@ -14,8 +14,6 @@ import org.eclipse.ui.part.ViewPart
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.text.DateFormat
-import java.time.Instant
 import java.util.*
 import java.util.concurrent.TimeUnit
 
@@ -61,7 +59,7 @@ class LanguageServerBrowserView : ViewPart() {
 
     val webviews = ArrayList<WebviewInfo?>()
 
-    // TODO: Trigger a browser event instead of synchronously handling this event?
+    // TODO: Trigger a browser event instead of synchronously handling these events?
     if (languageServerWrapper.languageServer != null) {
       webviews.addAll(
         languageServerWrapper.languageServer
@@ -81,18 +79,25 @@ class LanguageServerBrowserView : ViewPart() {
 
       if (redirect != null) {
         buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$redirect'\" />")
-      } else {
-        buffer.append("<meta http-equiv=\"Refresh\" content=\"0; url='$lspUrl'\" />")
       }
       logger.warn("webview: ${redirect ?: "no redirect"}")
     } else {
+      val skeletonStateUrl = "https://gitlab-org.gitlab.io/gitlab-ui/iframe.html?viewMode=story&id=base-skeleton-loader--default"
+      buffer.append(
+        "<meta http-equiv=\"Refresh\" content=\"0; url='$skeletonStateUrl'\" />"
+      )
       logger.warn("webview: no redirect available")
     }
 
     buffer.append("<body>")
-    buffer.append("<p>Hello world from the GitLab for Eclipse.</p>")
     buffer.append(
-      "<p>Webview content loaded from development environment at: " + DateFormat.getInstance().format(Date.from(Instant.now())) + "</p>"
+      "<p>If you're seeing this message please refresh the page after opening a" +
+        "Java file to ensure the GitLab Language Server started successfully." +
+        "If you're still seeing this afterwards please" +
+        "<a href=\"https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/new?issuable_template=Bug\">" +
+        "open an issue" +
+        "<a/>." +
+        "</p>"
     )
     buffer.append("</body>")
     buffer.append("</html>")
