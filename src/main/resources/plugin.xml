@@ -108,6 +108,16 @@
                 commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                 class="com.gitlab.eclipse.chat.commands.RefactorCodeCommandHandler"
         />
+
+        <handler
+            commandId="gitlab-eclipse-plugin.commands.showSettings"
+            class="com.gitlab.eclipse.handlers.ShowSettings"
+        />
+
+        <handler
+            commandId="gitlab-eclipse-plugin.commands.showDocumentation"
+            class="com.gitlab.eclipse.handlers.ShowDocumentation"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -139,6 +149,35 @@
                         label="Refactor Code"
                         tooltip="Refactor the selected snippet" />
             </menu>
+        </menuContribution>
+
+        <menuContribution locationURI="toolbar:org.eclipse.ui.trim.status">
+            <toolbar id="com.gitlab.eclipse.menus.trim" label="GitLab Duo">
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.showPluginStatus"
+                        icon="icons/notification.png"
+                        id="gitlab-eclipse-plugin.menus.statusWidgetMenu"
+                        style="pulldown"
+                        tooltip="Show GitLab Status">
+                </command>
+            </toolbar>
+        </menuContribution>
+
+        <menuContribution
+                allPopups="false"
+                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu">
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.showSettings"
+                    id="gitlab-eclipse-plugin.commands.showSettings"
+                    label="Show Settings">
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.showDocumentation"
+                    id="gitlab-eclipse-plugin.menus.showDocumentation"
+                    label="Show Documentation">
+            </command>
         </menuContribution>
     </extension>
 </plugin>
