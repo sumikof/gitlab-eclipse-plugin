@@ -1,39 +1,84 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
-import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.core.resources.ResourcesPlugin
 import org.eclipse.core.runtime.Platform
-import org.eclipse.lsp4e.server.ProcessStreamConnectionProvider
-import org.eclipse.lsp4j.jsonrpc.messages.Message
-import org.eclipse.lsp4j.jsonrpc.messages.NotificationMessage
-import org.eclipse.lsp4j.services.LanguageServer
-import java.net.URI
+import org.eclipse.lsp4j.*
+import org.eclipse.lsp4j.jsonrpc.Launcher
+import java.io.IOException
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 
+@Suppress("ForbiddenVoid")
 class GitLabLanguageServerProcessProvider(
-  private val languageServerWrapper: GitLabLanguageServerWrapper = service(),
-  private val languageServerConfigurationService: GitLabLanguageServerConfigurationService = service(),
-  private val languageServerProxyManager: LanguageServerProxyManager = LanguageServerProxyManager(),
-  private val languageServerWebviewService: LanguageServerWebviewService = service(),
-  languageServerInstaller: LanguageServerInstaller = LanguageServerInstaller(),
-) : ProcessStreamConnectionProvider() {
-  private val logger = logger<GitLabLanguageServerProcessProvider>()
-
-  init {
-    val languageServerInstallationPath = languageServerInstaller.install()
-
-    if (languageServerInstallationPath != null) {
-      commands = listOf(languageServerInstallationPath, "--stdio")
-    } else {
-      logger.error("Language server installation failed")
-    }
+  private val languageServerWrapper: GitLabLanguageServerWrapper,
+  private val languageServerConfigurationService: GitLabLanguageServerConfigurationService,
+  private val languageServerProxyManager: LanguageServerProxyManager,
+  private val languageServerWebviewService: LanguageServerWebviewService,
+  private val languageServerInstaller: LanguageServerInstaller,
+) {
+  companion object {
+    private const val LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS = 30L
   }
 
-  override fun createProcessBuilder(): ProcessBuilder {
-    val builder = super.createProcessBuilder()
+  private val logger = logger<GitLabLanguageServerProcessProvider>()
+  private var process: Process? = null
+  private var processListener: Future<Void>? = null
+
+  fun start() {
+    val languageServerInstallationPath = languageServerInstaller.install()
+      ?: error("Language server installation failed")
+
+    process = try {
+      createProcessBuilder(languageServerInstallationPath).start()
+    } catch (e: IOException) {
+      logger.error("Failed to the Language Server create process.", e)
+      null
+    }
+
+    process?.onExit()?.thenApply {
+      logger.info("Language Server exited.")
+      process = null
+    }
+
+    val languageServerProxy = Launcher.Builder<GitLabLanguageServer>()
+      .setLocalService(GitLabLanguageServerClient())
+      .setRemoteInterface(GitLabLanguageServer::class.java)
+      .setInput(process?.inputStream)
+      .setOutput(process?.outputStream)
+      .create()
+      .also { processListener = it.startListening() }
+
+    logger.info("Language server started successfully.")
+    languageServerWrapper.registerLanguageServer(languageServerProxy.remoteProxy)
+
+    languageServerProxy.remoteProxy.initialize(getInitializationOptions()).handleAsync { result, err ->
+      if (err != null) {
+        logger.error("Failed to initialize Language Server", err)
+      } else {
+        logger.info("Initialized Language Server: $result")
+        languageServerProxy.remoteProxy.initialized(null)
+        languageServerConfigurationService.sendConfiguration()
+        languageServerWebviewService.sendThemeChange()
+        languageServerWebviewService.subscribeToThemeChanges()
+      }
+    }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+  }
+
+  fun stop() {
+    languageServerWrapper.unregisterLanguageServer()
+    processListener?.cancel(true)
+
+    process?.destroy()
+    process = null
+  }
+
+  private fun createProcessBuilder(path: String): ProcessBuilder {
+    val builder = ProcessBuilder(path, "--stdio")
 
     if (!BuildConfig.IS_EQUO_IDE) {
       val metadataDirectory = Platform.getLogFileLocation().toFile().parentFile
@@ -47,42 +92,40 @@ class GitLabLanguageServerProcessProvider(
 
       builder.redirectError(lsLogFile)
       logger.info("Language server logs saved to: ${lsLogFile.absolutePath}.")
+    } else {
+      builder.redirectError(ProcessBuilder.Redirect.INHERIT)
     }
 
     builder.injectHttpProxyEnvironmentVariables()
     return builder
   }
 
-  override fun start() {
-    super.start()
-
-    getAdapter(ProcessHandle::class.java)?.apply {
-      logger.info("Language server exit bindings defined.")
-
-      onExit().thenApply {
-        logger.warn("Language server process exited.")
-      }
-    }
-  }
-
-  override fun handleMessage(message: Message, languageServer: LanguageServer, rootURI: URI?) {
-    if (message is NotificationMessage) {
-      when (message.method) {
-        "initialized" -> {
-          languageServerWrapper.registerLanguageServer(languageServer)
-          languageServerConfigurationService.sendConfiguration()
-          languageServerWebviewService.sendThemeChange()
-          languageServerWebviewService.subscribeToThemeChanges()
+  private fun getInitializationOptions() = InitializeParams().apply {
+    processId = process?.pid()?.toInt()
+    capabilities = ClientCapabilities(
+      WorkspaceClientCapabilities().also { capabilities ->
+        capabilities.configuration = true
+        capabilities.workspaceFolders = true
+      },
+      TextDocumentClientCapabilities().apply {
+        completion = CompletionCapabilities().apply {
+          completionItem = CompletionItemCapabilities()
+          completionItemKind = CompletionItemKindCapabilities(listOf(CompletionItemKind.Text))
+          contextSupport = true
+          insertTextMode = InsertTextMode.AdjustIndentation
         }
-        else -> {}
-      }
-    }
-
-    super.handleMessage(message, languageServer, rootURI)
-  }
-
-  override fun getInitializationOptions(rootUri: URI?): Any {
-    return mapOf(
+      },
+      WindowClientCapabilities().apply {
+        showMessage = WindowShowMessageRequestCapabilities().apply {
+          messageActionItem = WindowShowMessageRequestActionItemCapabilities()
+        }
+      },
+    )
+    clientInfo = ClientInfo(
+      "gitlab-eclipse-plugin",
+      System.getProperty("eclipse.buildId")
+    )
+    initializationOptions = mapOf(
       "extension" to mapOf(
         "name" to "gitlab-eclipse-plugin",
         "version" to System.getProperty("eclipse.buildId")
@@ -92,7 +135,14 @@ class GitLabLanguageServerProcessProvider(
         "vendor" to "GitLab",
         "version" to System.getProperty("eclipse.buildId")
       ),
-      "folders" to listOf(rootUri.toString())
+      // Placeholder until we get open project url
+      "folder" to listOf(ResourcesPlugin.getWorkspace().root.locationURI.toASCIIString())
+    )
+    workspaceFolders = listOf(
+      WorkspaceFolder(
+        ResourcesPlugin.getWorkspace().root.locationURI.toASCIIString(), // Placeholder until we get open project url
+        ResourcesPlugin.getWorkspace().root.name // Placeholder until we get open project url
+      )
     )
   }
 
