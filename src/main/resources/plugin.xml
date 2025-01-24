@@ -70,11 +70,6 @@
       </contentTypeMapping>
     </extension>
 
-    <extension point="org.eclipse.ui.commands">
-        <category id="gitlab-eclipse-plugin.commands.category" name="GitLab Duo Commands">
-        </category>
-    </extension>
-
     <extension point="org.eclipse.ui.views">
         <category name="GitLab" id="gitlab-eclipse-plugin"/>
 
@@ -112,6 +107,21 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                 class="com.gitlab.eclipse.chat.commands.RefactorCodeCommandHandler"
+        />
+
+        <handler
+            commandId="gitlab-eclipse-plugin.commands.chatStatus"
+            class="com.gitlab.eclipse.handlers.ToggleDuoChatHandler"
+        />
+
+        <handler
+            commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+            class="com.gitlab.eclipse.handlers.CodeSuggestionsStatus"
+        />
+
+        <handler
+            commandId="gitlab-eclipse-plugin.commands.disableAllCodeSuggestions"
+            class="com.gitlab.eclipse.handlers.DisableAllCodeSuggestions"
         />
 
         <handler
@@ -171,6 +181,33 @@
         <menuContribution
                 allPopups="false"
                 locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu">
+
+            <separator name="StatusIndicators" visible="false"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.chatStatus"
+                    icon="icons/duo-chat.png"
+                    id="gitlab-eclipse-plugin.commands.chatStatus"
+                    label="Duo Chat: Enabled">
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                    icon="icons/notification.png"
+                    id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                    label="Code Suggestions: Enabled">
+            </command>
+
+            <separator name="StatusActions" visible="true"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.disableAllCodeSuggestions"
+                    id="gitlab-eclipse-plugin.commands.disableAllCodeSuggestions"
+                    label="Disable All Code Suggestions"
+                    style="pulldown">
+            </command>
+
+            <separator name="UserHelp" visible="true"/>
 
             <command
                     commandId="gitlab-eclipse-plugin.commands.showSettings"
