@@ -122,4 +122,10 @@
             </command>
         </menuContribution>
     </extension>
+
+    <extension point="org.eclipse.ui.workbench.texteditor.codeMiningProviders">
+        <codeMiningProvider id="com.gitlab.eclipse.codesuggestions.CodeSuggestionsMiningProvider"
+                            class="com.gitlab.eclipse.codesuggestions.CodeSuggestionsMiningProvider"
+                            label="GitLab Duo"/>
+    </extension>
 </plugin>
