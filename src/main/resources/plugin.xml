@@ -63,6 +63,16 @@
     </extension>
 
     <extension point="org.eclipse.ui.menus">
+        <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?endof">
+            <toolbar id="com.gitlab.eclipse.toolbar">
+                <command
+                        id="com.gitlab.eclipse.toolbar"
+                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                        icon="icons/duo-chat.png"
+                        tooltip="GitLab Duo Chat"
+                />
+            </toolbar>
+        </menuContribution>
         <menuContribution locationURI="popup:#AbstractTextEditorContext">
             <menu id="com.gitlab.eclipse.chat.menu" label="GitLab Duo Chat" icon="icons/notification.png">
                 <command

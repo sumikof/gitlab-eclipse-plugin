@@ -24,10 +24,10 @@ plugins {
   id("com.github.node-gradle.node").version("7.1.0") apply false
 
   // Provide Equo IDE as a sandbox and support listing available Eclipse categories/features.
-  id("dev.equo.ide") version "1.7.7"
+  id("dev.equo.ide") version "1.7.8"
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
-  id("dev.equo.p2deps") version "1.7.7"
+  id("dev.equo.p2deps") version "1.7.8"
 
   id("io.gitlab.arturbosch.detekt") version "1.23.7"
 
@@ -111,7 +111,7 @@ dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
-  implementation("com.google.guava:guava:32.1.3-jre")
+  implementation("com.google.guava:guava:33.4.0-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.1.10")
   implementation("io.insert-koin:koin-core:4.0.2")
 
@@ -119,7 +119,7 @@ dependencies {
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
   testImplementation("io.mockk:mockk:1.13.16")
 
-  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.0")
+  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.200")
   testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.134.0")
   testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
   testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
