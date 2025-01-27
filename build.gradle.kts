@@ -27,7 +27,7 @@ plugins {
   id("dev.equo.ide") version "1.7.8"
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
-  id("dev.equo.p2deps") version "1.7.7"
+  id("dev.equo.p2deps") version "1.7.8"
 
   id("io.gitlab.arturbosch.detekt") version "1.23.7"
 
