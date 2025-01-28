@@ -5,6 +5,6 @@ import com.gitlab.eclipse.lsp.plugins.PluginController
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
-fun chatModule() = module {
+val chatModule = module {
   single<GitLabDuoChatWebViewController> { GitLabDuoChatWebViewController() } bind PluginController::class
 }

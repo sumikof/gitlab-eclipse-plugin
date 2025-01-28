@@ -12,12 +12,14 @@ import org.osgi.framework.BundleContext
 
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
-    val koinApplication = startKoin {
-      modules(workspaceModule(context), chatModule(), languageServerModule())
+    startKoin {
+      modules(
+        workspaceModule(context),
+        chatModule,
+        languageServerModule(),
+        pluginCommunicationModule
+      )
     }
-
-    // For discoverability reasons, this module must be instantiated after the application modules have been registered.
-    koinApplication.modules(pluginCommunicationModule())
 
     service<GitLabLanguageServerProcessProvider>().start()
   }

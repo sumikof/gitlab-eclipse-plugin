@@ -22,16 +22,15 @@ class PluginCommunicationModuleTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   beforeEach {
-    val koinApplication = startKoin {
+    startKoin {
       modules(
         module {
           single { TestPluginController() } bind PluginController::class
           single { AnotherTestPluginController() } bind PluginController::class
-        }
+        },
+        pluginCommunicationModule
       )
     }
-
-    koinApplication.modules(pluginCommunicationModule())
   }
 
   afterEach { stopKoin() }
