@@ -90,7 +90,7 @@ class GitLabLanguageServerProcessProvider(
         lsLogFile.createNewFile()
       }
 
-      builder.redirectError(lsLogFile)
+      builder.redirectError(ProcessBuilder.Redirect.appendTo(lsLogFile))
       logger.info("Language server logs saved to: ${lsLogFile.absolutePath}.")
     } else {
       builder.redirectError(ProcessBuilder.Redirect.INHERIT)
