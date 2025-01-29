@@ -107,7 +107,6 @@ dependencies {
   implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
   implementation(project(":gitlab-language-server"))
 
-  implementation("org.reflections:reflections:0.10.2")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
@@ -144,7 +143,8 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui.workbench" to "3.133.0",
   "org.eclipse.jface.text" to "0.0.0",
   "org.eclipse.core.resources" to "0.0.0",
-  "org.eclipse.core.net" to "0.0.0"
+  "org.eclipse.core.net" to "0.0.0",
+  "com.google.gson" to "2.11.0"
 )
 
 p2deps {
