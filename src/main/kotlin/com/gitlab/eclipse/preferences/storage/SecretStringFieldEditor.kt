@@ -50,8 +50,9 @@ class SecretStringFieldEditor(
       return false
     }
 
-    if (!text.matches("^[a-zA-Z0-9-]+$".toRegex()) && !text.matches("^•+$".toRegex())) {
-      errorMessage = "$labelText must match pattern ^[a-zA-Z0-9-]+$"
+    val allowedRegexString = "^[a-zA-Z0-9-_]+$"
+    if (!text.matches(allowedRegexString.toRegex()) && !text.matches("^•+$".toRegex())) {
+      errorMessage = "$labelText must match pattern $allowedRegexString"
       return false
     }
 

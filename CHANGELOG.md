@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Fixed bug preventing use of PATs that include underscores ([!104](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/68))
+
 ## 0.3.0 (2024-12-12)
 
 ### Added
