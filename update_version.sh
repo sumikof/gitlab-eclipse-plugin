@@ -53,7 +53,17 @@ fi
 # Update pom.xml
 echo "Updating pom.xml..."
 POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$NEW_VERSION"'</version>"); f=1} 1'
+update_file "pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update update-site/pom.xml
+echo "Updating pom.xml..."
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$NEW_VERSION"'</version>"); f=1} 1'
 update_file "update-site/pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update feature/pom.xml
+echo "Updating pom.xml..."
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$NEW_VERSION"'</version>"); f=1} 1'
+update_file "feature/pom.xml" "$POM_AWK_COMMAND" || exit 1
 
 # Update build.gradle.kts
 echo "Updating build.gradle.kts..."

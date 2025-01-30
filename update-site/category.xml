@@ -6,34 +6,11 @@
         </description>
     </category-def>
 
-    <bundle id="com.gitlab.eclipse.gitlab-eclipse-plugin">
+    <feature
+            url="features/com.gitlab.eclipse.feature_0.3.1.qualifier.jar"
+            id="com.gitlab.eclipse.feature"
+            version="0.3.1.qualifier"
+    >
         <category name="com.gitlab.eclipse.category"/>
-    </bundle>
-
-    <category-def name="com.gitlab.eclipse.lsp.category" label="GitLab Language Server">
-        <category name="com.gitlab.eclipse.category"/>
-        <description>
-            Contains plugins for the GitLab language server client and platform-dependent server binaries.
-        </description>
-    </category-def>
-
-    <bundle id="com.gitlab.eclipse.gitlab-language-server">
-        <category name="com.gitlab.eclipse.lsp.category"/>
-    </bundle>
-
-    <bundle id="com.gitlab.eclipse.gitlab-language-server.gtk.linux.x86_64" ws="gtk" os="linux" arch="x86_64">
-        <category name="com.gitlab.eclipse.lsp.category"/>
-    </bundle>
-
-    <bundle id="com.gitlab.eclipse.gitlab-language-server.cocoa.macosx.aarch64" ws="cocoa" os="macosx" arch="aarch64">
-        <category name="com.gitlab.eclipse.lsp.category"/>
-    </bundle>
-
-    <bundle id="com.gitlab.eclipse.gitlab-language-server.cocoa.macosx.x86_64" ws="cocoa" os="macosx" arch="x86_64">
-        <category name="com.gitlab.eclipse.lsp.category"/>
-    </bundle>
-
-    <bundle id="com.gitlab.eclipse.gitlab-language-server.win32.win32.x86_64" ws="win32" os="win32" arch="x86_64">
-        <category name="com.gitlab.eclipse.lsp.category"/>
-    </bundle>
+    </feature>
 </site>
