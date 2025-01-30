@@ -8,7 +8,6 @@ deploy update site (snapshot):
   needs: ["publish plugin (snapshot)"]
   stage: deploy
   script:
-    - cd update-site
     - mvn $MAVEN_CLI_OPTS deploy
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -21,7 +20,6 @@ deploy update site (release):
   needs: ["publish plugin (release)"]
   stage: release
   script:
-    - cd update-site
     - mvn $MAVEN_CLI_OPTS versions:set -DnewVersion=${CI_COMMIT_TAG:1}
     - mvn $MAVEN_CLI_OPTS deploy
   rules:
