@@ -7,7 +7,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 @OptIn(ExperimentalCoroutinesApi::class)
 class RefactorCodeCommandHandlerTest : ChatCommandHandlerTest(
   promptTypeUnderTest = "refactorCode",
-  createCommandHandler = { languageServerWrapper, textEditorProvider ->
-    RefactorCodeCommandHandler(TestScope(UnconfinedTestDispatcher()), languageServerWrapper, textEditorProvider)
+  createCommandHandler = { gitLabDuoChatWebViewClient, textEditorProvider ->
+    RefactorCodeCommandHandler(TestScope(UnconfinedTestDispatcher()), gitLabDuoChatWebViewClient, textEditorProvider)
   }
 )

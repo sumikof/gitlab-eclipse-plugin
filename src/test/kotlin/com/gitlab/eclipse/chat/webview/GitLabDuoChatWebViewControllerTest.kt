@@ -7,10 +7,7 @@ import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
+import io.mockk.*
 import org.eclipse.swt.SwtCallable
 import org.eclipse.ui.texteditor.ITextEditor
 
@@ -19,8 +16,13 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   val textEditor = mockk<ITextEditor>()
 
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
+  val gitlabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>(relaxUnitFun = true)
 
-  val controller = GitLabDuoChatWebViewController(textEditorProvider, currentFileContextProvider)
+  val controller = GitLabDuoChatWebViewController(
+    textEditorProvider,
+    currentFileContextProvider,
+    gitlabDuoChatWebViewClient
+  )
 
   extensions(LoggingKotestExtension)
 
@@ -57,5 +59,13 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
     val result = controller.getCurrentFileContext()
 
     result shouldBe context
+  }
+
+  describe("appReady") {
+    it("should mark client as ready") {
+      controller.appReady()
+
+      verify { gitlabDuoChatWebViewClient.markAsReady() }
+    }
   }
 })

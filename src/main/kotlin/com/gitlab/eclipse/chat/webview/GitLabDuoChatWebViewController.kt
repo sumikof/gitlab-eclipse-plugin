@@ -10,8 +10,9 @@ import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 
 class GitLabDuoChatWebViewController(
-  private val textEditorProvider: TextEditorProvider = TextEditorProvider(),
-  private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
+  private val textEditorProvider: TextEditorProvider,
+  private val currentFileContextProvider: CurrentFileContextProvider,
+  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient
 ) : PluginController("duo-chat-v2") {
   private val logger by lazy { logger<GitLabDuoChatWebViewController>() }
 
@@ -33,5 +34,10 @@ class GitLabDuoChatWebViewController(
       "info" -> logger.warn(notification.message)
       else -> logger.warn("Received unknown message type ($type) with content: ${notification.message}")
     }
+  }
+
+  @PluginNotification("appReady")
+  fun appReady() {
+    gitLabDuoChatWebViewClient.markAsReady()
   }
 }
