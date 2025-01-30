@@ -12,45 +12,4 @@
         <version>0.3.1-SNAPSHOT</version>
         <relativePath>../</relativePath>
     </parent>
-
-    <properties>
-        <!--suppress UnresolvedMavenProperty -->
-        <gitlabEclipsePluginProjectId>${env.CI_PROJECT_ID}</gitlabEclipsePluginProjectId>
-        <!--suppress UnresolvedMavenProperty -->
-        <gitlabGroupId>${env.CI_PROJECT_NAMESPACE_ID}</gitlabGroupId>
-    </properties>
-
-    <repositories>
-        <repository>
-            <id>gitlab-maven</id>
-            <url>https://gitlab.com/api/v4/groups/${gitlabGroupId}/packages/maven</url>
-        </repository>
-    </repositories>
-
-    <distributionManagement>
-      <repository>
-        <id>gitlab-maven</id>
-        <url>https://gitlab.com/api/v4/projects/${gitlabEclipsePluginProjectId}/packages/maven</url>
-      </repository>
-
-      <snapshotRepository>
-        <id>gitlab-maven</id>
-        <url>https://gitlab.com/api/v4/projects/${gitlabEclipsePluginProjectId}/packages/maven</url>
-      </snapshotRepository>
-    </distributionManagement>
-
-    <profiles>
-        <profile>
-            <id>local</id>
-            <activation>
-                <property>
-                    <name>!env.CI</name>
-                </property>
-            </activation>
-            <properties>
-                <gitlabEclipsePluginProjectId>gitlab-org%2Feditor-extensions%2Fgitlab-eclipse-plugin</gitlabEclipsePluginProjectId>
-                <gitlabGroupId>gitlab-org%2Feditor-extensions</gitlabGroupId>
-            </properties>
-        </profile>
-    </profiles>
 </project>
