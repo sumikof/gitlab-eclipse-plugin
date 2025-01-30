@@ -1,9 +1,9 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.chat.utils.openDuoChatWindow
+import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.lsp.NewPromptRequest
-import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.utils.TextEditorProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -14,7 +14,7 @@ import org.eclipse.jface.text.ITextSelection
 open class ChatCommandHandler(
   private val promptType: String,
   private val coroutineScope: CoroutineScope,
-  private val languageServerWrapper: GitLabLanguageServerWrapper,
+  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
   private val textEditorProvider: TextEditorProvider,
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
 ) : AbstractHandler() {
@@ -22,17 +22,15 @@ open class ChatCommandHandler(
     val textEditor = textEditorProvider.getActiveTextEditor() ?: return
     val context = currentFileContextProvider.provide(textEditor) ?: return
 
-    val request = ExtensionToPluginNotification(
-      pluginId = "duo-chat-v2",
-      type = "newPrompt",
-      payload = NewPromptRequest(
-        prompt = promptType,
-        fileContext = context
-      )
+    val payload = NewPromptRequest(
+      prompt = promptType,
+      fileContext = context
     )
 
+    openDuoChatWindow()
+
     coroutineScope.launch {
-      languageServerWrapper.languageServer?.pluginNotification(request)
+      gitLabDuoChatWebViewClient.notify("newPrompt", payload)
     }
   }
 

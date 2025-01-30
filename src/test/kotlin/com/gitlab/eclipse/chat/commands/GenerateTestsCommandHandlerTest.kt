@@ -7,7 +7,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 @OptIn(ExperimentalCoroutinesApi::class)
 class GenerateTestsCommandHandlerTest : ChatCommandHandlerTest(
   promptTypeUnderTest = "generateTests",
-  createCommandHandler = { languageServerWrapper, textEditorProvider ->
-    GenerateTestsCommandHandler(TestScope(UnconfinedTestDispatcher()), languageServerWrapper, textEditorProvider)
+  createCommandHandler = { gitLabDuoChatWebViewClient, textEditorProvider ->
+    GenerateTestsCommandHandler(TestScope(UnconfinedTestDispatcher()), gitLabDuoChatWebViewClient, textEditorProvider)
   }
 )
