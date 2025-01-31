@@ -74,9 +74,9 @@ class ThemeProvider {
     private fun ITheme.applyCodeFont(styles: MutableMap<String, String>) {
       try {
         fontRegistry.getFontData("org.eclipse.jdt.ui.editors.textfont").firstOrNull()?.apply {
-          styles["--editor-code-font-family"] = name
-          styles["--editor-code-font-size"] = height.toString()
-          styles["--editor-code-font-weight"] = style.toString()
+          styles["--editor-code-font-family"] = getName().orEmpty()
+          styles["--editor-code-font-size"] = getHeight().toString()
+          styles["--editor-code-font-weight"] = getStyle().toString()
         }
       } catch (ex: Exception) {
         logger.warn("Unable to apply Eclipse code font styles for webview.", ex)
@@ -118,8 +118,9 @@ class ThemeProvider {
     private fun ITheme.applyFont(styles: MutableMap<String, String>) {
       try {
         fontRegistry.getFontData("org.eclipse.jface.headerfont").firstOrNull()?.apply {
-          styles["--editor-font-family"] = name
-          styles["--editor-font-size"] = height.toString()
+          styles["--editor-font-family"] = getName().orEmpty()
+          styles["--editor-font-style"] = getStyle().toString()
+          styles["--editor-font-size"] = getHeight().toString()
         }
       } catch (ex: Exception) {
         logger.warn("Unable to apply Eclipse font styles for webview.", ex)
