@@ -4,6 +4,16 @@
 
 ### Added
 
+### Changed
+
+### Removed
+
+### Fixed
+
+## 0.3.1 (2025-01-31)
+
+### Added
+
 - Add support for HTTP and HTTPS proxies ([!31](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/31))
 - Allow manually specifying a CA certificate ([!33](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/33))
 - Add GitLab status popup menu icon to trim ([!50](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/50))
