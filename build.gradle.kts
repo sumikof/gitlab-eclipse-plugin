@@ -229,11 +229,7 @@ tasks.register("checkReleaseVersion") {
     val commitTag = System.getenv("CI_COMMIT_TAG") ?: null
     val isTagPipeline = !commitTag.isNullOrEmpty()
     if (isTagPipeline) {
-      if (project.version.toString().endsWith("-SNAPSHOT")) {
-        error("The project version '${project.version}' must not contain -SNAPSHOT.")
-      }
-
-      if (commitTag != "v${project.version}") {
+      if (commitTag != "v${project.version.toString().removePrefix("-SNAPSHOT")}") {
         error("The commit tag '$commitTag' did not match semantic version: v${project.version}")
       }
     }
