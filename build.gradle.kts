@@ -36,8 +36,8 @@ plugins {
 
 allprojects {
   group = "com.gitlab.eclipse"
-  version = "0.3.2-SNAPSHOT"
-  ext["bundleVersion"] = "0.3.2.${Instant.now().toEpochMilli()}"
+  version = "0.3.3-SNAPSHOT"
+  ext["bundleVersion"] = "0.3.3.${Instant.now().toEpochMilli()}"
 
   repositories {
     gradlePluginPortal()
@@ -229,7 +229,7 @@ tasks.register("checkReleaseVersion") {
     val commitTag = System.getenv("CI_COMMIT_TAG") ?: null
     val isTagPipeline = !commitTag.isNullOrEmpty()
     if (isTagPipeline) {
-      if (commitTag != "v${project.version.toString().removePrefix("-SNAPSHOT")}") {
+      if (commitTag != "v${project.version.toString().removeSuffix("-SNAPSHOT")}") {
         error("The commit tag '$commitTag' did not match semantic version: v${project.version}")
       }
     }
