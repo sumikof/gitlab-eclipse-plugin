@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.webview
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
+import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.utils.TextEditorProvider
@@ -17,11 +18,13 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
 
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
   val gitlabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>(relaxUnitFun = true)
+  val insertCodeSnippetService = mockk<InsertCodeSnippetService>(relaxUnitFun = true)
 
   val controller = GitLabDuoChatWebViewController(
     textEditorProvider,
     currentFileContextProvider,
-    gitlabDuoChatWebViewClient
+    gitlabDuoChatWebViewClient,
+    insertCodeSnippetService
   )
 
   extensions(LoggingKotestExtension)
@@ -66,6 +69,16 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       controller.appReady()
 
       verify { gitlabDuoChatWebViewClient.markAsReady() }
+    }
+  }
+
+  describe("insertCodeSnippet") {
+    it("should insert code snippet") {
+      val snippet = "println(\"Hello\")"
+
+      controller.insertCodeSnippet(InsertCodeSnippetNotification(snippet))
+
+      verify { insertCodeSnippetService.insertCodeSnippet(snippet) }
     }
   }
 })

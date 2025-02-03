@@ -20,4 +20,5 @@ fun workspaceModule(bundleContext: BundleContext) = module {
   single<CoroutineScope> { CoroutineScope(Dispatchers.IO) }
 
   single { TextEditorProvider() }
+  single { CodeFormatter(get()) }
 }
