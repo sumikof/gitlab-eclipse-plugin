@@ -36,7 +36,7 @@ plugins {
 
 allprojects {
   group = "com.gitlab.eclipse"
-  version = "0.3.3-SNAPSHOT"
+  version = "0.3.3"
   ext["bundleVersion"] = "0.3.3.${Instant.now().toEpochMilli()}"
 
   repositories {
@@ -229,7 +229,11 @@ tasks.register("checkReleaseVersion") {
     val commitTag = System.getenv("CI_COMMIT_TAG") ?: null
     val isTagPipeline = !commitTag.isNullOrEmpty()
     if (isTagPipeline) {
-      if (commitTag != "v${project.version.toString().removeSuffix("-SNAPSHOT")}") {
+      if (project.version.toString().endsWith("-SNAPSHOT")) {
+        error("The project version '${project.version}' must not contain -SNAPSHOT.")
+      }
+
+      if (commitTag != "v${project.version}") {
         error("The commit tag '$commitTag' did not match semantic version: v${project.version}")
       }
     }
