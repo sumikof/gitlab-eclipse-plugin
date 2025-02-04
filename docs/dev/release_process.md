@@ -24,7 +24,8 @@ up during this process, reach out in the `#f_eclipse_plugin` Slack channel.
 
 Create a branch with a name like `yourname/prepare-0.5.5-release`. It should contain these changes:
 
-1. [ ] Run `update_version.sh` with the version number as the parameter e.g. `./update_version.sh 0.5.5` 
+1. [ ] Run `update_version.sh` with the version number as the parameter e.g. `./update_version.sh --prepare-release 0.5.5`
+    - The version number be the current snapshot version.
 1. [ ] Move the changes in `CHANGELOG.md` from the `[Unreleased]` section to the section for the new version.
 1. [ ] Review the changes to `CHANGELOG.md`.
     - Do the changes look sensible?
@@ -33,7 +34,7 @@ Create a branch with a name like `yourname/prepare-0.5.5-release`. It should con
     - Is the versioning correct for the intended release. See
       [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) for format examples.
 1. [ ] Were any major features released that you should feature in the release?
-2. [ ] Create a merge request containing these changes, get it reviewed, and merge it.
+1. [ ] Create a merge request containing these changes, get it reviewed, and merge it.
 
 Optional:
 
@@ -70,3 +71,24 @@ is now in progress.
 1. [ ] After the tag pipeline finishes, check the [software site](https://main-ee-175586.docs.gitlab-review.app/ee/editor_extensions/eclipse/setup.html#add-the-gitlab-releases-software-site)
    for the latest release.
 1. [ ] Update the release schedule with the results ([example](https://gitlab.com/gitlab-org/editor-extensions/meta/-/issues/188#eclipse)).
+
+## Eclipse Marketplace
+
+Publish a new version of the plugin on the [Eclipse Marketplace](https://marketplace.eclipse.org/)
+
+1. [ ] Authenticate as GitLab Inc.
+1. [ ] Navigate to [My Marketplace](https://marketplace.eclipse.org/user/gitlab/listings)
+1. [ ] Click on [GitLab for Eclipse](https://marketplace.eclipse.org/content/gitlab-eclipse)
+1. [ ] Next to the `View` tab, you will find the `Edit` tab. Click it.
+1. [ ] In `Revision log message`, add the changelog entries related to the new version.
+1. [ ] In `Solution Version(s)`, update the version number to match the new version.
+1. [ ] Scroll down until the `Update` button is on screen. Click it.
+1. [ ] Go back to [GitLab for Eclipse](https://marketplace.eclipse.org/content/gitlab-eclipse) and install the plugin.
+
+## Post-release
+
+Create a branch with a name like `yourname/prepare-0.5.5-snapshot`. It should contain these changes:
+
+1. [ ] Run `update_version.sh` with the version number as the parameter e.g. `./update_version.sh 0.5.6`
+   1. The version number should be above the latest released version and be composed of 3 digits.
+1. [ ] Create a merge request containing these changes, get it reviewed, and merge it.
