@@ -36,7 +36,7 @@ abstract class ChatCommandHandlerTest(
 
   beforeSpec {
     mockkStatic("com.gitlab.eclipse.utils.FileKt")
-    mockkStatic("com.gitlab.eclipse.chat.utils.OpenDuoChatWindowKt")
+    mockkStatic("com.gitlab.eclipse.chat.utils.DuoChatWindowKt")
   }
 
   beforeEach {
