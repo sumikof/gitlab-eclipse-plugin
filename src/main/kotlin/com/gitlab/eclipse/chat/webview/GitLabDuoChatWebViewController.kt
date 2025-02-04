@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.webview
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
+import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
@@ -12,7 +13,8 @@ import com.gitlab.eclipse.utils.logger
 class GitLabDuoChatWebViewController(
   private val textEditorProvider: TextEditorProvider,
   private val currentFileContextProvider: CurrentFileContextProvider,
-  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient
+  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
+  private val insertCodeSnippetService: InsertCodeSnippetService
 ) : PluginController("duo-chat-v2") {
   private val logger by lazy { logger<GitLabDuoChatWebViewController>() }
 
@@ -39,5 +41,10 @@ class GitLabDuoChatWebViewController(
   @PluginNotification("appReady")
   fun appReady() {
     gitLabDuoChatWebViewClient.markAsReady()
+  }
+
+  @PluginNotification("insertCodeSnippet")
+  fun insertCodeSnippet(notification: InsertCodeSnippetNotification) {
+    insertCodeSnippetService.insertCodeSnippet(notification.snippet)
   }
 }

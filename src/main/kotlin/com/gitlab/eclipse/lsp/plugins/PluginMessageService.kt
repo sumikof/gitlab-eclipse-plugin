@@ -16,11 +16,16 @@ class PluginMessageService(private val registry: PluginRegistry) {
       if (handler.type == null && payload == null) {
         return@supplyAsync handler.handle.apply(null)
       } else if (handler.type != null && payload != null) {
-        try {
-          val argument = Gson().fromJson(Gson().toJsonTree(payload), handler.type)
-          return@supplyAsync handler.handle.apply(argument)
+        val argument = try {
+          Gson().fromJson(Gson().toJsonTree(payload), handler.type)
         } catch (e: Throwable) {
           return@supplyAsync logger.warn("Could not parse payload ($payload) for $route. Skipping.", e)
+        }
+
+        return@supplyAsync try {
+          handler.handle.apply(argument)
+        } catch (e: Throwable) {
+          return@supplyAsync logger.error(e.cause?.message, e.cause)
         }
       } else {
         return@supplyAsync logger.warn("Could handle message for $route with payload ($payload). Skipping.")
