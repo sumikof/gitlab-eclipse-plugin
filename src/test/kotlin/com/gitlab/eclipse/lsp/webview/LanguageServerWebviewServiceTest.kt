@@ -3,8 +3,6 @@ package com.gitlab.eclipse.lsp.webview
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
-import com.gitlab.eclipse.lsp.plugins.messages.ThemeProvider
-import com.gitlab.eclipse.lsp.plugins.messages.css
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.equals.shouldBeEqual
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -69,7 +67,7 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
       languageServerWebviewService.sendThemeChange()
 
       // Smoke test editor font, code font, and color styles were applied:
-      val themeSlot = slot<ThemeProvider.Theme>()
+      val themeSlot = slot<ThemeChangedParams>()
       verify { languageServer.didChangeTheme(capture(themeSlot)) }
       themeSlot.captured.apply {
         styles["--editor-code-font-family"].shouldNotBeNull().shouldBeEqual("Menlo")
@@ -92,7 +90,7 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
 
       // then
       eventHandlerSlot.captured.handleEvent(mockk())
-      val themeSlot = slot<ThemeProvider.Theme>()
+      val themeSlot = slot<ThemeChangedParams>()
       verify { languageServer.didChangeTheme(capture(themeSlot)) }
       themeSlot.captured.styles["--editor-textLink-foreground"].shouldNotBeNull().shouldBeEqual(expectedColor.css())
     }
