@@ -1,7 +1,6 @@
 package com.gitlab.eclipse.lsp.webview
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
-import com.gitlab.eclipse.lsp.plugins.messages.ThemeProvider
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
