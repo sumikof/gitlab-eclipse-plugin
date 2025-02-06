@@ -16,7 +16,7 @@ import kotlin.io.path.walk
 val gitlabEclipsePluginProjectId = System.getenv().getOrDefault("CI_PROJECT_ID", "62043363").toInt()
 
 plugins {
-  kotlin("jvm") version "2.0.20"
+  kotlin("jvm") version "2.1.10"
 
   // Deploy artifacts to this project's Maven repository (e.g. GitLab Package Registry).
   `maven-publish`
@@ -24,10 +24,10 @@ plugins {
   id("com.github.node-gradle.node").version("7.1.0") apply false
 
   // Provide Equo IDE as a sandbox and support listing available Eclipse categories/features.
-  id("dev.equo.ide") version "1.7.7"
+  id("dev.equo.ide") version "1.7.8"
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
-  id("dev.equo.p2deps") version "1.7.7"
+  id("dev.equo.p2deps") version "1.7.8"
 
   id("io.gitlab.arturbosch.detekt") version "1.23.7"
 
@@ -36,8 +36,8 @@ plugins {
 
 allprojects {
   group = "com.gitlab.eclipse"
-  version = "0.3.1-SNAPSHOT"
-  ext["bundleVersion"] = "0.3.1.${Instant.now().toEpochMilli()}"
+  version = "0.3.4-SNAPSHOT"
+  ext["bundleVersion"] = "0.3.4.${Instant.now().toEpochMilli()}"
 
   repositories {
     gradlePluginPortal()
@@ -107,19 +107,18 @@ dependencies {
   implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
   implementation(project(":gitlab-language-server"))
 
-  implementation("org.reflections:reflections:0.10.2")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
-  implementation("com.google.guava:guava:32.1.3-jre")
-  implementation("org.jetbrains.kotlin:kotlin-reflect:2.0.21")
-  implementation("io.insert-koin:koin-core:4.0.1")
+  implementation("com.google.guava:guava:33.4.0-jre")
+  implementation("org.jetbrains.kotlin:kotlin-reflect:2.1.10")
+  implementation("io.insert-koin:koin-core:4.0.2")
 
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
-  testImplementation("io.mockk:mockk:1.13.13")
+  testImplementation("io.mockk:mockk:1.13.16")
 
-  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.0")
+  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.200")
   testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.134.0")
   testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
   testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
@@ -144,7 +143,8 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui.workbench" to "3.133.0",
   "org.eclipse.jface.text" to "0.0.0",
   "org.eclipse.core.resources" to "0.0.0",
-  "org.eclipse.core.net" to "0.0.0"
+  "org.eclipse.core.net" to "0.0.0",
+  "com.google.gson" to "2.11.0"
 )
 
 p2deps {

@@ -1,7 +1,8 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.inject.service
-import com.gitlab.eclipse.lsp.plugins.PluginCommunicationModule
+import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
@@ -12,18 +13,30 @@ import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import org.eclipse.lsp4j.services.LanguageClient
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
-@Suppress("UnusedParameter", "TooManyFunctions")
+@Suppress("UnusedParameter", "TooManyFunctions", "ForbiddenVoid")
 class GitLabLanguageServerClient(
-  private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service()
+  private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service(),
+  private val pluginMessageService: PluginMessageService = service()
 ) : LanguageClient {
+  companion object {
+    private const val TIMEOUT_IN_SECONDS = 10L
+  }
+
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
-  private val pluginCommunicationModule by lazy { PluginCommunicationModule() }
 
   @JsonNotification("$/gitlab/featureStateChange")
-  fun gitlabFeatureStateChange(params: List<FeatureStateChange?>?, reserved: Any? = null) {
-    return
-  }
+  fun gitlabFeatureStateChange(
+    changes: Array<FeatureStateChange>
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    changes.forEach { change ->
+      when (change.featureId) {
+        "chat" -> service<DuoChatStateService>().update(change)
+        else -> return@forEach
+      }
+    }
+  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   @JsonNotification("$/gitlab/token/check")
   fun gitlabTokenCheck(params: Any?) {
@@ -42,7 +55,7 @@ class GitLabLanguageServerClient(
 
   @JsonNotification("$/gitlab/plugin/notification")
   fun gitlabPluginNotification(message: PluginMessage) {
-    pluginCommunicationModule.service.dispatch(
+    pluginMessageService.dispatch(
       route = PluginMessageRoute(
         method = message.type,
         pluginId = message.pluginId,
@@ -54,7 +67,7 @@ class GitLabLanguageServerClient(
 
   @JsonRequest("$/gitlab/plugin/request")
   fun gitlabPluginRequest(message: PluginMessage): CompletableFuture<Any?> {
-    return pluginCommunicationModule.service.dispatch(
+    return pluginMessageService.dispatch(
       route = PluginMessageRoute(
         method = message.type,
         pluginId = message.pluginId,
@@ -66,7 +79,7 @@ class GitLabLanguageServerClient(
 
   @JsonNotification("$/gitlab/webview/notification")
   fun gitlabWebviewNotification(message: WebViewMessage) {
-    pluginCommunicationModule.service.dispatch(
+    pluginMessageService.dispatch(
       route = PluginMessageRoute(
         method = message.type,
         pluginId = message.webviewId,
@@ -78,7 +91,7 @@ class GitLabLanguageServerClient(
 
   @JsonRequest("$/gitlab/webview/request")
   fun gitlabWebviewRequest(message: WebViewMessage): CompletableFuture<Any?> {
-    return pluginCommunicationModule.service.dispatch(
+    return pluginMessageService.dispatch(
       route = PluginMessageRoute(
         method = message.type,
         pluginId = message.webviewId,

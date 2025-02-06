@@ -1,43 +1,39 @@
 package com.gitlab.eclipse.lsp.plugins
 
-import com.gitlab.eclipse.lsp.plugins.annotations.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageHandler
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
-import org.reflections.Reflections
+import com.gitlab.eclipse.utils.logger
 import java.lang.reflect.Method
 
-class PluginCommunicationModule(pkgName: String = "com.gitlab.eclipse") {
-  val service: PluginMessageService = PluginMessageService()
+class PluginRegistry(controllers: List<PluginController>) {
+  private val logger = logger<PluginRegistry>()
+  private val registry = mutableMapOf<PluginMessageRoute, PluginMessageHandler>()
 
   init {
-    val reflections = Reflections(pkgName)
-
-    val controllers = reflections.getTypesAnnotatedWith(PluginController::class.java)
     controllers.forEach { controller ->
-      val pluginId = controller.getAnnotation(PluginController::class.java).pluginId
-      val instance = controller.getDeclaredConstructor().newInstance()
+      val definition = controller.javaClass
 
-      val requests = controller.declaredMethods.filter { it.isAnnotationPresent(PluginRequest::class.java) }
-      val notifications = controller.declaredMethods.filter { it.isAnnotationPresent(PluginNotification::class.java) }
+      val requests = definition.declaredMethods.filter { it.isAnnotationPresent(PluginRequest::class.java) }
+      val notifications = definition.declaredMethods.filter { it.isAnnotationPresent(PluginNotification::class.java) }
 
-      (requests + notifications).register(pluginId, instance)
+      (requests + notifications).register(controller)
     }
   }
 
-  private fun List<Method>.register(pluginId: String, controller: Any) = forEach { method ->
+  private fun List<Method>.register(controller: PluginController) = forEach { method ->
     if (method.parameterCount > 1) {
       error("Method ${method.name} is not a valid request handler, multiple arguments found.")
     }
 
     val route = if (method.isAnnotationPresent(PluginRequest::class.java)) {
       val type = method.getAnnotation(PluginRequest::class.java).type
-      PluginMessageRoute(pluginId, PluginMessageType.REQUEST, type)
+      PluginMessageRoute(controller.pluginId, PluginMessageType.REQUEST, type)
     } else {
       val type = method.getAnnotation(PluginNotification::class.java).type
-      PluginMessageRoute(pluginId, PluginMessageType.NOTIFICATION, type)
+      PluginMessageRoute(controller.pluginId, PluginMessageType.NOTIFICATION, type)
     }
 
     val payloadType = method.parameters.firstOrNull()?.type
@@ -48,6 +44,12 @@ class PluginCommunicationModule(pkgName: String = "com.gitlab.eclipse") {
       }
     }
 
-    service.registerMessageHandler(route, handler)
+    if (registry.containsKey(route)) {
+      return logger.warn("Plugin route $route is already registered. Skipping.")
+    }
+
+    registry[route] = handler
   }
+
+  operator fun get(route: PluginMessageRoute) = registry[route]
 }

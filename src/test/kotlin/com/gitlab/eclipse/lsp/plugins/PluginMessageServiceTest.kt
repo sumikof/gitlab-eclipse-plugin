@@ -3,7 +3,7 @@
 package com.gitlab.eclipse.lsp.plugins
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
-import com.gitlab.eclipse.lsp.plugins.annotations.PluginController
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
@@ -12,19 +12,36 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import org.koin.core.context.startKoin
+import org.koin.core.context.stopKoin
+import org.koin.dsl.bind
+import org.koin.dsl.module
 
-class PluginCommunicationModuleTest : DescribeSpec({
-  val module by lazy { PluginCommunicationModule("com.gitlab.eclipse.lsp.plugins") }
-
+class PluginMessageServiceTest : DescribeSpec({
   extensions(LoggingKotestExtension)
+
+  beforeEach {
+    startKoin {
+      modules(
+        module {
+          single { TestPluginController() } bind PluginController::class
+          single { AnotherTestPluginController() } bind PluginController::class
+          single { PluginRegistry(getAll()) }
+          single { PluginMessageService(get()) }
+        }
+      )
+    }
+  }
+
+  afterEach { stopKoin() }
 
   it("should register all controllers") {
     val route1 = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request")
     val route2 = PluginMessageRoute(pluginId = "another-test", type = PluginMessageType.REQUEST, method = "request")
     val payload = null
 
-    val result1 = module.service.dispatch(route1, payload).get()
-    val result2 = module.service.dispatch(route2, payload).get()
+    val result1 = service<PluginMessageService>().dispatch(route1, payload).get()
+    val result2 = service<PluginMessageService>().dispatch(route2, payload).get()
 
     result1 shouldBe 123
     result2 shouldBe 789
@@ -34,7 +51,7 @@ class PluginCommunicationModuleTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request")
     val payload = null
 
-    val result = module.service.dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload).get()
 
     result shouldBe 123
   }
@@ -43,7 +60,7 @@ class PluginCommunicationModuleTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request-payload")
     val payload = JsonObject().apply { add("message", JsonPrimitive("Hello World!")) }
 
-    val result = module.service.dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload).get()
 
     result shouldBe "Hello World!"
   }
@@ -52,7 +69,7 @@ class PluginCommunicationModuleTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notification")
     val payload = null
 
-    val result = module.service.dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload).get()
 
     result shouldBe 456
   }
@@ -61,14 +78,13 @@ class PluginCommunicationModuleTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notif-payload")
     val payload = JsonObject().apply { add("message", JsonPrimitive("Hello World!")) }
 
-    val result = module.service.dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload).get()
 
     result shouldBe "Hello World!"
   }
 })
 
-@PluginController("test")
-class TestPluginController {
+class TestPluginController : PluginController("test") {
   @PluginRequest("request")
   fun request() = 123
 
@@ -82,8 +98,7 @@ class TestPluginController {
   fun notificationPayload(payload: TestPayload) = payload.message
 }
 
-@PluginController("another-test")
-class AnotherTestPluginController {
+class AnotherTestPluginController : PluginController("another-test") {
   @PluginRequest("request")
   fun request() = 789
 }

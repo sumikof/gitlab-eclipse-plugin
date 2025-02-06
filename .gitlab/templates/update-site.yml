@@ -8,8 +8,12 @@ deploy update site (snapshot):
   needs: ["publish plugin (snapshot)"]
   stage: deploy
   script:
-    - cd update-site
-    - mvn $MAVEN_CLI_OPTS deploy
+    - |-
+      if ./gradlew checkSnapshotVersion; then
+        mvn $MAVEN_CLI_OPTS deploy
+      else
+        echo 'WARNING: Skipping deploy update site due to project version missing -SNAPSHOT suffix. If this is an error please amend build.gradle.kts.'
+      fi
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   artifacts:
@@ -21,7 +25,6 @@ deploy update site (release):
   needs: ["publish plugin (release)"]
   stage: release
   script:
-    - cd update-site
     - mvn $MAVEN_CLI_OPTS versions:set -DnewVersion=${CI_COMMIT_TAG:1}
     - mvn $MAVEN_CLI_OPTS deploy
   rules:

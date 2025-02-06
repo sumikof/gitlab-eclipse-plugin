@@ -2,14 +2,18 @@
 
 # Function to display usage information
 usage() {
-    echo "Usage: $0 <new_version>"
-    echo "Updates the version number in pom.xml and build.gradle.kts files."
+    echo "Usage: $0 [--prepare-release] <new_version>"
+    echo "Updates the version number in pom.xml, build.gradle.kts, feature.xml and category.xml files."
     echo ""
     echo "Arguments:"
     echo "  <new_version>  The new version number to set (e.g., 0.3.1)"
     echo ""
+    echo "Options:"
+    echo "  --prepare-release  Prepare for a release by removing .qualifier suffix for the feature Jar"
+    echo ""
     echo "Example:"
     echo "  $0 0.3.1"
+    echo "  $0 --prepare-release 0.3.1"
     echo ""
     echo "Note: You must provide a new version number as an argument."
 }
@@ -35,29 +39,97 @@ update_file() {
     echo "Successfully updated $file"
 }
 
-# Check if a version number is provided
-if [ $# -eq 0 ]; then
+# The new version number (e.g., 0.1.1)
+SEMANTIC_VERSION=
+# The maven version number  (e.g., 0.1.1-SNAPSHOT)
+MAVEN_VERSION=
+# The maven tycho version number  (e.g., 0.1.1.qualifier)
+TYCHO_VERSION=
+# If we are preparing a release
+PREPARE_RELEASE=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --prepare-release)
+      PREPARE_RELEASE=true
+      shift
+      ;;
+    *)
+      SEMANTIC_VERSION=$1
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$SEMANTIC_VERSION" ]; then
+    echo "Error: Version number is required."
     usage
     exit 1
 fi
 
-# The new version number
-NEW_VERSION=$1
-
 # Validate version number format
-if ! [[ $NEW_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?$ ]]; then
-    echo "Error: Invalid version number format. Please use semantic versioning (e.g., 1.2.3 or 1.2.3-alpha.1)"
+if ! [[ $SEMANTIC_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?$ ]]; then
+    echo "Error: Invalid version number format. Please use semantic versioning (e.g., 1.2.3)"
     exit 1
+fi
+
+if [[ "$PREPARE_RELEASE" == "true" ]]; then
+  CURRENT_VERSION=''
+  CURRENT_VERSION=$(awk '/version = "[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?"/ {print $3}' build.gradle.kts)
+
+  if [[ $CURRENT_VERSION != "\"$SEMANTIC_VERSION-SNAPSHOT\"" ]]; then
+    echo "Error: Cannot prepare release for version \"$SEMANTIC_VERSION\" because it's different from the current snapshot version $CURRENT_VERSION."
+    exit 1
+  fi
+fi
+
+if [[ "$PREPARE_RELEASE" = "false" ]]; then
+    MAVEN_VERSION="$SEMANTIC_VERSION-SNAPSHOT"
+    TYCHO_VERSION="$SEMANTIC_VERSION.qualifier"
+else
+    MAVEN_VERSION="$SEMANTIC_VERSION"
+    TYCHO_VERSION="$SEMANTIC_VERSION"
 fi
 
 # Update pom.xml
 echo "Updating pom.xml..."
-POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$NEW_VERSION"'</version>"); f=1} 1'
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$MAVEN_VERSION"'</version>"); f=1} 1'
+update_file "pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update update-site/pom.xml
+echo "Updating update-site/pom.xml..."
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$MAVEN_VERSION"'</version>"); f=1} 1'
 update_file "update-site/pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update feature/pom.xml
+echo "Updating feature/pom.xml..."
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$MAVEN_VERSION"'</version>"); f=1} 1'
+update_file "feature/pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update feature/feature.xml
+echo "Updating feature/feature.xml"
+FEATURE_AWK_COMMAND=''
+if [[ "$PREPARE_RELEASE" = "true" ]]; then
+    # If we're preparing for a release, we only need to remove the .qualifier from the feature version.
+    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/ && !f {sub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "version=\"'"$SEMANTIC_VERSION"'\""); f=1} 1'
+else
+    # If we're not preparing a release, we need to increment all versions in the feature.xml.
+    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/ {gsub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "version=\"'"$TYCHO_VERSION"'\"")} 1'
+fi
+update_file "feature/feature.xml" "$FEATURE_AWK_COMMAND" || exit 1
+
+# Update update-site/category.xml
+echo "Updating update-site/category.xml"
+CATEGORY_AWK_VERSION="$TYCHO_VERSION"
+if [[ "$PREPARE_RELEASE" = "true" ]]; then
+    CATEGORY_AWK_VERSION="$SEMANTIC_VERSION"
+fi
+CATEGORY_AWK_COMMAND='/version=/{sub(/\"[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "\"'"$CATEGORY_AWK_VERSION"'\""); f=1} /url="features\/com\.gitlab\.eclipse\.feature_/{sub(/[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?/, "'"$CATEGORY_AWK_VERSION"'"); f=1} 1'
+update_file "update-site/category.xml" "$CATEGORY_AWK_COMMAND" || exit 1
 
 # Update build.gradle.kts
 echo "Updating build.gradle.kts..."
-GRADLE_AWK_COMMAND='/version = / {sub(/\"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?\"/, "\"'"$NEW_VERSION"'\""); f=1} /ext\["bundleVersion"\] = / {sub(/\"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?/, "\"'"$NEW_VERSION"'"); f=1} 1'
+GRADLE_AWK_COMMAND='/version = / {sub(/\"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?\"/, "\"'"$MAVEN_VERSION"'\""); f=1} /ext\["bundleVersion"\] = / {sub(/\"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?/, "\"'"$SEMANTIC_VERSION"'"); f=1} 1'
 update_file "build.gradle.kts" "$GRADLE_AWK_COMMAND" || exit 1
 
-echo "Version update completed successfully. New version: $NEW_VERSION"
+echo "Version update completed successfully. New version: $SEMANTIC_VERSION"

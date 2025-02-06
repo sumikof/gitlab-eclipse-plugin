@@ -21,9 +21,29 @@ Use `./gradlew equoIde` to start a Equo instance with GitLab for Eclipse install
 
 Creates a P2 update site (e.g. Eclipse repository) which can be used to install the GitLab for Eclipse plug-in.
 
-Use `mvn clean install -f update-site/pom.xml` to publish the latest to your local Maven repository (e.g. `~/.m2/repository`)
+This project uses the [tycho-p2-repository-plugin](https://tycho.eclipseprojects.io/doc/latest/tycho-p2-repository-plugin/plugin-info.html).
 
-Learn more in the [update site project README](./gitlab-eclipse-plugin.site/README.md).
+Use `mvn clean install -f pom.xml` to publish the latest to your local Maven repository (e.g. `~/.m2/repository`)
+
+A successful build will include these artifacts among other intermediate artifacts:
+
+```plaintext
+target/
+├── repository
+│   ├── artifacts.jar
+│   ├── artifacts.xml.xz
+│   ├── content.jar
+│   ├── content.xml.xz
+│   ├── p2.index
+│   └── plugins
+│       └── gitlab-eclipse-plugin_0.1.0.qualifier.jar
+│   └── features
+│       └── gitlab-eclipse-plugin.feaure_0.1.0.qualifier.jar
+└── update-site-0.1.0-SNAPSHOT.zip
+```
+
+- Generate a local update site/p2 repository under `target/repository` which can be added as a local Update Site.
+- Assemble a ZIP archive `target/update-site-0.1.0-SNAPSHOT.zip` Maven artifact which can be deployed for usage.
 
 ## Releasing
 

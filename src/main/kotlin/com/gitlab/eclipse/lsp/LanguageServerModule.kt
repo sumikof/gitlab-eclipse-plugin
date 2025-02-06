@@ -5,7 +5,7 @@ import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import org.koin.dsl.module
 
-fun languageServerModule() = module {
+val languageServerModule = module {
   single<LanguageServerProxyManager> { LanguageServerProxyManager() }
   single<LanguageServerInstaller> { LanguageServerInstaller() }
   single<GitLabLanguageServerWrapper> { GitLabLanguageServerWrapper() }
