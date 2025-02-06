@@ -7,6 +7,7 @@ import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.WebviewInfo
+import com.gitlab.eclipse.lsp.webview.ThemeProvider
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
@@ -69,6 +70,8 @@ class LanguageServerBrowserView : ViewPart() {
   }
 
   private fun loadUnauthenticatedWebview(reason: FeatureStateChangeCheck) {
+    val colors = ThemeProvider.currentTheme()
+
     browser?.setText(
       """
         <!doctype html>
@@ -78,6 +81,16 @@ class LanguageServerBrowserView : ViewPart() {
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <title>GitLab</title>
         </head>
+        <style>
+          * {
+            background: ${colors.styles["--editor-background-alternative"]};
+            color: ${colors.styles["--editor-foreground"]};
+            
+            font-family: ${colors.styles["--editor-font-family"]};
+            font-size: ${colors.styles["--editor-font-size"]};
+            font-weight: ${colors.styles["--editor-font-style"]};
+          }
+        </style>
         <body>
             <p>GitLab Duo Chat is currently disabled: ${reason.details}</p>
         </body>
