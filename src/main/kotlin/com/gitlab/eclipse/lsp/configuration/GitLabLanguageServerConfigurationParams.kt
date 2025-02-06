@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import org.eclipse.lsp4j.WorkspaceFolder
+
 data class GitLabLanguageServerConfigurationParams(
   val baseUrl: String? = null,
   val logLevel: String? = null,
@@ -8,7 +10,8 @@ data class GitLabLanguageServerConfigurationParams(
   val codeCompletion: CodeCompletion? = null,
   val featureFlags: FeatureFlags? = null,
   val ignoreCertificateErrors: Boolean = false,
-  val httpAgentOptions: HttpAgentOptions? = null
+  val httpAgentOptions: HttpAgentOptions? = null,
+  val workspaceFolders: List<WorkspaceFolder>? = null,
 ) {
   data class CodeCompletion(
     val enableSecretRedaction: Boolean = true,

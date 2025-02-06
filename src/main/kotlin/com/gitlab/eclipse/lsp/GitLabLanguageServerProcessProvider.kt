@@ -5,7 +5,6 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationSer
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.core.resources.ResourcesPlugin
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.Launcher
@@ -135,15 +134,8 @@ class GitLabLanguageServerProcessProvider(
         "vendor" to "GitLab",
         "version" to System.getProperty("eclipse.buildId")
       ),
-      // Placeholder until we get open project url
-      "folder" to listOf(ResourcesPlugin.getWorkspace().root.locationURI.toASCIIString())
     )
-    workspaceFolders = listOf(
-      WorkspaceFolder(
-        ResourcesPlugin.getWorkspace().root.locationURI.toASCIIString(), // Placeholder until we get open project url
-        ResourcesPlugin.getWorkspace().root.name // Placeholder until we get open project url
-      )
-    )
+    workspaceFolders = workspaceFolders
   }
 
   private fun ProcessBuilder.injectHttpProxyEnvironmentVariables() {

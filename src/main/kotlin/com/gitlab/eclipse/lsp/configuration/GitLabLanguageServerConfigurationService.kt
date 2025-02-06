@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
+import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
 import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERRORS
@@ -39,7 +40,8 @@ class GitLabLanguageServerConfigurationService(
       token = SecretStorage("gitlab.com").getSecret("personal_access_token"),
       httpAgentOptions = HttpAgentOptions(
         ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() }
-      )
+      ),
+      workspaceFolders = workspaceFolders
     )
 
     logger.info("Sending configuration change notification to Language Server.")
