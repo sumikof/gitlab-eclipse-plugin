@@ -1,31 +1,48 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.jface.text.ITextViewer
+import org.eclipse.jface.text.Position
 import org.eclipse.jface.text.codemining.ICodeMining
 import org.eclipse.jface.text.codemining.ICodeMiningProvider
+import org.eclipse.swt.widgets.Display
 import java.util.concurrent.CompletableFuture
 
 class CodeSuggestionsMiningProvider : ICodeMiningProvider {
+  private val logger = logger<CodeSuggestionsMiningProvider>()
+
   override fun dispose() {
-    TODO("Not yet implemented")
+    // Nothing to dispose
   }
 
   override fun provideCodeMinings(
     viewer: ITextViewer,
     monitor: IProgressMonitor
   ): CompletableFuture<List<ICodeMining>> {
-    if (monitor.isCanceled) return CompletableFuture.completedFuture(mutableListOf())
+    return CompletableFuture.supplyAsync {
+      try {
+        if (monitor.isCanceled) return@supplyAsync emptyList()
 
-    // TODO: Validate we don't trigger a bad location error by using sensible protections around the line number.
-    return CompletableFuture.completedFuture(
-      mutableListOf(
-        CodeSuggestionMining(
-          document = viewer.document,
-          line = 0,
-          provider = this
+        // Get caret position from UI thread
+        var currentCaretPosition = 0
+        Display.getDefault().syncExec {
+          currentCaretPosition = viewer.textWidget.caretOffset
+        }
+
+        // Create a Position at the current cursor location
+        val position = Position(currentCaretPosition, 1)
+
+        listOf(
+          CodeSuggestionMining(
+            position = position,
+            provider = this
+          )
         )
-      )
-    )
+      } catch (e: Exception) {
+        logger.error("Unable to provide code minings", e)
+        emptyList()
+      }
+    }
   }
 }
