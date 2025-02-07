@@ -139,6 +139,7 @@ val eclipseDependencies = mapOf(
   "org.eclipse.osgi" to "0.0.0",
   "org.eclipse.swt" to "0.0.0",
   "org.eclipse.ui" to "0.0.0",
+  "org.eclipse.ui.ide" to "3.22.0",
   "org.eclipse.ui.editors" to "0.0.0",
   "org.eclipse.ui.workbench" to "3.133.0",
   "org.eclipse.jface.text" to "0.0.0",

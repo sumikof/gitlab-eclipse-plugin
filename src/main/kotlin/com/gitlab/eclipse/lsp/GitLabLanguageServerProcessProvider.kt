@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
+import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
@@ -16,6 +17,7 @@ import java.util.concurrent.TimeUnit
 class GitLabLanguageServerProcessProvider(
   private val languageServerWrapper: GitLabLanguageServerWrapper,
   private val languageServerConfigurationService: GitLabLanguageServerConfigurationService,
+  private val languageServerOpenFilesService: GitLabLanguageServerOpenFilesService,
   private val languageServerProxyManager: LanguageServerProxyManager,
   private val languageServerWebviewService: LanguageServerWebviewService,
   private val languageServerInstaller: LanguageServerInstaller,
@@ -62,6 +64,7 @@ class GitLabLanguageServerProcessProvider(
         logger.info("Initialized Language Server: $result")
         languageServerProxy.remoteProxy.initialized(null)
         languageServerConfigurationService.sendConfiguration()
+        languageServerOpenFilesService.sendOpenTabs()
         languageServerWebviewService.sendThemeChange()
         languageServerWebviewService.subscribeToThemeChanges()
       }
