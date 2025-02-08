@@ -12,16 +12,16 @@ kotlin {
   jvmToolchain(21)
 }
 
-val eclipseRelease = "4.33"
+//val eclipseRelease = "4.33"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(
   "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
   "org.eclipse.lsp4j" to "0.23.1",
-  "org.eclipse.jface.text" to "3.25.200",
+//  "org.eclipse.jface.text" to "3.25.200",
 )
 p2deps {
   into(listOf("compileOnly", "testImplementation")) {
-    p2repo("https://download.eclipse.org/eclipse/updates/$eclipseRelease/")
+//    p2repo("https://download.eclipse.org/eclipse/updates/$eclipseRelease/")
     p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
 
     eclipseDependencies.forEach {

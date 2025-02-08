@@ -126,7 +126,7 @@ dependencies {
   detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
 }
 
-val eclipseRelease = "4.33"
+val eclipseRelease = "4.34"
 // Declare OSGi bundles (Eclipse plug-ins) that are required in our plug-in's manifest.
 val eclipseDependencies = mapOf(
   "org.eclipse.e4.core.services" to "2.4.400",

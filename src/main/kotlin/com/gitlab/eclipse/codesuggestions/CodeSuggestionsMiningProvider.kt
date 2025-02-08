@@ -24,20 +24,38 @@ class CodeSuggestionsMiningProvider : ICodeMiningProvider {
       try {
         if (monitor.isCanceled) return@supplyAsync emptyList()
 
-        // Get caret position from UI thread
         var currentCaretPosition = 0
+        var currentLine = 0
+        var lineEndOffset = 0
+
         Display.getDefault().syncExec {
           currentCaretPosition = viewer.textWidget.caretOffset
+          currentLine = viewer.textWidget.getLineAtOffset(currentCaretPosition)
+          // Get the offset of the end of the current line
+          lineEndOffset = viewer.textWidget.getOffsetAtLine(currentLine) + viewer.textWidget.getLine(currentLine).length
         }
 
-        // Create a Position at the current cursor location
-        val position = Position(currentCaretPosition, 1)
+        val document = viewer.document ?: return@supplyAsync emptyList()
+        val isAtLineEnd = currentCaretPosition == lineEndOffset
 
-        listOf(
-          CodeSuggestionMining(
-            position = position,
-            provider = this
-          )
+        logger.info("Current Caret Position: $currentCaretPosition")
+        logger.info("Current Line: $currentLine")
+        logger.info("Line End Offset: $lineEndOffset")
+        logger.info("Is At Line End: $isAtLineEnd")
+
+        listOfNotNull(
+//          if (isAtLineEnd) {
+//            LineEndCodeSuggestionMining.create(
+//              document = document,
+//              line = currentLine,
+//              provider = this
+//            )
+//          } else {
+            CodeSuggestionMining(
+              position = Position(currentCaretPosition, 1),
+              provider = this
+            )
+//          }
         )
       } catch (e: Exception) {
         logger.error("Unable to provide code minings", e)
