@@ -2,18 +2,20 @@ package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
+import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import org.eclipse.lsp4j.DidCloseTextDocumentParams
-import org.eclipse.lsp4j.DidOpenTextDocumentParams
-import org.eclipse.lsp4j.TextDocumentIdentifier
-import org.eclipse.lsp4j.TextDocumentItem
+import org.eclipse.jface.text.DocumentEvent
+import org.eclipse.jface.text.IDocumentListener
+import org.eclipse.lsp4j.*
 import org.eclipse.ui.*
 
 class GitLabLanguageServerOpenFilesService(
+  private val textEditorProvider: TextEditorProvider,
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
   private val coroutineScope: CoroutineScope
-) : IPartListener2 {
+) : IPartListener2, IDocumentListener {
   init {
     val activeWorkbench = PlatformUI.getWorkbench().activeWorkbenchWindow
 
@@ -49,6 +51,12 @@ class GitLabLanguageServerOpenFilesService(
           TextDocumentIdentifier(editorInput.file.locationURI.toASCIIString())
         )
       )
+
+      textEditorProvider
+        .getActiveTextEditor()
+        ?.documentProvider
+        ?.getDocument(editorInput)
+        ?.removeDocumentListener(this@GitLabLanguageServerOpenFilesService)
     }
   }
 
@@ -63,6 +71,23 @@ class GitLabLanguageServerOpenFilesService(
     }
   }
 
+  @Suppress("SwallowedException")
+  override fun documentChanged(event: DocumentEvent) {
+    coroutineScope.launch {
+      gitLabLanguageServerWrapper.languageServer?.textDocumentService?.didChange(
+        DidChangeTextDocumentParams(
+          VersionedTextDocumentIdentifier(
+            event.document.uri,
+            event.modificationStamp.toInt()
+          ),
+          listOf(TextDocumentContentChangeEvent(event.document.get()))
+        )
+      )
+    }
+  }
+
+  override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
+
   private fun editorOpen(editorRef: IWorkbenchPartReference) {
     val editorInput = editorRef.fileEditorInput
       ?: return
@@ -71,6 +96,12 @@ class GitLabLanguageServerOpenFilesService(
       gitLabLanguageServerWrapper.languageServer?.textDocumentService?.didOpen(
         DidOpenTextDocumentParams(editorInput.toTextDocumentItem())
       )
+
+      textEditorProvider
+        .getActiveTextEditor()
+        ?.documentProvider
+        ?.getDocument(editorInput)
+        ?.addDocumentListener(this@GitLabLanguageServerOpenFilesService)
     }
   }
 

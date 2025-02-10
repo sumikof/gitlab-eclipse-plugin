@@ -133,6 +133,9 @@ val eclipseDependencies = mapOf(
   "org.eclipse.e4.ui.css.swt.theme" to "0.14.400",
   "org.osgi.service.event" to "1.4.1",
   "org.eclipse.core.runtime" to "0.0.0",
+  "org.eclipse.core.resources" to "0.0.0",
+  "org.eclipse.core.net" to "0.0.0",
+  "org.eclipse.core.filesystem" to "0.0.0",
   "org.eclipse.equinox.security" to "0.0.0",
   "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
   "org.eclipse.lsp4j" to "0.23.1",
@@ -142,10 +145,9 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui.ide" to "3.22.0",
   "org.eclipse.ui.editors" to "0.0.0",
   "org.eclipse.ui.workbench" to "3.133.0",
+  "org.eclipse.text" to "0.0.0",
   "org.eclipse.jface.text" to "0.0.0",
-  "org.eclipse.core.resources" to "0.0.0",
-  "org.eclipse.core.net" to "0.0.0",
-  "com.google.gson" to "2.11.0"
+  "com.google.gson" to "2.11.0",
 )
 
 p2deps {
