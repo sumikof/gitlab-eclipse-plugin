@@ -28,22 +28,19 @@ class GitLabLanguageServerOpenFilesService(
       ?: return
 
     activePage.editorReferences.forEach { editorRef -> editorOpen(editorRef) }
+    activePage.activePartReference?.let { activePagePart -> editorActive(activePagePart) }
   }
 
   override fun partOpened(partRef: IWorkbenchPartReference) {
-    if (partRef !is IEditorReference) {
-      return
-    }
-
     editorOpen(partRef)
   }
 
-  override fun partClosed(partRef: IWorkbenchPartReference) {
-    if (partRef !is IEditorReference) {
-      return
-    }
+  override fun partActivated(partRef: IWorkbenchPartReference) {
+    editorActive(partRef)
+  }
 
-    val editorInput = partRef.editorInput as? IFileEditorInput
+  override fun partClosed(partRef: IWorkbenchPartReference) {
+    val editorInput = partRef.fileEditorInput
       ?: return
 
     coroutineScope.launch {
@@ -55,8 +52,19 @@ class GitLabLanguageServerOpenFilesService(
     }
   }
 
-  private fun editorOpen(editorRef: IEditorReference) {
-    val editorInput = editorRef.editorInput as? IFileEditorInput
+  private fun editorActive(editorRef: IWorkbenchPartReference) {
+    val editorInput = editorRef.fileEditorInput
+      ?: return
+
+    coroutineScope.launch {
+      gitLabLanguageServerWrapper.languageServer?.didChangeDocumentInActiveEditor(
+        editorInput.file.locationURI.toASCIIString()
+      )
+    }
+  }
+
+  private fun editorOpen(editorRef: IWorkbenchPartReference) {
+    val editorInput = editorRef.fileEditorInput
       ?: return
 
     coroutineScope.launch {
@@ -65,6 +73,15 @@ class GitLabLanguageServerOpenFilesService(
       )
     }
   }
+
+  private val IWorkbenchPartReference.fileEditorInput: IFileEditorInput?
+    get() = run {
+      if (this !is IEditorReference) {
+        return@run null
+      }
+
+      return editorInput as? IFileEditorInput
+    }
 
   private fun IFileEditorInput.toTextDocumentItem() = TextDocumentItem(
     file.locationURI.toASCIIString(),
