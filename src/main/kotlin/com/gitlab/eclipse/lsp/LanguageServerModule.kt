@@ -13,7 +13,7 @@ val languageServerModule = module {
   single<GitLabLanguageServerWrapper> { GitLabLanguageServerWrapper() }
 
   single<GitLabLanguageServerOpenFilesService>(createdAtStart = true) {
-    GitLabLanguageServerOpenFilesService(get(), get())
+    GitLabLanguageServerOpenFilesService(get(), get(), get())
   }
 
   single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
