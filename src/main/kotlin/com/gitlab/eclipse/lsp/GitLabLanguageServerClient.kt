@@ -2,12 +2,14 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
 import com.gitlab.eclipse.utils.logger
+import com.google.gson.JsonObject
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
@@ -133,14 +135,33 @@ class GitLabLanguageServerClient(
   }
 
   @Suppress("ForbiddenVoid")
-  override fun registerCapability(params: RegistrationParams?): CompletableFuture<Void> {
-    logger.info("registerCapability: $params")
-    return CompletableFuture()
+  override fun registerCapability(
+    params: RegistrationParams
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    params.registrations.forEach { registration ->
+      when {
+        registration.method == "workspace/didChangeWatchedFiles" -> {
+          service<DidChangeWatchedFileCapability>().register(
+            registration.id,
+            registration.registerOptions as JsonObject
+          )
+        }
+        else -> logger.warn("[RegisterCapability]: Ignoring unsupported capability ${registration.method}.")
+      }
+    }
   }
 
   @Suppress("ForbiddenVoid")
-  override fun unregisterCapability(params: UnregistrationParams?): CompletableFuture<Void> {
-    logger.info("unregisterCapability: $params")
-    return CompletableFuture()
+  override fun unregisterCapability(
+    params: UnregistrationParams
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    params.unregisterations.forEach { unregisteration ->
+      when {
+        unregisteration.method == "workspace/didChangeWatchedFiles" -> {
+          service<DidChangeWatchedFileCapability>().unregister(unregisteration.id)
+        }
+        else -> logger.warn("[UnregisterCapability]: Ignoring unsupported capability ${unregisteration.method}.")
+      }
+    }
   }
 }

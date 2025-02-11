@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
@@ -18,6 +19,7 @@ val languageServerModule = module {
 
   single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
   single<GitLabLanguageServerConfigurationService> { GitLabLanguageServerConfigurationService(get(), get(), get()) }
+  single<DidChangeWatchedFileCapability>(createdAtStart = true) { DidChangeWatchedFileCapability(get(), get()) }
 
   single<GitLabLanguageServerProcessProvider> {
     GitLabLanguageServerProcessProvider(get(), get(), get(), get(), get(), get())

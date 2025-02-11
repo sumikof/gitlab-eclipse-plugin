@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.uri
@@ -83,6 +85,8 @@ class GitLabLanguageServerOpenFilesService(
           listOf(TextDocumentContentChangeEvent(event.document.get()))
         )
       )
+
+      service<DidChangeWatchedFileCapability>().documentChanged(event.document.uri)
     }
   }
 
