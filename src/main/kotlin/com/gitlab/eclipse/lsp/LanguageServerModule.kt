@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.lsp.authentication.PatProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
@@ -9,6 +10,8 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import org.koin.dsl.module
 
 val languageServerModule = module {
+  single<PatProvider> { PatProvider() }
+
   single<LanguageServerProxyManager> { LanguageServerProxyManager() }
   single<LanguageServerInstaller> { LanguageServerInstaller() }
   single<GitLabLanguageServerWrapper> { GitLabLanguageServerWrapper() }
