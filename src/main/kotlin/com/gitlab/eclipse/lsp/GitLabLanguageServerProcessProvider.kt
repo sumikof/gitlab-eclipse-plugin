@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
@@ -72,7 +74,12 @@ class GitLabLanguageServerProcessProvider(
   }
 
   fun stop() {
+    // Unregister language server before killing the process.
     languageServerWrapper.unregisterLanguageServer()
+
+    // Unregister capabilities before killing the process.
+    service<DidChangeWatchedFileCapability>().unregisterAll()
+
     processListener?.cancel(true)
 
     process?.destroy()

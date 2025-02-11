@@ -3,11 +3,13 @@ package com.gitlab.eclipse.lsp.configuration
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.uri
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.jface.text.BadLocationException
@@ -17,11 +19,17 @@ import org.eclipse.jface.text.IRegion
 import org.eclipse.lsp4j.DidChangeTextDocumentParams
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.PlatformUI
+import org.koin.core.context.startKoin
+import org.koin.core.context.stopKoin
+import org.koin.dsl.module
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
   val documentUri = "file:///test.kt"
   val document = mockk<IDocument>()
   val workbench = mockk<IWorkbench>(relaxUnitFun = true)
+
+  val didWatchedChangeFileCapability = mockk<DidChangeWatchedFileCapability>(relaxUnitFun = true)
 
   val languageServer = mockk<GitLabLanguageServer>(relaxed = true)
   val gitLabLanguageServerWrapper = mockk<GitLabLanguageServerWrapper>()
@@ -36,6 +44,14 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
   beforeSpec {
     mockkStatic(PlatformUI::getWorkbench)
     mockkStatic("com.gitlab.eclipse.utils.DocumentKt")
+
+    startKoin {
+      modules(
+        module {
+          single<DidChangeWatchedFileCapability> { didWatchedChangeFileCapability }
+        }
+      )
+    }
   }
 
   beforeEach {
@@ -58,10 +74,13 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
 
   afterEach { clearAllMocks() }
 
-  afterSpec { unmockkAll() }
+  afterSpec {
+    unmockkAll()
+    stopKoin()
+  }
 
   describe("didChange") {
-    it("should send didChange notification with full document text ") {
+    it("should send didChange notification with full document text") {
       val event = mockk<DocumentEvent> {
         every { this@mockk.document } returns document
         every { modificationStamp } returns 1L
@@ -84,6 +103,8 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
       sentParams.captured.textDocument.version shouldBe 1
       sentParams.captured.contentChanges[0].text shouldBe "fallback content"
       sentParams.captured.contentChanges[0].range shouldBe null
+
+      verify { didWatchedChangeFileCapability.documentChanged(documentUri) }
     }
   }
 })
