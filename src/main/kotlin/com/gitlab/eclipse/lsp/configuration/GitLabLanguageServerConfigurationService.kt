@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.authentication.PatProvider
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -9,7 +11,6 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERR
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
-import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -37,7 +38,7 @@ class GitLabLanguageServerConfigurationService(
         preferenceStore.getBoolean(TELEMETRY_ENABLED),
         "https://snowplowprd.trx.gitlab.net"
       ),
-      token = SecretStorage("gitlab.com").getSecret("personal_access_token"),
+      token = service<PatProvider>().getToken(),
       httpAgentOptions = HttpAgentOptions(
         ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() }
       ),
