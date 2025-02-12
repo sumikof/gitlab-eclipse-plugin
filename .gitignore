@@ -29,6 +29,7 @@ out/
 .kotlin
 
 ### Eclipse ###
+.metadata
 .apt_generated
 .classpath
 .factorypath

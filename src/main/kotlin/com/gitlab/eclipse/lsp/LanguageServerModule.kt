@@ -4,6 +4,7 @@ import com.gitlab.eclipse.lsp.authentication.PatProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
+import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
@@ -15,6 +16,7 @@ val languageServerModule = module {
   single<LanguageServerProxyManager> { LanguageServerProxyManager() }
   single<LanguageServerInstaller> { LanguageServerInstaller() }
   single<GitLabLanguageServerWrapper> { GitLabLanguageServerWrapper() }
+  single<GitDiffService> { GitDiffService() }
 
   single<GitLabLanguageServerOpenFilesService>(createdAtStart = true) {
     GitLabLanguageServerOpenFilesService(get(), get(), get())

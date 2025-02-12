@@ -3,6 +3,8 @@ package com.gitlab.eclipse.lsp
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
+import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
@@ -27,6 +29,21 @@ class GitLabLanguageServerClient(
   }
 
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
+
+  @JsonRequest("$/gitlab/ai-context/git-diff")
+  fun getGitDiff(request: GitDiffParams): CompletableFuture<String?> = CompletableFuture.supplyAsync {
+    try {
+      val diffProvider = service<GitDiffService>()
+
+      when {
+        request.branch != null -> diffProvider.getDiff(request.repositoryUri, request.branch)
+        else -> diffProvider.getDiff(request.repositoryUri)
+      }
+    } catch (e: Throwable) {
+      logger.warn("Exception when retrieving git diff.", e)
+      null
+    }
+  }
 
   @JsonNotification("$/gitlab/featureStateChange")
   fun gitlabFeatureStateChange(

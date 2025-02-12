@@ -3,9 +3,12 @@ package com.gitlab.eclipse.lsp
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
+import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.google.gson.JsonObject
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.lsp4j.Registration
 import org.eclipse.lsp4j.RegistrationParams
@@ -18,6 +21,7 @@ import org.koin.dsl.module
 class GitLabLanguageServerClientTest : DescribeSpec({
   val didChangeWatchedFilesCapability = mockk<DidChangeWatchedFileCapability>(relaxUnitFun = true)
 
+  val gitDiffService = mockk<GitDiffService>(relaxUnitFun = true)
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
   val codeSuggestionsApiStatusMonitor = mockk<CodeSuggestionsApiStatusService>(relaxUnitFun = true)
   val pluginMessageService = mockk<PluginMessageService>()
@@ -32,6 +36,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
         module {
           single<DuoChatStateService> { duoChatStateService }
           single<DidChangeWatchedFileCapability> { didChangeWatchedFilesCapability }
+          single<GitDiffService> { gitDiffService }
         }
       )
     }
@@ -84,6 +89,37 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.unregisterCapability(params).join()
 
       verify { didChangeWatchedFilesCapability.unregister("test-id") }
+    }
+  }
+
+  describe("getGitDiff") {
+    it("should get git diff with without specified branch") {
+      val params = GitDiffParams(repositoryUri = "test/repo", branch = null)
+      every { gitDiffService.getDiff(params.repositoryUri) } returns "test diff"
+
+      val result = client.getGitDiff(params).join()
+
+      result shouldBe "test diff"
+    }
+
+    it("should get git diff for specified branch") {
+      val params = GitDiffParams(repositoryUri = "test/repo", branch = "test-branch")
+      every { gitDiffService.getDiff(params.repositoryUri, params.branch) } returns "test branch diff"
+
+      val result = client.getGitDiff(params).join()
+
+      verify { gitDiffService.getDiff("test/repo", "test-branch") }
+      result shouldBe "test branch diff"
+    }
+
+    it("should return null if getting git diff fails") {
+      val params = GitDiffParams(repositoryUri = "test/repo")
+      every { gitDiffService.getDiff(params.repositoryUri) } throws RuntimeException("test error")
+
+      val result = client.getGitDiff(params).join()
+
+      verify { gitDiffService.getDiff("test/repo") }
+      result shouldBe null
     }
   }
 })
