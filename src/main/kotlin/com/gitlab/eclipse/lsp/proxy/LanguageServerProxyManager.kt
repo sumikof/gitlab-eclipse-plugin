@@ -1,11 +1,14 @@
 package com.gitlab.eclipse.lsp.proxy
 
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.internal.net.ProxyData
 import org.eclipse.core.internal.net.ProxyManager
 import org.eclipse.core.net.proxy.IProxyData
 import java.net.URLEncoder
 
 class LanguageServerProxyManager {
+  private val logger by lazy { logger<LanguageServerProxyManager>() }
+
   private val proxyManager
     get() = ProxyManager.getProxyManager()
 
@@ -14,7 +17,17 @@ class LanguageServerProxyManager {
   }
 
   fun getHttpsProxyUrl(): String? {
-    return proxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE)?.let { getProxyUrl(it) }
+    val httpsProxyUrl = proxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE)?.let { getProxyUrl(it) }
+
+    if (httpsProxyUrl == null) {
+      val httpProxyUrl = getHttpProxyUrl()
+        ?: return null
+
+      logger.info("Using HTTP proxy URL for HTTPS as HTTPS proxy is not configured.")
+      return httpProxyUrl
+    }
+
+    return httpsProxyUrl
   }
 
   fun getBypassHosts(): String? {
