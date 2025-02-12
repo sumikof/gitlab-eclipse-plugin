@@ -14,6 +14,7 @@ import kotlin.io.path.pathString
 import kotlin.io.path.walk
 
 val gitlabEclipsePluginProjectId = System.getenv().getOrDefault("CI_PROJECT_ID", "62043363").toInt()
+val isLocalBuild by lazy { System.getenv("CI").isNullOrEmpty() }
 
 plugins {
   kotlin("jvm") version "2.1.10"
@@ -71,6 +72,12 @@ buildConfig {
     "Boolean",
     "IS_EQUO_IDE",
     System.getenv().getOrDefault("EQUO_IDE", "false").toBoolean()
+  )
+
+  buildConfigField(
+    "Boolean",
+    "CODE_SUGGESTIONS_ENABLED",
+    isLocalBuild
   )
 }
 

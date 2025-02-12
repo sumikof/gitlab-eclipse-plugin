@@ -1,6 +1,7 @@
 package com.gitlab.eclipse
 
 import com.gitlab.eclipse.chat.chatModule
+import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.languageServerModule
@@ -10,6 +11,7 @@ import org.eclipse.ui.plugin.AbstractUIPlugin
 import org.koin.core.context.startKoin
 import org.osgi.framework.BundleContext
 
+@Suppress("unused")
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
     startKoin {
@@ -17,7 +19,8 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         workspaceModule(context),
         languageServerModule,
         chatModule,
-        pluginModule
+        pluginModule,
+        codeSuggestionsModule,
       )
     }
 

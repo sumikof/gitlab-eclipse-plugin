@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?eclipse version="3.4"?>
 <plugin>
+    <extension point="org.eclipse.ui.commands">
+        <command
+                id="com.gitlab.eclipse.codesuggestions.showSuggestion"
+                name="Show Suggestion"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+    </extension>
+
+    <extension point="org.eclipse.ui.bindings">
+        <key
+                sequence="M1+."
+                commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+    </extension>
+
     <extension point="org.eclipse.ui.services">
         <sourceProvider provider="com.gitlab.eclipse.chat.DuoChatStateService">
             <variable name="duo_chat_enabled" priorityLevel="workbench"/>
@@ -33,6 +49,11 @@
 
     <extension point="org.eclipse.ui.handlers">
         <handler
+                class="com.gitlab.eclipse.codesuggestions.ShowCodeSuggestionHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                 class="com.gitlab.eclipse.chat.commands.OpenDuoChatCommandHandler"
         />
@@ -58,18 +79,18 @@
         />
 
         <handler
-            commandId="gitlab-eclipse-plugin.commands.showSettings"
-            class="com.gitlab.eclipse.handlers.ShowSettings"
+                commandId="gitlab-eclipse-plugin.commands.showSettings"
+                class="com.gitlab.eclipse.handlers.ShowSettings"
         />
 
         <handler
-            commandId="gitlab-eclipse-plugin.commands.showDocumentation"
-            class="com.gitlab.eclipse.handlers.ShowDocumentation"
+                commandId="gitlab-eclipse-plugin.commands.showDocumentation"
+                class="com.gitlab.eclipse.handlers.ShowDocumentation"
         />
 
         <handler
-            commandId="gitlab-eclipse-plugin.commands.chatStatus"
-            class="com.gitlab.eclipse.chat.commands.ChatStatusHandler"
+                commandId="gitlab-eclipse-plugin.commands.chatStatus"
+                class="com.gitlab.eclipse.chat.commands.ChatStatusHandler"
         />
     </extension>
 
@@ -96,27 +117,27 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
                         tooltip="Open Duo Chat Window"
-                        icon="icons/duo-chat.png" />
+                        icon="icons/duo-chat.png"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                         label="Explain Code"
-                        tooltip="Explain the selected snippet" />
+                        tooltip="Explain the selected snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FixCode"
                         label="Fix Code"
-                        tooltip="Fix the selected code snippet" />
+                        tooltip="Fix the selected code snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.GenerateTests"
                         label="Generate Tests"
-                        tooltip="Write tests for the selected snippet" />
+                        tooltip="Write tests for the selected snippet"/>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                         label="Refactor Code"
-                        tooltip="Refactor the selected snippet" />
+                        tooltip="Refactor the selected snippet"/>
 
                 <visibleWhen checkEnabled="false">
                     <with variable="duo_chat_enabled">
