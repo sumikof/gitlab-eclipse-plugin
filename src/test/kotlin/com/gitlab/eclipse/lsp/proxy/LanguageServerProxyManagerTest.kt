@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.proxy
 
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.every
@@ -12,6 +13,8 @@ import org.eclipse.core.internal.net.ProxyManager
 class LanguageServerProxyManagerTest : DescribeSpec({
   val eclipseProxyManager = mockk<ProxyManager>()
   val lsProxyManager = LanguageServerProxyManager()
+
+  extensions(LoggingKotestExtension)
 
   beforeSpec { mockkStatic(ProxyManager::class) }
 
@@ -82,26 +85,29 @@ class LanguageServerProxyManagerTest : DescribeSpec({
   }
 
   describe("getHttpsProxyUrl") {
-    it("should return null when no HTTPS proxy is set") {
+    it("should return null when no HTTPS or HTTP proxy is set") {
       every { eclipseProxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE) } returns null
+      every { eclipseProxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE) } returns null
 
       lsProxyManager.getHttpsProxyUrl() shouldBe null
     }
 
-    it("should return null when HTTPS proxy host is null") {
+    it("should return null when HTTPS proxy host is null and no HTTP proxy is set") {
       val proxyData = mockk<ProxyData>()
       every { proxyData.host } returns null
       every { proxyData.port } returns 8443
       every { eclipseProxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE) } returns proxyData
+      every { eclipseProxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE) } returns null
 
       lsProxyManager.getHttpsProxyUrl() shouldBe null
     }
 
-    it("should return null when HTTPS proxy port is invalid") {
+    it("should return null when HTTPS proxy port is invalid and no HTTP proxy is set") {
       val proxyData = mockk<ProxyData>()
       every { proxyData.host } returns "proxy.example.com"
       every { proxyData.port } returns -1
       every { eclipseProxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE) } returns proxyData
+      every { eclipseProxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE) } returns null
 
       lsProxyManager.getHttpsProxyUrl() shouldBe null
     }
@@ -138,6 +144,20 @@ class LanguageServerProxyManagerTest : DescribeSpec({
       every { eclipseProxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE) } returns proxyData
 
       lsProxyManager.getHttpsProxyUrl() shouldBe "http://user%40domain:p%40ss%3Aword@proxy.example.com:8443"
+    }
+
+    it("should use HTTP proxy as fallback when HTTPS proxy is not configured") {
+      val httpsProxyData = mockk<ProxyData>()
+      every { httpsProxyData.host } returns null
+      every { eclipseProxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE) } returns httpsProxyData
+
+      val httpProxyData = mockk<ProxyData>()
+      every { httpProxyData.host } returns "proxy.example.com"
+      every { httpProxyData.port } returns 8080
+      every { httpProxyData.isRequiresAuthentication } returns false
+      every { eclipseProxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE) } returns httpProxyData
+
+      lsProxyManager.getHttpsProxyUrl() shouldBe "http://proxy.example.com:8080"
     }
   }
 
