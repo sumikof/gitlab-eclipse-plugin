@@ -107,6 +107,7 @@ dependencies {
   implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
   implementation(project(":gitlab-language-server"))
 
+  implementation("org.eclipse.jgit:org.eclipse.jgit:7.1.0.202411261347-r")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
   // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
@@ -147,6 +148,7 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui.workbench" to "3.133.0",
   "org.eclipse.text" to "0.0.0",
   "org.eclipse.jface.text" to "0.0.0",
+  "org.eclipse.jgit" to "[7.0.0,8.0.0)",
   "com.google.gson" to "2.11.0",
 )
 
@@ -154,6 +156,7 @@ p2deps {
   into(listOf("compileOnly", "testImplementation")) {
     p2repo("https://download.eclipse.org/eclipse/updates/$eclipseRelease/")
     p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
+    p2repo("https://download.eclipse.org/egit/updates/")
 
     eclipseDependencies.forEach {
       install(it.key)
@@ -169,7 +172,7 @@ tasks.withType<Jar> {
     "kotlin-reflect",
     "kotlin-stdlib",
     "kotlinx-coroutines-core-jvm",
-    "koin-core-jvm",
+    "koin-core-jvm"
   )
 
   duplicatesStrategy = DuplicatesStrategy.EXCLUDE
