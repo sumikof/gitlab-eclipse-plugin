@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.webview
 
+import com.gitlab.eclipse.utils.ThemeUtils.isDarkTheme
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.graphics.Color
 import org.eclipse.ui.PlatformUI
@@ -30,23 +31,14 @@ class ThemeProvider {
       return ThemeChangedParams(styles)
     }
 
-    @Suppress("MagicNumber")
-    private fun ITheme.getThemeColors(): ThemeCSSColors {
-      val color = colorRegistry.get("org.eclipse.ui.workbench.ACTIVE_TAB_BG_START")
-      val hsb = java.awt.Color.RGBtoHSB(color.red, color.green, color.blue, null)
-
-      // Use the brightness to determine if a theme is dark or not.
-      return when {
-        hsb[2] < 0.5f -> getDarkThemeColors()
-        else -> getLightThemeColors()
-      }
-    }
-
     /**
      * Set theme variables based on available Eclipse colors.
      */
     private fun ITheme.applyColors(styles: MutableMap<String, String>) {
-      val themeColors = getThemeColors()
+      val themeColors = when {
+        this.isDarkTheme() -> getDarkThemeColors()
+        else -> getLightThemeColors()
+      }
 
       styles.apply {
         put("--editor-foreground", themeColors.activeText)

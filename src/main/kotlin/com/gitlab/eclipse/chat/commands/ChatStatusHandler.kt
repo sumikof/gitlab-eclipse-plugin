@@ -2,11 +2,11 @@ package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.utils.ThemeUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.ui.commands.IElementUpdater
 import org.eclipse.ui.menus.UIElement
-import org.eclipse.ui.plugin.AbstractUIPlugin
 
 class ChatStatusHandler : AbstractHandler(), IElementUpdater {
   override fun execute(event: ExecutionEvent) = Unit
@@ -19,20 +19,10 @@ class ChatStatusHandler : AbstractHandler(), IElementUpdater {
     val engagedCheck = service.getFirstEngagedCheck()
     if (engagedCheck == null) {
       element.setText("Duo Chat: Enabled")
-      element.setIcon(
-        AbstractUIPlugin.imageDescriptorFromPlugin(
-          "com.gitlab.eclipse.gitlab-eclipse-plugin",
-          "icons/duo-chat.png"
-        )
-      )
+      element.setIcon(ThemeUtils.getThemedIcon("chaton_obj"))
     } else {
       element.setText("Duo Chat: Disabled (${engagedCheck.checkId})")
-      element.setIcon(
-        AbstractUIPlugin.imageDescriptorFromPlugin(
-          "com.gitlab.eclipse.gitlab-eclipse-plugin",
-          "icons/duo-chat-off.png"
-        )
-      )
+      element.setIcon(ThemeUtils.getThemedIcon("chatoff_obj"))
     }
   }
 }

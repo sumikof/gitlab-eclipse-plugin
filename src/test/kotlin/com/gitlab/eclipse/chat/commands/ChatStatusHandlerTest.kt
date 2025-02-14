@@ -2,10 +2,11 @@ package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
+import com.gitlab.eclipse.utils.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
+import org.eclipse.jface.resource.ImageDescriptor
 import org.eclipse.ui.menus.UIElement
-import org.eclipse.ui.plugin.AbstractUIPlugin
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -16,7 +17,7 @@ class ChatStatusHandlerTest : DescribeSpec({
   val handler = ChatStatusHandler()
 
   beforeSpec {
-    mockkStatic(AbstractUIPlugin::class)
+    mockkObject(ThemeUtils)
 
     startKoin {
       modules(
@@ -28,7 +29,7 @@ class ChatStatusHandlerTest : DescribeSpec({
   }
 
   beforeEach {
-    every { AbstractUIPlugin.imageDescriptorFromPlugin(any(), any()) } returns null
+    every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
   }
 
   afterEach { clearAllMocks() }
@@ -44,10 +45,7 @@ class ChatStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        AbstractUIPlugin.imageDescriptorFromPlugin(
-          "com.gitlab.eclipse.gitlab-eclipse-plugin",
-          "icons/duo-chat.png"
-        )
+        ThemeUtils.getThemedIcon("chaton_obj")
         element.setText("Duo Chat: Enabled")
         element.setIcon(any())
       }
@@ -61,11 +59,7 @@ class ChatStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        AbstractUIPlugin.imageDescriptorFromPlugin(
-          "com.gitlab.eclipse.gitlab-eclipse-plugin",
-          "icons/duo-chat-off.png"
-        )
-
+        ThemeUtils.getThemedIcon("chatoff_obj")
         element.setText("Duo Chat: Disabled (authentication-required)")
         element.setIcon(any())
       }

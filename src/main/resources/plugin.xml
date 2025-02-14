@@ -97,18 +97,16 @@
     <extension point="org.eclipse.ui.menus">
         <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?endof">
             <toolbar id="com.gitlab.eclipse.toolbar">
-                <command
-                        id="com.gitlab.eclipse.toolbar"
-                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
-                        icon="icons/duo-chat.png"
-                        tooltip="GitLab Duo Chat"
+                <dynamic
+                        id="com.gitlab.eclipse.toolbar.duo-chat.contribution"
+                        class="com.gitlab.eclipse.chat.toolbar.DuoChatToolbarContribution"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="duo_chat_enabled">
                             <equals value="true"/>
                         </with>
                     </visibleWhen>
-                </command>
+                </dynamic>
             </toolbar>
         </menuContribution>
         <menuContribution locationURI="popup:#AbstractTextEditorContext">
@@ -116,8 +114,7 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
-                        tooltip="Open Duo Chat Window"
-                        icon="icons/duo-chat.png"/>
+                        tooltip="Open Duo Chat Window" />
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"
@@ -165,7 +162,6 @@
 
             <command
                     commandId="gitlab-eclipse-plugin.commands.chatStatus"
-                    icon="icons/duo-chat-off.png"
                     id="gitlab-eclipse-plugin.commands.chatStatus"
                     label="Duo Chat: Disabled">
             </command>
