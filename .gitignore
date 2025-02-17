@@ -59,3 +59,6 @@ bin/
 
 # Ubuntu VNC server:
 nohup.out
+
+# Log4J2 logs
+.gitlab_plugin

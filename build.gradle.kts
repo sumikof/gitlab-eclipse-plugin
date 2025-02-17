@@ -114,10 +114,14 @@ dependencies {
   implementation("org.eclipse.platform:org.eclipse.swt.\${osgi.platform}:+")
   implementation(project(":gitlab-language-server"))
 
+  implementation("org.slf4j:slf4j-api:2.0.16")
+  implementation("org.apache.logging.log4j:log4j-core:2.24.3")
+  implementation("org.apache.logging.log4j:log4j-slf4j2-impl:2.24.3")
+
   implementation("org.eclipse.jgit:org.eclipse.jgit:7.1.0.202411261347-r")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
-  // NOTE: This depedency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
+  // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:33.4.0-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.1.10")
   implementation("io.insert-koin:koin-core:4.0.2")
@@ -179,7 +183,9 @@ tasks.withType<Jar> {
     "kotlin-reflect",
     "kotlin-stdlib",
     "kotlinx-coroutines-core-jvm",
-    "koin-core-jvm"
+    "koin-core-jvm",
+    "slf4j-api",
+    "log4j"
   )
 
   duplicatesStrategy = DuplicatesStrategy.EXCLUDE
