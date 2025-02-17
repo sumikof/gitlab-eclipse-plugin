@@ -8,10 +8,13 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.Launcher
+import org.slf4j.LoggerFactory
+import java.io.File
 import java.io.IOException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
@@ -29,8 +32,12 @@ class GitLabLanguageServerProcessProvider(
   }
 
   private val logger = logger<GitLabLanguageServerProcessProvider>()
+  private val languageServerLogger = LoggerFactory.getLogger("com.gitlab.eclipse.lsp")
+
   private var process: Process? = null
   private var processListener: Future<Void>? = null
+
+  private var pullStdErrLogsExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
   fun start() {
     val languageServerInstallationPath = languageServerInstaller.install()
@@ -46,6 +53,10 @@ class GitLabLanguageServerProcessProvider(
     process?.onExit()?.thenApply {
       logger.info("Language Server exited.")
       process = null
+    }
+
+    if (!BuildConfig.IS_EQUO_IDE) {
+      process?.pullStdErrLogs()
     }
 
     val languageServerProxy = Launcher.Builder<GitLabLanguageServer>()
@@ -82,6 +93,7 @@ class GitLabLanguageServerProcessProvider(
 
     processListener?.cancel(true)
 
+    pullStdErrLogsExecutor.shutdownNow()
     process?.destroy()
     process = null
   }
@@ -89,24 +101,27 @@ class GitLabLanguageServerProcessProvider(
   private fun createProcessBuilder(path: String): ProcessBuilder {
     val builder = ProcessBuilder(path, "--stdio")
 
-    if (!BuildConfig.IS_EQUO_IDE) {
-      val metadataDirectory = Platform.getLogFileLocation().toFile().parentFile
-        ?: return builder
-
-      val lsLogFile = metadataDirectory.resolve("language-server.log")
-
-      if (!lsLogFile.exists()) {
-        lsLogFile.createNewFile()
-      }
-
-      builder.redirectError(ProcessBuilder.Redirect.appendTo(lsLogFile))
-      logger.info("Language server logs saved to: ${lsLogFile.absolutePath}.")
-    } else {
+    if (BuildConfig.IS_EQUO_IDE) {
       builder.redirectError(ProcessBuilder.Redirect.INHERIT)
     }
 
     builder.injectHttpProxyEnvironmentVariables()
     return builder
+  }
+
+  private fun Process.pullStdErrLogs() {
+    logger.info("Language server logs saved to: ${File(".gitlab_plugin/language_server.log").absolutePath}.")
+
+    pullStdErrLogsExecutor = Executors.newSingleThreadExecutor().apply {
+      execute {
+        while (isAlive) {
+          val stderrLine = errorReader().readLine()
+          if (stderrLine != null) {
+            languageServerLogger.info(stderrLine)
+          }
+        }
+      }
+    }
   }
 
   private fun getInitializationOptions() = InitializeParams().apply {

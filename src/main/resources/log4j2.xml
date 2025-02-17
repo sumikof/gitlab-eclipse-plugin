@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration xmlns="https://logging.apache.org/xml/ns"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:schemaLocation="
+                   https://logging.apache.org/xml/ns
+                   https://logging.apache.org/xml/ns/log4j-config-2.xsd">
+    <Appenders>
+        <!--
+            The fileName is mentioned in a log that gives a hint of the log file location in
+            main/kotlin/com/gitlab/eclipse/lsp/GitLabLanguageServerProcessProvider.kt
+
+            The log must be updated as well if the fileName property changes.
+         -->
+        <RollingFile name="GitLabLanguageServerLogs"
+                     fileName=".gitlab_plugin/language_server.log"
+                     filePattern=".gitlab_plugin/language_server_%i.log">
+            <PatternLayout pattern="%msg%n"/> <!-- Language server logs are already formatted -->
+            <Policies>
+                <SizeBasedTriggeringPolicy size="20MB"/> <!-- ~100k lines of logs -->
+            </Policies>
+            <DefaultRolloverStrategy max="1"/>
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <Logger name="com.gitlab.eclipse.lsp" level="INFO">
+            <AppenderRef ref="GitLabLanguageServerLogs"/>
+        </Logger>
+        <Root level="ERROR" />
+    </Loggers>
+</Configuration>
