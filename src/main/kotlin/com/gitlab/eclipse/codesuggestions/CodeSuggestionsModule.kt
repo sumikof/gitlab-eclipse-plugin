@@ -4,6 +4,10 @@ import org.koin.dsl.module
 
 val codeSuggestionsModule = module {
   single {
-    CodeSuggestionsSession(get())
+    CodeSuggestionsManager(get()) {
+      get<CodeSuggestionsSession>()
+    }
   }
+
+  factory { CodeSuggestionsSession(get()) }
 }
