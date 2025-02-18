@@ -1,7 +1,7 @@
 package com.gitlab.eclipse.lsp.webview
 
-import com.gitlab.eclipse.utils.ThemeUtils.isDarkTheme
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.utils.theming.ThemeUtils.isDarkTheme
 import org.eclipse.swt.graphics.Color
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.themes.ITheme

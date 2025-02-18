@@ -2,7 +2,7 @@ package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.inject.service
-import com.gitlab.eclipse.utils.ThemeUtils
+import com.gitlab.eclipse.utils.theming.ThemeUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.ui.commands.IElementUpdater

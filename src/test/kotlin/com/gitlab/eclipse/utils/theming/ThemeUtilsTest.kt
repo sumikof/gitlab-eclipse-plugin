@@ -1,6 +1,6 @@
-package com.gitlab.eclipse.utils
+package com.gitlab.eclipse.utils.theming
 
-import com.gitlab.eclipse.utils.ThemeUtils.isDarkTheme
+import com.gitlab.eclipse.utils.theming.ThemeUtils.isDarkTheme
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
