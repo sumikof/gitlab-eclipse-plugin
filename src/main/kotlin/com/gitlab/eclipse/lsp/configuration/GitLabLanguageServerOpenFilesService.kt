@@ -134,7 +134,7 @@ private class WindowListener(
   }
 
   override fun windowClosed(window: IWorkbenchWindow) {
-    window.activePage.removePartListener(partListener)
+    window.activePage?.removePartListener(partListener)
   }
 
   override fun windowActivated(p0: IWorkbenchWindow?) = Unit
