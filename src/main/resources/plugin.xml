@@ -21,6 +21,10 @@
         <sourceProvider provider="com.gitlab.eclipse.chat.DuoChatStateService">
             <variable name="duo_chat_enabled" priorityLevel="workbench"/>
         </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.utils.theming.ThemeSourceProvider">
+            <variable name="theme_tone" priorityLevel="workbench"/>
+        </sourceProvider>
     </extension>
 
     <extension point="org.eclipse.ui.preferencePages">
@@ -97,16 +101,41 @@
     <extension point="org.eclipse.ui.menus">
         <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?endof">
             <toolbar id="com.gitlab.eclipse.toolbar">
-                <dynamic
-                        id="com.gitlab.eclipse.toolbar.duo-chat.contribution"
-                        class="com.gitlab.eclipse.chat.toolbar.DuoChatToolbarContribution"
+                <command
+                        id="com.gitlab.eclipse.toolbar"
+                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                        icon="icons/light/chaton_obj.png"
+                        tooltip="GitLab Duo Chat"
                 >
                     <visibleWhen checkEnabled="false">
-                        <with variable="duo_chat_enabled">
-                            <equals value="true"/>
-                        </with>
+                        <and>
+                            <with variable="duo_chat_enabled">
+                                <equals value="true"/>
+                            </with>
+                            <with variable="theme_tone">
+                                <equals value="dark"/>
+                            </with>
+                        </and>
                     </visibleWhen>
-                </dynamic>
+                </command>
+
+                <command
+                        id="com.gitlab.eclipse.toolbar"
+                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                        icon="icons/dark/chaton_obj.png"
+                        tooltip="GitLab Duo Chat"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <and>
+                            <with variable="duo_chat_enabled">
+                                <equals value="true"/>
+                            </with>
+                            <with variable="theme_tone">
+                                <equals value="light"/>
+                            </with>
+                        </and>
+                    </visibleWhen>
+                </command>
             </toolbar>
         </menuContribution>
         <menuContribution locationURI="popup:#AbstractTextEditorContext">
@@ -114,7 +143,28 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
-                        tooltip="Open Duo Chat Window" />
+                        tooltip="Open Duo Chat Window"
+                        icon="icons/dark/chaton_obj.png"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="theme_tone">
+                            <equals value="light"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                        label="Open Chat Window"
+                        tooltip="Open Duo Chat Window"
+                        icon="icons/light/chaton_obj.png"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="theme_tone">
+                            <equals value="dark"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"

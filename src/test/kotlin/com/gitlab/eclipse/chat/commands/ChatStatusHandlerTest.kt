@@ -2,7 +2,7 @@ package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
-import com.gitlab.eclipse.utils.ThemeUtils
+import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
 import org.eclipse.jface.resource.ImageDescriptor
