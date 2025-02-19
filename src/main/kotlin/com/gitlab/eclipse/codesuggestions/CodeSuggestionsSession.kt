@@ -27,16 +27,14 @@ internal class CodeSuggestionsSession(
     codeSuggestionsRenderer = CodeSuggestionsRenderer(
       textWidget,
       textWidget.caretOffset,
-      "Ghost Suggestion\nSecond line of ghost suggestion!\n${LocalTime.now().format(timeFormatter)}"
+      LocalTime.now().format(timeFormatter)
     )
 
     job = coroutineScope.launch {
       while (isActive) {
         if (!textWidget.isDisposed) {
           textWidget.display.asyncExec {
-            codeSuggestionsRenderer?.update(
-              "Ghost Suggestion\nSecond line of ghost suggestion!\n${LocalTime.now().format(timeFormatter)}"
-            )
+            codeSuggestionsRenderer?.update(LocalTime.now().format(timeFormatter))
           }
         }
 
