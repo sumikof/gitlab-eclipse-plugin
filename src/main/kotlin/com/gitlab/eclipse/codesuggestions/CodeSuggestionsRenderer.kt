@@ -1,9 +1,11 @@
 package com.gitlab.eclipse.codesuggestions
 
+import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
 import org.eclipse.swt.graphics.Color
+import org.eclipse.swt.graphics.GlyphMetrics
 
 class CodeSuggestionsRenderer(
   private val textWidget: StyledText,
@@ -23,20 +25,54 @@ class CodeSuggestionsRenderer(
   override fun paintControl(paintEvent: PaintEvent) {
     val lines = text.lines()
 
-    renderSuffix(lines, paintEvent)
+    if (textWidget.isEndOfLine(offset)) {
+      renderSuffix(lines, paintEvent)
+    } else {
+      renderInline(lines, paintEvent)
+    }
+
     if (lines.size > 1) {
       renderBlock(lines.drop(1), paintEvent)
     }
   }
 
-  private fun renderSuffix(lines: List<String>, paintEvent: PaintEvent) {
-    val suffix = lines.firstOrNull() ?: return
+  private fun renderInline(lines: List<String>, paintEvent: PaintEvent) {
+    val inline = lines.firstOrNull() ?: return
+
+    val character = textWidget.getText(offset, offset)
+    val characterBounds = textWidget.getTextBounds(offset, offset)
+    val characterStyle = textWidget.getStyleRangeAtOffset(offset)
+
+    textWidget.setStyleRange(
+      StyleRange().apply {
+        start = offset
+        length = 1
+        foreground = characterStyle.foreground
+        metrics = GlyphMetrics(
+          paintEvent.gc.fontMetrics.ascent,
+          paintEvent.gc.fontMetrics.descent,
+          paintEvent.gc.stringExtent(inline).x + paintEvent.gc.stringExtent(character).x
+        )
+      }
+    )
 
     val caretPos = textWidget.getLocationAtOffset(offset)
+    paintEvent.gc.font = textWidget.font
+    paintEvent.gc.foreground = ghostColor
+    paintEvent.gc.drawString(inline, caretPos.x, caretPos.y, true)
+
+    // Redraw the extended character because GlyphMetrics clips it.
+    paintEvent.gc.foreground = characterStyle.foreground ?: textWidget.foreground
+    paintEvent.gc.drawString(character, paintEvent.gc.stringExtent(inline).x + characterBounds.x, caretPos.y, true)
+  }
+
+  private fun renderSuffix(lines: List<String>, paintEvent: PaintEvent) {
+    val suffix = lines.firstOrNull() ?: return
 
     paintEvent.gc.font = textWidget.font
     paintEvent.gc.foreground = ghostColor
 
+    val caretPos = textWidget.getLocationAtOffset(offset)
     paintEvent.gc.drawString(suffix, caretPos.x, caretPos.y, true)
   }
 
@@ -69,5 +105,12 @@ class CodeSuggestionsRenderer(
   private fun resetVerticalIndent() {
     lineWithVerticalIndent?.let { textWidget.setLineVerticalIndent(it, 0) }
     lineWithVerticalIndent = null
+  }
+
+  private fun StyledText.isEndOfLine(offset: Int): Boolean {
+    val line = textWidget.getLineAtOffset(offset)
+    val lineEndOffset = textWidget.getOffsetAtLine(line) + textWidget.getLine(line).length
+
+    return offset == lineEndOffset
   }
 }
