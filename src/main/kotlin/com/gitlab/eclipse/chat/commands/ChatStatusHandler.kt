@@ -19,10 +19,10 @@ class ChatStatusHandler : AbstractHandler(), IElementUpdater {
     val engagedCheck = service.getFirstEngagedCheck()
     if (engagedCheck == null) {
       element.setText("Duo Chat: Enabled")
-      element.setIcon(ThemeUtils.getThemedIcon("chaton_obj"))
+      element.setIcon(ThemeUtils.getThemedIcon("chat_on_obj"))
     } else {
       element.setText("Duo Chat: Disabled (${engagedCheck.checkId})")
-      element.setIcon(ThemeUtils.getThemedIcon("chatoff_obj"))
+      element.setIcon(ThemeUtils.getThemedIcon("chat_off_obj"))
     }
   }
 }

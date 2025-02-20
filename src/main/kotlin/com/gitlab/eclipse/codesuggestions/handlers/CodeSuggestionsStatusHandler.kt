@@ -19,10 +19,10 @@ class CodeSuggestionsStatusHandler : AbstractHandler(), IElementUpdater {
     val engagedCheck = service.getFirstEngagedCheck()
     if (engagedCheck == null) {
       element.setText("Code Suggestions: Enabled")
-      element.setIcon(ThemeUtils.getThemedIcon("duoon_edit"))
+      element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit"))
     } else {
       element.setText("Code Suggestions: Disabled (${engagedCheck.checkId})")
-      element.setIcon(ThemeUtils.getThemedIcon("duooff_edit"))
+      element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit"))
     }
   }
 }
