@@ -1,5 +1,8 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
+import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.*
 import org.eclipse.jface.text.ITextViewer
@@ -54,5 +57,12 @@ internal class CodeSuggestionsSession(
     } catch (e: Exception) {
       logger.error("Error disposing code suggestion session", e)
     }
+  }
+
+  private fun isEnabled(): Boolean {
+    val codeSuggestionsIsEnabled = service<CodeSuggestionsStateService>().isEnabled
+    val codeSuggestionsApiInError = service<CodeSuggestionsApiStatusService>().apiStatus.value == CodeSuggestionsApiStatusService.ApiStatus.Error
+
+    return codeSuggestionsIsEnabled && !codeSuggestionsApiInError
   }
 }
