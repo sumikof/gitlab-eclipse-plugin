@@ -96,6 +96,11 @@
                 commandId="gitlab-eclipse-plugin.commands.chatStatus"
                 class="com.gitlab.eclipse.chat.commands.ChatStatusHandler"
         />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                class="com.gitlab.eclipse.codesuggestions.handlers.CodeSuggestionsStatusHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -214,6 +219,12 @@
                     commandId="gitlab-eclipse-plugin.commands.chatStatus"
                     id="gitlab-eclipse-plugin.commands.chatStatus"
                     label="Duo Chat: Disabled">
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                    id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                    label="Code Suggestions: Disabled">
             </command>
 
             <separator name="StatusActions" visible="true"/>

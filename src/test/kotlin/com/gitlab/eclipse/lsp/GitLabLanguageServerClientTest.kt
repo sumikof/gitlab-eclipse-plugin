@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.git.GitDiffService
@@ -22,7 +23,10 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val didChangeWatchedFilesCapability = mockk<DidChangeWatchedFileCapability>(relaxUnitFun = true)
 
   val gitDiffService = mockk<GitDiffService>(relaxUnitFun = true)
+
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
+  val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
+
   val codeSuggestionsApiStatusMonitor = mockk<CodeSuggestionsApiStatusService>(relaxUnitFun = true)
   val pluginMessageService = mockk<PluginMessageService>()
 
@@ -35,6 +39,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       modules(
         module {
           single<DuoChatStateService> { duoChatStateService }
+          single<CodeSuggestionsStateService> { codeSuggestionsStateService }
           single<DidChangeWatchedFileCapability> { didChangeWatchedFilesCapability }
           single<GitDiffService> { gitDiffService }
         }
@@ -59,6 +64,17 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.gitlabFeatureStateChange(arrayOf(featureState)).join()
 
       verify { duoChatStateService.update(featureState) }
+    }
+
+    it("should update code suggestions state based on the feature state") {
+      val featureState = FeatureStateChange(
+        featureId = "code_suggestions",
+        allChecks = emptyList()
+      )
+
+      client.gitlabFeatureStateChange(arrayOf(featureState)).join()
+
+      verify { codeSuggestionsStateService.update(featureState) }
     }
   }
 

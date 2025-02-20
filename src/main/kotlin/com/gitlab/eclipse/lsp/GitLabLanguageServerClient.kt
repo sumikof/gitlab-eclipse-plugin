@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.git.GitDiffService
@@ -52,6 +53,7 @@ class GitLabLanguageServerClient(
     changes.forEach { change ->
       when (change.featureId) {
         "chat" -> service<DuoChatStateService>().update(change)
+        "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
         else -> return@forEach
       }
     }
