@@ -1,6 +1,7 @@
 package com.gitlab.eclipse
 
 import com.gitlab.eclipse.chat.chatModule
+import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
@@ -29,5 +30,6 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
 
   override fun stop(context: BundleContext) {
     service<GitLabLanguageServerProcessProvider>().stop()
+    service<CodeSuggestionsManager>().endAllSessions()
   }
 }

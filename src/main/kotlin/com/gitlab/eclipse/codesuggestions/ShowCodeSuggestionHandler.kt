@@ -1,15 +1,14 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
-import org.koin.core.component.KoinComponent
-import org.koin.core.component.inject
 
-class ShowCodeSuggestionHandler : AbstractHandler(), KoinComponent {
+class ShowCodeSuggestionHandler : AbstractHandler() {
   private val logger = logger<ShowCodeSuggestionHandler>()
-  private val codeSuggestionsManager: CodeSuggestionsManager by inject()
+  private val codeSuggestionsManager by lazyService<CodeSuggestionsManager>()
 
   override fun execute(event: ExecutionEvent?) {
     try {
