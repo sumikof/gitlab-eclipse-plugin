@@ -2,71 +2,61 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.utils.TextEditorProvider
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.IEditorReference
 import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWorkbenchPartReference
-import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.texteditor.ITextEditor
 
+@Suppress("ParameterListWrapping")
 internal class CodeSuggestionsManager(
   private val textEditorProvider: TextEditorProvider,
-  private val sessionFactory: () -> CodeSuggestionsSession // Lazily inject a CodeSuggestionsSession
+  private val createCodeSuggestionsSession: (StyledText) -> CodeSuggestionsSession // Lazily inject a CodeSuggestionsSession
 ) {
   private val logger = logger<CodeSuggestionsManager>()
   private val editorSessions = mutableMapOf<ITextEditor, CodeSuggestionsSession>()
 
-  private val partListener = object : IPartListener2 {
-    override fun partClosed(partRef: IWorkbenchPartReference) {
-      (partRef as? IEditorReference)?.getEditor(false)?.let { editor ->
-        if (editor is ITextEditor) {
-          removeSession(editor)
-        }
-      }
-    }
-  }
-
   init {
-    PlatformUI.getWorkbench()
-      .activeWorkbenchWindow
-      ?.activePage
-      ?.addPartListener(partListener)
-  }
-
-  fun startSession(): Boolean {
-    val editor = textEditorProvider.getActiveTextEditor() ?: run {
-      logger.error("No active text editor found")
-      return false
-    }
-
-    // If already running on this editor, do nothing
-    if (editorSessions.containsKey(editor)) {
-      logger.info("Code suggestions session already active for editor ${editor.title}")
-      return true
-    }
-
-    return try {
-      val session = sessionFactory()
-
-      if (session.start(editor)) {
-        editorSessions[editor] = session
-        logger.info("Successfully started code suggestions session for editor ${editor.title}")
-      } else {
-        logger.error("Failed to start code suggestions for editor ${editor.title}")
-      }
-
-      true
-    } catch (e: Exception) {
-      logger.error("Failed to start code suggestions", e)
-      false
+    textEditorProvider.getAllPages().forEach { page ->
+      page.addPartListener(
+        object : IPartListener2 {
+          override fun partClosed(partRef: IWorkbenchPartReference) {
+            val editor = (partRef as? IEditorReference)?.getEditor(false)
+            if (editor is ITextEditor) {
+              endSession(editor)
+            }
+          }
+        }
+      )
     }
   }
 
-  private fun removeSession(editor: ITextEditor) {
+  fun startSession() {
     try {
-      editorSessions.remove(editor)?.dispose()
-      logger.info("Removed code suggestions session for ${editor.title}")
+      val editor = checkNotNull(textEditorProvider.getActiveTextEditor())
+      val textWidget = checkNotNull(textEditorProvider.getActiveTextWidget())
+
+      editorSessions.getOrPut(editor) {
+        createCodeSuggestionsSession(textWidget)
+      }.start()
+
+      logger.info("Code Suggestions session started for ${editor.title}")
     } catch (e: Exception) {
-      logger.error("Error removing code suggestions session for ${editor.title}", e)
+      logger.error("Error starting a Code Suggestions session", e)
     }
+  }
+
+  private fun endSession(editor: ITextEditor) {
+    if (editorSessions.remove(editor)?.dispose() != null) {
+      logger.info("Code Suggestions session ended for ${editor.title}")
+    } else {
+      logger.info("No Code Suggestions session found for ${editor.title}")
+    }
+  }
+
+  fun endAllSessions() {
+    editorSessions.values.forEach(CodeSuggestionsSession::dispose)
+    editorSessions.clear()
+    logger.info("Ended all Code Suggestion sessions.")
   }
 }
