@@ -51,7 +51,7 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        ThemeUtils.getThemedIcon("duoon_edit")
+        ThemeUtils.getThemedIcon("duo_on_edit")
         element.setText("Code Suggestions: Enabled")
         element.setIcon(any())
       }
@@ -65,7 +65,7 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        ThemeUtils.getThemedIcon("duooff_edit")
+        ThemeUtils.getThemedIcon("duo_off_edit")
         element.setText("Code Suggestions: Disabled (authentication-required)")
         element.setIcon(any())
       }

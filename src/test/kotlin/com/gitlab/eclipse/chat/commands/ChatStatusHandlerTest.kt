@@ -45,7 +45,7 @@ class ChatStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        ThemeUtils.getThemedIcon("chaton_obj")
+        ThemeUtils.getThemedIcon("chat_on_obj")
         element.setText("Duo Chat: Enabled")
         element.setIcon(any())
       }
@@ -59,7 +59,7 @@ class ChatStatusHandlerTest : DescribeSpec({
       handler.updateElement(element, mutableMapOf())
 
       verify {
-        ThemeUtils.getThemedIcon("chatoff_obj")
+        ThemeUtils.getThemedIcon("chat_off_obj")
         element.setText("Duo Chat: Disabled (authentication-required)")
         element.setIcon(any())
       }

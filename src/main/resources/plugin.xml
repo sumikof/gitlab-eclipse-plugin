@@ -109,7 +109,7 @@
                 <command
                         id="com.gitlab.eclipse.toolbar"
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
-                        icon="icons/light/chaton_obj.png"
+                        icon="icons/light/chat_on_obj.png"
                         tooltip="GitLab Duo Chat"
                 >
                     <visibleWhen checkEnabled="false">
@@ -127,7 +127,7 @@
                 <command
                         id="com.gitlab.eclipse.toolbar"
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
-                        icon="icons/dark/chaton_obj.png"
+                        icon="icons/dark/chat_on_obj.png"
                         tooltip="GitLab Duo Chat"
                 >
                     <visibleWhen checkEnabled="false">
@@ -149,7 +149,7 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
                         tooltip="Open Duo Chat Window"
-                        icon="icons/dark/chaton_obj.png"
+                        icon="icons/dark/chat_on_obj.png"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="theme_tone">
@@ -162,7 +162,7 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                         label="Open Chat Window"
                         tooltip="Open Duo Chat Window"
-                        icon="icons/light/chaton_obj.png"
+                        icon="icons/light/chat_on_obj.png"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="theme_tone">
