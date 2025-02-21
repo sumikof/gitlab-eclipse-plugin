@@ -7,7 +7,7 @@ import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.texteditor.ITextEditor
 
-class TextEditorProvider {
+class PlatformUtils {
   fun getAllPages() = PlatformUI.getWorkbench().workbenchWindows.flatMap { it.pages.toList() }
 
   fun getActiveTextWidget(): StyledText? = getActiveTextEditor()?.getAdapter(ITextViewer::class.java)?.textWidget
