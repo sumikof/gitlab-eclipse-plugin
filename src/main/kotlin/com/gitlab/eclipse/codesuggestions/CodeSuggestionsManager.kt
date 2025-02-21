@@ -36,21 +36,31 @@ internal class CodeSuggestionsManager(
       val editor = checkNotNull(platformUtils.getActiveTextEditor())
       val textWidget = checkNotNull(platformUtils.getActiveTextWidget())
 
-      editorSessions.getOrPut(editor) {
-        createCodeSuggestionsSession(textWidget)
-      }.start()
+      if (!editorSessions.contains(editor)) {
+        val newSession = createCodeSuggestionsSession(textWidget)
+        editorSessions.put(editor, newSession)
+        newSession.start()
+      }
 
-      logger.info("Code Suggestions session started for ${editor.title}")
+      logger.info("Code Suggestions session started for ${editor.title}.")
     } catch (e: Exception) {
       logger.error("Error starting a Code Suggestions session", e)
     }
   }
 
+  fun cancelCodeSuggestion() {
+    val editor = platformUtils.getActiveTextEditor()
+      ?: return
+
+    editorSessions[editor]?.cancelCodeSuggestion()
+    logger.info("Code Suggestions session cancelled for ${editor.title}.")
+  }
+
   private fun endSession(editor: ITextEditor) {
     if (editorSessions.remove(editor)?.dispose() != null) {
-      logger.info("Code Suggestions session ended for ${editor.title}")
+      logger.info("Code Suggestions session ended for ${editor.title}.")
     } else {
-      logger.info("No Code Suggestions session found for ${editor.title}")
+      logger.info("No Code Suggestions session found for ${editor.title}.")
     }
   }
 

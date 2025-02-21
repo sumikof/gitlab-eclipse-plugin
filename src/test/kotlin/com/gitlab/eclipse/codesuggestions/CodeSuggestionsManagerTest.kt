@@ -54,6 +54,16 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
     }
 
+    it("should not start a new Code Suggestion session for an editor if it already has a session") {
+      every { textEditor.title } returns "Test Editor"
+      val manager = CodeSuggestionsManager(platformUtils) { session }
+
+      manager.startSession()
+      manager.startSession()
+
+      verify(exactly = 1) { session.start() }
+    }
+
     it("should end the Code Suggestion session when editor is closed") {
       val manager = CodeSuggestionsManager(platformUtils) { session }
       manager.startSession()
@@ -94,6 +104,16 @@ class CodeSuggestionsManagerTest : DescribeSpec({
           session.dispose()
         }
       }
+    }
+
+    it("should cancel a code suggestion for the active editor") {
+      every { textEditor.title } returns "Test Editor"
+      val manager = CodeSuggestionsManager(platformUtils) { session }
+      manager.startSession()
+
+      manager.cancelCodeSuggestion()
+
+      verify { session.cancelCodeSuggestion() }
     }
   }
 })
