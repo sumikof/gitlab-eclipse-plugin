@@ -5,26 +5,39 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.custom.StyledText
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
 
 @Suppress("MagicNumber")
-internal class CodeSuggestionsSession(private val textWidget: StyledText) {
-  private val logger = logger<CodeSuggestionsSession>()
+internal class CodeSuggestionsSession(
+  private val textWidget: StyledText,
+  private val codeSuggestionsProvider: CodeSuggestionsProvider,
+) {
+  private val logger by lazy { logger<CodeSuggestionsSession>() }
 
-  private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
   private var codeSuggestionsRenderer: CodeSuggestionsRenderer? = null
 
   fun start() {
     try {
-      // This demos the suggestion being displayed.
+      // TODO: Implement the session creation
+    } catch (e: Exception) {
+      logger.error("Error starting code suggestion session.", e)
+    }
+  }
+
+  fun requestCodeSuggestion() {
+    try {
+      if (!isEnabled()) {
+        return
+      }
+
+      clear()
+
       codeSuggestionsRenderer = CodeSuggestionsRenderer(
         textWidget,
         textWidget.caretOffset,
-        "${LocalTime.now().format(timeFormatter)}\nHello"
+        codeSuggestionsProvider.provide()
       )
     } catch (e: Exception) {
-      logger.error("Error starting code suggestion session.", e)
+      logger.error("Error requesting code suggestion.", e)
     }
   }
 

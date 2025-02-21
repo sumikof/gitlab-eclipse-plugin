@@ -11,7 +11,7 @@ import org.eclipse.ui.texteditor.ITextEditor
 @Suppress("ParameterListWrapping")
 internal class CodeSuggestionsManager(
   private val platformUtils: PlatformUtils,
-  private val createCodeSuggestionsSession: (StyledText) -> CodeSuggestionsSession // Lazily inject a CodeSuggestionsSession
+  private val createCodeSuggestionsSession: (StyledText) -> CodeSuggestionsSession
 ) {
   private val logger = logger<CodeSuggestionsManager>()
   private val editorSessions = mutableMapOf<ITextEditor, CodeSuggestionsSession>()
@@ -34,18 +34,34 @@ internal class CodeSuggestionsManager(
   fun startSession() {
     try {
       val editor = checkNotNull(platformUtils.getActiveTextEditor())
-      val textWidget = checkNotNull(platformUtils.getActiveTextWidget())
 
       if (!editorSessions.contains(editor)) {
-        val newSession = createCodeSuggestionsSession(textWidget)
-        editorSessions.put(editor, newSession)
-        newSession.start()
+        startSession(editor)
       }
-
-      logger.info("Code Suggestions session started for ${editor.title}.")
     } catch (e: Exception) {
       logger.error("Error starting a Code Suggestions session", e)
     }
+  }
+
+  private fun startSession(editor: ITextEditor) {
+    val textWidget = checkNotNull(platformUtils.getActiveTextWidget())
+
+    val newSession = createCodeSuggestionsSession(textWidget)
+    editorSessions.put(editor, newSession)
+    newSession.start()
+
+    logger.info("Code Suggestions session started for ${editor.title}.")
+  }
+
+  fun requestCodeSuggestion() {
+    val editor = platformUtils.getActiveTextEditor()
+      ?: return
+
+    if (!editorSessions.contains(editor)) {
+      startSession(editor)
+    }
+
+    editorSessions[editor]?.requestCodeSuggestion()
   }
 
   fun cancelCodeSuggestion() {

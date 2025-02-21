@@ -6,15 +6,15 @@ import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 
-class ShowCodeSuggestionHandler : AbstractHandler() {
-  private val logger = logger<ShowCodeSuggestionHandler>()
+class RequestCodeSuggestionHandler : AbstractHandler() {
+  private val logger = logger<RequestCodeSuggestionHandler>()
   private val codeSuggestionsManager by lazyService<CodeSuggestionsManager>()
 
   override fun execute(event: ExecutionEvent?) {
     try {
-      codeSuggestionsManager.startSession()
+      codeSuggestionsManager.requestCodeSuggestion()
     } catch (e: Exception) {
-      logger.error("ShowCodeSuggestionHandler execution failed.", e)
+      logger.error("Failed to request a code suggestion.", e)
     }
   }
 

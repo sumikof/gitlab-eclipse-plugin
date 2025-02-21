@@ -25,6 +25,7 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     every { platformUtils.getActiveTextEditor() } returns textEditor
     every { platformUtils.getActiveTextWidget() } returns textWidget
     every { editorRef.getEditor(false) } returns textEditor
+    every { textEditor.title } returns "Test Editor"
   }
 
   afterEach {
@@ -42,8 +43,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should start a Code Suggestion session for the active editor") {
-      every { textEditor.title } returns "Test Editor"
-
       val manager = CodeSuggestionsManager(platformUtils) { session }
       manager.startSession()
 
@@ -55,7 +54,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should not start a new Code Suggestion session for an editor if it already has a session") {
-      every { textEditor.title } returns "Test Editor"
       val manager = CodeSuggestionsManager(platformUtils) { session }
 
       manager.startSession()
@@ -107,13 +105,32 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should cancel a code suggestion for the active editor") {
-      every { textEditor.title } returns "Test Editor"
       val manager = CodeSuggestionsManager(platformUtils) { session }
       manager.startSession()
 
       manager.cancelCodeSuggestion()
 
       verify { session.cancelCodeSuggestion() }
+    }
+
+    it("should request a code suggestion for an editor with an active session") {
+      val manager = CodeSuggestionsManager(platformUtils) { session }
+      manager.startSession()
+
+      manager.requestCodeSuggestion()
+
+      verify { session.requestCodeSuggestion() }
+    }
+
+    it("should start a session when requesting a code suggestion for an editor without an active session") {
+      val manager = CodeSuggestionsManager(platformUtils) { session }
+
+      manager.requestCodeSuggestion()
+
+      verify {
+        session.start()
+        session.requestCodeSuggestion()
+      }
     }
   }
 })
