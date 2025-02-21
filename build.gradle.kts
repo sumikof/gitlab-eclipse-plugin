@@ -30,7 +30,7 @@ plugins {
   // Support resolving Eclipse plug-ins as Maven dependencies.
   id("dev.equo.p2deps") version "1.7.8"
 
-  id("io.gitlab.arturbosch.detekt") version "1.23.7"
+  id("io.gitlab.arturbosch.detekt") version "1.23.8"
 
   id("com.github.gmazzo.buildconfig") version "5.5.1"
 }
@@ -135,7 +135,7 @@ dependencies {
   testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.0")
   testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
 
-  detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
+  detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.8")
 }
 
 val eclipseRelease = "4.33"
