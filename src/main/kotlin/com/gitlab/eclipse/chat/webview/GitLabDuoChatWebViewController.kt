@@ -6,12 +6,12 @@ import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 
 class GitLabDuoChatWebViewController(
-  private val textEditorProvider: TextEditorProvider,
+  private val platformUtils: PlatformUtils,
   private val currentFileContextProvider: CurrentFileContextProvider,
   private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
   private val insertCodeSnippetService: InsertCodeSnippetService
@@ -20,7 +20,7 @@ class GitLabDuoChatWebViewController(
 
   @PluginRequest("getCurrentFileContext")
   fun getCurrentFileContext(): FileContext? {
-    val textEditor = textEditorProvider.getActiveTextEditor()
+    val textEditor = platformUtils.getActiveTextEditor()
       ?: return null
 
     return currentDisplay.syncCall<FileContext, Exception> {

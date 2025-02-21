@@ -4,7 +4,7 @@ import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.FileContext
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -13,7 +13,7 @@ import org.eclipse.swt.SwtCallable
 import org.eclipse.ui.texteditor.ITextEditor
 
 class GitLabDuoChatWebViewControllerTest : DescribeSpec({
-  val textEditorProvider = mockk<TextEditorProvider>()
+  val platformUtils = mockk<PlatformUtils>()
   val textEditor = mockk<ITextEditor>()
 
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
@@ -21,7 +21,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   val insertCodeSnippetService = mockk<InsertCodeSnippetService>(relaxUnitFun = true)
 
   val controller = GitLabDuoChatWebViewController(
-    textEditorProvider,
+    platformUtils,
     currentFileContextProvider,
     gitlabDuoChatWebViewClient,
     insertCodeSnippetService
@@ -42,7 +42,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   afterSpec { unmockkAll() }
 
   it("should return null when there is no active text editor") {
-    every { textEditorProvider.getActiveTextEditor() } returns null
+    every { platformUtils.getActiveTextEditor() } returns null
 
     val result = controller.getCurrentFileContext()
 
@@ -50,7 +50,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   }
 
   it("should return file context when there is an active text editor") {
-    every { textEditorProvider.getActiveTextEditor() } returns textEditor
+    every { platformUtils.getActiveTextEditor() } returns textEditor
     val context = FileContext(
       fileName = "test.txt",
       selectedText = "Hello, World!",

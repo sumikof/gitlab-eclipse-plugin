@@ -1,7 +1,7 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
 import org.eclipse.swt.custom.StyledText
@@ -16,14 +16,14 @@ class CodeSuggestionsManagerTest : DescribeSpec({
   val page = mockk<IWorkbenchPage>(relaxed = true)
   val textWidget = mockk<StyledText>(relaxed = true)
   val editorRef = mockk<IEditorReference>(relaxed = true)
-  val textEditorProvider = mockk<TextEditorProvider>(relaxed = true)
+  val platformUtils = mockk<PlatformUtils>(relaxed = true)
 
   extensions(LoggingKotestExtension)
 
   beforeEach {
-    every { textEditorProvider.getAllPages() } returns listOf(page)
-    every { textEditorProvider.getActiveTextEditor() } returns textEditor
-    every { textEditorProvider.getActiveTextWidget() } returns textWidget
+    every { platformUtils.getAllPages() } returns listOf(page)
+    every { platformUtils.getActiveTextEditor() } returns textEditor
+    every { platformUtils.getActiveTextWidget() } returns textWidget
     every { editorRef.getEditor(false) } returns textEditor
   }
 
@@ -33,10 +33,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
   describe("CodeSuggestionsManager") {
     it("should set up part listeners for existing pages") {
-      CodeSuggestionsManager(textEditorProvider) { session }
+      CodeSuggestionsManager(platformUtils) { session }
 
       verify {
-        textEditorProvider.getAllPages()
+        platformUtils.getAllPages()
         page.addPartListener(any<IPartListener2>())
       }
     }
@@ -44,18 +44,18 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     it("should start a Code Suggestion session for the active editor") {
       every { textEditor.title } returns "Test Editor"
 
-      val manager = CodeSuggestionsManager(textEditorProvider) { session }
+      val manager = CodeSuggestionsManager(platformUtils) { session }
       manager.startSession()
 
       verify {
-        textEditorProvider.getActiveTextEditor()
-        textEditorProvider.getActiveTextWidget()
+        platformUtils.getActiveTextEditor()
+        platformUtils.getActiveTextWidget()
         session.start()
       }
     }
 
     it("should end the Code Suggestion session when editor is closed") {
-      val manager = CodeSuggestionsManager(textEditorProvider) { session }
+      val manager = CodeSuggestionsManager(platformUtils) { session }
       manager.startSession()
 
       val partListener = slot<IPartListener2>()
@@ -77,13 +77,13 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
       var sessionIndex = 0
 
-      val manager = CodeSuggestionsManager(textEditorProvider) {
+      val manager = CodeSuggestionsManager(platformUtils) {
         sessions[sessionIndex++ % sessions.size]
       }
 
       repeat(3) {
-        every { textEditorProvider.getActiveTextEditor() } returns mockk(relaxed = true)
-        every { textEditorProvider.getActiveTextWidget() } returns mockk(relaxed = true)
+        every { platformUtils.getActiveTextEditor() } returns mockk(relaxed = true)
+        every { platformUtils.getActiveTextWidget() } returns mockk(relaxed = true)
         manager.startSession()
       }
 

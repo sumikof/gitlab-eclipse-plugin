@@ -4,7 +4,7 @@ import com.gitlab.eclipse.chat.utils.openDuoChatWindow
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NewPromptRequest
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.relativePath
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
@@ -19,7 +19,7 @@ import org.eclipse.ui.editors.text.TextEditor
 @Suppress("UnnecessaryAbstractClass")
 abstract class ChatCommandHandlerTest(
   val promptTypeUnderTest: String,
-  val createCommandHandler: (GitLabDuoChatWebViewClient, TextEditorProvider) -> ChatCommandHandler
+  val createCommandHandler: (GitLabDuoChatWebViewClient, PlatformUtils) -> ChatCommandHandler
 ) : DescribeSpec({
   val event = mockk<ExecutionEvent>()
 
@@ -29,10 +29,10 @@ abstract class ChatCommandHandlerTest(
   val document = mockk<IDocument>()
   val selection = mockk<ITextSelection>()
 
-  val textEditorProvider = mockk<TextEditorProvider>()
+  val platformUtils = mockk<PlatformUtils>()
   val gitLabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>()
 
-  val handler = createCommandHandler(gitLabDuoChatWebViewClient, textEditorProvider)
+  val handler = createCommandHandler(gitLabDuoChatWebViewClient, platformUtils)
 
   beforeSpec {
     mockkStatic("com.gitlab.eclipse.utils.FileKt")
@@ -40,7 +40,7 @@ abstract class ChatCommandHandlerTest(
   }
 
   beforeEach {
-    every { textEditorProvider.getActiveTextEditor() } returns textEditor
+    every { platformUtils.getActiveTextEditor() } returns textEditor
 
     every { textEditor.editorInput } returns editorInput
     every { editorInput.getAdapter(IFile::class.java) } returns file

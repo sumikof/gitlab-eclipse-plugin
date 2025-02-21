@@ -4,7 +4,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -14,7 +14,7 @@ import org.eclipse.lsp4j.*
 import org.eclipse.ui.*
 
 class GitLabLanguageServerOpenFilesService(
-  private val textEditorProvider: TextEditorProvider,
+  private val platformUtils: PlatformUtils,
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
   private val coroutineScope: CoroutineScope
 ) : IPartListener2, IDocumentListener {
@@ -54,7 +54,7 @@ class GitLabLanguageServerOpenFilesService(
         )
       )
 
-      textEditorProvider
+      platformUtils
         .getActiveTextEditor()
         ?.documentProvider
         ?.getDocument(editorInput)
@@ -101,7 +101,7 @@ class GitLabLanguageServerOpenFilesService(
         DidOpenTextDocumentParams(editorInput.toTextDocumentItem())
       )
 
-      textEditorProvider
+      platformUtils
         .getActiveTextEditor()
         ?.documentProvider
         ?.getDocument(editorInput)

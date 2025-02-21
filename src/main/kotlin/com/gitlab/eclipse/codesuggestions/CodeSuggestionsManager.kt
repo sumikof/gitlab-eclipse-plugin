@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.codesuggestions
 
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.IEditorReference
@@ -10,14 +10,14 @@ import org.eclipse.ui.texteditor.ITextEditor
 
 @Suppress("ParameterListWrapping")
 internal class CodeSuggestionsManager(
-  private val textEditorProvider: TextEditorProvider,
+  private val platformUtils: PlatformUtils,
   private val createCodeSuggestionsSession: (StyledText) -> CodeSuggestionsSession // Lazily inject a CodeSuggestionsSession
 ) {
   private val logger = logger<CodeSuggestionsManager>()
   private val editorSessions = mutableMapOf<ITextEditor, CodeSuggestionsSession>()
 
   init {
-    textEditorProvider.getAllPages().forEach { page ->
+    platformUtils.getAllPages().forEach { page ->
       page.addPartListener(
         object : IPartListener2 {
           override fun partClosed(partRef: IWorkbenchPartReference) {
@@ -33,8 +33,8 @@ internal class CodeSuggestionsManager(
 
   fun startSession() {
     try {
-      val editor = checkNotNull(textEditorProvider.getActiveTextEditor())
-      val textWidget = checkNotNull(textEditorProvider.getActiveTextWidget())
+      val editor = checkNotNull(platformUtils.getActiveTextEditor())
+      val textWidget = checkNotNull(platformUtils.getActiveTextWidget())
 
       editorSessions.getOrPut(editor) {
         createCodeSuggestionsSession(textWidget)

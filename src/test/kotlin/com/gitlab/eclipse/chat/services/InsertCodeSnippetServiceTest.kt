@@ -2,7 +2,7 @@ package com.gitlab.eclipse.chat.services
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.utils.CodeFormatter
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
@@ -14,10 +14,10 @@ class InsertCodeSnippetServiceTest : DescribeSpec({
   val document = mockk<IDocument>()
   val selection = mockk<ITextSelection>()
 
-  val textEditorProvider = mockk<TextEditorProvider>()
+  val platformUtils = mockk<PlatformUtils>()
   val codeFormatter = mockk<CodeFormatter>()
 
-  val insertCodeSnippetService = InsertCodeSnippetService(textEditorProvider, codeFormatter)
+  val insertCodeSnippetService = InsertCodeSnippetService(platformUtils, codeFormatter)
 
   extensions(LoggingKotestExtension)
 
@@ -26,8 +26,8 @@ class InsertCodeSnippetServiceTest : DescribeSpec({
   }
 
   beforeEach {
-    every { textEditorProvider.getActiveDocument() } returns document
-    every { textEditorProvider.getActiveSelection() } returns selection
+    every { platformUtils.getActiveDocument() } returns document
+    every { platformUtils.getActiveSelection() } returns selection
 
     every { codeFormatter.format(any()) } answers { firstArg() }
 
@@ -49,11 +49,11 @@ class InsertCodeSnippetServiceTest : DescribeSpec({
   afterSpec { unmockkAll() }
 
   it("should do nothing if there is no active document") {
-    every { textEditorProvider.getActiveDocument() } returns null
+    every { platformUtils.getActiveDocument() } returns null
 
     insertCodeSnippetService.insertCodeSnippet("print('Hello World')")
 
-    verify(exactly = 0) { textEditorProvider.getActiveSelection() }
+    verify(exactly = 0) { platformUtils.getActiveSelection() }
   }
 
   it("should replace selection and format code snippet") {
@@ -67,8 +67,8 @@ class InsertCodeSnippetServiceTest : DescribeSpec({
     insertCodeSnippetService.insertCodeSnippet(codeSnippet)
 
     verify {
-      textEditorProvider.getActiveDocument()
-      textEditorProvider.getActiveSelection()
+      platformUtils.getActiveDocument()
+      platformUtils.getActiveSelection()
       codeFormatter.format(codeSnippet)
       document.replace(0, 8, formattedSnippet)
     }
@@ -85,8 +85,8 @@ class InsertCodeSnippetServiceTest : DescribeSpec({
     insertCodeSnippetService.insertCodeSnippet(codeSnippet)
 
     verify {
-      textEditorProvider.getActiveDocument()
-      textEditorProvider.getActiveSelection()
+      platformUtils.getActiveDocument()
+      platformUtils.getActiveSelection()
       codeFormatter.format(codeSnippet)
       document.replace(10, 0, formattedSnippet)
     }

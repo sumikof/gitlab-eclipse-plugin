@@ -4,7 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
-import com.gitlab.eclipse.utils.TextEditorProvider
+import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.uri
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -34,7 +34,7 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
   val languageServer = mockk<GitLabLanguageServer>(relaxed = true)
   val gitLabLanguageServerWrapper = mockk<GitLabLanguageServerWrapper>()
 
-  val textEditorProvider = mockk<TextEditorProvider>()
+  val platformUtils = mockk<PlatformUtils>()
   val coroutineScope = TestScope(UnconfinedTestDispatcher())
 
   lateinit var service: GitLabLanguageServerOpenFilesService
@@ -69,7 +69,7 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
       }
     }
 
-    service = GitLabLanguageServerOpenFilesService(textEditorProvider, gitLabLanguageServerWrapper, coroutineScope)
+    service = GitLabLanguageServerOpenFilesService(platformUtils, gitLabLanguageServerWrapper, coroutineScope)
   }
 
   afterEach { clearAllMocks() }

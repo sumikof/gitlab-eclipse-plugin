@@ -8,17 +8,17 @@ import org.eclipse.jface.text.Document
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.ITextSelection
 
-class CodeFormatter(val textEditorProvider: TextEditorProvider) {
+class CodeFormatter(val platformUtils: PlatformUtils) {
   companion object {
     private const val DEFAULT_TAB_SIZE = 4
   }
 
   fun format(snippet: String): String {
     val selection = currentDisplay.syncCall<ITextSelection?, Exception> {
-      textEditorProvider.getActiveSelection()
+      platformUtils.getActiveSelection()
     } ?: return snippet
 
-    val document = textEditorProvider.getActiveDocument()
+    val document = platformUtils.getActiveDocument()
       ?: return snippet
 
     val startOffset = selection.startOffset()
