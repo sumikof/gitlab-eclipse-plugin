@@ -2,17 +2,33 @@
 <?eclipse version="3.4"?>
 <plugin>
     <extension point="org.eclipse.ui.commands">
+        <category name="GitLab Duo" id="gitlab-eclipse-plugin" />
+
         <command
                 id="com.gitlab.eclipse.codesuggestions.showSuggestion"
                 name="Show Suggestion"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+                name="Cancel Suggestion"
+                categoryId="gitlab-eclipse-plugin"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.bindings">
         <key
                 sequence="M1+."
                 commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="ESC"
+                commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+                contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
     </extension>
@@ -52,6 +68,11 @@
     </extension>
 
     <extension point="org.eclipse.ui.handlers">
+        <handler
+            class="com.gitlab.eclipse.codesuggestions.handlers.CancelCodeSuggestionsHandler"
+            commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+        />
+
         <handler
                 class="com.gitlab.eclipse.codesuggestions.ShowCodeSuggestionHandler"
                 commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"

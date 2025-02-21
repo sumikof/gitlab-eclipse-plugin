@@ -18,9 +18,11 @@ class CodeSuggestionsRenderer(
 
   init {
     textWidget.addPaintListener(this)
+    textWidget.redraw()
   }
 
-  var lineWithVerticalIndent: Int? = null
+  var suggestionCharacterStyle: StyleRange? = null
+  var suggestionLine: Int? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
     val lines = text.lines()
@@ -41,13 +43,16 @@ class CodeSuggestionsRenderer(
 
     val character = textWidget.getText(offset, offset)
     val characterBounds = textWidget.getTextBounds(offset, offset)
-    val characterStyle = textWidget.getStyleRangeAtOffset(offset)
+
+    if (suggestionCharacterStyle == null) {
+      suggestionCharacterStyle = textWidget.getStyleRangeAtOffset(offset)
+    }
 
     textWidget.setStyleRange(
       StyleRange().apply {
         start = offset
         length = 1
-        foreground = characterStyle.foreground
+        foreground = suggestionCharacterStyle?.foreground
         metrics = GlyphMetrics(
           paintEvent.gc.fontMetrics.ascent,
           paintEvent.gc.fontMetrics.descent,
@@ -62,7 +67,7 @@ class CodeSuggestionsRenderer(
     paintEvent.gc.drawString(inline, caretPos.x, caretPos.y, true)
 
     // Redraw the extended character because GlyphMetrics clips it.
-    paintEvent.gc.foreground = characterStyle.foreground ?: textWidget.foreground
+    paintEvent.gc.foreground = suggestionCharacterStyle?.foreground ?: textWidget.foreground
     paintEvent.gc.drawString(character, paintEvent.gc.stringExtent(inline).x + characterBounds.x, caretPos.y, true)
   }
 
@@ -83,6 +88,7 @@ class CodeSuggestionsRenderer(
     if (currentLine != textWidget.lineCount - 1) {
       val adjustedLine = currentLine + 1
       textWidget.setLineVerticalIndent(adjustedLine, lines.size * textWidget.lineHeight)
+      suggestionLine = adjustedLine
     }
 
     lines.forEachIndexed { index, line ->
@@ -94,17 +100,20 @@ class CodeSuggestionsRenderer(
 
   fun dispose() {
     textWidget.removePaintListener(this)
-    resetVerticalIndent()
+
+    suggestionLine?.let { textWidget.setLineVerticalIndent(it, 0) }
+    suggestionLine = null
+
+    suggestionCharacterStyle?.let { textWidget.setStyleRange(it) }
+    suggestionCharacterStyle = null
+
+    textWidget.redraw()
   }
 
   fun update(newText: String) {
     text = newText
-    textWidget.redraw()
-  }
 
-  private fun resetVerticalIndent() {
-    lineWithVerticalIndent?.let { textWidget.setLineVerticalIndent(it, 0) }
-    lineWithVerticalIndent = null
+    textWidget.redraw()
   }
 
   private fun StyledText.isEndOfLine(offset: Int): Boolean {
