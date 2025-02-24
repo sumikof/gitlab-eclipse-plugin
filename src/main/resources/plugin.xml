@@ -5,8 +5,8 @@
         <category name="GitLab Duo" id="gitlab-eclipse-plugin" />
 
         <command
-                id="com.gitlab.eclipse.codesuggestions.showSuggestion"
-                name="Show Suggestion"
+                id="com.gitlab.eclipse.codesuggestions.requestSuggestion"
+                name="Request Suggestion"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
@@ -20,7 +20,7 @@
     <extension point="org.eclipse.ui.bindings">
         <key
                 sequence="M1+."
-                commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"
+                commandId="com.gitlab.eclipse.codesuggestions.requestSuggestion"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -74,8 +74,8 @@
         />
 
         <handler
-                class="com.gitlab.eclipse.codesuggestions.ShowCodeSuggestionHandler"
-                commandId="com.gitlab.eclipse.codesuggestions.showSuggestion"
+                class="com.gitlab.eclipse.codesuggestions.RequestCodeSuggestionHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.requestSuggestion"
         />
 
         <handler

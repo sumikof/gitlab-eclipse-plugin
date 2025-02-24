@@ -13,8 +13,10 @@ val codeSuggestionsModule = module {
     }
   }
 
+  single<CodeSuggestionsProvider> { CodeSuggestionsProvider() }
+
   factory<CodeSuggestionsSession> { (textWidget: StyledText) ->
-    CodeSuggestionsSession(textWidget)
+    CodeSuggestionsSession(textWidget, get())
   }
 
   single<CodeSuggestionsStateService> { CodeSuggestionsStateService() }
