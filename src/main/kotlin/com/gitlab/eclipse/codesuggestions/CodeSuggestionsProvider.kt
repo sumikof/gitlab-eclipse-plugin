@@ -6,5 +6,7 @@ import java.time.format.DateTimeFormatter
 class CodeSuggestionsProvider {
   private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
-  fun provide(): String = timeFormatter.format(LocalTime.now())
+  private var counter = 1
+
+  fun provide(): String = "Req#${counter++} ${timeFormatter.format(LocalTime.now())}"
 }

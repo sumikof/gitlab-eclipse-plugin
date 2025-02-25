@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
@@ -9,32 +10,39 @@ import org.eclipse.swt.graphics.GlyphMetrics
 
 class CodeSuggestionsRenderer(
   private val textWidget: StyledText,
-  private val offset: Int,
-  private var text: String,
 ) : PaintListener {
+  private val logger by lazy { logger<CodeSuggestionsRenderer>() }
+
   companion object {
     private val ghostColor = Color(128, 128, 128)
   }
 
   init {
     textWidget.addPaintListener(this)
-    textWidget.redraw()
   }
 
-  var suggestionCharacterStyle: StyleRange? = null
-  var suggestionLine: Int? = null
+  private var offset: Int = -1
+  private var text: String? = null
+
+  private var suggestionCharacterStyle: StyleRange? = null
+  private var suggestionLine: Int? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
-    val lines = text.lines()
+    try {
+      val lines = text?.lines()
+        ?: return
 
-    if (textWidget.isEndOfLine(offset)) {
-      renderSuffix(lines, paintEvent)
-    } else {
-      renderInline(lines, paintEvent)
-    }
+      if (isEndOfLine(offset)) {
+        renderSuffix(lines, paintEvent)
+      } else {
+        renderInline(lines, paintEvent)
+      }
 
-    if (lines.size > 1) {
-      renderBlock(lines.drop(1), paintEvent)
+      if (lines.size > 1) {
+        renderBlock(lines.drop(1), paintEvent)
+      }
+    } catch (e: Exception) {
+      logger.error("Error rendering code suggestion.", e)
     }
   }
 
@@ -98,8 +106,21 @@ class CodeSuggestionsRenderer(
     }
   }
 
+  fun display(text: String, offset: Int) {
+    this.text = text
+    this.offset = offset
+
+    textWidget.redraw()
+  }
+
   fun dispose() {
     textWidget.removePaintListener(this)
+    clear()
+  }
+
+  fun clear() {
+    text = null
+    offset = -1
 
     suggestionLine?.let { textWidget.setLineVerticalIndent(it, 0) }
     suggestionLine = null
@@ -110,13 +131,7 @@ class CodeSuggestionsRenderer(
     textWidget.redraw()
   }
 
-  fun update(newText: String) {
-    text = newText
-
-    textWidget.redraw()
-  }
-
-  private fun StyledText.isEndOfLine(offset: Int): Boolean {
+  private fun isEndOfLine(offset: Int): Boolean {
     val line = textWidget.getLineAtOffset(offset)
     val lineEndOffset = textWidget.getOffsetAtLine(line) + textWidget.getLine(line).length
 
