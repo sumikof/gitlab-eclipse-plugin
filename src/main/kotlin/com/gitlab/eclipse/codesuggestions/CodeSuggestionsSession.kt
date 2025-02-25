@@ -4,38 +4,70 @@ import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.jface.text.DocumentEvent
+import org.eclipse.jface.text.IDocument
+import org.eclipse.jface.text.IDocumentListener
+import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
+import org.eclipse.swt.events.KeyEvent
+import org.eclipse.swt.events.KeyListener
 
-@Suppress("MagicNumber")
+@Suppress("MagicNumber", "EmptyFunctionBlock")
 internal class CodeSuggestionsSession(
   private val textWidget: StyledText,
+  private val document: IDocument,
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
-) {
+  private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
+) : IDocumentListener, KeyListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
-  private var codeSuggestionsRenderer: CodeSuggestionsRenderer? = null
+  private var isFilteredKeyPress = false
 
-  fun start() {
+  override fun documentAboutToBeChanged(event: DocumentEvent) {
+    codeSuggestionsRenderer.clear()
+  }
+
+  override fun documentChanged(event: DocumentEvent) {
+    if (isFilteredKeyPress) {
+      return
+    }
+
+    requestCodeSuggestion(event.offset + event.text.length)
+  }
+
+  override fun keyReleased(e: KeyEvent) {
+    isFilteredKeyPress = false
+  }
+
+  override fun keyPressed(e: KeyEvent) {
+    if (e.character in listOf(SWT.TAB, SWT.BS)) {
+      isFilteredKeyPress = true
+      cancelCodeSuggestion()
+    }
+  }
+
+  init {
     try {
-      // TODO: Implement the session creation
+      document.addDocumentListener(this)
+      textWidget.addKeyListener(this)
     } catch (e: Exception) {
       logger.error("Error starting code suggestion session.", e)
     }
   }
 
-  fun requestCodeSuggestion() {
+  fun requestCodeSuggestion(newOffset: Int? = null) {
+    val offset = newOffset ?: textWidget.caretOffset
+
     try {
       if (!isEnabled()) {
         return
       }
 
-      clear()
+      if (isFilteredKeyPress) {
+        return
+      }
 
-      codeSuggestionsRenderer = CodeSuggestionsRenderer(
-        textWidget,
-        textWidget.caretOffset,
-        codeSuggestionsProvider.provide()
-      )
+      codeSuggestionsRenderer.display(codeSuggestionsProvider.provide(), offset)
     } catch (e: Exception) {
       logger.error("Error requesting code suggestion.", e)
     }
@@ -43,7 +75,7 @@ internal class CodeSuggestionsSession(
 
   fun cancelCodeSuggestion() {
     try {
-      clear()
+      codeSuggestionsRenderer.clear()
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion session.", e)
     }
@@ -51,15 +83,12 @@ internal class CodeSuggestionsSession(
 
   fun dispose() {
     try {
-      clear()
+      codeSuggestionsRenderer.dispose()
+      document.removeDocumentListener(this)
+      textWidget.removeKeyListener(this)
     } catch (e: Exception) {
       logger.error("Error disposing code suggestion session.", e)
     }
-  }
-
-  private fun clear() {
-    codeSuggestionsRenderer?.dispose()
-    codeSuggestionsRenderer = null
   }
 
   private fun isEnabled(): Boolean {
