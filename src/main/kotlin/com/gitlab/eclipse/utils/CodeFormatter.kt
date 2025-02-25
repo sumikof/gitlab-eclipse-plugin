@@ -26,7 +26,7 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
 
     val trimmedSnippet = when {
       document.isLineEmpty(startOffset) -> snippet.trimStart('\n', '\t', ' ').trimEnd('\n', '\t', ' ')
-      else -> snippet.trimStart('\n', '\t', ' ')
+      else -> snippet.trimEnd('\n', '\t', ' ')
     }
 
     if (trimmedSnippet.lines().size == 1) {

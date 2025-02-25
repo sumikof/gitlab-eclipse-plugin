@@ -1,12 +1,15 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.core.runtime.Platform
 import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
 import org.eclipse.swt.graphics.Color
+import org.eclipse.swt.graphics.GC
 import org.eclipse.swt.graphics.GlyphMetrics
+import org.eclipse.swt.graphics.TextLayout
 
 class CodeSuggestionsRenderer(
   private val textWidget: StyledText,
@@ -14,15 +17,19 @@ class CodeSuggestionsRenderer(
   private val logger by lazy { logger<CodeSuggestionsRenderer>() }
 
   companion object {
-    private val ghostColor = Color(128, 128, 128)
+    private const val DEFAULT_TAB_SIZE = 4
+    private val GHOST_COLOR = Color(128, 128, 128)
   }
 
   init {
     textWidget.addPaintListener(this)
   }
 
-  private var offset: Int = -1
-  private var text: String? = null
+  var offset: Int = -1
+    private set
+
+  var text: String? = null
+    private set
 
   private var suggestionCharacterStyle: StyleRange? = null
   private var suggestionLine: Int? = null
@@ -71,7 +78,7 @@ class CodeSuggestionsRenderer(
 
     val caretPos = textWidget.getLocationAtOffset(offset)
     paintEvent.gc.font = textWidget.font
-    paintEvent.gc.foreground = ghostColor
+    paintEvent.gc.foreground = GHOST_COLOR
     paintEvent.gc.drawString(inline, caretPos.x, caretPos.y, true)
 
     // Redraw the extended character because GlyphMetrics clips it.
@@ -83,7 +90,7 @@ class CodeSuggestionsRenderer(
     val suffix = lines.firstOrNull() ?: return
 
     paintEvent.gc.font = textWidget.font
-    paintEvent.gc.foreground = ghostColor
+    paintEvent.gc.foreground = GHOST_COLOR
 
     val caretPos = textWidget.getLocationAtOffset(offset)
     paintEvent.gc.drawString(suffix, caretPos.x, caretPos.y, true)
@@ -100,9 +107,15 @@ class CodeSuggestionsRenderer(
     }
 
     lines.forEachIndexed { index, line ->
-      paintEvent.gc.font = textWidget.font
-      paintEvent.gc.foreground = ghostColor
-      paintEvent.gc.drawString(line, 0, caretPos.y + (index + 1) * textWidget.lineHeight, true)
+      val layout = TextLayout(textWidget.display).apply {
+        text = line
+        font = textWidget.font
+        tabs = intArrayOf(paintEvent.gc.tabSize)
+      }
+
+      paintEvent.gc.foreground = GHOST_COLOR
+      layout.draw(paintEvent.gc, 0, caretPos.y + (index + 1) * textWidget.lineHeight)
+      layout.dispose()
     }
   }
 
@@ -137,4 +150,17 @@ class CodeSuggestionsRenderer(
 
     return offset == lineEndOffset
   }
+
+  fun isCodeSuggestionDisplayed(): Boolean {
+    return text != null
+  }
+
+  @Suppress("MagicNumber")
+  private val GC.tabSize
+    get(): Int = stringExtent(" ").x * Platform.getPreferencesService().getInt(
+      "org.eclipse.ui.editors",
+      "tabWidth",
+      DEFAULT_TAB_SIZE,
+      null
+    )
 }

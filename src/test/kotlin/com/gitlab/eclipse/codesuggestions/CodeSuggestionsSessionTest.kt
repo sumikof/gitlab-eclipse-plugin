@@ -17,16 +17,14 @@ import org.koin.dsl.module
 
 class CodeSuggestionsSessionTest : DescribeSpec({
   val textWidget = mockk<StyledText>(relaxed = true)
-
   val document = mockk<IDocument>(relaxed = true)
 
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>(relaxed = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
   val codeSuggestionsApiStatusService = mockk<CodeSuggestionsApiStatusService>()
-
   val renderer = mockk<CodeSuggestionsRenderer>(relaxed = true)
 
-  lateinit var session: CodeSuggestionsSession
+  var session = CodeSuggestionsSession(textWidget, document, codeSuggestionsProvider, renderer)
 
   extensions(LoggingKotestExtension)
 
@@ -54,6 +52,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { document.addDocumentListener(any()) } just Runs
     every { document.removeDocumentListener(any()) } just Runs
 
+    every { renderer.isCodeSuggestionDisplayed() } returns false
     every { renderer.dispose() } just Runs
 
     session = CodeSuggestionsSession(textWidget, document, codeSuggestionsProvider, renderer)
@@ -110,6 +109,22 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     }
 
     describe("requestCodeSuggestion") {
+      it("should not request code suggestions when the feature state is enabled and API status is in error") {
+        every { codeSuggestionsApiStatusService.apiStatus.value } returns CodeSuggestionsApiStatusService.ApiStatus.Error
+
+        session.requestCodeSuggestion()
+
+        verify(exactly = 0) { codeSuggestionsProvider.provide() }
+      }
+
+      it("should not request code suggestions when the feature state is disabled") {
+        every { codeSuggestionsStateService.isEnabled } returns false
+
+        session.requestCodeSuggestion()
+
+        verify(exactly = 0) { codeSuggestionsProvider.provide() }
+      }
+
       it("should not request code suggestions when key press is filtered") {
         val keyEvent = mockk<KeyEvent>()
         keyEvent.character = SWT.TAB
@@ -118,6 +133,23 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         verify(exactly = 0) { renderer.display(any(), any()) }
+      }
+
+      it("should not request code suggestions when suggestions are already displayed") {
+        every { renderer.isCodeSuggestionDisplayed() } returns true
+
+        session.requestCodeSuggestion()
+
+        verify(exactly = 0) { codeSuggestionsProvider.provide() }
+      }
+
+      it("should request code suggestions when the feature is enabled and not in error") {
+        every { codeSuggestionsProvider.provide() } returns "Hello"
+        every { textWidget.caretOffset } returns 10
+
+        session.requestCodeSuggestion()
+
+        verify(exactly = 1) { renderer.display("Hello", 10) }
       }
 
       it("should use the caret offset when no explicit offset is provided") {

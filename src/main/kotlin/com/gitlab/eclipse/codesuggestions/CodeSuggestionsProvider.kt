@@ -1,12 +1,11 @@
 package com.gitlab.eclipse.codesuggestions
 
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
+import com.gitlab.eclipse.utils.CodeFormatter
 
-class CodeSuggestionsProvider {
-  private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
-
+class CodeSuggestionsProvider(private val codeFormatter: CodeFormatter) {
   private var counter = 1
 
-  fun provide(): String = "Req#${counter++} ${timeFormatter.format(LocalTime.now())}"
+  fun provide(): String {
+    return codeFormatter.format("System.out.println(\"${counter++}\");")
+  }
 }

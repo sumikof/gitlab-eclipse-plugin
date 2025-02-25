@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.utils.PlatformUtils
 import io.kotest.assertions.throwables.shouldNotThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.jface.text.IDocument
 import org.eclipse.swt.custom.StyledText
@@ -164,6 +165,70 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
       shouldNotThrow<Exception> {
         CodeSuggestionsManager(platformUtils) { _, _ -> session }
+      }
+    }
+
+    describe("isCodeSuggestionDisplayed") {
+      it("should return false if no active text editor is found") {
+        every { platformUtils.getActiveTextEditor() } returns null
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+
+        manager.isCodeSuggestionDisplayed() shouldBe false
+      }
+
+      it("should return false if no code suggestion session exists") {
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val newEditor = mockk<ITextEditor>(relaxed = true)
+        every { platformUtils.getActiveTextEditor() } returns newEditor
+
+        manager.isCodeSuggestionDisplayed() shouldBe false
+      }
+
+      it("should return true if there is a code suggestion displayed") {
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+
+        val partListener = slot<IPartListener2>()
+        verify { page.addPartListener(capture(partListener)) }
+        partListener.captured.partOpened(editorRef)
+
+        every { session.isCodeSuggestionDisplayed() } returns true
+
+        manager.isCodeSuggestionDisplayed() shouldBe true
+      }
+    }
+
+    describe("acceptCodeSuggestion") {
+      it("should not accept code suggestion for an editor without an active session") {
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+
+        val newEditor = mockk<ITextEditor>(relaxed = true)
+        every { platformUtils.getActiveTextEditor() } returns newEditor
+        every { newEditor.title } returns "New Editor"
+
+        manager.acceptCodeSuggestion()
+
+        verify(exactly = 0) { session.acceptCodeSuggestion() }
+      }
+
+      it("should not accept code suggestion when no active editor is found") {
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        every { platformUtils.getActiveTextEditor() } returns null
+
+        manager.acceptCodeSuggestion()
+
+        verify(exactly = 0) { session.acceptCodeSuggestion() }
+      }
+
+      it("should accept code suggestion for an editor with an active session") {
+        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+
+        val partListener = slot<IPartListener2>()
+        verify { page.addPartListener(capture(partListener)) }
+        partListener.captured.partOpened(editorRef)
+
+        manager.acceptCodeSuggestion()
+
+        verify { session.acceptCodeSuggestion() }
       }
     }
   }

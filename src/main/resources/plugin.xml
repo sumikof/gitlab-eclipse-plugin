@@ -15,6 +15,12 @@
                 name="Cancel Suggestion"
                 categoryId="gitlab-eclipse-plugin"
         />
+
+        <command
+                id="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
+                name="Accept Suggestion"
+                categoryId="gitlab-eclipse-plugin"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.bindings">
@@ -28,6 +34,13 @@
         <key
                 sequence="ESC"
                 commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="TAB"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -68,6 +81,11 @@
     </extension>
 
     <extension point="org.eclipse.ui.handlers">
+        <handler
+            class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsHandler"
+            commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
+        />
+
         <handler
             class="com.gitlab.eclipse.codesuggestions.handlers.CancelCodeSuggestionsHandler"
             commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"

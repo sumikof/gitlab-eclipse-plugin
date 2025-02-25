@@ -14,7 +14,7 @@ val codeSuggestionsModule = module {
     }
   }
 
-  single<CodeSuggestionsProvider> { CodeSuggestionsProvider() }
+  single<CodeSuggestionsProvider> { CodeSuggestionsProvider(get()) }
 
   factory<CodeSuggestionsSession> { (textWidget: StyledText, document: IDocument) ->
     CodeSuggestionsSession(

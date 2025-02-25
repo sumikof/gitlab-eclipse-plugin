@@ -32,12 +32,29 @@ internal class CodeSuggestionsManager(
     }
   }
 
+  fun acceptCodeSuggestion() {
+    val editor = platformUtils.getActiveTextEditor()
+      ?: return
+
+    editorSessions[editor]?.acceptCodeSuggestion()
+  }
+
   fun cancelCodeSuggestion() {
     val editor = platformUtils.getActiveTextEditor()
       ?: return
 
     editorSessions[editor]?.cancelCodeSuggestion()
     logger.info("Code Suggestions session cancelled for ${editor.title}.")
+  }
+
+  fun isCodeSuggestionDisplayed(): Boolean {
+    val editor = platformUtils.getActiveTextEditor()
+      ?: return false
+
+    val session = editorSessions[editor]
+      ?: return false
+
+    return session.isCodeSuggestionDisplayed()
   }
 
   fun endAllSessions() {

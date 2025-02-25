@@ -67,10 +67,25 @@ internal class CodeSuggestionsSession(
         return
       }
 
+      if (codeSuggestionsRenderer.isCodeSuggestionDisplayed()) {
+        return
+      }
+
       codeSuggestionsRenderer.display(codeSuggestionsProvider.provide(), offset)
     } catch (e: Exception) {
       logger.error("Error requesting code suggestion.", e)
     }
+  }
+
+  fun acceptCodeSuggestion() {
+    val offset = codeSuggestionsRenderer.offset
+    val text = codeSuggestionsRenderer.text
+      ?: return
+
+    codeSuggestionsRenderer.clear()
+
+    document.replace(offset, 0, text)
+    textWidget.caretOffset = offset + text.length
   }
 
   fun cancelCodeSuggestion() {
@@ -80,6 +95,8 @@ internal class CodeSuggestionsSession(
       logger.error("Error canceling code suggestion session.", e)
     }
   }
+
+  fun isCodeSuggestionDisplayed() = codeSuggestionsRenderer.isCodeSuggestionDisplayed()
 
   fun dispose() {
     try {
