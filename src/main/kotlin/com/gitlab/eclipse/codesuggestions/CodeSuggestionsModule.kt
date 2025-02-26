@@ -14,14 +14,20 @@ val codeSuggestionsModule = module {
     }
   }
 
-  single<CodeSuggestionsProvider> { CodeSuggestionsProvider(get()) }
-
   factory<CodeSuggestionsSession> { (textWidget: StyledText, document: IDocument) ->
     CodeSuggestionsSession(
       textWidget = textWidget,
       document = document,
       codeSuggestionsProvider = get(),
-      codeSuggestionsRenderer = CodeSuggestionsRenderer(textWidget)
+      codeSuggestionsRenderer = CodeSuggestionsRenderer(textWidget),
+      coroutineScope = get()
+    )
+  }
+
+  single<CodeSuggestionsProvider> {
+    CodeSuggestionsProvider(
+      gitLabLanguageServerWrapper = get(),
+      codeFormatter = get()
     )
   }
 
