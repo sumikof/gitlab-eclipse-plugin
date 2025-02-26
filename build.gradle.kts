@@ -79,6 +79,12 @@ buildConfig {
     "CODE_SUGGESTIONS_ENABLED",
     isLocalBuild
   )
+
+  buildConfigField(
+    "String",
+    "SNOWPLOW_COLLECTOR_URL",
+    "\"${if (isLocalBuild) "http://localhost:9090" else "https://snowplowprd.trx.gitlab.net" }\""
+  )
 }
 
 val arch = when (System.getProperty("os.arch")) {

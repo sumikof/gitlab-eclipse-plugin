@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.authentication.PatProvider
@@ -36,7 +37,7 @@ class GitLabLanguageServerConfigurationService(
       logLevel = preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL),
       telemetry = Telemetry(
         preferenceStore.getBoolean(TELEMETRY_ENABLED),
-        "https://snowplowprd.trx.gitlab.net"
+        BuildConfig.SNOWPLOW_COLLECTOR_URL
       ),
       token = service<PatProvider>().getToken(),
       httpAgentOptions = HttpAgentOptions(
