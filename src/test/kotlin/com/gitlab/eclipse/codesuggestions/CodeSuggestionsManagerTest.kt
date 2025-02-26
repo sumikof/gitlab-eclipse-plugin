@@ -37,6 +37,7 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
     every { editorRef.getEditor(false) } returns textEditor
     every { textEditor.title } returns "Test Editor"
+    every { textWidget.caretOffset } returns 10
   }
 
   afterEach {
