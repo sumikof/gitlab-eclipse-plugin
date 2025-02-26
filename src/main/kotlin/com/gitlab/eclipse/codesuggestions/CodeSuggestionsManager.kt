@@ -39,12 +39,12 @@ internal class CodeSuggestionsManager(
     editorSessions[editor]?.acceptCodeSuggestion()
   }
 
-  fun cancelCodeSuggestion() {
+  fun rejectCodeSuggestion() {
     val editor = platformUtils.getActiveTextEditor()
       ?: return
 
-    editorSessions[editor]?.cancelCodeSuggestion()
-    logger.info("Code Suggestions session cancelled for ${editor.title}.")
+    editorSessions[editor]?.rejectCodeSuggestion()
+    logger.info("Code Suggestions rejected for ${editor.title}.")
   }
 
   fun isCodeSuggestionDisplayed(): Boolean {

@@ -11,8 +11,8 @@
         </command>
 
         <command
-                id="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
-                name="Cancel Suggestion"
+                id="com.gitlab.eclipse.codesuggestions.rejectSuggestion"
+                name="Reject Suggestion"
                 categoryId="gitlab-eclipse-plugin"
         />
 
@@ -33,7 +33,7 @@
 
         <key
                 sequence="ESC"
-                commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+                commandId="com.gitlab.eclipse.codesuggestions.rejectSuggestion"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -87,8 +87,8 @@
         />
 
         <handler
-            class="com.gitlab.eclipse.codesuggestions.handlers.CancelCodeSuggestionsHandler"
-            commandId="com.gitlab.eclipse.codesuggestions.cancelSuggestion"
+            class="com.gitlab.eclipse.codesuggestions.handlers.RejectCodeSuggestionsHandler"
+            commandId="com.gitlab.eclipse.codesuggestions.rejectSuggestion"
         />
 
         <handler

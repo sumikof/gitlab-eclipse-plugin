@@ -123,16 +123,16 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
     }
 
-    it("should cancel a code suggestion for the active editor") {
+    it("should reject a code suggestion for the active editor") {
       val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
 
       partListener.captured.partOpened(editorRef)
-      manager.cancelCodeSuggestion()
+      manager.rejectCodeSuggestion()
 
-      verify { session.cancelCodeSuggestion() }
+      verify { session.rejectCodeSuggestion() }
     }
 
     it("should request a code suggestion for an editor with an active session") {

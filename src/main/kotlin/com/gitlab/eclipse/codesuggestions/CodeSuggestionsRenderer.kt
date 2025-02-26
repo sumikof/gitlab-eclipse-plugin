@@ -126,12 +126,22 @@ class CodeSuggestionsRenderer(
     textWidget.redraw()
   }
 
+  fun reject() {
+    clear()
+    textWidget.redraw()
+  }
+
   fun dispose() {
     textWidget.removePaintListener(this)
     clear()
+    textWidget.redraw()
   }
 
   fun clear() {
+    if (text == null) {
+      return
+    }
+
     text = null
     offset = -1
 
@@ -140,8 +150,6 @@ class CodeSuggestionsRenderer(
 
     suggestionCharacterStyle?.let { textWidget.setStyleRange(it) }
     suggestionCharacterStyle = null
-
-    textWidget.redraw()
   }
 
   private fun isEndOfLine(offset: Int): Boolean {
