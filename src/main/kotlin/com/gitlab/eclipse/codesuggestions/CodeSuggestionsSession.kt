@@ -11,45 +11,48 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.KeyEvent
 import org.eclipse.swt.events.KeyListener
+import org.eclipse.swt.events.MouseEvent
+import org.eclipse.swt.events.MouseListener
 
-@Suppress("MagicNumber", "EmptyFunctionBlock")
+@Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions")
 internal class CodeSuggestionsSession(
   private val textWidget: StyledText,
   private val document: IDocument,
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
   private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
-) : IDocumentListener, KeyListener {
-  private val logger by lazy { logger<CodeSuggestionsSession>() }
-
-  private var isFilteredKeyPress = false
-
-  override fun documentAboutToBeChanged(event: DocumentEvent) {
-    codeSuggestionsRenderer.clear()
+) : IDocumentListener, KeyListener, MouseListener {
+  companion object {
+    private val ARROW_KEYS = listOf(SWT.ARROW_RIGHT, SWT.ARROW_LEFT, SWT.ARROW_UP, SWT.ARROW_DOWN)
   }
 
+  private val logger by lazy { logger<CodeSuggestionsSession>() }
+
+  override fun documentAboutToBeChanged(event: DocumentEvent) = cancelCodeSuggestion()
+  override fun mouseDown(e: MouseEvent) = cancelCodeSuggestion()
+
   override fun documentChanged(event: DocumentEvent) {
-    if (isFilteredKeyPress) {
+    if (event.text.isEmpty()) {
       return
     }
 
     requestCodeSuggestion(event.offset + event.text.length)
   }
 
-  override fun keyReleased(e: KeyEvent) {
-    isFilteredKeyPress = false
-  }
-
   override fun keyPressed(e: KeyEvent) {
-    if (e.character in listOf(SWT.TAB, SWT.BS)) {
-      isFilteredKeyPress = true
+    if (e.keyCode in ARROW_KEYS) {
       cancelCodeSuggestion()
     }
   }
+
+  override fun keyReleased(e: KeyEvent) = Unit
+  override fun mouseDoubleClick(e: MouseEvent) = Unit
+  override fun mouseUp(e: MouseEvent) = Unit
 
   init {
     try {
       document.addDocumentListener(this)
       textWidget.addKeyListener(this)
+      textWidget.addMouseListener(this)
     } catch (e: Exception) {
       logger.error("Error starting code suggestion session.", e)
     }
@@ -60,10 +63,6 @@ internal class CodeSuggestionsSession(
 
     try {
       if (!isEnabled()) {
-        return
-      }
-
-      if (isFilteredKeyPress) {
         return
       }
 
@@ -92,7 +91,15 @@ internal class CodeSuggestionsSession(
     try {
       codeSuggestionsRenderer.clear()
     } catch (e: Exception) {
-      logger.error("Error canceling code suggestion session.", e)
+      logger.error("Error canceling code suggestion.", e)
+    }
+  }
+
+  fun rejectCodeSuggestion() {
+    try {
+      codeSuggestionsRenderer.reject()
+    } catch (e: Exception) {
+      logger.error("Error rejecting code suggestion.", e)
     }
   }
 
@@ -103,6 +110,7 @@ internal class CodeSuggestionsSession(
       codeSuggestionsRenderer.dispose()
       document.removeDocumentListener(this)
       textWidget.removeKeyListener(this)
+      textWidget.removeMouseListener(this)
     } catch (e: Exception) {
       logger.error("Error disposing code suggestion session.", e)
     }

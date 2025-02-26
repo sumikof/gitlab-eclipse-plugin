@@ -7,15 +7,15 @@ import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 
-class CancelCodeSuggestionsHandler : AbstractHandler() {
-  private val logger by lazy { logger<CancelCodeSuggestionsHandler>() }
+class RejectCodeSuggestionsHandler : AbstractHandler() {
+  private val logger by lazy { logger<RejectCodeSuggestionsHandler>() }
   private val codeSuggestionsManager by lazyService<CodeSuggestionsManager>()
 
   override fun execute(event: ExecutionEvent) {
     try {
-      codeSuggestionsManager.cancelCodeSuggestion()
+      codeSuggestionsManager.rejectCodeSuggestion()
     } catch (e: Exception) {
-      logger.error("Failed to cancel code suggestions.", e)
+      logger.error("Failed to reject code suggestions.", e)
     }
   }
 

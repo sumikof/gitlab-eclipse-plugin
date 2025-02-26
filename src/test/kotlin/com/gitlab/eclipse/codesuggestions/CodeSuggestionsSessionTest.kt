@@ -11,6 +11,7 @@ import org.eclipse.jface.text.IDocument
 import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.KeyEvent
+import org.eclipse.swt.events.MouseEvent
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -73,6 +74,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should add itself as key and document listeners during instantiation") {
         verify { document.addDocumentListener(session) }
         verify { textWidget.addKeyListener(session) }
+        verify { textWidget.addMouseListener(session) }
       }
 
       it("should handle exceptions during instantiation") {
@@ -99,12 +101,21 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify { sessionSpy.requestCodeSuggestion(8) }
       }
 
-      it("should do nothing in documentAboutToBeChanged") {
+      it("should not request code suggestions when text is empty") {
+        val event = mockk<DocumentEvent> {
+          every { text } returns ""
+        }
+        session.documentChanged(event)
+
+        verify(exactly = 0) { codeSuggestionsProvider.provide() }
+      }
+
+      it("should cancel suggestion in documentAboutToBeChanged") {
         val event = mockk<DocumentEvent>()
 
-        shouldNotThrow<Exception> {
-          session.documentAboutToBeChanged(event)
-        }
+        session.documentAboutToBeChanged(event)
+
+        verify(exactly = 1) { renderer.clear() }
       }
     }
 
@@ -123,16 +134,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         verify(exactly = 0) { codeSuggestionsProvider.provide() }
-      }
-
-      it("should not request code suggestions when key press is filtered") {
-        val keyEvent = mockk<KeyEvent>()
-        keyEvent.character = SWT.TAB
-
-        session.keyPressed(keyEvent)
-        session.requestCodeSuggestion()
-
-        verify(exactly = 0) { renderer.display(any(), any()) }
       }
 
       it("should not request code suggestions when suggestions are already displayed") {
@@ -170,21 +171,29 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
     describe("cancelCodeSuggestion") {
       it("should clear suggestions") {
-        session.requestCodeSuggestion()
-        verify { renderer.display(any(), any()) }
-
         session.cancelCodeSuggestion()
-        verify { renderer.dispose() }
+
+        verify { renderer.clear() }
       }
 
       it("should handle exceptions gracefully") {
-        session.requestCodeSuggestion()
+        every { renderer.clear() } throws RuntimeException("Test exception")
 
-        every { renderer.dispose() } throws RuntimeException("Test exception")
+        shouldNotThrow<Exception> { session.cancelCodeSuggestion() }
+      }
+    }
 
-        shouldNotThrow<Exception> {
-          session.cancelCodeSuggestion()
-        }
+    describe("rejectCodeSuggestion") {
+      it("should reject code suggestions") {
+        session.rejectCodeSuggestion()
+
+        verify { renderer.reject() }
+      }
+
+      it("should handle exceptions gracefully when rejecting") {
+        every { renderer.reject() } throws RuntimeException("Test exception")
+
+        shouldNotThrow<Exception> { session.rejectCodeSuggestion() }
       }
     }
 
@@ -214,54 +223,31 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     }
 
     describe("key listener") {
-      it("should mark key press as filtered when TAB is pressed") {
-        val keyEvent = mockk<KeyEvent>()
-        keyEvent.character = SWT.TAB
-
-        session.keyPressed(keyEvent)
-
-        val event = mockk<DocumentEvent>()
-        session.documentChanged(event)
-
-        verify(exactly = 0) { renderer.display(any(), any()) }
-      }
-
-      it("should mark key press as filtered when BACKSPACE is pressed") {
-        val keyEvent = mockk<KeyEvent>()
-        keyEvent.character = SWT.BS
-
-        session.keyPressed(keyEvent)
-
-        val event = mockk<DocumentEvent>()
-        session.documentChanged(event)
-
-        verify(exactly = 0) { renderer.display(any(), any()) }
-      }
-
-      it("should reset filtered key press flag on key released") {
-        val keyEvent = mockk<KeyEvent>()
-        keyEvent.character = SWT.TAB
-
-        session.keyPressed(keyEvent)
-        session.keyReleased(keyEvent)
-
-        val event = mockk<DocumentEvent> {
-          every { offset } returns 5
-          every { text } returns "abc"
+      it("should cancel suggestions when arrow keys are pressed") {
+        listOf(SWT.ARROW_RIGHT, SWT.ARROW_LEFT, SWT.ARROW_UP, SWT.ARROW_DOWN).forEach { keyCode ->
+          val keyEvent = mockk<KeyEvent>()
+          keyEvent.keyCode = keyCode
+          session.keyPressed(keyEvent)
         }
-        session.documentChanged(event)
 
-        verify { renderer.display(any(), any()) }
+        verify(exactly = 4) { renderer.clear() }
       }
 
-      it("should clear suggestions when filtered keys are pressed") {
-        session.requestCodeSuggestion()
-        verify { renderer.display(any(), any()) }
-
+      it("should not cancel suggestions on other key presses") {
         val keyEvent = mockk<KeyEvent>()
         keyEvent.character = SWT.TAB
 
         session.keyPressed(keyEvent)
+
+        verify(exactly = 0) { renderer.clear() }
+      }
+    }
+
+    describe("mouse listener") {
+      it("should cancel suggestions when mouse is clicked") {
+        val mouseEvent = mockk<MouseEvent>()
+
+        session.mouseDown(mouseEvent)
 
         verify { renderer.clear() }
       }
