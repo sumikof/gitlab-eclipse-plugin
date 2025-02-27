@@ -10,9 +10,6 @@ import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage
 import org.eclipse.jface.preference.FileFieldEditor
 import org.eclipse.jface.preference.StringFieldEditor
-import org.eclipse.swt.SWT
-import org.eclipse.swt.layout.GridData
-import org.eclipse.swt.widgets.Button
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
 import org.eclipse.ui.preferences.ScopedPreferenceStore
@@ -41,13 +38,14 @@ class GitLabPreferencePage(
     )
 
     if (BuildConfig.OAUTH_ENABLED) {
-      val button = Button(fieldEditorParent, SWT.PUSH)
-      button.text = "Login with OAuth"
-      button.layoutData = GridData(GridData.FILL_HORIZONTAL)
-      button.addListener(SWT.Selection) {
-        val gitLabOAuthService = GitLabOAuthService()
-        gitLabOAuthService.startOAuthFlow()
-      }
+      addField(
+        ButtonFieldEditor(
+          "Login with OAuth",
+          fieldEditorParent
+        ) {
+          service<GitLabOAuthService>().startOAuthFlow()
+        }
+      )
     }
 
     // Language Server
