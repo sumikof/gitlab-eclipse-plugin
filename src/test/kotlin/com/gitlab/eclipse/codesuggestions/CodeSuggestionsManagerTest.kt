@@ -24,6 +24,15 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
   extensions(LoggingKotestExtension)
 
+  fun createCodeSuggestionsManager(
+    isCodeSuggestionsEnabled: Boolean = true,
+    createCodeSuggestionsSession: (StyledText, IDocument) -> CodeSuggestionsSession
+  ) = CodeSuggestionsManager(
+    platformUtils = platformUtils,
+    isCodeSuggestionsEnabled = isCodeSuggestionsEnabled,
+    createCodeSuggestionsSession = createCodeSuggestionsSession
+  )
+
   beforeEach {
     every { platformUtils.getWorkbench() } returns workbench
 
@@ -44,12 +53,31 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     clearAllMocks()
   }
 
+  afterSpec {
+    unmockkAll()
+  }
+
   describe("CodeSuggestionsManager") {
-    it("should set up listeners for workbench, windows, and pages during initialization") {
-      CodeSuggestionsManager(platformUtils) { _, _ -> session }
+    it("should not set up listeners for workbench, windows and pages if code suggestions are disabled") {
+      createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = false,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
+
+      verify(exactly = 0) {
+        workbench.addWindowListener(any<IWindowListener>())
+        window.addPageListener(any<IPageListener>())
+        page.addPartListener(any<IPartListener2>())
+      }
+    }
+
+    it("should set up listeners for workbench, windows and pages during initialization") {
+      createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
 
       verify {
-        platformUtils.getWorkbench()
         workbench.addWindowListener(any<IWindowListener>())
         window.addPageListener(any<IPageListener>())
         page.addPartListener(any<IPartListener2>())
@@ -60,7 +88,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       val sessionFactory = mockk<(StyledText, IDocument) -> CodeSuggestionsSession>()
       every { sessionFactory.invoke(any(), any()) } returns session
 
-      CodeSuggestionsManager(platformUtils, sessionFactory)
+      createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = sessionFactory
+      )
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
@@ -75,7 +106,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should end the Code Suggestion session when editor is closed") {
-      CodeSuggestionsManager(platformUtils) { _, _ -> session }
+      createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
@@ -100,7 +134,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
         sessions[sessionIndex++ % sessions.size]
       }
 
-      val manager = CodeSuggestionsManager(platformUtils, sessionFactory)
+      val manager = createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = sessionFactory
+      )
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
@@ -125,7 +162,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should reject a code suggestion for the active editor") {
-      val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+      val manager = createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
@@ -137,7 +177,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should request a code suggestion for an editor with an active session") {
-      val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+      val manager = createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
 
       val partListener = slot<IPartListener2>()
       verify { page.addPartListener(capture(partListener)) }
@@ -150,7 +193,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should log a warning when requesting a code suggestion for an editor without an active session") {
-      val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+      val manager = createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
 
       val newEditor = mockk<ITextEditor>(relaxed = true)
       every { platformUtils.getActiveTextEditor() } returns newEditor
@@ -162,6 +208,11 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     }
 
     it("should handle exceptions when setting up platform listeners") {
+      createCodeSuggestionsManager(
+        isCodeSuggestionsEnabled = true,
+        createCodeSuggestionsSession = { _, _ -> session }
+      )
+
       every { platformUtils.getWorkbench() } throws RuntimeException("Test exception")
 
       shouldNotThrow<Exception> {
@@ -171,14 +222,22 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
     describe("isCodeSuggestionDisplayed") {
       it("should return false if no active text editor is found") {
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
+
         every { platformUtils.getActiveTextEditor() } returns null
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
 
         manager.isCodeSuggestionDisplayed() shouldBe false
       }
 
       it("should return false if no code suggestion session exists") {
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
+
         val newEditor = mockk<ITextEditor>(relaxed = true)
         every { platformUtils.getActiveTextEditor() } returns newEditor
 
@@ -186,7 +245,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
 
       it("should return true if there is a code suggestion displayed") {
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
 
         val partListener = slot<IPartListener2>()
         verify { page.addPartListener(capture(partListener)) }
@@ -200,7 +262,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
     describe("acceptCodeSuggestion") {
       it("should not accept code suggestion for an editor without an active session") {
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
 
         val newEditor = mockk<ITextEditor>(relaxed = true)
         every { platformUtils.getActiveTextEditor() } returns newEditor
@@ -212,7 +277,11 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
 
       it("should not accept code suggestion when no active editor is found") {
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
+
         every { platformUtils.getActiveTextEditor() } returns null
 
         manager.acceptCodeSuggestion()
@@ -221,7 +290,10 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
 
       it("should accept code suggestion for an editor with an active session") {
-        val manager = CodeSuggestionsManager(platformUtils) { _, _ -> session }
+        val manager = createCodeSuggestionsManager(
+          isCodeSuggestionsEnabled = true,
+          createCodeSuggestionsSession = { _, _ -> session }
+        )
 
         val partListener = slot<IPartListener2>()
         verify { page.addPartListener(capture(partListener)) }

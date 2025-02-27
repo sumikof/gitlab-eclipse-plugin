@@ -1,6 +1,7 @@
-package com.gitlab.eclipse.codesuggestions
+package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.commands.AbstractHandler

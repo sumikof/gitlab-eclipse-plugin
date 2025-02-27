@@ -54,6 +54,10 @@
         <sourceProvider provider="com.gitlab.eclipse.utils.theming.ThemeSourceProvider">
             <variable name="theme_tone" priorityLevel="workbench"/>
         </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.utils.BuildFlagSourceProvider">
+            <variable name="code_suggestions_enabled" priorityLevel="workbench"/>
+        </sourceProvider>
     </extension>
 
     <extension point="org.eclipse.ui.preferencePages">
@@ -92,7 +96,7 @@
         />
 
         <handler
-                class="com.gitlab.eclipse.codesuggestions.RequestCodeSuggestionHandler"
+                class="com.gitlab.eclipse.codesuggestions.handlers.RequestCodeSuggestionHandler"
                 commandId="com.gitlab.eclipse.codesuggestions.requestSuggestion"
         />
 
@@ -264,6 +268,11 @@
                     commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     label="Code Suggestions: Disabled">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="code_suggestions_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
             </command>
 
             <separator name="StatusActions" visible="true"/>
