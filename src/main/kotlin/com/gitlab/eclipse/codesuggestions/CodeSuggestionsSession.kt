@@ -108,6 +108,7 @@ internal class CodeSuggestionsSession(
 
   fun cancelCodeSuggestion() {
     try {
+      job?.cancel()
       codeSuggestionsRenderer.clear()
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)

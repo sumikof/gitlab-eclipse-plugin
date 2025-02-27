@@ -1,13 +1,11 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.core.runtime.Platform
 import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
 import org.eclipse.swt.graphics.Color
-import org.eclipse.swt.graphics.GC
 import org.eclipse.swt.graphics.GlyphMetrics
 import org.eclipse.swt.graphics.TextLayout
 
@@ -17,7 +15,6 @@ class CodeSuggestionsRenderer(
   private val logger by lazy { logger<CodeSuggestionsRenderer>() }
 
   companion object {
-    private const val DEFAULT_TAB_SIZE = 4
     private val GHOST_COLOR = Color(128, 128, 128)
   }
 
@@ -110,11 +107,11 @@ class CodeSuggestionsRenderer(
       val layout = TextLayout(textWidget.display).apply {
         text = line
         font = textWidget.font
-        tabs = intArrayOf(paintEvent.gc.tabSize)
+        tabs = textWidget.tabStops
       }
 
       paintEvent.gc.foreground = GHOST_COLOR
-      layout.draw(paintEvent.gc, 0, caretPos.y + (index + 1) * textWidget.lineHeight)
+      layout.draw(paintEvent.gc, textWidget.leftMargin, caretPos.y + (index + 1) * textWidget.lineHeight)
       layout.dispose()
     }
   }
@@ -162,13 +159,4 @@ class CodeSuggestionsRenderer(
   fun isCodeSuggestionDisplayed(): Boolean {
     return text != null
   }
-
-  @Suppress("MagicNumber")
-  private val GC.tabSize
-    get(): Int = stringExtent(" ").x * Platform.getPreferencesService().getInt(
-      "org.eclipse.ui.editors",
-      "tabWidth",
-      DEFAULT_TAB_SIZE,
-      null
-    )
 }
