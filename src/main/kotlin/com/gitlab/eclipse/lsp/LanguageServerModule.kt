@@ -1,6 +1,6 @@
 package com.gitlab.eclipse.lsp
 
-import com.gitlab.eclipse.lsp.authentication.PatProvider
+import com.gitlab.eclipse.authentication.PatProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
