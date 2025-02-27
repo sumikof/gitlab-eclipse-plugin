@@ -1,4 +1,4 @@
-package com.gitlab.eclipse.lsp.authentication
+package com.gitlab.eclipse.authentication
 
 interface TokenProvider {
   fun getToken(): String

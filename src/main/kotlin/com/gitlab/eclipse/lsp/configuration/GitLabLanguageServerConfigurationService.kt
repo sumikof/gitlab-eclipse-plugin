@@ -1,9 +1,9 @@
 package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.authentication.PatProvider
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
-import com.gitlab.eclipse.lsp.authentication.PatProvider
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.preferences.PreferenceConstants

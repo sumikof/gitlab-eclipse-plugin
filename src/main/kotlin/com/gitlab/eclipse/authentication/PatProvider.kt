@@ -1,4 +1,4 @@
-package com.gitlab.eclipse.lsp.authentication
+package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 
