@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.preferences
 
+import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
@@ -8,11 +10,14 @@ import org.eclipse.jface.preference.BooleanFieldEditor
 import org.eclipse.jface.preference.FieldEditorPreferencePage
 import org.eclipse.jface.preference.FileFieldEditor
 import org.eclipse.jface.preference.StringFieldEditor
+import org.eclipse.swt.SWT
+import org.eclipse.swt.layout.GridData
+import org.eclipse.swt.widgets.Button
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 
-@Suppress("ForbiddenComment")
+@Suppress("ForbiddenComment", "LongMethod")
 class GitLabPreferencePage(
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service()
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
@@ -34,6 +39,16 @@ class GitLabPreferencePage(
         fieldEditorParent
       )
     )
+
+    if (BuildConfig.OAUTH_ENABLED) {
+      val button = Button(fieldEditorParent, SWT.PUSH)
+      button.text = "Login with OAuth"
+      button.layoutData = GridData(GridData.FILL_HORIZONTAL)
+      button.addListener(SWT.Selection) {
+        val gitLabOAuthService = GitLabOAuthService()
+        gitLabOAuthService.startOAuthFlow()
+      }
+    }
 
     // Language Server
     addField(

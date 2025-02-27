@@ -85,6 +85,11 @@ buildConfig {
     "SNOWPLOW_COLLECTOR_URL",
     "\"${if (isLocalBuild) "http://localhost:9090" else "https://snowplowprd.trx.gitlab.net" }\""
   )
+  buildConfigField(
+    "Boolean",
+    "OAUTH_ENABLED",
+    false
+  )
 }
 
 val arch = when (System.getProperty("os.arch")) {
@@ -142,6 +147,9 @@ dependencies {
   testImplementation("org.eclipse.platform:org.eclipse.swt:3.128.0")
 
   detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.8")
+
+  implementation("com.github.scribejava:scribejava-core:8.3.3")
+  implementation("org.nanohttpd:nanohttpd:2.3.1")
 }
 
 val eclipseRelease = "4.33"
@@ -191,7 +199,9 @@ tasks.withType<Jar> {
     "kotlinx-coroutines-core-jvm",
     "koin-core-jvm",
     "slf4j-api",
-    "log4j"
+    "log4j",
+    "scribejava-core",
+    "nanohttpd"
   )
 
   duplicatesStrategy = DuplicatesStrategy.EXCLUDE
