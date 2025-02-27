@@ -38,7 +38,7 @@ target/
 │   └── plugins
 │       └── gitlab-eclipse-plugin_0.1.0.qualifier.jar
 │   └── features
-│       └── gitlab-eclipse-plugin.feaure_0.1.0.qualifier.jar
+│       └── gitlab-eclipse-plugin.feature_0.1.0.qualifier.jar
 └── update-site-0.1.0-SNAPSHOT.zip
 ```
 
