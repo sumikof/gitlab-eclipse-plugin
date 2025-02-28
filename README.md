@@ -45,6 +45,56 @@ target/
 - Generate a local update site/p2 repository under `target/repository` which can be added as a local Update Site.
 - Assemble a ZIP archive `target/update-site-0.1.0-SNAPSHOT.zip` Maven artifact which can be deployed for usage.
 
+### Add the GitLab Releases software site
+
+> [!note]
+> For local builds, run `./gradlew publishToMavenLocal && mvn clean install` once from the project root before adding the software site.
+
+1. Open your Eclipse IDE.
+1. In your IDE, select **Eclipse > Settings...**.
+1. On the left sidebar, expand **Install/Update**, then select **Available Software Sites**.
+1. On the right, select **Add...** to configure a new software site.
+1. To build either a **local build** or a **release**:
+    - For a **local build**:
+        1. For **Name:**, use `GitLab Duo Local`.
+        1. For **Location:**, select **Local..." and choose your local update site located at:
+
+           ```plaintext
+           <your-gitlab-for-eclipse-project-path>/update-site/target/respository
+           ```
+
+    - For a **release**:
+        1. For **Name:**, use `GitLab Releases`.
+        1. For **Location:**, copy and paste this URL:
+
+           ```plaintext
+           https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/releases/permalink/latest/downloads/
+           ```
+
+1. Select **Add**.
+1. Select **Apply and Close**.
+
+## Install the GitLab for Eclipse plugin using software site
+
+Prerequisites:
+
+- Eclipse **4.33** and later.
+- GitLab version 16.8 or later.
+
+> [!note]
+> For local builds, run `./gradlew publishToMavenLocal && mvn clean install` from the project root before installing the plugin.
+
+To install GitLab for Eclipse:
+
+1. In your IDE, select the **Help** menu.
+1. Select **Install New Software...**.
+1. Expand **Work with:**, then select your chosen software site.
+    - For a local build, use `GitLab Duo Local`
+    - For a release, use `GitLab Releases`
+1. Select the **GitLab** category to install the GitLab for Eclipse plugin and dependencies.
+1. Select **Next >**, then select **Finish**.
+1. Select **Restart Now**.
+
 ## Releasing
 
 Follow the release process issue template to create and distribute a new plugin release.
