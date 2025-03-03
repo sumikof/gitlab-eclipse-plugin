@@ -4,6 +4,7 @@ import com.github.scribejava.core.builder.ServiceBuilder
 import com.github.scribejava.core.builder.api.DefaultApi20
 import com.github.scribejava.core.oauth.AccessTokenRequestParams
 import com.github.scribejava.core.oauth.OAuth20Service
+import com.gitlab.eclipse.inject.service
 import fi.iki.elonen.NanoHTTPD
 import java.awt.Desktop
 import java.net.URI
@@ -49,8 +50,8 @@ class GitLabOAuthService {
 
       tokenRequest.addExtraParameter("client_id", CLIENT_ID)
 
-      // This will be integrated in the OAuthTokenProvider: https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/75
-      service.getAccessToken(tokenRequest)
+      val token = service.getAccessToken(tokenRequest)
+      service<OAuthTokenProvider>().updateToken(token)
 
       future.complete(code)
     }
