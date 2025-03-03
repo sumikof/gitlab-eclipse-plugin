@@ -33,12 +33,16 @@ internal class CodeSuggestionsSession(
 
   private var job: Job? = null
 
-  override fun documentAboutToBeChanged(event: DocumentEvent) = cancelCodeSuggestion()
+  override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
   override fun mouseDown(e: MouseEvent) = cancelCodeSuggestion()
 
   override fun documentChanged(event: DocumentEvent) {
     if (event.text.isEmpty()) {
       return
+    }
+
+    if (isCodeSuggestionDisplayed()) {
+      cancelCodeSuggestion()
     }
 
     requestCodeSuggestion(event.offset + event.text.length)
@@ -67,7 +71,6 @@ internal class CodeSuggestionsSession(
   fun requestCodeSuggestion(requestOffset: Int? = null) {
     try {
       if (!isEnabled()) return
-      if (codeSuggestionsRenderer.isCodeSuggestionDisplayed()) return
 
       job?.cancel()
       job = coroutineScope.launch {
@@ -109,7 +112,7 @@ internal class CodeSuggestionsSession(
   fun cancelCodeSuggestion() {
     try {
       job?.cancel()
-      codeSuggestionsRenderer.clear()
+      currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
     }

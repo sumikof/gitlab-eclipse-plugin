@@ -19,5 +19,5 @@ class RequestCodeSuggestionHandler : AbstractHandler() {
     }
   }
 
-  override fun isEnabled() = BuildConfig.CODE_SUGGESTIONS_ENABLED
+  override fun isEnabled() = BuildConfig.CODE_SUGGESTIONS_ENABLED && !codeSuggestionsManager.isCodeSuggestionDisplayed()
 }
