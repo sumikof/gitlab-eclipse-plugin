@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.jface.text.IDocument
+import org.eclipse.jface.text.Position
 import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
@@ -10,6 +12,7 @@ import org.eclipse.swt.graphics.GlyphMetrics
 import org.eclipse.swt.graphics.TextLayout
 
 class CodeSuggestionsRenderer(
+  private val document: IDocument,
   private val textWidget: StyledText,
 ) : PaintListener {
   private val logger by lazy { logger<CodeSuggestionsRenderer>() }
@@ -29,7 +32,7 @@ class CodeSuggestionsRenderer(
     private set
 
   private var suggestionCharacterStyle: StyleRange? = null
-  private var suggestionLine: Int? = null
+  private var suggestionLine: Position? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
     try {
@@ -97,10 +100,12 @@ class CodeSuggestionsRenderer(
     val caretPos = textWidget.getLocationAtOffset(offset)
     val currentLine = textWidget.getLineAtOffset(offset)
 
-    if (currentLine != textWidget.lineCount - 1) {
-      val adjustedLine = currentLine + 1
-      textWidget.setLineVerticalIndent(adjustedLine, lines.size * textWidget.lineHeight)
-      suggestionLine = adjustedLine
+    if (suggestionLine == null && currentLine != textWidget.lineCount - 1) {
+      textWidget.setLineVerticalIndent(currentLine + 1, lines.size * textWidget.lineHeight)
+
+      // Add a position marker in a document that will be update as new line are created or removed.
+      suggestionLine = Position(offset)
+      document.addPosition(suggestionLine)
     }
 
     lines.forEachIndexed { index, line ->
@@ -142,7 +147,10 @@ class CodeSuggestionsRenderer(
     text = null
     offset = -1
 
-    suggestionLine?.let { textWidget.setLineVerticalIndent(it, 0) }
+    suggestionLine?.let {
+      textWidget.setLineVerticalIndent(document.getLineOfOffset(it.offset) + 1, 0)
+      document.removePosition(it)
+    }
     suggestionLine = null
 
     suggestionCharacterStyle?.let { textWidget.setStyleRange(it) }

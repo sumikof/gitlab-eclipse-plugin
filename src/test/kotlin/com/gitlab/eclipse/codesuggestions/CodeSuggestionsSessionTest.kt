@@ -125,6 +125,19 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         sessionSpy.documentChanged(event)
 
         verify { sessionSpy.requestCodeSuggestion(8) }
+        verify(exactly = 0) { renderer.clear() }
+      }
+
+      it("should cancel displayed code suggestions when document changes") {
+        every { renderer.isCodeSuggestionDisplayed() } returns true
+        val event = mockk<DocumentEvent> {
+          every { offset } returns 5
+          every { text } returns "abc"
+        }
+
+        session.documentChanged(event)
+
+        verify { renderer.clear() }
       }
 
       it("should not request code suggestions when text is empty") {
@@ -134,14 +147,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.documentChanged(event)
 
         coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
-      }
-
-      it("should cancel suggestion in documentAboutToBeChanged") {
-        val event = mockk<DocumentEvent>()
-
-        session.documentAboutToBeChanged(event)
-
-        verify(exactly = 1) { renderer.clear() }
       }
     }
 
