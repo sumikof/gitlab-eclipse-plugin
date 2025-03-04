@@ -9,6 +9,8 @@ import io.kotest.matchers.shouldBe
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
 import org.eclipse.lsp4j.jsonrpc.messages.Either
@@ -62,6 +64,22 @@ class CodeSuggestionsProviderTest : DescribeSpec({
   }
 
   describe("provide") {
+    it("cancels ongoing request before making a new one") {
+      val firstRequest = CompletableFuture<Either<List<CompletionItem>, CompletionList>>()
+      val secondRequest = CompletableFuture.completedFuture(
+        Either.forLeft<List<CompletionItem>, CompletionList>(emptyList())
+      )
+      coEvery { languageServer.inlineCompletion(any()) } returnsMany listOf(firstRequest, secondRequest)
+
+      val job1 = launch { codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) }
+      delay(100)
+      val job2 = launch { codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) }
+      job2.join()
+
+      firstRequest.isCancelled shouldBe true
+      job1.join()
+    }
+
     it("returns formatted suggestion when language server returns items on the left") {
       listOf(suggestionText).asLeftResponse()
 

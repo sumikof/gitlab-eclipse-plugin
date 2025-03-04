@@ -7,15 +7,18 @@ import com.gitlab.eclipse.lsp.messages.InlineCompletionParams
 import com.gitlab.eclipse.lsp.messages.InlineCompletionTriggerKind
 import com.gitlab.eclipse.utils.CodeFormatter
 import com.gitlab.eclipse.utils.logger
-import kotlinx.coroutines.future.await
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.future.asDeferred
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.TextDocumentIdentifier
+import java.util.concurrent.CompletableFuture
 
 class CodeSuggestionsProvider(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
   private val codeFormatter: CodeFormatter
 ) {
   private val logger by lazy { logger<CodeSuggestionsProvider>() }
+  private var ongoingRequest: CompletableFuture<*>? = null
 
   suspend fun provide(
     fileUri: String,
@@ -25,20 +28,21 @@ class CodeSuggestionsProvider(
     try {
       val languageServer: GitLabLanguageServer = checkNotNull(gitLabLanguageServerWrapper.languageServer)
 
-      val result = languageServer.inlineCompletion(
+      ongoingRequest?.cancel(true)
+      val request = languageServer.inlineCompletion(
         InlineCompletionParams(
           textDocumentIdentifier = TextDocumentIdentifier(fileUri),
           cursorPosition = Position(cursorLine, cursorColumn),
-          // InlineCompletionTriggerKind.INVOKED prevents Streaming Code suggestions from being triggered.
+          // InlineCompletionTriggerKind.INVOKED prevents Streaming Code Suggestions from being triggered.
+          // Note that this also cause suggestions to not be cancellable. For development purpose this is ok.
           context = InlineCompletionContext(InlineCompletionTriggerKind.INVOKED)
         )
-      ).await()
+      ).also { ongoingRequest = it }
 
+      val result = request.asDeferred().await()
       val choices = (result.left ?: result.right?.items)
         ?.distinctBy { it.insertText }
         .orEmpty()
-
-      // TODO: Cycle through all suggestions. Currently we only use the first one.
 
       val suggestion = choices
         .firstOrNull()
@@ -48,6 +52,9 @@ class CodeSuggestionsProvider(
       logger.info("Got suggestion from language server: $suggestion")
 
       return suggestion
+    } catch (_: CancellationException) {
+      ongoingRequest?.cancel(true)
+      return null
     } catch (e: Throwable) {
       logger.warn("Failed to provide code suggestions", e)
       return null
