@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.utils.CodeFormatter
+import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.coEvery
@@ -11,6 +12,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.eclipse.lsp4j.Command
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
 import org.eclipse.lsp4j.jsonrpc.messages.Either
@@ -28,6 +30,8 @@ class CodeSuggestionsProviderTest : DescribeSpec({
   val cursorColumn = 15
   val suggestionText = "val x=5"
   val formattedText = "val x = 5"
+  val trackingId = "tracking-123"
+  val optionId = 42
 
   extensions(LoggingKotestExtension)
 
@@ -47,6 +51,9 @@ class CodeSuggestionsProviderTest : DescribeSpec({
 
   fun String.toCompletionItem() = CompletionItem().apply {
     insertText = this@toCompletionItem
+    command = Command().apply {
+      arguments = listOf(JsonPrimitive(trackingId), JsonPrimitive(optionId))
+    }
   }
 
   fun List<String>.toCompletionItems() = map { it.toCompletionItem() }
@@ -80,22 +87,60 @@ class CodeSuggestionsProviderTest : DescribeSpec({
       job1.join()
     }
 
+    it("stores all suggestions and returns the first one") {
+      // Create items with different tracking IDs and option IDs
+      val item1 = CompletionItem().apply {
+        insertText = suggestionText
+        command = Command().apply {
+          arguments = listOf(JsonPrimitive("tracking-1"), JsonPrimitive(1))
+        }
+      }
+
+      val item2 = CompletionItem().apply {
+        insertText = "val y=10"
+        command = Command().apply {
+          arguments = listOf(JsonPrimitive("tracking-2"), JsonPrimitive(2))
+        }
+      }
+
+      coEvery { languageServer.inlineCompletion(any()) } returns CompletableFuture.completedFuture(
+        Either.forLeft(listOf(item1, item2))
+      )
+      every { codeFormatter.format(suggestionText) } returns formattedText
+      every { codeFormatter.format("val y=10") } returns "val y = 10"
+
+      val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
+
+      result?.text shouldBe formattedText
+      result?.trackingId shouldBe "tracking-1"
+      result?.optionId shouldBe 1
+    }
+
     it("returns formatted suggestion when language server returns items on the left") {
       listOf(suggestionText).asLeftResponse()
 
-      codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe formattedText
+      val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
+      result?.text shouldBe formattedText
+      result?.trackingId shouldBe trackingId
+      result?.optionId shouldBe optionId
     }
 
     it("returns formatted suggestion when language server returns items on the right") {
       listOf(suggestionText).asRightResponse()
 
-      codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe formattedText
+      val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
+      result?.text shouldBe formattedText
+      result?.trackingId shouldBe trackingId
+      result?.optionId shouldBe optionId
     }
 
     it("returns first non-duplicate suggestion") {
       listOf(suggestionText, suggestionText, "val y=10").asLeftResponse()
 
-      codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe formattedText
+      val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
+      result?.text shouldBe formattedText
+      result?.trackingId shouldBe trackingId
+      result?.optionId shouldBe optionId
     }
 
     it("returns null when language server is null") {

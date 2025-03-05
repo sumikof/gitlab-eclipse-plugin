@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import org.eclipse.lsp4j.WorkspaceFolder
 
 data class GitLabLanguageServerConfigurationParams(
@@ -23,5 +24,11 @@ data class GitLabLanguageServerConfigurationParams(
 
   data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null)
 
-  data class Telemetry(val enabled: Boolean, val trackingUrl: String)
+  data class Telemetry(
+    val enabled: Boolean,
+    val trackingUrl: String,
+
+    // This structure is defined in https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/blob/main/docs/supported_messages.md?ref_type=heads#code-suggestions-telemetry
+    val actions: List<Map<String, String>> = TelemetryAction.entries.map { action -> mapOf("action" to action.value) }
+  )
 }

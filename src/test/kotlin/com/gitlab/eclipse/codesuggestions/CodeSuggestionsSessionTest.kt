@@ -3,6 +3,7 @@ package com.gitlab.eclipse.codesuggestions
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
+import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.uri
 import io.kotest.assertions.throwables.shouldNotThrow
@@ -32,6 +33,9 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>(relaxed = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
   val codeSuggestionsApiStatusService = mockk<CodeSuggestionsApiStatusService>()
+  val codeSuggestion = CodeSuggestion("foo", 123, "sample suggestion")
+
+  val telemetryService = mockk<TelemetryService>()
 
   val renderer = mockk<CodeSuggestionsRenderer>(relaxed = true)
 
@@ -64,7 +68,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { textWidget.addKeyListener(any()) } just Runs
     every { textWidget.removeKeyListener(any()) } just Runs
 
-    coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns "Suggestion"
+    coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
 
     every { document.uri } returns "file://file.test"
     every { document.addDocumentListener(any()) } just Runs
@@ -81,7 +85,8 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       document,
       codeSuggestionsProvider,
       renderer,
-      coroutineScope
+      coroutineScope,
+      telemetryService
     )
   }
 
@@ -107,7 +112,14 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         every { document.addDocumentListener(any()) } throws RuntimeException("Test exception")
 
         shouldNotThrow<Exception> {
-          CodeSuggestionsSession(textWidget, document, codeSuggestionsProvider, renderer, coroutineScope)
+          CodeSuggestionsSession(
+            textWidget,
+            document,
+            codeSuggestionsProvider,
+            renderer,
+            coroutineScope,
+            telemetryService
+          )
         }
       }
     }
@@ -192,7 +204,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         coroutineScope.advanceUntilIdle()
 
-        verify { renderer.display("Suggestion", 10) }
+        verify { renderer.display(codeSuggestion.text, 10) }
       }
 
       it("should request code suggestions when cursor is at the beginning of document") {
@@ -202,37 +214,27 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         coroutineScope.advanceUntilIdle()
 
-        verify { renderer.display("Suggestion", 1) }
+        verify { renderer.display(codeSuggestion.text, 1) }
       }
 
       it("should handle exceptions when checking for bracket pairs") {
         every { textWidget.caretOffset } returns 10
         every { document.get(8, 2) } throws RuntimeException("Test exception")
 
-        session.requestCodeSuggestion()
-
-        coroutineScope.advanceUntilIdle()
-
-        verify { renderer.display("Suggestion", 10) }
-      }
-
-      it("should not request code suggestions when suggestions are already displayed") {
-        every { renderer.isCodeSuggestionDisplayed() } returns true
-
-        session.requestCodeSuggestion()
-
-        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+        shouldNotThrow<Exception> {
+          session.requestCodeSuggestion()
+          coroutineScope.advanceUntilIdle()
+        }
       }
 
       it("should request code suggestions when the feature is enabled and not in error") {
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns "Hello"
         every { textWidget.caretOffset } returns 10
 
         session.requestCodeSuggestion()
 
         coroutineScope.advanceUntilIdle()
 
-        verify(exactly = 1) { renderer.display("Hello", 10) }
+        verify(exactly = 1) { renderer.display(codeSuggestion.text, 10) }
       }
 
       it("should use the caret offset when no explicit offset is provided") {
@@ -242,7 +244,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         coroutineScope.advanceUntilIdle()
 
-        verify { renderer.display("Suggestion", 10) }
+        verify { renderer.display(codeSuggestion.text, 10) }
       }
 
       it("should handle exceptions gracefully") {

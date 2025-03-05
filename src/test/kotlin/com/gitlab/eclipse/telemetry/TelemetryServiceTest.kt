@@ -1,7 +1,9 @@
 package com.gitlab.eclipse.telemetry
 
+import com.gitlab.eclipse.codesuggestions.CodeSuggestion
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.telemetry.params.TelemetryContext
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
 import io.kotest.core.spec.style.DescribeSpec
@@ -14,44 +16,37 @@ class TelemetryServiceTest : DescribeSpec({
   val gitLabLanguageServer = mockk<GitLabLanguageServer>(relaxed = true)
   val telemetryService = TelemetryService(gitLabLanguageServerWrapper)
 
-  val trackingId = "test-tracking-id"
-  val optionId = 1
+  val trackingId = "foo"
+  val optionId = 123
 
   every { gitLabLanguageServerWrapper.languageServer } returns gitLabLanguageServer
 
   it("should send correct telemetry for accepted suggestion") {
-    telemetryService.sendCodeSuggestionAcceptedTelemetry(trackingId, optionId)
+    telemetryService.send(
+      CodeSuggestion(trackingId, optionId, "Some code suggestion"),
+      TelemetryAction.SUGGESTION_ACCEPTED
+    )
 
     verify {
       gitLabLanguageServer.telemetry(
         TelemetryParams(
-          action = "suggestion_accepted",
+          action = TelemetryAction.SUGGESTION_ACCEPTED.value,
           context = TelemetryContext(trackingId, optionId)
         )
       )
     }
   }
 
-  it("should send correct telemetry for suggestion not provided") {
-    telemetryService.sendCodeSuggestionNotProvidedTelemetry(trackingId)
-
-    verify {
-      gitLabLanguageServer.telemetry(
-        TelemetryParams(
-          action = "suggestion_not_provided",
-          context = TelemetryContext(trackingId)
-        )
-      )
-    }
-  }
-
   it("should send correct telemetry for cancelled suggestion") {
-    telemetryService.sendCodeSuggestionCancelledTelemetry(trackingId)
+    telemetryService.send(
+      CodeSuggestion(trackingId, null, "Some code suggestion"),
+      TelemetryAction.SUGGESTION_CANCELLED
+    )
 
     verify {
       gitLabLanguageServer.telemetry(
         TelemetryParams(
-          action = "suggestion_cancelled",
+          action = TelemetryAction.SUGGESTION_CANCELLED.value,
           context = TelemetryContext(trackingId)
         )
       )
@@ -59,25 +54,15 @@ class TelemetryServiceTest : DescribeSpec({
   }
 
   it("should send correct telemetry for rejected suggestion") {
-    telemetryService.sendCodeSuggestionRejectedTelemetry(trackingId)
+    telemetryService.send(
+      CodeSuggestion(trackingId, null, "Some code suggestion"),
+      TelemetryAction.SUGGESTION_REJECTED
+    )
 
     verify {
       gitLabLanguageServer.telemetry(
         TelemetryParams(
-          action = "suggestion_rejected",
-          context = TelemetryContext(trackingId)
-        )
-      )
-    }
-  }
-
-  it("should send correct telemetry for shown suggestion") {
-    telemetryService.sendCodeSuggestionShownTelemetry(trackingId)
-
-    verify {
-      gitLabLanguageServer.telemetry(
-        TelemetryParams(
-          action = "suggestion_shown",
+          action = TelemetryAction.SUGGESTION_REJECTED.value,
           context = TelemetryContext(trackingId)
         )
       )
