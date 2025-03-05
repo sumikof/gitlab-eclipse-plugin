@@ -20,7 +20,8 @@ val codeSuggestionsModule = module {
       document = document,
       codeSuggestionsProvider = get(),
       codeSuggestionsRenderer = CodeSuggestionsRenderer(document, textWidget),
-      coroutineScope = get()
+      coroutineScope = get(),
+      telemetryService = get()
     )
   }
 

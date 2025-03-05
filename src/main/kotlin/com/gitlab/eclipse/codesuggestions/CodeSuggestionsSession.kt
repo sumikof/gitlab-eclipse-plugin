@@ -3,6 +3,8 @@ package com.gitlab.eclipse.codesuggestions
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
+import com.gitlab.eclipse.telemetry.TelemetryService
+import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.uri
@@ -28,10 +30,13 @@ internal class CodeSuggestionsSession(
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
   private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
   private val coroutineScope: CoroutineScope,
+  private val telemetryService: TelemetryService
 ) : IDocumentListener, KeyListener, MouseListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
   private var job: Job? = null
+
+  private var codeSuggestion: CodeSuggestion? = null
 
   override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
   override fun mouseDown(e: MouseEvent) = cancelCodeSuggestion()
@@ -80,17 +85,20 @@ internal class CodeSuggestionsSession(
         val line = document.getLineOfOffset(offset)
         val column = offset - document.getLineOffset(line)
 
-        val suggestion = codeSuggestionsProvider.provide(
+        codeSuggestion = codeSuggestionsProvider.provide(
           fileUri = document.uri,
           cursorLine = line,
           cursorColumn = column
-        )
-
-        if (suggestion.isNullOrBlank()) return@launch
+        ) ?: return@launch
 
         currentDisplay.syncExec {
-          codeSuggestionsRenderer.display(suggestion, offset)
-          logger.info("Showing code suggestion for ${document.uri} at line: $line, column: $column: $suggestion")
+          codeSuggestion?.let {
+            codeSuggestionsRenderer.display(it.text, offset)
+          }
+        }
+
+        codeSuggestion?.let {
+          telemetryService.send(it, TelemetryAction.SUGGESTION_SHOWN)
         }
       }
     } catch (e: Exception) {
@@ -107,6 +115,10 @@ internal class CodeSuggestionsSession(
 
     document.replace(offset, 0, text)
     textWidget.caretOffset = offset + text.length
+
+    codeSuggestion?.let {
+      telemetryService.send(it, TelemetryAction.SUGGESTION_ACCEPTED)
+    }
   }
 
   fun cancelCodeSuggestion() {
@@ -121,6 +133,10 @@ internal class CodeSuggestionsSession(
   fun rejectCodeSuggestion() {
     try {
       codeSuggestionsRenderer.reject()
+
+      codeSuggestion?.let {
+        telemetryService.send(it, TelemetryAction.SUGGESTION_REJECTED)
+      }
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
     }
