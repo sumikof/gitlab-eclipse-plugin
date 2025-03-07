@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
+import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
@@ -29,8 +31,9 @@ internal class CodeSuggestionsSession(
   private val document: IDocument,
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
   private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
+  private val annotationManager: CodeSuggestionsSessionAnnotationManager,
+  private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
-  private val telemetryService: TelemetryService
 ) : IDocumentListener, KeyListener, MouseListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
@@ -85,20 +88,24 @@ internal class CodeSuggestionsSession(
         val line = document.getLineOfOffset(offset)
         val column = offset - document.getLineOffset(line)
 
+        annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
+
         codeSuggestion = codeSuggestionsProvider.provide(
           fileUri = document.uri,
           cursorLine = line,
           cursorColumn = column
-        ) ?: return@launch
+        )
 
-        currentDisplay.syncExec {
-          codeSuggestion?.let {
-            codeSuggestionsRenderer.display(it.text, offset)
-          }
+        if (codeSuggestion == null) {
+          annotationManager.hide()
+          return@launch
         }
 
         codeSuggestion?.let {
+          currentDisplay.syncExec { codeSuggestionsRenderer.display(it.text, offset) }
+
           telemetryService.send(it, TelemetryAction.SUGGESTION_SHOWN)
+          annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
         }
       }
     } catch (e: Exception) {
@@ -112,6 +119,7 @@ internal class CodeSuggestionsSession(
       ?: return
 
     codeSuggestionsRenderer.clear()
+    annotationManager.hide()
 
     document.replace(offset, 0, text)
     textWidget.caretOffset = offset + text.length
@@ -124,6 +132,7 @@ internal class CodeSuggestionsSession(
   fun cancelCodeSuggestion() {
     try {
       job?.cancel()
+      annotationManager.hide()
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
@@ -133,6 +142,7 @@ internal class CodeSuggestionsSession(
   fun rejectCodeSuggestion() {
     try {
       codeSuggestionsRenderer.reject()
+      annotationManager.hide()
 
       codeSuggestion?.let {
         telemetryService.send(it, TelemetryAction.SUGGESTION_REJECTED)
@@ -147,6 +157,7 @@ internal class CodeSuggestionsSession(
   fun dispose() {
     try {
       codeSuggestionsRenderer.dispose()
+      annotationManager.hide()
       document.removeDocumentListener(this)
       textWidget.removeKeyListener(this)
       textWidget.removeMouseListener(this)

@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
+import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
@@ -35,7 +37,8 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   val codeSuggestionsApiStatusService = mockk<CodeSuggestionsApiStatusService>()
   val codeSuggestion = CodeSuggestion("foo", 123, "sample suggestion")
 
-  val telemetryService = mockk<TelemetryService>()
+  val annotationManager = mockk<CodeSuggestionsSessionAnnotationManager>(relaxUnitFun = true)
+  val telemetryService = mockk<TelemetryService>(relaxUnitFun = true)
 
   val renderer = mockk<CodeSuggestionsRenderer>(relaxed = true)
 
@@ -85,8 +88,9 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       document,
       codeSuggestionsProvider,
       renderer,
-      coroutineScope,
-      telemetryService
+      annotationManager,
+      telemetryService,
+      coroutineScope
     )
   }
 
@@ -117,8 +121,9 @@ class CodeSuggestionsSessionTest : DescribeSpec({
             document,
             codeSuggestionsProvider,
             renderer,
-            coroutineScope,
-            telemetryService
+            annotationManager,
+            telemetryService,
+            coroutineScope
           )
         }
       }
@@ -233,8 +238,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         coroutineScope.advanceUntilIdle()
-
-        verify(exactly = 1) { renderer.display(codeSuggestion.text, 10) }
+        verify {
+          annotationManager.display(CodeSuggestionAnnotationType.LOADING, 10)
+          renderer.display(codeSuggestion.text, 10)
+          annotationManager.display(CodeSuggestionAnnotationType.READY, 10)
+        }
       }
 
       it("should use the caret offset when no explicit offset is provided") {
@@ -243,7 +251,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         coroutineScope.advanceUntilIdle()
-
         verify { renderer.display(codeSuggestion.text, 10) }
       }
 
@@ -260,7 +267,10 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should clear suggestions") {
         session.cancelCodeSuggestion()
 
-        verify { renderer.clear() }
+        verify {
+          renderer.clear()
+          annotationManager.hide()
+        }
       }
 
       it("should handle exceptions gracefully") {
@@ -274,7 +284,10 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should reject code suggestions") {
         session.rejectCodeSuggestion()
 
-        verify { renderer.reject() }
+        verify {
+          renderer.reject()
+          annotationManager.hide()
+        }
       }
 
       it("should handle exceptions gracefully when rejecting") {
@@ -291,6 +304,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify { renderer.dispose() }
         verify { document.removeDocumentListener(session) }
         verify { textWidget.removeKeyListener(session) }
+        verify { annotationManager.hide() }
       }
 
       it("should handle exceptions gracefully") {
