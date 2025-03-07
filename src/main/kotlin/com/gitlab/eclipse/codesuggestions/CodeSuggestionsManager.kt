@@ -3,8 +3,6 @@ package com.gitlab.eclipse.codesuggestions
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.jface.text.IDocument
-import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.*
 import org.eclipse.ui.texteditor.ITextEditor
 
@@ -12,7 +10,7 @@ import org.eclipse.ui.texteditor.ITextEditor
 internal class CodeSuggestionsManager(
   private val platformUtils: PlatformUtils,
   isCodeSuggestionsEnabled: Boolean = BuildConfig.CODE_SUGGESTIONS_ENABLED,
-  private val createCodeSuggestionsSession: (StyledText, IDocument) -> CodeSuggestionsSession,
+  private val createCodeSuggestionsSession: (ITextEditor) -> CodeSuggestionsSession,
 ) {
   private val logger = logger<CodeSuggestionsManager>()
   private val editorSessions = mutableMapOf<ITextEditor, CodeSuggestionsSession>()
@@ -102,11 +100,7 @@ internal class CodeSuggestionsManager(
   }
 
   private fun startSession(editor: ITextEditor) {
-    val textWidget = checkNotNull(platformUtils.getTextWidget(editor))
-    val document = checkNotNull(platformUtils.getDocument(editor))
-
-    editorSessions[editor] = createCodeSuggestionsSession(textWidget, document)
-
+    editorSessions[editor] = createCodeSuggestionsSession(editor)
     logger.info("Code Suggestions session created for ${editor.title}.")
   }
 

@@ -290,4 +290,36 @@
             </command>
         </menuContribution>
     </extension>
+
+    <extension point="org.eclipse.ui.editors.annotationTypes">
+        <type
+                name="codeSuggestionsMarker"
+                markerType="codeSuggestionsMarker"
+                super="org.eclipse.ui.workbench.texteditor.info">
+        </type>
+    </extension>
+
+    <extension point="org.eclipse.ui.editors.markerAnnotationSpecification">
+        <specification
+                annotationType="codeSuggestionsMarker"
+                annotationImageProvider="com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsAnnotationImageProvider"
+        >
+        </specification>
+    </extension>
+
+    <extension point="org.eclipse.ui.workbench.texteditor.rulerColumns">
+        <column
+                id="gitlab-eclipse-plugin.duoRuler"
+                name="GitLab Duo"
+                class="com.gitlab.eclipse.utils.ruler.DuoAnnotationsRulerColumn"
+                enabled="true"
+                global="true"
+        >
+            <placement gravity="1.0">
+                <after id="org.eclipse.ui.editors.columns.linenumbers"/>
+            </placement>
+            <targetEditor id="org.eclipse.ui.DefaultTextEditor" />
+            <targetClass class="org.eclipse.ui.texteditor.AbstractTextEditor" />
+        </column>
+    </extension>
 </plugin>
