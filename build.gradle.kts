@@ -32,7 +32,7 @@ plugins {
 
   id("io.gitlab.arturbosch.detekt") version "1.23.8"
 
-  id("com.github.gmazzo.buildconfig") version "5.5.1"
+  id("com.github.gmazzo.buildconfig") version "5.5.2"
 }
 
 allprojects {
