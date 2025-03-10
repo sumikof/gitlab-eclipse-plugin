@@ -39,12 +39,15 @@ class GitLabDuoChatWebViewController(
   }
 
   @PluginNotification("appReady")
-  fun appReady() {
-    gitLabDuoChatWebViewClient.markAsReady()
-  }
+  fun appReady() = Unit
 
   @PluginNotification("insertCodeSnippet")
   fun insertCodeSnippet(notification: InsertCodeSnippetNotification) {
     insertCodeSnippetService.insertCodeSnippet(notification.snippet)
+  }
+
+  @PluginNotification("focusChange")
+  fun focusChange(notification: FocusChangeNotification) {
+    gitLabDuoChatWebViewClient.updateFocus(notification.isFocused)
   }
 }

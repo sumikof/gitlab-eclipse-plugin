@@ -64,11 +64,13 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
     result shouldBe context
   }
 
-  describe("appReady") {
-    it("should mark client as ready") {
-      controller.appReady()
+  describe("focusChange") {
+    it("should forward the focus update to the client") {
+      val notification = FocusChangeNotification(true)
 
-      verify { gitlabDuoChatWebViewClient.markAsReady() }
+      controller.focusChange(notification)
+
+      verify { gitlabDuoChatWebViewClient.updateFocus(true) }
     }
   }
 

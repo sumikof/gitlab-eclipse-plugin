@@ -6,7 +6,7 @@ import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 class GitLabDuoChatWebViewClient(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper
 ) {
-  private var isReady = false
+  private var isFocused = false
   private val messagesAwaitingReady: MutableList<ExtensionToPluginNotification> = mutableListOf()
 
   fun notify(type: String, payload: Any?) {
@@ -17,17 +17,19 @@ class GitLabDuoChatWebViewClient(
     )
 
     when {
-      isReady -> gitLabLanguageServerWrapper.languageServer?.pluginNotification(message)
+      isFocused -> gitLabLanguageServerWrapper.languageServer?.pluginNotification(message)
       else -> messagesAwaitingReady += message
     }
   }
 
-  fun markAsReady() {
-    isReady = true
+  fun updateFocus(newIsFocused: Boolean) {
+    this.isFocused = newIsFocused
 
-    while (messagesAwaitingReady.isNotEmpty()) {
-      val message = messagesAwaitingReady.removeFirst()
-      gitLabLanguageServerWrapper.languageServer?.pluginNotification(message)
+    if (this.isFocused) {
+      while (messagesAwaitingReady.isNotEmpty()) {
+        val message = messagesAwaitingReady.removeFirst()
+        gitLabLanguageServerWrapper.languageServer?.pluginNotification(message)
+      }
     }
   }
 }
