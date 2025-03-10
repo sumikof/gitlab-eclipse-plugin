@@ -23,6 +23,9 @@ import org.eclipse.swt.events.KeyEvent
 import org.eclipse.swt.events.KeyListener
 import org.eclipse.swt.events.MouseEvent
 import org.eclipse.swt.events.MouseListener
+import org.eclipse.text.undo.DocumentUndoEvent
+import org.eclipse.text.undo.DocumentUndoManagerRegistry
+import org.eclipse.text.undo.IDocumentUndoListener
 import kotlin.time.Duration.Companion.milliseconds
 
 @Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions")
@@ -34,26 +37,27 @@ internal class CodeSuggestionsSession(
   private val annotationManager: CodeSuggestionsSessionAnnotationManager,
   private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
-) : IDocumentListener, KeyListener, MouseListener {
+) : IDocumentListener, KeyListener, MouseListener, IDocumentUndoListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
   private var job: Job? = null
 
+  private var skipNextSuggestion: Boolean = false
   private var codeSuggestion: CodeSuggestion? = null
 
   override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
   override fun mouseDown(e: MouseEvent) = cancelCodeSuggestion()
 
   override fun documentChanged(event: DocumentEvent) {
-    if (event.text.isEmpty()) {
-      return
-    }
-
     if (isCodeSuggestionDisplayed()) {
       cancelCodeSuggestion()
     }
 
-    requestCodeSuggestion(event.offset + event.text.length)
+    if (!skipNextSuggestion && event.text.isNotEmpty()) {
+      requestCodeSuggestion(event.offset + event.text.length)
+    }
+
+    skipNextSuggestion = false
   }
 
   override fun keyPressed(e: KeyEvent) {
@@ -66,8 +70,14 @@ internal class CodeSuggestionsSession(
   override fun mouseDoubleClick(e: MouseEvent) = Unit
   override fun mouseUp(e: MouseEvent) = Unit
 
+  override fun documentUndoNotification(event: DocumentUndoEvent) {
+    skipNextSuggestion = true
+  }
+
   init {
     try {
+      DocumentUndoManagerRegistry.getDocumentUndoManager(document).addDocumentUndoListener(this)
+
       document.addDocumentListener(this)
       textWidget.addKeyListener(this)
       textWidget.addMouseListener(this)
@@ -158,6 +168,7 @@ internal class CodeSuggestionsSession(
     try {
       codeSuggestionsRenderer.dispose()
       annotationManager.hide()
+      DocumentUndoManagerRegistry.getDocumentUndoManager(document).removeDocumentUndoListener(this)
       document.removeDocumentListener(this)
       textWidget.removeKeyListener(this)
       textWidget.removeMouseListener(this)

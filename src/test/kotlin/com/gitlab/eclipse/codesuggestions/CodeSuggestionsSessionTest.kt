@@ -22,6 +22,9 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.KeyEvent
 import org.eclipse.swt.events.MouseEvent
+import org.eclipse.text.undo.DocumentUndoEvent
+import org.eclipse.text.undo.DocumentUndoManager
+import org.eclipse.text.undo.DocumentUndoManagerRegistry
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -31,6 +34,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   val textWidget = mockk<StyledText>(relaxed = true)
 
   val document = mockk<IDocument>(relaxed = true)
+  val documentUndoManager = mockk<DocumentUndoManager>(relaxUnitFun = true)
 
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>(relaxed = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
@@ -50,6 +54,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   beforeSpec {
     mockkStatic("com.gitlab.eclipse.utils.DocumentKt")
     mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
+    mockkStatic(DocumentUndoManagerRegistry::getDocumentUndoManager)
 
     startKoin {
       modules(
@@ -73,6 +78,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
     coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
 
+    every { DocumentUndoManagerRegistry.getDocumentUndoManager(document) } returns documentUndoManager
     every { document.uri } returns "file://file.test"
     every { document.addDocumentListener(any()) } just Runs
     every { document.removeDocumentListener(any()) } just Runs
@@ -107,9 +113,12 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   describe("CodeSuggestionsSession") {
     describe("initialization") {
       it("should add itself as key, mouse, and document listeners during instantiation") {
-        verify { document.addDocumentListener(session) }
-        verify { textWidget.addKeyListener(session) }
-        verify { textWidget.addMouseListener(session) }
+        verify {
+          documentUndoManager.addDocumentUndoListener(session)
+          document.addDocumentListener(session)
+          textWidget.addKeyListener(session)
+          textWidget.addMouseListener(session)
+        }
       }
 
       it("should handle exceptions during instantiation") {
@@ -143,6 +152,23 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         verify { sessionSpy.requestCodeSuggestion(8) }
         verify(exactly = 0) { renderer.clear() }
+      }
+
+      it("should not automatically request code suggestions after an undo event") {
+        val undoEvent = mockk<DocumentUndoEvent>()
+        session.documentUndoNotification(undoEvent)
+
+        val event = mockk<DocumentEvent> {
+          every { offset } returns 10
+          every { text } returns "abc" // offset will be 13 (10 + 3)
+        }
+        session.documentChanged(event)
+        coroutineScope.advanceUntilIdle()
+        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+
+        session.documentChanged(event)
+        coroutineScope.advanceUntilIdle()
+        coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 0, 13) }
       }
 
       it("should cancel displayed code suggestions when document changes") {
@@ -301,10 +327,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should clean up resources and remove document listener") {
         session.dispose()
 
-        verify { renderer.dispose() }
-        verify { document.removeDocumentListener(session) }
-        verify { textWidget.removeKeyListener(session) }
-        verify { annotationManager.hide() }
+        verify {
+          renderer.dispose()
+          documentUndoManager.removeDocumentUndoListener(session)
+          document.removeDocumentListener(session)
+          textWidget.removeKeyListener(session)
+          annotationManager.hide()
+        }
       }
 
       it("should handle exceptions gracefully") {
