@@ -62,7 +62,7 @@
 
     <extension point="org.eclipse.ui.preferencePages">
         <page id="com.gitlab.eclipse.preferences.GitLabPreferencePage"
-              name="GitLab"
+              name="GitLab Duo"
               class="com.gitlab.eclipse.preferences.GitLabPreferencePage">
         </page>
     </extension>
