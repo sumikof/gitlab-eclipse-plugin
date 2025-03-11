@@ -1,22 +1,20 @@
 package com.gitlab.eclipse.preferences.storage
 
 import org.eclipse.jface.preference.StringFieldEditor
+import org.eclipse.swt.SWT
 import org.eclipse.swt.widgets.Composite
-import java.util.Optional
+import org.eclipse.swt.widgets.Text
 
 class SecretStringFieldEditor(
   private val secretStorage: SecretStorage,
   secretName: String?,
   labelText: String?,
   parent: Composite?
-) :
-  StringFieldEditor(secretName, labelText, parent) {
+) : StringFieldEditor(secretName, labelText, parent) {
   override fun doLoad() {
     val textField = textControl
     if (textField != null) {
-      val value = Optional.ofNullable(secret())
-        .map { s: String -> s.replace(".".toRegex(), "•") }
-        .orElse("")
+      val value = secretStorage.getSecret(preferenceName).orEmpty()
       textField.text = value
       oldValue = value
     }
@@ -27,18 +25,15 @@ class SecretStringFieldEditor(
     if (textField != null) {
       textField.text = ""
     }
+
     valueChanged()
   }
 
   override fun doStore() {
     val textField = textControl
-    val text = textField.text
-    if (text.matches("^•+$".toRegex())) {
-      // Avoid overwriting existing secrets with placeholder values.
-      return
+    if (textField != null) {
+      secretStorage.putSecret(preferenceName, textField.text)
     }
-
-    secretStorage.putSecret(preferenceName, text)
 
     doLoad()
   }
@@ -50,16 +45,10 @@ class SecretStringFieldEditor(
       return false
     }
 
-    val allowedRegexString = "^[a-zA-Z0-9-_]+$"
-    if (!text.matches(allowedRegexString.toRegex()) && !text.matches("^•+$".toRegex())) {
-      errorMessage = "$labelText must match pattern $allowedRegexString"
-      return false
-    }
-
     return true
   }
 
-  private fun secret(): String? {
-    return secretStorage.getSecret(preferenceName)
+  override fun createTextWidget(parent: Composite): Text {
+    return Text(parent, SWT.SINGLE or SWT.BORDER or SWT.PASSWORD)
   }
 }
