@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.authentication
 
+import com.github.scribejava.core.model.OAuth2AccessToken
+import com.github.scribejava.core.oauth.OAuth20Service
 import fi.iki.elonen.NanoHTTPD
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
@@ -60,6 +62,25 @@ class GitLabOAuthServiceTest : DescribeSpec({
         verify {
           serverMock.start()
         }
+      }
+    }
+
+    describe("refreshToken") {
+      it("should refresh the token and return a new OAuth2AccessToken") {
+        val mockOAuthService = mockk<OAuth20Service>()
+        val mockToken = mockk<OAuth2AccessToken>()
+        val currentToken = "refresh_token_123"
+
+        val oauthServiceField = GitLabOAuthService::class.java.getDeclaredField("oauthService")
+        oauthServiceField.isAccessible = true
+        oauthServiceField.set(gitLabOAuthService, mockOAuthService)
+
+        every { mockOAuthService.refreshAccessToken(currentToken, "api") } returns mockToken
+
+        val result = gitLabOAuthService.refreshToken(currentToken)
+
+        verify(exactly = 1) { mockOAuthService.refreshAccessToken(currentToken, "api") }
+        assert(result == mockToken)
       }
     }
   }
