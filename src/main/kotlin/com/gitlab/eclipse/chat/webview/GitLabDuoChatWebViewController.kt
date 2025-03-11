@@ -9,6 +9,7 @@ import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import java.net.URI
 
 class GitLabDuoChatWebViewController(
   private val platformUtils: PlatformUtils,
@@ -49,5 +50,12 @@ class GitLabDuoChatWebViewController(
   @PluginNotification("focusChange")
   fun focusChange(notification: FocusChangeNotification) {
     gitLabDuoChatWebViewClient.updateFocus(notification.isFocused)
+  }
+
+  @PluginNotification("openLink")
+  fun openLink(notification: OpenLinkNotification) {
+    platformUtils.getWorkbench().browserSupport.externalBrowser.openURL(
+      URI.create(notification.href).toURL()
+    )
   }
 }
