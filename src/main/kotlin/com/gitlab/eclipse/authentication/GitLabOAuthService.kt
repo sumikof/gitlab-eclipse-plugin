@@ -2,8 +2,11 @@ package com.gitlab.eclipse.authentication
 
 import com.github.scribejava.core.builder.ServiceBuilder
 import com.github.scribejava.core.builder.api.DefaultApi20
+import com.github.scribejava.core.model.OAuth2AccessToken
 import com.github.scribejava.core.oauth.AccessTokenRequestParams
 import com.github.scribejava.core.oauth.OAuth20Service
+import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
+import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
 import fi.iki.elonen.NanoHTTPD
 import java.awt.Desktop
@@ -20,23 +23,26 @@ class GitLabOAuthService {
     private const val AUTHORIZATION_ENDPOINT = "https://gitlab.com/oauth/authorize"
     private const val TOKEN_ENDPOINT = "https://gitlab.com/oauth/token"
     private const val CALLBACK_PORT = 63343
+    private const val SCOPE = "api"
   }
 
-  fun startOAuthFlow() {
-    val service: OAuth20Service = ServiceBuilder(CLIENT_ID)
-      .callback(REDIRECT_URI)
-      .defaultScope("api")
-      .build(object : DefaultApi20() {
-        override fun getAccessTokenEndpoint(): String = TOKEN_ENDPOINT
-        override fun getAuthorizationBaseUrl(): String = AUTHORIZATION_ENDPOINT
-      })
+  private val oauthService: OAuth20Service = ServiceBuilder(CLIENT_ID)
+    .debug()
+    .callback(REDIRECT_URI)
+    .build(object : DefaultApi20() {
+      override fun getAccessTokenEndpoint(): String = TOKEN_ENDPOINT
+      override fun getAuthorizationBaseUrl(): String = AUTHORIZATION_ENDPOINT
+      override fun getRefreshTokenEndpoint(): String = TOKEN_ENDPOINT
+      override fun getClientAuthentication(): ClientAuthentication = RequestBodyAuthenticationScheme.instance()
+    })
 
+  fun startOAuthFlow() {
     val codeVerifier = generateCodeVerifier()
     val codeChallenge = generateCodeChallenge(codeVerifier)
 
     // Open in default browser
     if (Desktop.isDesktopSupported()) {
-      val authUrl = "${service.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
+      val authUrl = "${oauthService.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
       Desktop.getDesktop().browse(URI(authUrl))
     }
 
@@ -45,17 +51,20 @@ class GitLabOAuthService {
     val server = createServer(CALLBACK_PORT) { code ->
       // Exchange code for an access token
       val tokenRequest = AccessTokenRequestParams(code)
-        .scope("api")
+        .scope(SCOPE)
         .pkceCodeVerifier(codeVerifier)
 
-      tokenRequest.addExtraParameter("client_id", CLIENT_ID)
-
-      val token = service.getAccessToken(tokenRequest)
+      val token = oauthService.getAccessToken(tokenRequest)
       service<OAuthTokenProvider>().updateToken(token)
 
       future.complete(code)
     }
     server.start()
+  }
+
+  fun refreshToken(currentToken: String): OAuth2AccessToken? {
+    val newToken = oauthService.refreshAccessToken(currentToken, SCOPE)
+    return newToken
   }
 
   internal fun createServer(port: Int, onCodeReceived: (String) -> Unit): NanoHTTPD {
