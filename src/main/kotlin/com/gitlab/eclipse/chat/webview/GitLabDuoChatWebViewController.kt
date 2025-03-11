@@ -9,6 +9,8 @@ import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.swt.dnd.Clipboard
+import org.eclipse.swt.dnd.TextTransfer
 import java.net.URI
 
 class GitLabDuoChatWebViewController(
@@ -57,5 +59,14 @@ class GitLabDuoChatWebViewController(
     platformUtils.getWorkbench().browserSupport.externalBrowser.openURL(
       URI.create(notification.href).toURL()
     )
+  }
+
+  @PluginNotification("copyCodeSnippet")
+  fun copyCodeSnippet(notification: CopyCodeSnippetNotification) {
+    currentDisplay.syncExec {
+      val clipboard = Clipboard(currentDisplay)
+      clipboard.setContents(arrayOf(notification.snippet), arrayOf(TextTransfer.getInstance()))
+      clipboard.dispose()
+    }
   }
 }
