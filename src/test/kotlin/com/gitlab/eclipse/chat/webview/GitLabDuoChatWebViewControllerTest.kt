@@ -10,11 +10,13 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.swt.SwtCallable
+import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.texteditor.ITextEditor
 
 class GitLabDuoChatWebViewControllerTest : DescribeSpec({
   val platformUtils = mockk<PlatformUtils>()
   val textEditor = mockk<ITextEditor>()
+  val workbench = mockk<IWorkbench>(relaxed = true)
 
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
   val gitlabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>(relaxUnitFun = true)
@@ -37,7 +39,11 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
     } answers {
       firstArg<SwtCallable<FileContext, Exception>>().call()
     }
+
+    every { platformUtils.getWorkbench() } returns workbench
   }
+
+  afterEach { clearAllMocks() }
 
   afterSpec { unmockkAll() }
 
@@ -81,6 +87,17 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       controller.insertCodeSnippet(InsertCodeSnippetNotification(snippet))
 
       verify { insertCodeSnippetService.insertCodeSnippet(snippet) }
+    }
+  }
+
+  describe("openLink") {
+    it("should open link in external browser") {
+      val url = "https://example.com"
+      val notification = OpenLinkNotification(url)
+
+      controller.openLink(notification)
+
+      verify { workbench.browserSupport.externalBrowser.openURL(any()) }
     }
   }
 })
