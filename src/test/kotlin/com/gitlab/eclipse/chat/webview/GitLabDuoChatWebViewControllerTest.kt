@@ -10,6 +10,8 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.swt.SwtCallable
+import org.eclipse.swt.dnd.Clipboard
+import org.eclipse.swt.dnd.TextTransfer
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.texteditor.ITextEditor
 
@@ -31,7 +33,12 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
 
   extensions(LoggingKotestExtension)
 
-  beforeSpec { mockkStatic("com.gitlab.eclipse.utils.DisplayKt") }
+  beforeSpec {
+    mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
+
+    mockkStatic(TextTransfer::getInstance)
+    mockkConstructor(Clipboard::class)
+  }
 
   beforeEach {
     every {
@@ -40,12 +47,25 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       firstArg<SwtCallable<FileContext, Exception>>().call()
     }
 
+    every {
+      currentDisplay.syncExec(any())
+    } answers {
+      firstArg<Runnable>().run()
+    }
+
+    every { currentDisplay.thread } returns Thread.currentThread()
+
     every { platformUtils.getWorkbench() } returns workbench
+
+    every { anyConstructed<Clipboard>().setContents(any(), any()) } returns Unit
+    every { anyConstructed<Clipboard>().dispose() } returns Unit
   }
 
   afterEach { clearAllMocks() }
 
-  afterSpec { unmockkAll() }
+  afterSpec {
+    unmockkAll()
+  }
 
   it("should return null when there is no active text editor") {
     every { platformUtils.getActiveTextEditor() } returns null
@@ -98,6 +118,22 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       controller.openLink(notification)
 
       verify { workbench.browserSupport.externalBrowser.openURL(any()) }
+    }
+  }
+
+  describe("copyCodeSnippet") {
+    it("should copy code snippet") {
+      val snippet = "println(\"Hello\")"
+      val notification = CopyCodeSnippetNotification(snippet)
+
+      controller.copyCodeSnippet(notification)
+
+      verify {
+        anyConstructed<Clipboard>().setContents(
+          arrayOf(snippet),
+          any()
+        )
+      }
     }
   }
 })
