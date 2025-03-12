@@ -1,7 +1,11 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
+import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.utils.NotificationUtils
+import com.gitlab.eclipse.utils.PlatformUtils
+import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
@@ -9,14 +13,24 @@ import org.eclipse.ui.commands.IElementUpdater
 import org.eclipse.ui.menus.UIElement
 
 class CodeSuggestionsStatusHandler : AbstractHandler(), IElementUpdater {
-  override fun execute(event: ExecutionEvent) = Unit
+  private val stateService by lazyService<CodeSuggestionsStateService>()
 
-  override fun isEnabled() = false
+  override fun execute(event: ExecutionEvent) {
+    val platform = service<PlatformUtils>()
+    val activeTextEditor = platform.getActiveTextEditor()
+
+    if (activeTextEditor != null) {
+      currentDisplay.syncExec { platform.getTextWidget(activeTextEditor)?.setFocus() }
+    } else {
+      NotificationUtils.show("No active editor. Open a file to use Duo Code Suggestions.")
+    }
+  }
+
+  override fun isEnabled() = stateService.isEnabled
 
   override fun updateElement(element: UIElement, parameters: MutableMap<Any?, Any?>) {
-    val service = service<CodeSuggestionsStateService>()
+    val engagedCheck = stateService.getFirstEngagedCheck()
 
-    val engagedCheck = service.getFirstEngagedCheck()
     if (engagedCheck == null) {
       element.setText("Code Suggestions: Enabled")
       element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit"))

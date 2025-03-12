@@ -2,32 +2,46 @@ package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
+import com.gitlab.eclipse.utils.NotificationUtils
+import com.gitlab.eclipse.utils.PlatformUtils
+import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
+import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
 import org.eclipse.jface.resource.ImageDescriptor
+import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.menus.UIElement
-import org.junit.jupiter.api.Assertions.*
+import org.eclipse.ui.texteditor.ITextEditor
 import org.koin.core.context.GlobalContext.startKoin
 import org.koin.core.context.GlobalContext.stopKoin
 import org.koin.dsl.module
 
 class CodeSuggestionsStatusHandlerTest : DescribeSpec({
+  val textEditor = mockk<ITextEditor>(relaxed = true)
+  val textWidget = mockk<StyledText>(relaxed = true)
   val element = mockk<UIElement>(relaxUnitFun = true)
+
+  val platformUtils = mockk<PlatformUtils>()
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
-  val handler = CodeSuggestionsStatusHandler()
+
+  val handler by lazy { CodeSuggestionsStatusHandler() }
 
   beforeSpec {
     mockkObject(ThemeUtils)
+    mockkObject(NotificationUtils)
+    mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
 
     startKoin {
       modules(
         module {
+          single<PlatformUtils> { platformUtils }
           single<CodeSuggestionsStateService> { codeSuggestionsStateService }
         }
       )
@@ -36,6 +50,12 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
 
   beforeEach {
     every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
+    every { NotificationUtils.show(any()) } returns Unit
+
+    every { currentDisplay.syncExec(any()) } answers { firstArg<Runnable>().run() }
+
+    every { platformUtils.getActiveTextEditor() } returns textEditor
+    every { platformUtils.getTextWidget(textEditor) } returns textWidget
   }
 
   afterEach { clearAllMocks() }
@@ -43,6 +63,33 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
   afterSpec {
     unmockkAll()
     stopKoin()
+  }
+
+  describe("execute") {
+    it("should focus the active text editor") {
+      every { platformUtils.getActiveTextEditor() } returns textEditor
+      every { platformUtils.getTextWidget(textEditor) } returns textWidget
+
+      handler.execute(mockk())
+
+      verify { textWidget.setFocus() }
+    }
+
+    it("should show a notification when there is no active text editor") {
+      every { platformUtils.getActiveTextEditor() } returns null
+
+      handler.execute(mockk())
+
+      verify { NotificationUtils.show("No active editor. Open a file to use Duo Code Suggestions.") }
+    }
+  }
+
+  it("should be enabled only when chat is enabled") {
+    every { codeSuggestionsStateService.isEnabled } returns true
+    handler.isEnabled() shouldBe true
+
+    every { codeSuggestionsStateService.isEnabled } returns false
+    handler.isEnabled() shouldBe false
   }
 
   describe("updateElement") {

@@ -15,7 +15,7 @@ class DuoChatStateService : AbstractSourceProvider() {
   }
 
   private var checks: List<FeatureStateChangeCheck>? = null
-  private val isEnabled: Boolean
+  val isEnabled: Boolean
     get() = checks?.none { it.engaged } ?: false
 
   fun update(featureStateChange: FeatureStateChange) {
