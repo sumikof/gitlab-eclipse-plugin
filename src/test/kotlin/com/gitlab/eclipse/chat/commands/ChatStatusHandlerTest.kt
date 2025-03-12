@@ -1,9 +1,11 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.chat.utils.openDuoChatWindow
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.jface.resource.ImageDescriptor
 import org.eclipse.ui.menus.UIElement
@@ -14,10 +16,11 @@ import org.koin.dsl.module
 class ChatStatusHandlerTest : DescribeSpec({
   val element = mockk<UIElement>(relaxUnitFun = true)
   val duoChatStatusService = mockk<DuoChatStateService>()
-  val handler = ChatStatusHandler()
+  val handler by lazy { ChatStatusHandler() }
 
   beforeSpec {
     mockkObject(ThemeUtils)
+    mockkStatic("com.gitlab.eclipse.chat.utils.DuoChatWindowKt")
 
     startKoin {
       modules(
@@ -30,6 +33,7 @@ class ChatStatusHandlerTest : DescribeSpec({
 
   beforeEach {
     every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
+    every { openDuoChatWindow() } returns Unit
   }
 
   afterEach { clearAllMocks() }
@@ -37,6 +41,20 @@ class ChatStatusHandlerTest : DescribeSpec({
   afterSpec {
     unmockkAll()
     stopKoin()
+  }
+
+  it("should open duo chat window") {
+    handler.execute(mockk())
+
+    verify { openDuoChatWindow() }
+  }
+
+  it("should be enabled only when chat is enabled") {
+    every { duoChatStatusService.isEnabled } returns true
+    handler.isEnabled() shouldBe true
+
+    every { duoChatStatusService.isEnabled } returns false
+    handler.isEnabled() shouldBe false
   }
 
   describe("updateElement") {

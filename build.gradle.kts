@@ -174,6 +174,7 @@ val eclipseDependencies = mapOf(
   "org.eclipse.ui.workbench.texteditor" to "0.0.0",
   "org.eclipse.text" to "0.0.0",
   "org.eclipse.jface.text" to "0.0.0",
+  "org.eclipse.jface.notifications" to "0.0.0",
   "org.eclipse.jgit" to "[7.0.0,8.0.0)",
   "org.eclipse.jdt.core" to "0.0.0",
   "com.google.gson" to "2.11.0",

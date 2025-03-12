@@ -126,6 +126,11 @@
         />
 
         <handler
+            commandId="gitlab-eclipse-plugin.commands.showPluginStatus"
+            class="com.gitlab.eclipse.handlers.ShowPluginStatusMenu"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.showSettings"
                 class="com.gitlab.eclipse.handlers.ShowSettings"
         />
@@ -254,10 +259,7 @@
             </toolbar>
         </menuContribution>
 
-        <menuContribution
-                allPopups="false"
-                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu">
-
+        <menuContribution locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu">
             <command
                     commandId="gitlab-eclipse-plugin.commands.chatStatus"
                     id="gitlab-eclipse-plugin.commands.chatStatus"
