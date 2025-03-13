@@ -3,6 +3,8 @@ package com.gitlab.eclipse.chat.commands
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.utils.openDuoChatWindow
 import com.gitlab.eclipse.inject.lazyService
+import com.gitlab.eclipse.utils.system.SystemUtils
+import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
@@ -21,12 +23,17 @@ class ChatStatusHandler : AbstractHandler(), IElementUpdater {
   override fun updateElement(element: UIElement, parameters: MutableMap<Any?, Any?>) {
     val engagedCheck = stateService.getFirstEngagedCheck()
 
+    val iconTone = when {
+      SystemUtils.isWindows() -> IconTone.DARK
+      else -> null
+    }
+
     if (engagedCheck == null) {
       element.setText("Duo Chat: Enabled")
-      element.setIcon(ThemeUtils.getThemedIcon("chat_on_obj"))
+      element.setIcon(ThemeUtils.getThemedIcon("chat_on_obj", iconTone))
     } else {
       element.setText("Duo Chat: Disabled (${engagedCheck.checkId})")
-      element.setIcon(ThemeUtils.getThemedIcon("chat_off_obj"))
+      element.setIcon(ThemeUtils.getThemedIcon("chat_off_obj", iconTone))
     }
   }
 }

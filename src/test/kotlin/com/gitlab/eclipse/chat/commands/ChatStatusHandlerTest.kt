@@ -3,6 +3,8 @@ package com.gitlab.eclipse.chat.commands
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.utils.openDuoChatWindow
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
+import com.gitlab.eclipse.utils.system.SystemUtils
+import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -19,6 +21,7 @@ class ChatStatusHandlerTest : DescribeSpec({
   val handler by lazy { ChatStatusHandler() }
 
   beforeSpec {
+    mockkObject(SystemUtils)
     mockkObject(ThemeUtils)
     mockkStatic("com.gitlab.eclipse.chat.utils.DuoChatWindowKt")
 
@@ -33,7 +36,11 @@ class ChatStatusHandlerTest : DescribeSpec({
 
   beforeEach {
     every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
+    every { ThemeUtils.getThemedIcon(any(), any()) } returns mockk<ImageDescriptor>()
+
     every { openDuoChatWindow() } returns Unit
+
+    every { SystemUtils.isWindows() } returns false
   }
 
   afterEach { clearAllMocks() }
@@ -58,6 +65,18 @@ class ChatStatusHandlerTest : DescribeSpec({
   }
 
   describe("updateElement") {
+    it("should always display dark icon on windows") {
+      every { duoChatStatusService.getFirstEngagedCheck() } returns null
+      every { SystemUtils.isWindows() } returns true
+      handler.updateElement(element, mutableMapOf())
+
+      verify {
+        ThemeUtils.getThemedIcon("chat_on_obj", IconTone.DARK)
+        element.setText("Duo Chat: Enabled")
+        element.setIcon(any())
+      }
+    }
+
     it("should show enabled status when chat has no engaged check") {
       every { duoChatStatusService.getFirstEngagedCheck() } returns null
       handler.updateElement(element, mutableMapOf())

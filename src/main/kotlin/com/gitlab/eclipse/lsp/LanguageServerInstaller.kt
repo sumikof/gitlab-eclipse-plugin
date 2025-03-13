@@ -1,6 +1,9 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.utils.system.Arch
+import com.gitlab.eclipse.utils.system.OS
+import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.core.runtime.FileLocator
 import org.eclipse.core.runtime.Path
 import org.eclipse.core.runtime.Platform
@@ -8,9 +11,6 @@ import org.osgi.framework.Bundle
 
 class LanguageServerInstaller {
   private val logger = logger<LanguageServerInstaller>()
-
-  private val os by lazy { System.getProperty("os.name").lowercase() }
-  private val arch by lazy { System.getProperty("os.arch").lowercase() }
 
   fun install(): String? {
     try {
@@ -49,19 +49,19 @@ class LanguageServerInstaller {
 
   private val languageServerBundle
     get() = when {
-      os.contains("windows", ignoreCase = true) -> "gitlab-language-server.win32.win32.x86_64"
-      os.contains("nix|nux|aix".toRegex()) -> "gitlab-language-server.gtk.linux.x86_64"
-      os.contains("mac") && arch.contains("aarch64") -> "gitlab-language-server.cocoa.macosx.aarch64"
-      os.contains("mac") -> "gitlab-language-server.cocoa.macosx.x86_64"
-      else -> error("Unsupported OS and architecture. os=$os, arch=$arch")
+      SystemUtils.os == OS.WINDOWS -> "gitlab-language-server.win32.win32.x86_64"
+      SystemUtils.os == OS.LINUX -> "gitlab-language-server.gtk.linux.x86_64"
+      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.cocoa.macosx.aarch64"
+      SystemUtils.os == OS.MAC -> "gitlab-language-server.cocoa.macosx.x86_64"
+      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
     }
 
   private val languageServerBinary
     get() = when {
-      os.contains("windows", ignoreCase = true) -> "gitlab-lsp-win-x64.exe"
-      os.contains("nix|nux|aix".toRegex()) -> "gitlab-lsp-linux-x64"
-      os.contains("mac") && arch.contains("aarch64") -> "gitlab-lsp-macos-arm64"
-      os.contains("mac") -> "gitlab-lsp-macos-x64"
-      else -> error("Unsupported OS and architecture. os=$os, arch=$arch")
+      SystemUtils.os == OS.WINDOWS -> "gitlab-lsp-win-x64.exe"
+      SystemUtils.os == OS.LINUX -> "gitlab-lsp-linux-x64"
+      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-macos-arm64"
+      SystemUtils.os == OS.MAC -> "gitlab-lsp-macos-x64"
+      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
     }
 }

@@ -2,7 +2,7 @@
 <?eclipse version="3.4"?>
 <plugin>
     <extension point="org.eclipse.ui.commands">
-        <category name="GitLab Duo" id="gitlab-eclipse-plugin" />
+        <category name="GitLab Duo" id="gitlab-eclipse-plugin"/>
 
         <command
                 id="com.gitlab.eclipse.codesuggestions.requestSuggestion"
@@ -58,6 +58,10 @@
         <sourceProvider provider="com.gitlab.eclipse.utils.BuildFlagSourceProvider">
             <variable name="code_suggestions_enabled" priorityLevel="workbench"/>
         </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.utils.system.SystemSourceProvider">
+            <variable name="os" priorityLevel="workbench"/>
+        </sourceProvider>
     </extension>
 
     <extension point="org.eclipse.ui.preferencePages">
@@ -97,13 +101,13 @@
 
     <extension point="org.eclipse.ui.handlers">
         <handler
-            class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsHandler"
-            commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
+                class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
         />
 
         <handler
-            class="com.gitlab.eclipse.codesuggestions.handlers.RejectCodeSuggestionsHandler"
-            commandId="com.gitlab.eclipse.codesuggestions.rejectSuggestion"
+                class="com.gitlab.eclipse.codesuggestions.handlers.RejectCodeSuggestionsHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.rejectSuggestion"
         />
 
         <handler
@@ -137,8 +141,8 @@
         />
 
         <handler
-            commandId="gitlab-eclipse-plugin.commands.showPluginStatus"
-            class="com.gitlab.eclipse.handlers.ShowPluginStatusMenu"
+                commandId="gitlab-eclipse-plugin.commands.showPluginStatus"
+                class="com.gitlab.eclipse.handlers.ShowPluginStatusMenu"
         />
 
         <handler
@@ -211,9 +215,14 @@
                         icon="icons/dark/chat_on_obj.png"
                 >
                     <visibleWhen checkEnabled="false">
-                        <with variable="theme_tone">
-                            <equals value="light"/>
-                        </with>
+                        <or>
+                            <with variable="theme_tone">
+                                <equals value="light"/>
+                            </with>
+                            <with variable="os">
+                                <equals value="windows" />
+                            </with>
+                        </or>
                     </visibleWhen>
                 </command>
 
@@ -224,9 +233,16 @@
                         icon="icons/light/chat_on_obj.png"
                 >
                     <visibleWhen checkEnabled="false">
-                        <with variable="theme_tone">
-                            <equals value="dark"/>
-                        </with>
+                        <and>
+                            <with variable="theme_tone">
+                                <equals value="dark"/>
+                            </with>
+                            <with variable="os">
+                                <not>
+                                    <equals value="windows"/>
+                                </not>
+                            </with>
+                        </and>
                     </visibleWhen>
                 </command>
 
@@ -281,11 +297,11 @@
                     commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     label="Code Suggestions: Disabled">
-                    <visibleWhen checkEnabled="false">
-                        <with variable="code_suggestions_enabled">
-                            <equals value="true"/>
-                        </with>
-                    </visibleWhen>
+                <visibleWhen checkEnabled="false">
+                    <with variable="code_suggestions_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
             </command>
 
             <separator name="StatusActions" visible="true"/>
@@ -331,8 +347,8 @@
             <placement gravity="1.0">
                 <after id="org.eclipse.ui.editors.columns.linenumbers"/>
             </placement>
-            <targetEditor id="org.eclipse.ui.DefaultTextEditor" />
-            <targetClass class="org.eclipse.ui.texteditor.AbstractTextEditor" />
+            <targetEditor id="org.eclipse.ui.DefaultTextEditor"/>
+            <targetClass class="org.eclipse.ui.texteditor.AbstractTextEditor"/>
         </column>
     </extension>
 </plugin>

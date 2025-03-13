@@ -5,6 +5,8 @@ import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
+import com.gitlab.eclipse.utils.system.SystemUtils
+import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -34,6 +36,7 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
   val handler by lazy { CodeSuggestionsStatusHandler() }
 
   beforeSpec {
+    mockkObject(SystemUtils)
     mockkObject(ThemeUtils)
     mockkObject(NotificationUtils)
     mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
@@ -50,12 +53,16 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
 
   beforeEach {
     every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
+    every { ThemeUtils.getThemedIcon(any(), any()) } returns mockk<ImageDescriptor>()
+
     every { NotificationUtils.show(any()) } returns Unit
 
     every { currentDisplay.syncExec(any()) } answers { firstArg<Runnable>().run() }
 
     every { platformUtils.getActiveTextEditor() } returns textEditor
     every { platformUtils.getTextWidget(textEditor) } returns textWidget
+
+    every { SystemUtils.isWindows() } returns false
   }
 
   afterEach { clearAllMocks() }
@@ -93,6 +100,18 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
   }
 
   describe("updateElement") {
+    it("should always display dark icon on windows") {
+      every { codeSuggestionsStateService.getFirstEngagedCheck() } returns null
+      every { SystemUtils.isWindows() } returns true
+      handler.updateElement(element, mutableMapOf())
+
+      verify {
+        ThemeUtils.getThemedIcon("duo_on_edit", IconTone.DARK)
+        element.setText("Code Suggestions: Enabled")
+        element.setIcon(any())
+      }
+    }
+
     it("should show enabled status when code suggestions has no engaged check") {
       every { codeSuggestionsStateService.getFirstEngagedCheck() } returns null
       handler.updateElement(element, mutableMapOf())

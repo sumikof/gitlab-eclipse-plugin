@@ -9,6 +9,7 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.WebviewInfo
 import com.gitlab.eclipse.lsp.webview.ThemeProvider
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
@@ -24,8 +25,7 @@ class LanguageServerBrowserView : ViewPart() {
   private val duoChatStateService by lazyService<DuoChatStateService>()
 
   override fun createPartControl(parent: Composite?) {
-    val osName = System.getProperty("os.name")
-    val browserStyle = if (osName.contains("Windows", ignoreCase = true)) SWT.EDGE else SWT.WEBKIT
+    val browserStyle = if (SystemUtils.isWindows()) SWT.EDGE else SWT.WEBKIT
 
     browser = Browser(parent, browserStyle)
     setBrowserContent()
