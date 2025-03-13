@@ -2,7 +2,6 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.utils.PlatformUtils
-import io.kotest.assertions.throwables.shouldNotThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
@@ -157,90 +156,8 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
     }
 
-    it("should reject a code suggestion for the active editor") {
-      val manager = createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
-        createCodeSuggestionsSession = { _ -> session }
-      )
-
-      val partListener = slot<IPartListener2>()
-      verify { page.addPartListener(capture(partListener)) }
-
-      partListener.captured.partOpened(editorRef)
-      manager.rejectCodeSuggestion()
-
-      verify { session.rejectCodeSuggestion() }
-    }
-
-    it("should request a code suggestion for an editor with an active session") {
-      val manager = createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
-        createCodeSuggestionsSession = { _ -> session }
-      )
-
-      val partListener = slot<IPartListener2>()
-      verify { page.addPartListener(capture(partListener)) }
-
-      partListener.captured.partOpened(editorRef)
-
-      manager.requestCodeSuggestion()
-
-      verify { session.requestCodeSuggestion() }
-    }
-
-    it("should log a warning when requesting a code suggestion for an editor without an active session") {
-      val manager = createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
-        createCodeSuggestionsSession = { _ -> session }
-      )
-
-      val newEditor = mockk<ITextEditor>(relaxed = true)
-      every { platformUtils.getActiveTextEditor() } returns newEditor
-      every { newEditor.title } returns "New Editor"
-
-      manager.requestCodeSuggestion()
-
-      verify(exactly = 0) { session.requestCodeSuggestion() }
-    }
-
-    it("should handle exceptions when setting up platform listeners") {
-      createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
-        createCodeSuggestionsSession = { _ -> session }
-      )
-
-      every { platformUtils.getWorkbench() } throws RuntimeException("Test exception")
-
-      shouldNotThrow<Exception> {
-        CodeSuggestionsManager(platformUtils) { _ -> session }
-      }
-    }
-
-    describe("isCodeSuggestionDisplayed") {
-      it("should return false if no active text editor is found") {
-        val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
-          createCodeSuggestionsSession = { _ -> session }
-        )
-
-        every { platformUtils.getActiveTextEditor() } returns null
-
-        manager.isCodeSuggestionDisplayed() shouldBe false
-      }
-
-      it("should return false if no code suggestion session exists") {
-        val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
-          createCodeSuggestionsSession = { _ -> session }
-        )
-
-        val newEditor = mockk<ITextEditor>(relaxed = true)
-        every { platformUtils.getActiveTextEditor() } returns newEditor
-
-        manager.isCodeSuggestionDisplayed() shouldBe false
-      }
-
-      it("should return true if there is a code suggestion displayed") {
+    describe("getOrCreateSession") {
+      it("should return existing session for editor if it exists") {
         val manager = createCodeSuggestionsManager(
           isCodeSuggestionsEnabled = true,
           createCodeSuggestionsSession = { _ -> session }
@@ -250,54 +167,28 @@ class CodeSuggestionsManagerTest : DescribeSpec({
         verify { page.addPartListener(capture(partListener)) }
         partListener.captured.partOpened(editorRef)
 
-        every { session.isCodeSuggestionDisplayed() } returns true
+        val result = manager.getOrCreateSession(textEditor)
 
-        manager.isCodeSuggestionDisplayed() shouldBe true
+        result shouldBe session
       }
-    }
 
-    describe("acceptCodeSuggestion") {
-      it("should not accept code suggestion for an editor without an active session") {
-        val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
-          createCodeSuggestionsSession = { _ -> session }
-        )
+      it("should create new session for editor if it doesn't exist") {
+        val sessionFactory = mockk<(ITextEditor) -> CodeSuggestionsSession>()
+        every { sessionFactory.invoke(any()) } returns session
 
         val newEditor = mockk<ITextEditor>(relaxed = true)
-        every { platformUtils.getActiveTextEditor() } returns newEditor
         every { newEditor.title } returns "New Editor"
+        every { platformUtils.getDocument(newEditor) } returns mockk(relaxed = true)
+        every { platformUtils.getTextWidget(newEditor) } returns mockk(relaxed = true)
 
-        manager.acceptCodeSuggestion()
-
-        verify(exactly = 0) { session.acceptCodeSuggestion() }
-      }
-
-      it("should not accept code suggestion when no active editor is found") {
         val manager = createCodeSuggestionsManager(
           isCodeSuggestionsEnabled = true,
-          createCodeSuggestionsSession = { _ -> session }
+          createCodeSuggestionsSession = sessionFactory
         )
 
-        every { platformUtils.getActiveTextEditor() } returns null
+        val result = manager.getOrCreateSession(newEditor)
 
-        manager.acceptCodeSuggestion()
-
-        verify(exactly = 0) { session.acceptCodeSuggestion() }
-      }
-
-      it("should accept code suggestion for an editor with an active session") {
-        val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
-          createCodeSuggestionsSession = { _ -> session }
-        )
-
-        val partListener = slot<IPartListener2>()
-        verify { page.addPartListener(capture(partListener)) }
-        partListener.captured.partOpened(editorRef)
-
-        manager.acceptCodeSuggestion()
-
-        verify { session.acceptCodeSuggestion() }
+        result shouldBe session
       }
     }
   }
