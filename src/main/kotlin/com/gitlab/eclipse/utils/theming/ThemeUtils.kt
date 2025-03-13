@@ -18,13 +18,22 @@ object ThemeUtils {
     return brightness < 0.5f
   }
 
-  fun getThemedIcon(iconName: String): ImageDescriptor? {
+  fun getThemedIcon(iconName: String, requestedTone: IconTone? = null): ImageDescriptor? {
     val theme = PlatformUI.getWorkbench().themeManager.currentTheme
-    val folder = if (theme.isDarkTheme()) "light" else "dark"
+
+    val folder = when (requestedTone) {
+      null -> if (theme.isDarkTheme()) "light" else "dark"
+      else -> requestedTone.name
+    }
 
     return AbstractUIPlugin.imageDescriptorFromPlugin(
       "com.gitlab.eclipse.gitlab-eclipse-plugin",
       "icons/$folder/$iconName.png"
     )
   }
+}
+
+enum class IconTone {
+  DARK,
+  LIGHT
 }
