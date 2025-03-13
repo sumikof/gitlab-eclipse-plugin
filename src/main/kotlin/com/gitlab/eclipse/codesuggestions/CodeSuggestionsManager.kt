@@ -8,7 +8,7 @@ import org.eclipse.ui.texteditor.ITextEditor
 
 @Suppress("ParameterListWrapping", "EmptyFunctionBlock", "TooManyFunctions")
 internal class CodeSuggestionsManager(
-  private val platformUtils: PlatformUtils,
+  platformUtils: PlatformUtils,
   isCodeSuggestionsEnabled: Boolean = BuildConfig.CODE_SUGGESTIONS_ENABLED,
   private val createCodeSuggestionsSession: (ITextEditor) -> CodeSuggestionsSession,
 ) {
@@ -25,38 +25,8 @@ internal class CodeSuggestionsManager(
     }
   }
 
-  fun requestCodeSuggestion() {
-    val editor = platformUtils.getActiveTextEditor()
-      ?: return
-
-    editorSessions[editor]?.requestCodeSuggestion() ?: run {
-      logger.warn("No active Code Suggestions session found for ${editor.title}.")
-    }
-  }
-
-  fun acceptCodeSuggestion() {
-    val editor = platformUtils.getActiveTextEditor()
-      ?: return
-
-    editorSessions[editor]?.acceptCodeSuggestion()
-  }
-
-  fun rejectCodeSuggestion() {
-    val editor = platformUtils.getActiveTextEditor()
-      ?: return
-
-    editorSessions[editor]?.rejectCodeSuggestion()
-    logger.info("Code Suggestions rejected for ${editor.title}.")
-  }
-
-  fun isCodeSuggestionDisplayed(): Boolean {
-    val editor = platformUtils.getActiveTextEditor()
-      ?: return false
-
-    val session = editorSessions[editor]
-      ?: return false
-
-    return session.isCodeSuggestionDisplayed()
+  fun getOrCreateSession(editor: ITextEditor): CodeSuggestionsSession {
+    return editorSessions[editor] ?: startSession(editor)
   }
 
   fun endAllSessions() {
@@ -99,9 +69,12 @@ internal class CodeSuggestionsManager(
     }
   }
 
-  private fun startSession(editor: ITextEditor) {
-    editorSessions[editor] = createCodeSuggestionsSession(editor)
+  private fun startSession(editor: ITextEditor): CodeSuggestionsSession {
+    val newSession = createCodeSuggestionsSession(editor)
+
+    editorSessions[editor] = newSession
     logger.info("Code Suggestions session created for ${editor.title}.")
+    return newSession
   }
 
   private fun endSession(editor: ITextEditor) {
