@@ -1,25 +1,50 @@
 package com.gitlab.eclipse.authentication
 
-import com.github.scribejava.core.model.OAuth2AccessToken
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.unmockkAll
+import org.koin.core.context.startKoin
+import org.koin.core.context.stopKoin
+import org.koin.dsl.module
+import java.time.Instant
+import kotlin.test.assertEquals
 
 class OAuthTokenProviderTest : DescribeSpec({
+  val tokenProvider = OAuthTokenProvider()
+  val oAuthService = mockk<GitLabOAuthService>()
+
+  extensions(LoggingKotestExtension)
+
+  startKoin {
+    modules(
+      module {
+        single<GitLabOAuthService> { oAuthService }
+      }
+    )
+  }
+
+  afterEach { clearAllMocks() }
+
+  afterSpec {
+    unmockkAll()
+    stopKoin()
+  }
+
   describe("getToken") {
-    val tokenProvider = OAuthTokenProvider()
-
-    it("should return empty string when no token is set") {
-      tokenProvider.getToken() shouldBe ""
-    }
-
     describe("when a token is set") {
-      val mockToken = mockk<OAuth2AccessToken>()
-      val tokenValue = "test-access-token"
+      val tokenValue = "access_token_value"
+      val mockToken = GitLabAuthorizationToken(
+        accessToken = tokenValue,
+        refreshToken = "refresh_token",
+        expiresIn = 3600,
+        createdAt = Instant.now().epochSecond
+      )
 
       beforeTest {
-        every { mockToken.accessToken } returns tokenValue
         tokenProvider.updateToken(mockToken)
       }
 
@@ -27,19 +52,51 @@ class OAuthTokenProviderTest : DescribeSpec({
         tokenProvider.getToken() shouldBe tokenValue
       }
 
-      describe("when token is updated") {
+      it("should return the new token value when token is updated") {
         val newTokenValue = "new-access-token"
-        val newMockToken = mockk<OAuth2AccessToken>()
+        val newMockToken = GitLabAuthorizationToken(
+          accessToken = newTokenValue,
+          refreshToken = "refresh_token",
+          expiresIn = 3600,
+          createdAt = Instant.now().epochSecond
+        )
+        tokenProvider.updateToken(newMockToken)
 
-        beforeTest {
-          every { newMockToken.accessToken } returns newTokenValue
-          tokenProvider.updateToken(newMockToken)
-        }
-
-        it("should return the new token value") {
-          tokenProvider.getToken() shouldBe newTokenValue
-        }
+        assertEquals(newTokenValue, tokenProvider.getToken())
       }
+    }
+  }
+
+  describe("refreshToken") {
+    it("token returns valid token when not expired") {
+      val validToken = GitLabAuthorizationToken("valid_token", "refresh_token", 3600, Instant.now().epochSecond)
+
+      tokenProvider.updateToken(validToken)
+
+      assertEquals("valid_token", tokenProvider.getToken())
+    }
+
+    it("refreshes token when expired") {
+      val oldToken = GitLabAuthorizationToken(
+        "old_token",
+        "refresh_token",
+        3600,
+        Instant.now().epochSecond - 3601
+      )
+      val newToken = GitLabAuthorizationToken(
+        "new_token",
+        "refresh_token",
+        3600,
+        Instant.now().epochSecond
+      )
+
+      every {
+        oAuthService.refreshToken(oldToken.refreshToken)
+      } returns newToken
+
+      tokenProvider.updateToken(oldToken)
+
+      assertEquals("new_token", tokenProvider.getToken())
     }
   }
 })

@@ -2,12 +2,12 @@ package com.gitlab.eclipse.authentication
 
 import com.github.scribejava.core.builder.ServiceBuilder
 import com.github.scribejava.core.builder.api.DefaultApi20
-import com.github.scribejava.core.model.OAuth2AccessToken
 import com.github.scribejava.core.oauth.AccessTokenRequestParams
 import com.github.scribejava.core.oauth.OAuth20Service
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
+import com.google.gson.Gson
 import fi.iki.elonen.NanoHTTPD
 import java.awt.Desktop
 import java.net.URI
@@ -36,6 +36,8 @@ class GitLabOAuthService {
       override fun getClientAuthentication(): ClientAuthentication = RequestBodyAuthenticationScheme.instance()
     })
 
+  private val gson = Gson()
+
   fun startOAuthFlow() {
     val codeVerifier = generateCodeVerifier()
     val codeChallenge = generateCodeChallenge(codeVerifier)
@@ -55,16 +57,24 @@ class GitLabOAuthService {
         .pkceCodeVerifier(codeVerifier)
 
       val token = oauthService.getAccessToken(tokenRequest)
-      service<OAuthTokenProvider>().updateToken(token)
+      val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
+
+      service<OAuthTokenProvider>().updateToken(gitlabToken)
 
       future.complete(code)
     }
     server.start()
   }
 
-  fun refreshToken(currentToken: String): OAuth2AccessToken? {
-    val newToken = oauthService.refreshAccessToken(currentToken, SCOPE)
-    return newToken
+  @Suppress("SwallowedException")
+  fun refreshToken(currentToken: String): GitLabAuthorizationToken? {
+    try {
+      val newToken = oauthService.refreshAccessToken(currentToken, SCOPE)
+      val gitlabToken = gson.fromJson(newToken.rawResponse, GitLabAuthorizationToken::class.java)
+      return gitlabToken
+    } catch (exception: Exception) {
+      return null
+    }
   }
 
   internal fun createServer(port: Int, onCodeReceived: (String) -> Unit): NanoHTTPD {
