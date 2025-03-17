@@ -20,7 +20,7 @@ class OAuthTokenProvider : TokenProvider {
   }
 
   private fun refreshTokenIfExpired() {
-    val tokenExpirationTimestamp = Instant.ofEpochSecond(currentToken?.tokenExpirationTimestamp ?: 0L)
+    val tokenExpirationTimestamp = currentToken?.tokenExpirationTimestamp ?: Instant.MIN
     // Always check if the token is expired first
     if (tokenExpirationTimestamp > Instant.now()) return
 
@@ -33,8 +33,7 @@ class OAuthTokenProvider : TokenProvider {
       return
     }
 
-    val newTokenExpirationTimestamp = Instant.ofEpochSecond(refreshedToken.tokenExpirationTimestamp)
-    logger.info("The OAuth token has been refreshed and it expires at $newTokenExpirationTimestamp.")
+    logger.info("The OAuth token has been refreshed and it expires at ${refreshedToken.tokenExpirationTimestamp}.")
 
     updateToken(refreshedToken)
   }
