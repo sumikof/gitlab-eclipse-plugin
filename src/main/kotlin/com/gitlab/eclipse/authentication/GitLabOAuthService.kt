@@ -7,7 +7,7 @@ import com.github.scribejava.core.oauth.OAuth20Service
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
-import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import fi.iki.elonen.NanoHTTPD
 import java.awt.Desktop
 import java.net.URI
@@ -36,7 +36,9 @@ class GitLabOAuthService {
       override fun getClientAuthentication(): ClientAuthentication = RequestBodyAuthenticationScheme.instance()
     })
 
-  private val gson = Gson()
+  private val gson = GsonBuilder()
+    .registerTypeAdapter(GitLabAuthorizationToken::class.java, GitLabAuthorizationTokenDeserializer())
+    .create()
 
   fun startOAuthFlow() {
     val codeVerifier = generateCodeVerifier()
