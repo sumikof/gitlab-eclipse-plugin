@@ -13,6 +13,7 @@ import org.eclipse.jface.text.Position
 import org.eclipse.jface.text.source.CompositeRuler
 import org.eclipse.jface.text.source.IVerticalRulerInfo
 import org.eclipse.ui.texteditor.ITextEditor
+import org.junit.jupiter.api.assertDoesNotThrow
 
 class CodeSuggestionsSessionAnnotationManagerTest : DescribeSpec({
   val textEditor = mockk<ITextEditor>(relaxed = true)
@@ -63,5 +64,12 @@ class CodeSuggestionsSessionAnnotationManagerTest : DescribeSpec({
     val annotation = slot<CodeSuggestionAnnotation>()
     verify { duoRuler.remove(capture(annotation)) }
     annotation.captured.type shouldBe CodeSuggestionAnnotationType.LOADING
+  }
+
+  it("should handle exceptions when hiding annotations") {
+    every { duoRuler.remove(any()) } throws RuntimeException("Test exception")
+    manager.display(CodeSuggestionAnnotationType.LOADING, 10)
+
+    assertDoesNotThrow { manager.hide() }
   }
 })

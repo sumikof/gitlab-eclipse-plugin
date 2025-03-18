@@ -14,7 +14,7 @@ import org.eclipse.lsp4j.TextDocumentIdentifier
 import java.util.concurrent.CompletableFuture
 import kotlin.coroutines.cancellation.CancellationException
 
-internal class CodeSuggestionsProvider(
+class CodeSuggestionsProvider(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
   private val codeFormatter: CodeFormatter
 ) {

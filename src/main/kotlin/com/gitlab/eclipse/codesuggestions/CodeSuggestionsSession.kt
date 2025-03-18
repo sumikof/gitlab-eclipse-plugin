@@ -2,6 +2,9 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsKeyListener
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
@@ -17,19 +20,11 @@ import kotlinx.coroutines.launch
 import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.IDocumentListener
-import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
-import org.eclipse.swt.events.KeyEvent
-import org.eclipse.swt.events.KeyListener
-import org.eclipse.swt.events.MouseEvent
-import org.eclipse.swt.events.MouseListener
-import org.eclipse.text.undo.DocumentUndoEvent
-import org.eclipse.text.undo.DocumentUndoManagerRegistry
-import org.eclipse.text.undo.IDocumentUndoListener
 import kotlin.time.Duration.Companion.milliseconds
 
 @Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions")
-internal class CodeSuggestionsSession(
+class CodeSuggestionsSession(
   private val textWidget: StyledText,
   private val document: IDocument,
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
@@ -37,7 +32,7 @@ internal class CodeSuggestionsSession(
   private val annotationManager: CodeSuggestionsSessionAnnotationManager,
   private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
-) : IDocumentListener, KeyListener, MouseListener, IDocumentUndoListener {
+) : IDocumentListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
   private var job: Job? = null
@@ -45,8 +40,11 @@ internal class CodeSuggestionsSession(
   private var skipNextSuggestion: Boolean = false
   private var codeSuggestion: CodeSuggestion? = null
 
+  private val keyListener = CodeSuggestionsKeyListener(textWidget, this)
+  private val mouseListener = CodeSuggestionsMouseListener(textWidget, this)
+  private val undoListener = CodeSuggestionsUndoListener(document, this)
+
   override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
-  override fun mouseDown(e: MouseEvent) = cancelCodeSuggestion()
 
   override fun documentChanged(event: DocumentEvent) {
     if (isCodeSuggestionDisplayed()) {
@@ -60,27 +58,9 @@ internal class CodeSuggestionsSession(
     skipNextSuggestion = false
   }
 
-  override fun keyPressed(e: KeyEvent) {
-    if (e.keyCode in ARROW_KEYS) {
-      cancelCodeSuggestion()
-    }
-  }
-
-  override fun keyReleased(e: KeyEvent) = Unit
-  override fun mouseDoubleClick(e: MouseEvent) = Unit
-  override fun mouseUp(e: MouseEvent) = Unit
-
-  override fun documentUndoNotification(event: DocumentUndoEvent) {
-    skipNextSuggestion = true
-  }
-
   init {
     try {
-      DocumentUndoManagerRegistry.getDocumentUndoManager(document).addDocumentUndoListener(this)
-
       document.addDocumentListener(this)
-      textWidget.addKeyListener(this)
-      textWidget.addMouseListener(this)
     } catch (e: Exception) {
       logger.error("Error starting code suggestion session.", e)
     }
@@ -164,17 +144,33 @@ internal class CodeSuggestionsSession(
 
   fun isCodeSuggestionDisplayed() = codeSuggestionsRenderer.isCodeSuggestionDisplayed()
 
+  fun setSkipNextSuggestion() {
+    skipNextSuggestion = true
+  }
+
   fun dispose() {
     try {
+      job?.cancel()
+    } catch (e: Exception) {
+      logger.error("Error cancelling ongoing code suggestion request.", e)
+    }
+
+    try {
       codeSuggestionsRenderer.dispose()
-      annotationManager.hide()
-      DocumentUndoManagerRegistry.getDocumentUndoManager(document).removeDocumentUndoListener(this)
-      document.removeDocumentListener(this)
-      textWidget.removeKeyListener(this)
-      textWidget.removeMouseListener(this)
     } catch (e: Exception) {
       logger.error("Error disposing code suggestion session.", e)
     }
+
+    try {
+      document.removeDocumentListener(this)
+    } catch (e: Exception) {
+      logger.error("Error removing document listener.", e)
+    }
+
+    annotationManager.hide()
+    keyListener.dispose()
+    mouseListener.dispose()
+    undoListener.dispose()
   }
 
   private fun isEnabled(): Boolean {
@@ -201,6 +197,5 @@ internal class CodeSuggestionsSession(
   companion object {
     private val BLOCKED_BRACKET_PAIRS = setOf("[]", "{}", "()")
     private val KEY_PRESS_DEBOUNCE = 150.milliseconds
-    private val ARROW_KEYS = listOf(SWT.ARROW_RIGHT, SWT.ARROW_LEFT, SWT.ARROW_UP, SWT.ARROW_DOWN)
   }
 }
