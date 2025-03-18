@@ -39,7 +39,11 @@ class CodeSuggestionsSessionAnnotationManager(private val textEditor: ITextEdito
   }
 
   fun hide() {
-    currentAnnotation?.let { duoAnnotationsRulerColumn?.remove(it) }
-    currentAnnotation = null
+    try {
+      currentAnnotation?.let { duoAnnotationsRulerColumn?.remove(it) }
+      currentAnnotation = null
+    } catch (e: Exception) {
+      logger.error("Error hiding code suggestion annotation.", e)
+    }
   }
 }

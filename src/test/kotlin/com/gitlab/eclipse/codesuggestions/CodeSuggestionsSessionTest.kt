@@ -2,6 +2,9 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsKeyListener
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
@@ -18,11 +21,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
-import org.eclipse.swt.SWT
 import org.eclipse.swt.custom.StyledText
-import org.eclipse.swt.events.KeyEvent
-import org.eclipse.swt.events.MouseEvent
-import org.eclipse.text.undo.DocumentUndoEvent
 import org.eclipse.text.undo.DocumentUndoManager
 import org.eclipse.text.undo.DocumentUndoManagerRegistry
 import org.koin.core.context.startKoin
@@ -114,10 +113,10 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     describe("initialization") {
       it("should add itself as key, mouse, and document listeners during instantiation") {
         verify {
-          documentUndoManager.addDocumentUndoListener(session)
+          documentUndoManager.addDocumentUndoListener(any<CodeSuggestionsUndoListener>())
           document.addDocumentListener(session)
-          textWidget.addKeyListener(session)
-          textWidget.addMouseListener(session)
+          textWidget.addKeyListener(any<CodeSuggestionsKeyListener>())
+          textWidget.addMouseListener(any<CodeSuggestionsMouseListener>())
         }
       }
 
@@ -154,9 +153,8 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify(exactly = 0) { renderer.clear() }
       }
 
-      it("should not automatically request code suggestions after an undo event") {
-        val undoEvent = mockk<DocumentUndoEvent>()
-        session.documentUndoNotification(undoEvent)
+      it("should not automatically request code suggestions if it should skip next suggestion") {
+        session.setSkipNextSuggestion()
 
         val event = mockk<DocumentEvent> {
           every { offset } returns 10
@@ -329,49 +327,31 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         verify {
           renderer.dispose()
-          documentUndoManager.removeDocumentUndoListener(session)
-          document.removeDocumentListener(session)
-          textWidget.removeKeyListener(session)
           annotationManager.hide()
+
+          document.removeDocumentListener(session)
+
+          documentUndoManager.removeDocumentUndoListener(any<CodeSuggestionsUndoListener>())
+          textWidget.removeKeyListener(any<CodeSuggestionsKeyListener>())
+          textWidget.removeMouseListener(any<CodeSuggestionsMouseListener>())
         }
       }
 
-      it("should handle exceptions gracefully") {
-        every { renderer.dispose() } throws RuntimeException("Test exception")
+      it("failing to dispose a listener should not prevent disposing the session") {
         every { document.removeDocumentListener(any()) } throws RuntimeException("Test exception")
 
         shouldNotThrow<Exception> { session.dispose() }
-      }
-    }
 
-    describe("key listener") {
-      it("should cancel suggestions when arrow keys are pressed") {
-        listOf(SWT.ARROW_RIGHT, SWT.ARROW_LEFT, SWT.ARROW_UP, SWT.ARROW_DOWN).forEach { keyCode ->
-          val keyEvent = mockk<KeyEvent>()
-          keyEvent.keyCode = keyCode
-          session.keyPressed(keyEvent)
+        verify {
+          renderer.dispose()
+          annotationManager.hide()
+
+          document.removeDocumentListener(session)
+
+          documentUndoManager.removeDocumentUndoListener(any<CodeSuggestionsUndoListener>())
+          textWidget.removeKeyListener(any<CodeSuggestionsKeyListener>())
+          textWidget.removeMouseListener(any<CodeSuggestionsMouseListener>())
         }
-
-        verify(exactly = 4) { renderer.clear() }
-      }
-
-      it("should not cancel suggestions on other key presses") {
-        val keyEvent = mockk<KeyEvent>()
-        keyEvent.character = SWT.TAB
-
-        session.keyPressed(keyEvent)
-
-        verify(exactly = 0) { renderer.clear() }
-      }
-    }
-
-    describe("mouse listener") {
-      it("should cancel suggestions when mouse is clicked") {
-        val mouseEvent = mockk<MouseEvent>()
-
-        session.mouseDown(mouseEvent)
-
-        verify { renderer.clear() }
       }
     }
   }

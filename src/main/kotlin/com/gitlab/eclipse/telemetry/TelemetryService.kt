@@ -6,7 +6,7 @@ import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.telemetry.params.TelemetryContext
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
 
-internal class TelemetryService(
+class TelemetryService(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper
 ) {
 
