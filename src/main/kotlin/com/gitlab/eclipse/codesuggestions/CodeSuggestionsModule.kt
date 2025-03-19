@@ -14,6 +14,10 @@ val codeSuggestionsModule = module {
     }
   }
 
+  single<StreamingCodeSuggestionsManager> {
+    StreamingCodeSuggestionsManager(get(), get())
+  }
+
   factory<CodeSuggestionsSession> { (textEditor: ITextEditor) ->
     val platformUtils = get<PlatformUtils>()
 
@@ -26,6 +30,7 @@ val codeSuggestionsModule = module {
       codeSuggestionsProvider = get(),
       codeSuggestionsRenderer = CodeSuggestionsRenderer(document, textWidget),
       annotationManager = CodeSuggestionsSessionAnnotationManager(textEditor),
+      streamingCodeSuggestionsManager = get(),
       coroutineScope = get(),
       telemetryService = get()
     )

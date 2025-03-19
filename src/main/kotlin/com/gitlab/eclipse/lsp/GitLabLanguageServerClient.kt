@@ -1,11 +1,13 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
+import com.gitlab.eclipse.lsp.messages.StreamingCompletionResponse
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
@@ -30,6 +32,13 @@ class GitLabLanguageServerClient(
   }
 
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
+
+  @JsonNotification("streamingCompletionResponse")
+  fun streamingCompletionResponse(
+    params: StreamingCompletionResponse
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    service<StreamingCodeSuggestionsManager>().receive(params)
+  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   @JsonRequest("$/gitlab/ai-context/git-diff")
   fun getGitDiff(request: GitDiffParams): CompletableFuture<String?> = CompletableFuture.supplyAsync {

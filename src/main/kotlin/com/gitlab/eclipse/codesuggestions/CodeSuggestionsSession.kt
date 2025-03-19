@@ -30,9 +30,10 @@ class CodeSuggestionsSession(
   private val codeSuggestionsProvider: CodeSuggestionsProvider,
   private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
   private val annotationManager: CodeSuggestionsSessionAnnotationManager,
+  private val streamingCodeSuggestionsManager: StreamingCodeSuggestionsManager,
   private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
-) : IDocumentListener {
+) : IDocumentListener, StreamingCodeSuggestionsListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
   private var job: Job? = null
@@ -91,15 +92,33 @@ class CodeSuggestionsSession(
           return@launch
         }
 
-        codeSuggestion?.let {
-          currentDisplay.syncExec { codeSuggestionsRenderer.display(it.text, offset) }
+        codeSuggestion?.let { suggestion ->
+          currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
 
-          telemetryService.send(it, TelemetryAction.SUGGESTION_SHOWN)
-          annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
+          telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
+
+          val streamId = suggestion.streamId
+          if (streamId == null) {
+            annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
+          } else {
+            streamingCodeSuggestionsManager.register(streamId, this@CodeSuggestionsSession)
+          }
         }
       }
     } catch (e: Exception) {
       logger.error("Error requesting code suggestion.", e)
+    }
+  }
+
+  override fun onSuggestionStreamUpdate(text: String) {
+    currentDisplay.syncExec {
+      codeSuggestionsRenderer.update(text)
+    }
+  }
+
+  override fun onSuggestionStreamComplete() {
+    currentDisplay.syncExec {
+      annotationManager.display(CodeSuggestionAnnotationType.READY, codeSuggestionsRenderer.offset)
     }
   }
 
@@ -116,12 +135,22 @@ class CodeSuggestionsSession(
 
     codeSuggestion?.let {
       telemetryService.send(it, TelemetryAction.SUGGESTION_ACCEPTED)
+
+      val stream = it.streamId
+      if (stream != null) {
+        streamingCodeSuggestionsManager.cancel(stream)
+      }
     }
   }
 
   fun cancelCodeSuggestion() {
     try {
       job?.cancel()
+
+      codeSuggestion?.streamId?.let { stream ->
+        streamingCodeSuggestionsManager.cancel(stream)
+      }
+
       annotationManager.hide()
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
     } catch (e: Exception) {
@@ -136,6 +165,11 @@ class CodeSuggestionsSession(
 
       codeSuggestion?.let {
         telemetryService.send(it, TelemetryAction.SUGGESTION_REJECTED)
+
+        val stream = it.streamId
+        if (stream != null) {
+          streamingCodeSuggestionsManager.cancel(stream)
+        }
       }
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
@@ -153,6 +187,10 @@ class CodeSuggestionsSession(
       job?.cancel()
     } catch (e: Exception) {
       logger.error("Error cancelling ongoing code suggestion request.", e)
+    }
+
+    codeSuggestion?.streamId?.let { stream ->
+      streamingCodeSuggestionsManager.cancel(stream)
     }
 
     try {

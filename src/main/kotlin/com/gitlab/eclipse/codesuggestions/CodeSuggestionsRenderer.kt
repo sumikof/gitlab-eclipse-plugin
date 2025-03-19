@@ -11,6 +11,7 @@ import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.GlyphMetrics
 import org.eclipse.swt.graphics.TextLayout
 
+@Suppress("TooManyFunctions")
 class CodeSuggestionsRenderer(
   private val document: IDocument,
   private val textWidget: StyledText,
@@ -106,6 +107,11 @@ class CodeSuggestionsRenderer(
       // Add a position marker in a document that will be update as new line are created or removed.
       suggestionLine = Position(offset)
       document.addPosition(suggestionLine)
+    } else {
+      suggestionLine?.let { position ->
+        val lineAtOffset = document.getLineOfOffset(position.offset) + 1
+        textWidget.setLineVerticalIndent(lineAtOffset, lines.size * textWidget.lineHeight)
+      }
     }
 
     lines.forEachIndexed { index, line ->
@@ -126,17 +132,26 @@ class CodeSuggestionsRenderer(
     this.offset = offset
 
     textWidget.redraw()
+    textWidget.update()
+  }
+
+  fun update(newText: String) {
+    display(newText, offset)
   }
 
   fun reject() {
     clear()
+
     textWidget.redraw()
+    textWidget.update()
   }
 
   fun dispose() {
     textWidget.removePaintListener(this)
     clear()
+
     textWidget.redraw()
+    textWidget.update()
   }
 
   fun clear() {
@@ -155,6 +170,9 @@ class CodeSuggestionsRenderer(
 
     suggestionCharacterStyle?.let { textWidget.setStyleRange(it) }
     suggestionCharacterStyle = null
+
+    textWidget.redraw()
+    textWidget.update()
   }
 
   private fun isEndOfLine(offset: Int): Boolean {
