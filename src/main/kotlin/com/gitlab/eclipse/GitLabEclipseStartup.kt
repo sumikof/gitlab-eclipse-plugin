@@ -1,5 +1,6 @@
 package com.gitlab.eclipse
 
+import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.chat.chatModule
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
@@ -28,10 +29,12 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     }
 
     service<GitLabLanguageServerProcessProvider>().start()
+    service<OAuthTokenProvider>().startTokenRefreshTimer()
   }
 
   override fun stop(context: BundleContext) {
     service<GitLabLanguageServerProcessProvider>().stop()
     service<CodeSuggestionsManager>().endAllSessions()
+    service<OAuthTokenProvider>().stopTokenRefreshTimer()
   }
 }
