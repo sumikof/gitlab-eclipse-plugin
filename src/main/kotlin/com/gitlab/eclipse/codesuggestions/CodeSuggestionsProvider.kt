@@ -9,6 +9,7 @@ import com.gitlab.eclipse.utils.CodeFormatter
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.JsonPrimitive
 import kotlinx.coroutines.future.asDeferred
+import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.TextDocumentIdentifier
 import java.util.concurrent.CompletableFuture
@@ -18,6 +19,11 @@ class CodeSuggestionsProvider(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
   private val codeFormatter: CodeFormatter
 ) {
+  companion object {
+    private const val SUGGESTION_ACCEPTED_COMMAND = "gitlab.ls.codeSuggestionAccepted"
+    private const val START_STREAMING_COMMAND = "gitlab.ls.startStreaming"
+  }
+
   private val logger by lazy { logger<CodeSuggestionsProvider>() }
 
   private var ongoingRequest: CompletableFuture<*>? = null
@@ -36,24 +42,15 @@ class CodeSuggestionsProvider(
         InlineCompletionParams(
           textDocumentIdentifier = TextDocumentIdentifier(fileUri),
           cursorPosition = Position(cursorLine, cursorColumn),
-          // InlineCompletionTriggerKind.INVOKED prevents Streaming Code Suggestions from being triggered.
-          // Note that this also cause suggestions to not be cancellable. For development purpose this is ok.
-          context = InlineCompletionContext(InlineCompletionTriggerKind.INVOKED)
+          context = InlineCompletionContext(InlineCompletionTriggerKind.AUTOMATIC)
         )
       ).also { ongoingRequest = it }
 
       val result = request.asDeferred().await()
 
       return (result.left ?: result.right?.items)
-        ?.distinctBy { it.insertText }
-        .orEmpty()
-        .map {
-          CodeSuggestion(
-            trackingId = (it.command?.arguments?.getOrNull(0) as? JsonPrimitive)?.asString,
-            optionId = (it.command?.arguments?.getOrNull(1) as? JsonPrimitive)?.asInt,
-            text = codeFormatter.format(it.insertText)
-          )
-        }.firstOrNull()
+        ?.map { it.createCodeSuggestion() }
+        ?.firstOrNull()
     } catch (_: CancellationException) {
       ongoingRequest?.cancel(true)
       return null
@@ -61,5 +58,30 @@ class CodeSuggestionsProvider(
       logger.error("Error providing code suggestions.", e)
       return null
     }
+  }
+
+  private fun CompletionItem.createCodeSuggestion(): CodeSuggestion {
+    val streamId: String? = when (command?.command) {
+      START_STREAMING_COMMAND -> (command.arguments?.getOrNull(0) as? JsonPrimitive)?.asString
+      else -> null
+    }
+
+    val uniqueTrackingId: String? = when (command?.command) {
+      SUGGESTION_ACCEPTED_COMMAND -> (command.arguments?.getOrNull(0) as? JsonPrimitive)?.asString
+      START_STREAMING_COMMAND -> (command.arguments?.getOrNull(1) as? JsonPrimitive)?.asString
+      else -> null
+    }
+
+    val optionId: Int? = when (command?.command) {
+      SUGGESTION_ACCEPTED_COMMAND -> (command.arguments?.getOrNull(1) as? JsonPrimitive)?.asInt
+      else -> null
+    }
+
+    return CodeSuggestion(
+      streamId = streamId,
+      trackingId = uniqueTrackingId,
+      optionId = optionId,
+      text = codeFormatter.format(insertText)
+    )
   }
 }

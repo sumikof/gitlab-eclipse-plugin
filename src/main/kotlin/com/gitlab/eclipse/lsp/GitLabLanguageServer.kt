@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.lsp.messages.InlineCompletionParams
+import com.gitlab.eclipse.lsp.messages.StreamWithId
 import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.lsp.webview.ThemeChangedParams
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
@@ -30,4 +31,7 @@ interface GitLabLanguageServer : LanguageServer {
 
   @JsonRequest("textDocument/inlineCompletion")
   fun inlineCompletion(params: InlineCompletionParams): CompletableFuture<Either<List<CompletionItem>, CompletionList>>
+
+  @JsonNotification("cancelStreaming")
+  fun cancelStreaming(params: StreamWithId)
 }

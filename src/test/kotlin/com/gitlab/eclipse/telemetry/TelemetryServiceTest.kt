@@ -23,7 +23,7 @@ class TelemetryServiceTest : DescribeSpec({
 
   it("should send correct telemetry for accepted suggestion") {
     telemetryService.send(
-      CodeSuggestion(trackingId, optionId, "Some code suggestion"),
+      CodeSuggestion(null, trackingId, optionId, "Some code suggestion"),
       TelemetryAction.SUGGESTION_ACCEPTED
     )
 
@@ -39,7 +39,7 @@ class TelemetryServiceTest : DescribeSpec({
 
   it("should send correct telemetry for cancelled suggestion") {
     telemetryService.send(
-      CodeSuggestion(trackingId, null, "Some code suggestion"),
+      CodeSuggestion(null, trackingId, null, "Some code suggestion"),
       TelemetryAction.SUGGESTION_CANCELLED
     )
 
@@ -55,7 +55,7 @@ class TelemetryServiceTest : DescribeSpec({
 
   it("should send correct telemetry for rejected suggestion") {
     telemetryService.send(
-      CodeSuggestion(trackingId, null, "Some code suggestion"),
+      CodeSuggestion(null, trackingId, null, "Some code suggestion"),
       TelemetryAction.SUGGESTION_REJECTED
     )
 

@@ -35,12 +35,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
   val document = mockk<IDocument>(relaxed = true)
   val documentUndoManager = mockk<DocumentUndoManager>(relaxUnitFun = true)
 
-  val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>(relaxed = true)
+  val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>()
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
   val codeSuggestionsApiStatusService = mockk<CodeSuggestionsApiStatusService>()
-  val codeSuggestion = CodeSuggestion("foo", 123, "sample suggestion")
+  val codeSuggestion = CodeSuggestion(streamId = null, "foo", 123, "sample suggestion")
 
   val annotationManager = mockk<CodeSuggestionsSessionAnnotationManager>(relaxUnitFun = true)
+  val streamingCodeSuggestionsManager = mockk<StreamingCodeSuggestionsManager>(relaxUnitFun = true)
   val telemetryService = mockk<TelemetryService>(relaxUnitFun = true)
 
   val renderer = mockk<CodeSuggestionsRenderer>(relaxed = true)
@@ -75,14 +76,14 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { textWidget.addKeyListener(any()) } just Runs
     every { textWidget.removeKeyListener(any()) } just Runs
 
-    coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
-
     every { DocumentUndoManagerRegistry.getDocumentUndoManager(document) } returns documentUndoManager
     every { document.uri } returns "file://file.test"
     every { document.addDocumentListener(any()) } just Runs
     every { document.removeDocumentListener(any()) } just Runs
     every { document.getLineOfOffset(10) } returns 1
     every { document.getLineOffset(1) } returns 0
+
+    coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
 
     every { renderer.isCodeSuggestionDisplayed() } returns false
     every { renderer.dispose() } just Runs
@@ -94,6 +95,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       codeSuggestionsProvider,
       renderer,
       annotationManager,
+      streamingCodeSuggestionsManager,
       telemetryService,
       coroutineScope
     )
@@ -130,6 +132,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
             codeSuggestionsProvider,
             renderer,
             annotationManager,
+            streamingCodeSuggestionsManager,
             telemetryService,
             coroutineScope
           )
@@ -225,6 +228,14 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
       }
 
+      it("should handle exceptions gracefully") {
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } throws RuntimeException("Test exception")
+
+        shouldNotThrow<Exception> {
+          session.requestCodeSuggestion()
+        }
+      }
+
       it("should request code suggestions when cursor is not after blocked bracket pairs") {
         every { textWidget.caretOffset } returns 10
         every { document.get(8, 2) } returns "ab"
@@ -232,7 +243,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         coroutineScope.advanceUntilIdle()
-
         verify { renderer.display(codeSuggestion.text, 10) }
       }
 
@@ -242,7 +252,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         coroutineScope.advanceUntilIdle()
-
         verify { renderer.display(codeSuggestion.text, 1) }
       }
 
@@ -278,11 +287,68 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify { renderer.display(codeSuggestion.text, 10) }
       }
 
-      it("should handle exceptions gracefully") {
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } throws RuntimeException("Test exception")
+      it("should not register the current session as a listener for a non-streaming suggestion") {
+        every { textWidget.caretOffset } returns 10
+        val nonStreamingCodeSuggestion = CodeSuggestion(null, "trackingId", null, "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns nonStreamingCodeSuggestion
 
-        shouldNotThrow<Exception> {
-          session.requestCodeSuggestion()
+        session.requestCodeSuggestion()
+
+        verify(exactly = 0) { streamingCodeSuggestionsManager.register(any(), any()) }
+      }
+
+      it("should register the current session as a listener for streaming suggestions") {
+        every { textWidget.caretOffset } returns 10
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+
+        session.requestCodeSuggestion()
+
+        coroutineScope.advanceUntilIdle()
+        verify(exactly = 1) {
+          renderer.display("", 10)
+          streamingCodeSuggestionsManager.register("streamId", session)
+        }
+        verify(exactly = 0) {
+          annotationManager.display(CodeSuggestionAnnotationType.READY, 10)
+        }
+      }
+    }
+
+    describe("acceptCodeSuggestion") {
+      beforeEach {
+        every { renderer.text } returns "suggested text"
+        every { renderer.offset } returns 10
+      }
+
+      it("should update the document and move the caret based on the rendered text") {
+        session.acceptCodeSuggestion()
+
+        verify {
+          document.replace(10, 0, "suggested text")
+          textWidget.caretOffset = 10 + "suggested text".length
+        }
+      }
+
+      it("should clear the code suggestion ui indicators") {
+        session.acceptCodeSuggestion()
+
+        verify {
+          renderer.clear()
+          annotationManager.hide()
+        }
+      }
+
+      it("should cancel ongoing streaming code suggestion at its current state") {
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        session.acceptCodeSuggestion()
+
+        verify {
+          streamingCodeSuggestionsManager.cancel("streamId")
         }
       }
     }
@@ -294,6 +360,19 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify {
           renderer.clear()
           annotationManager.hide()
+        }
+      }
+
+      it("should cancel ongoing streaming code suggestion") {
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        session.cancelCodeSuggestion()
+
+        verify {
+          streamingCodeSuggestionsManager.cancel("streamId")
         }
       }
 
@@ -311,6 +390,19 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify {
           renderer.reject()
           annotationManager.hide()
+        }
+      }
+
+      it("should cancel ongoing streaming code suggestion") {
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        session.rejectCodeSuggestion()
+
+        verify {
+          streamingCodeSuggestionsManager.cancel("streamId")
         }
       }
 
@@ -337,6 +429,19 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
       }
 
+      it("should cancel ongoing streaming code suggestion") {
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        session.dispose()
+
+        verify {
+          streamingCodeSuggestionsManager.cancel("streamId")
+        }
+      }
+
       it("failing to dispose a listener should not prevent disposing the session") {
         every { document.removeDocumentListener(any()) } throws RuntimeException("Test exception")
 
@@ -352,6 +457,27 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           textWidget.removeKeyListener(any<CodeSuggestionsKeyListener>())
           textWidget.removeMouseListener(any<CodeSuggestionsMouseListener>())
         }
+      }
+    }
+
+    describe("onSuggestionStreamUpdate") {
+      it("should update the renderer with new text when stream is updated") {
+        val updatedText = "updated suggestion text"
+
+        session.onSuggestionStreamUpdate(updatedText)
+
+        verify { renderer.update(updatedText) }
+      }
+    }
+
+    describe("onSuggestionStreamComplete") {
+      it("should request annotation manager to display ready icon when stream is complete") {
+        val offset = 10
+        every { renderer.offset } returns offset
+
+        session.onSuggestionStreamComplete()
+
+        verify { annotationManager.display(CodeSuggestionAnnotationType.READY, offset) }
       }
     }
   }
