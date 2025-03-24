@@ -22,7 +22,7 @@ class StreamingCodeSuggestionsManager(
       ?: return
 
     when {
-      !chunk.done -> listener.onSuggestionStreamUpdate(codeFormatter.format(chunk.completion))
+      !chunk.done -> listener.onSuggestionStreamUpdate(chunk.id, codeFormatter.format(chunk.completion))
       else -> complete(chunk.id)
     }
   }
@@ -47,6 +47,6 @@ class StreamingCodeSuggestionsManager(
 }
 
 interface StreamingCodeSuggestionsListener {
-  fun onSuggestionStreamUpdate(text: String)
+  fun onSuggestionStreamUpdate(streamId: String, text: String)
   fun onSuggestionStreamComplete()
 }

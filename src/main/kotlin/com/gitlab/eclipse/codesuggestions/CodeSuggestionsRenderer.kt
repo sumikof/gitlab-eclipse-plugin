@@ -26,56 +26,54 @@ class CodeSuggestionsRenderer(
     textWidget.addPaintListener(this)
   }
 
-  var offset: Int = -1
+  var position: Position? = null
     private set
 
   var text: String? = null
     private set
 
   private var suggestionCharacterStyle: StyleRange? = null
-  private var suggestionLine: Position? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
     try {
       val lines = text?.lines()
         ?: return
 
+      val offset = position?.offset
+        ?: return
+
       if (isEndOfLine(offset)) {
-        renderSuffix(lines, paintEvent)
+        renderSuffix(lines, offset, paintEvent)
       } else {
-        renderInline(lines, paintEvent)
+        renderInline(lines, offset, paintEvent)
       }
 
       if (lines.size > 1) {
-        renderBlock(lines.drop(1), paintEvent)
+        renderBlock(lines.drop(1), offset, paintEvent)
       }
     } catch (e: Exception) {
       logger.error("Error rendering code suggestion.", e)
     }
   }
 
-  private fun renderInline(lines: List<String>, paintEvent: PaintEvent) {
+  private fun renderInline(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
     val inline = lines.firstOrNull() ?: return
 
     val character = textWidget.getText(offset, offset)
     val characterBounds = textWidget.getTextBounds(offset, offset)
 
+    val characterStyleRange = textWidget.getStyleRangeAtOffset(offset)
     if (suggestionCharacterStyle == null) {
-      suggestionCharacterStyle = textWidget.getStyleRangeAtOffset(offset)
+      characterStyleRange.metrics = GlyphMetrics(
+        paintEvent.gc.fontMetrics.ascent,
+        paintEvent.gc.fontMetrics.descent,
+        paintEvent.gc.stringExtent(inline).x + paintEvent.gc.stringExtent(character).x
+      )
+
+      suggestionCharacterStyle = characterStyleRange
     }
 
-    textWidget.setStyleRange(
-      StyleRange().apply {
-        start = offset
-        length = 1
-        foreground = suggestionCharacterStyle?.foreground
-        metrics = GlyphMetrics(
-          paintEvent.gc.fontMetrics.ascent,
-          paintEvent.gc.fontMetrics.descent,
-          paintEvent.gc.stringExtent(inline).x + paintEvent.gc.stringExtent(character).x
-        )
-      }
-    )
+    textWidget.setStyleRange(characterStyleRange)
 
     val caretPos = textWidget.getLocationAtOffset(offset)
     paintEvent.gc.font = textWidget.font
@@ -87,7 +85,7 @@ class CodeSuggestionsRenderer(
     paintEvent.gc.drawString(character, paintEvent.gc.stringExtent(inline).x + characterBounds.x, caretPos.y, true)
   }
 
-  private fun renderSuffix(lines: List<String>, paintEvent: PaintEvent) {
+  private fun renderSuffix(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
     val suffix = lines.firstOrNull() ?: return
 
     paintEvent.gc.font = textWidget.font
@@ -97,20 +95,16 @@ class CodeSuggestionsRenderer(
     paintEvent.gc.drawString(suffix, caretPos.x, caretPos.y, true)
   }
 
-  private fun renderBlock(lines: List<String>, paintEvent: PaintEvent) {
+  private fun renderBlock(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
     val caretPos = textWidget.getLocationAtOffset(offset)
     val currentLine = textWidget.getLineAtOffset(offset)
 
-    if (suggestionLine == null && currentLine != textWidget.lineCount - 1) {
-      textWidget.setLineVerticalIndent(currentLine + 1, lines.size * textWidget.lineHeight)
-
-      // Add a position marker in a document that will be update as new line are created or removed.
-      suggestionLine = Position(offset)
-      document.addPosition(suggestionLine)
-    } else {
-      suggestionLine?.let { position ->
-        val lineAtOffset = document.getLineOfOffset(position.offset) + 1
-        textWidget.setLineVerticalIndent(lineAtOffset, lines.size * textWidget.lineHeight)
+    if (currentLine != textWidget.lineCount - 1) {
+      textWidget.setLineSpacingProvider { lineIndex ->
+        when {
+          lineIndex == currentLine -> lines.size * textWidget.lineHeight
+          else -> null
+        }
       }
     }
 
@@ -129,50 +123,46 @@ class CodeSuggestionsRenderer(
 
   fun display(text: String, offset: Int) {
     this.text = text
-    this.offset = offset
+    this.position = Position(offset)
 
-    textWidget.redraw()
-    textWidget.update()
+    document.addPosition(position)
+
+    textWidget.redrawNow()
   }
 
   fun update(newText: String) {
-    display(newText, offset)
+    this.text = newText
+
+    textWidget.redrawNow()
   }
 
   fun reject() {
     clear()
-
-    textWidget.redraw()
-    textWidget.update()
+    textWidget.redrawNow()
   }
 
   fun dispose() {
     textWidget.removePaintListener(this)
     clear()
-
-    textWidget.redraw()
-    textWidget.update()
+    textWidget.redrawNow()
   }
 
   fun clear() {
-    if (text == null) {
-      return
+    suggestionCharacterStyle?.let { style ->
+      style.metrics = GlyphMetrics(0, 0, 0)
+      textWidget.setStyleRange(style)
     }
+
+    textWidget.setLineSpacingProvider(null)
+    document.removePosition(position)
 
     text = null
-    offset = -1
-
-    suggestionLine?.let {
-      textWidget.setLineVerticalIndent(document.getLineOfOffset(it.offset) + 1, 0)
-      document.removePosition(it)
-    }
-    suggestionLine = null
-
-    suggestionCharacterStyle?.let { textWidget.setStyleRange(it) }
+    position = null
     suggestionCharacterStyle = null
+  }
 
-    textWidget.redraw()
-    textWidget.update()
+  fun isCodeSuggestionDisplayed(): Boolean {
+    return text != null
   }
 
   private fun isEndOfLine(offset: Int): Boolean {
@@ -182,7 +172,8 @@ class CodeSuggestionsRenderer(
     return offset == lineEndOffset
   }
 
-  fun isCodeSuggestionDisplayed(): Boolean {
-    return text != null
+  private fun StyledText.redrawNow() {
+    redraw()
+    update()
   }
 }

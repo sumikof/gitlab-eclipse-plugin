@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
+import org.eclipse.jface.text.Position
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.text.undo.DocumentUndoManager
 import org.eclipse.text.undo.DocumentUndoManagerRegistry
@@ -172,18 +173,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 0, 13) }
       }
 
-      it("should cancel displayed code suggestions when document changes") {
-        every { renderer.isCodeSuggestionDisplayed() } returns true
-        val event = mockk<DocumentEvent> {
-          every { offset } returns 5
-          every { text } returns "abc"
-        }
-
-        session.documentChanged(event)
-
-        verify { renderer.clear() }
-      }
-
       it("should not request code suggestions when text is empty") {
         val event = mockk<DocumentEvent> {
           every { text } returns ""
@@ -191,6 +180,18 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.documentChanged(event)
 
         coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+      }
+
+      it("should cancel displayed code suggestions when document is about to change") {
+        every { renderer.isCodeSuggestionDisplayed() } returns true
+        val event = mockk<DocumentEvent> {
+          every { offset } returns 5
+          every { text } returns "abc"
+        }
+
+        session.documentAboutToBeChanged(event)
+
+        verify { renderer.clear() }
       }
     }
 
@@ -318,7 +319,9 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     describe("acceptCodeSuggestion") {
       beforeEach {
         every { renderer.text } returns "suggested text"
-        every { renderer.offset } returns 10
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
       }
 
       it("should update the document and move the caret based on the rendered text") {
@@ -461,23 +464,43 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     }
 
     describe("onSuggestionStreamUpdate") {
-      it("should update the renderer with new text when stream is updated") {
-        val updatedText = "updated suggestion text"
+      it("should update the renderer with new text when stream of the current suggestion is updated") {
+        every { textWidget.caretOffset } returns 10
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
 
-        session.onSuggestionStreamUpdate(updatedText)
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
 
-        verify { renderer.update(updatedText) }
+        session.onSuggestionStreamUpdate(streamId = "streamId", text = "updated suggestion text")
+
+        verify { renderer.update("updated suggestion text") }
+      }
+
+      it("should ignore the stream update when the current suggestion has changed") {
+        every { textWidget.caretOffset } returns 10
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+        session.cancelCodeSuggestion()
+
+        session.onSuggestionStreamUpdate(streamId = "streamId", text = "updated suggestion text")
+
+        verify { renderer.update("updated suggestion text") }
       }
     }
 
     describe("onSuggestionStreamComplete") {
       it("should request annotation manager to display ready icon when stream is complete") {
-        val offset = 10
-        every { renderer.offset } returns offset
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
 
         session.onSuggestionStreamComplete()
 
-        verify { annotationManager.display(CodeSuggestionAnnotationType.READY, offset) }
+        verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 10) }
       }
     }
   }
