@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
+import com.gitlab.eclipse.codesuggestions.isCodeSuggestionsApiAvailable
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -24,7 +25,6 @@ import java.util.concurrent.TimeUnit
 
 @Suppress("UnusedParameter", "TooManyFunctions", "ForbiddenVoid")
 class GitLabLanguageServerClient(
-  private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service(),
   private val pluginMessageService: PluginMessageService = service()
 ) : LanguageClient {
   companion object {
@@ -133,12 +133,14 @@ class GitLabLanguageServerClient(
 
   @JsonNotification("$/gitlab/api/error")
   fun gitLabApiError() {
-    codeSuggestionsApiStatusMonitor.reportError()
+    logger.warn("Code Suggestions API is now unavailable")
+    isCodeSuggestionsApiAvailable = false
   }
 
   @JsonNotification("$/gitlab/api/recovery")
   fun gitLabApiRecovery() {
-    codeSuggestionsApiStatusMonitor.reportRecovery()
+    logger.info("Code Suggestions API is now available")
+    isCodeSuggestionsApiAvailable = true
   }
 
   override fun telemetryEvent(event: Any) {
@@ -174,6 +176,7 @@ class GitLabLanguageServerClient(
             registration.registerOptions as JsonObject
           )
         }
+
         else -> logger.warn("[RegisterCapability]: Ignoring unsupported capability ${registration.method}.")
       }
     }
@@ -188,6 +191,7 @@ class GitLabLanguageServerClient(
         unregisteration.method == "workspace/didChangeWatchedFiles" -> {
           service<DidChangeWatchedFileCapability>().unregister(unregisteration.id)
         }
+
         else -> logger.warn("[UnregisterCapability]: Ignoring unsupported capability ${unregisteration.method}.")
       }
     }

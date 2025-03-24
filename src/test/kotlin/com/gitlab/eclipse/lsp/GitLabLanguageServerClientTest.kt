@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.codesuggestions.isCodeSuggestionsApiAvailable
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -27,10 +28,9 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
 
-  val codeSuggestionsApiStatusMonitor = mockk<CodeSuggestionsApiStatusService>(relaxUnitFun = true)
   val pluginMessageService = mockk<PluginMessageService>()
 
-  val client = GitLabLanguageServerClient(codeSuggestionsApiStatusMonitor, pluginMessageService)
+  val client = GitLabLanguageServerClient(pluginMessageService)
 
   extensions(LoggingKotestExtension)
 
@@ -45,6 +45,10 @@ class GitLabLanguageServerClientTest : DescribeSpec({
         }
       )
     }
+  }
+
+  beforeEach {
+    isCodeSuggestionsApiAvailable = true
   }
 
   afterEach { clearAllMocks() }
@@ -136,6 +140,24 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       verify { gitDiffService.getDiff("test/repo") }
       result shouldBe null
+    }
+  }
+
+  describe("API Status Handling") {
+    it("should set API as unavailable when error is reported") {
+      isCodeSuggestionsApiAvailable = true
+
+      client.gitLabApiError()
+
+      isCodeSuggestionsApiAvailable shouldBe false
+    }
+
+    it("should set API as available when recovery is reported") {
+      isCodeSuggestionsApiAvailable = false
+
+      client.gitLabApiRecovery()
+
+      isCodeSuggestionsApiAvailable shouldBe true
     }
   }
 })

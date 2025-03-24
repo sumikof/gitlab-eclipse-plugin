@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
+import com.gitlab.eclipse.codesuggestions.isCodeSuggestionsApiAvailable
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.inject.service
@@ -38,12 +39,22 @@ class CodeSuggestionsStatusHandler : AbstractHandler(), IElementUpdater {
       else -> null
     }
 
-    if (engagedCheck == null) {
-      element.setText("Code Suggestions: Enabled")
-      element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit", iconTone))
-    } else {
-      element.setText("Code Suggestions: Disabled (${engagedCheck.checkId})")
-      element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit", iconTone))
+    when {
+      // API is unavailable - this takes precedence over other states
+      !isCodeSuggestionsApiAvailable -> {
+        element.setText("Code Suggestions: Unavailable")
+        element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit", iconTone))
+      }
+      // No engaged checks means it's enabled
+      engagedCheck == null -> {
+        element.setText("Code Suggestions: Enabled")
+        element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit", iconTone))
+      }
+      // Otherwise, it's disabled for a specific reason
+      else -> {
+        element.setText("Code Suggestions: Disabled (${engagedCheck.checkId})")
+        element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit", iconTone))
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
+import com.gitlab.eclipse.codesuggestions.isCodeSuggestionsApiAvailable
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.utils.NotificationUtils
@@ -10,13 +11,7 @@ import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
-import io.mockk.clearAllMocks
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.mockkObject
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
-import io.mockk.verify
+import io.mockk.*
 import org.eclipse.jface.resource.ImageDescriptor
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.menus.UIElement
@@ -52,6 +47,8 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
   }
 
   beforeEach {
+    isCodeSuggestionsApiAvailable = true
+
     every { ThemeUtils.getThemedIcon(any()) } returns mockk<ImageDescriptor>()
     every { ThemeUtils.getThemedIcon(any(), any()) } returns mockk<ImageDescriptor>()
 
@@ -65,7 +62,10 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
     every { SystemUtils.isWindows() } returns false
   }
 
-  afterEach { clearAllMocks() }
+  afterEach {
+    isCodeSuggestionsApiAvailable = true
+    clearAllMocks()
+  }
 
   afterSpec {
     unmockkAll()
@@ -112,8 +112,23 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
       }
     }
 
-    it("should show enabled status when code suggestions has no engaged check") {
+    it("should show unavailable status when API is unavailable") {
       every { codeSuggestionsStateService.getFirstEngagedCheck() } returns null
+      isCodeSuggestionsApiAvailable = false
+
+      handler.updateElement(element, mutableMapOf())
+
+      verify {
+        ThemeUtils.getThemedIcon("duo_off_edit")
+        element.setText("Code Suggestions: Unavailable")
+        element.setIcon(any())
+      }
+    }
+
+    it("should show enabled status when API is available and code suggestions has no engaged check") {
+      every { codeSuggestionsStateService.getFirstEngagedCheck() } returns null
+      isCodeSuggestionsApiAvailable = true
+
       handler.updateElement(element, mutableMapOf())
 
       verify {

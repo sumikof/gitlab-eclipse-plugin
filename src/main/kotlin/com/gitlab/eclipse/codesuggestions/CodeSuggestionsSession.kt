@@ -7,7 +7,6 @@ import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
-import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.utils.currentDisplay
@@ -220,10 +219,8 @@ class CodeSuggestionsSession(
 
   private fun isEnabled(): Boolean {
     val codeSuggestionsIsEnabled = service<CodeSuggestionsStateService>().isEnabled
-    val codeSuggestionsApiInError =
-      service<CodeSuggestionsApiStatusService>().apiStatus.value == CodeSuggestionsApiStatusService.ApiStatus.Error
 
-    return codeSuggestionsIsEnabled && !codeSuggestionsApiInError && !isCursorAfterBracketPair()
+    return codeSuggestionsIsEnabled && isCodeSuggestionsApiAvailable && !isCursorAfterBracketPair()
   }
 
   private fun isCursorAfterBracketPair(): Boolean {
