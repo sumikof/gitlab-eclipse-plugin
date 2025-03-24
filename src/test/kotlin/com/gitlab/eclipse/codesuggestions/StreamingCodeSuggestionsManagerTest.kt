@@ -41,7 +41,7 @@ class StreamingCodeSuggestionsManagerTest : DescribeSpec({
       manager.register("streamId", listener)
       manager.receive(StreamingCompletionResponse("streamId", unformattedCode, done = false))
 
-      verify { listener.onSuggestionStreamUpdate(formattedCode) }
+      verify { listener.onSuggestionStreamUpdate("streamId", formattedCode) }
     }
   }
 
@@ -50,7 +50,7 @@ class StreamingCodeSuggestionsManagerTest : DescribeSpec({
       manager.register("streamId", listener)
       manager.receive(StreamingCompletionResponse("streamId", unformattedCode, done = false))
 
-      verify(exactly = 1) { listener.onSuggestionStreamUpdate(formattedCode) }
+      verify(exactly = 1) { listener.onSuggestionStreamUpdate("streamId", formattedCode) }
     }
 
     it("should notify listener when stream is complete") {
@@ -64,7 +64,7 @@ class StreamingCodeSuggestionsManagerTest : DescribeSpec({
       manager.register("unknownStreamId", listener)
       manager.receive(StreamingCompletionResponse("differentStreamId", unformattedCode, done = false))
 
-      verify(exactly = 0) { listener.onSuggestionStreamUpdate(any()) }
+      verify(exactly = 0) { listener.onSuggestionStreamUpdate(any(), any()) }
       verify(exactly = 0) { listener.onSuggestionStreamComplete() }
     }
   }

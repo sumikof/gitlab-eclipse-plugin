@@ -45,13 +45,11 @@ class CodeSuggestionsSession(
   private val mouseListener = CodeSuggestionsMouseListener(textWidget, this)
   private val undoListener = CodeSuggestionsUndoListener(document, this)
 
-  override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
+  override fun documentAboutToBeChanged(event: DocumentEvent) {
+    cancelCodeSuggestion()
+  }
 
   override fun documentChanged(event: DocumentEvent) {
-    if (isCodeSuggestionDisplayed()) {
-      cancelCodeSuggestion()
-    }
-
     if (!skipNextSuggestion && event.text.isNotEmpty()) {
       requestCodeSuggestion(event.offset + event.text.length)
     }
@@ -81,28 +79,25 @@ class CodeSuggestionsSession(
 
         annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
 
-        codeSuggestion = codeSuggestionsProvider.provide(
+        val suggestion = codeSuggestionsProvider.provide(
           fileUri = document.uri,
           cursorLine = line,
           cursorColumn = column
-        )
+        ).also { codeSuggestion = it }
 
-        if (codeSuggestion == null) {
+        if (suggestion == null) {
           annotationManager.hide()
           return@launch
         }
 
-        codeSuggestion?.let { suggestion ->
-          currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
+        currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
+        telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
 
-          telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
-
-          val streamId = suggestion.streamId
-          if (streamId == null) {
-            annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
-          } else {
-            streamingCodeSuggestionsManager.register(streamId, this@CodeSuggestionsSession)
-          }
+        val streamId = suggestion.streamId
+        if (streamId == null) {
+          annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
+        } else {
+          streamingCodeSuggestionsManager.register(streamId, this@CodeSuggestionsSession)
         }
       }
     } catch (e: Exception) {
@@ -110,7 +105,11 @@ class CodeSuggestionsSession(
     }
   }
 
-  override fun onSuggestionStreamUpdate(text: String) {
+  override fun onSuggestionStreamUpdate(streamId: String, text: String) {
+    if (codeSuggestion?.streamId != streamId) {
+      return
+    }
+
     currentDisplay.syncExec {
       codeSuggestionsRenderer.update(text)
     }
@@ -118,12 +117,20 @@ class CodeSuggestionsSession(
 
   override fun onSuggestionStreamComplete() {
     currentDisplay.syncExec {
-      annotationManager.display(CodeSuggestionAnnotationType.READY, codeSuggestionsRenderer.offset)
+      val suggestionPosition = codeSuggestionsRenderer.position
+
+      if (suggestionPosition != null) {
+        annotationManager.display(CodeSuggestionAnnotationType.READY, suggestionPosition.offset)
+      } else {
+        annotationManager.hide()
+      }
     }
   }
 
   fun acceptCodeSuggestion() {
-    val offset = codeSuggestionsRenderer.offset
+    val offset = codeSuggestionsRenderer.position?.offset
+      ?: return
+
     val text = codeSuggestionsRenderer.text
       ?: return
 
