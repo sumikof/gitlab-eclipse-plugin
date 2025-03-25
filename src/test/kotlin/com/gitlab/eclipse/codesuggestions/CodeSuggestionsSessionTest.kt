@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.Position
+import org.eclipse.swt.SwtCallable
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.text.undo.DocumentUndoManager
 import org.eclipse.text.undo.DocumentUndoManagerRegistry
@@ -66,6 +67,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
   beforeEach {
     every { currentDisplay.syncExec(any()) } answers { firstArg<Runnable>().run() }
+    every { currentDisplay.syncCall<Int, Exception>(any()) } answers { firstArg<SwtCallable<Int, Exception>>().call() }
 
     every { codeSuggestionsStateService.isEnabled } returns true
 
@@ -476,7 +478,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         session.onSuggestionStreamUpdate(streamId = "streamId", text = "updated suggestion text")
 
-        verify { renderer.update("updated suggestion text") }
+        verify(exactly = 0) { renderer.update("updated suggestion text") }
       }
     }
 

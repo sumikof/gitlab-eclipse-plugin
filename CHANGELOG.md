@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Manually requesting code suggestions causing a SWT thread error ([!179](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/179))
+
 ## 0.4.1 (2025-03-25)
 
 ### Added

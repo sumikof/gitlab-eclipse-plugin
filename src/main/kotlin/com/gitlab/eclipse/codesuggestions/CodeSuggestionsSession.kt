@@ -72,7 +72,7 @@ class CodeSuggestionsSession(
       job = coroutineScope.launch {
         delay(KEY_PRESS_DEBOUNCE)
 
-        val offset = requestOffset ?: textWidget.caretOffset
+        val offset = requestOffset ?: currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
         val line = document.getLineOfOffset(offset)
         val column = offset - document.getLineOffset(line)
 
@@ -159,6 +159,8 @@ class CodeSuggestionsSession(
 
       annotationManager.hide()
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
+
+      codeSuggestion = null
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
     }
@@ -177,6 +179,8 @@ class CodeSuggestionsSession(
           streamingCodeSuggestionsManager.cancel(stream)
         }
       }
+
+      codeSuggestion = null
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
     }
@@ -198,6 +202,7 @@ class CodeSuggestionsSession(
     codeSuggestion?.streamId?.let { stream ->
       streamingCodeSuggestionsManager.cancel(stream)
     }
+    codeSuggestion = null
 
     try {
       codeSuggestionsRenderer.dispose()
