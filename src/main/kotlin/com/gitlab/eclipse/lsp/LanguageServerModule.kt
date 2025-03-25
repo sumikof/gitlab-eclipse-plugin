@@ -34,6 +34,5 @@ val languageServerModule = module {
     GitLabLanguageServerProcessProvider(get(), get(), get(), get(), get(), get())
   }
 
-  single<CodeSuggestionsApiStatusService> { CodeSuggestionsApiStatusService(get()) }
   single<LanguageServerWebviewService> { LanguageServerWebviewService(get(), get()) }
 }

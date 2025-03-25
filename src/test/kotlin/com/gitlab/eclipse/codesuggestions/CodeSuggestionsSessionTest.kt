@@ -7,7 +7,6 @@ import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
-import com.gitlab.eclipse.lsp.CodeSuggestionsApiStatusService
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.uri
@@ -38,7 +37,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>()
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
-  val codeSuggestionsApiStatusService = mockk<CodeSuggestionsApiStatusService>()
   val codeSuggestion = CodeSuggestion(streamId = null, "foo", 123, "sample suggestion")
 
   val annotationManager = mockk<CodeSuggestionsSessionAnnotationManager>(relaxUnitFun = true)
@@ -61,7 +59,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       modules(
         module {
           single { codeSuggestionsStateService }
-          single { codeSuggestionsApiStatusService }
         }
       )
     }
@@ -71,7 +68,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { currentDisplay.syncExec(any()) } answers { firstArg<Runnable>().run() }
 
     every { codeSuggestionsStateService.isEnabled } returns true
-    every { codeSuggestionsApiStatusService.apiStatus.value } returns CodeSuggestionsApiStatusService.ApiStatus.Recovery
 
     every { textWidget.caretOffset } returns 10
     every { textWidget.addKeyListener(any()) } just Runs
@@ -196,14 +192,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     }
 
     describe("requestCodeSuggestion") {
-      it("should not request code suggestions when the feature state is enabled and API status is in error") {
-        every { codeSuggestionsApiStatusService.apiStatus.value } returns CodeSuggestionsApiStatusService.ApiStatus.Error
-
-        session.requestCodeSuggestion()
-
-        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
-      }
-
       it("should not request code suggestions when the feature state is disabled") {
         every { codeSuggestionsStateService.isEnabled } returns false
 

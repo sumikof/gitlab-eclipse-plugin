@@ -24,7 +24,6 @@ import java.util.concurrent.TimeUnit
 
 @Suppress("UnusedParameter", "TooManyFunctions", "ForbiddenVoid")
 class GitLabLanguageServerClient(
-  private val codeSuggestionsApiStatusMonitor: CodeSuggestionsApiStatusService = service(),
   private val pluginMessageService: PluginMessageService = service()
 ) : LanguageClient {
   companion object {
@@ -131,16 +130,6 @@ class GitLabLanguageServerClient(
     )
   }
 
-  @JsonNotification("$/gitlab/api/error")
-  fun gitLabApiError() {
-    codeSuggestionsApiStatusMonitor.reportError()
-  }
-
-  @JsonNotification("$/gitlab/api/recovery")
-  fun gitLabApiRecovery() {
-    codeSuggestionsApiStatusMonitor.reportRecovery()
-  }
-
   override fun telemetryEvent(event: Any) {
     logger.info("telemetryEvent: $event")
   }
@@ -174,6 +163,7 @@ class GitLabLanguageServerClient(
             registration.registerOptions as JsonObject
           )
         }
+
         else -> logger.warn("[RegisterCapability]: Ignoring unsupported capability ${registration.method}.")
       }
     }
@@ -188,6 +178,7 @@ class GitLabLanguageServerClient(
         unregisteration.method == "workspace/didChangeWatchedFiles" -> {
           service<DidChangeWatchedFileCapability>().unregister(unregisteration.id)
         }
+
         else -> logger.warn("[UnregisterCapability]: Ignoring unsupported capability ${unregisteration.method}.")
       }
     }
