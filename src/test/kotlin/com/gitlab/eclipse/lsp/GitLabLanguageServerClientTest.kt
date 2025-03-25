@@ -27,10 +27,9 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
 
-  val codeSuggestionsApiStatusMonitor = mockk<CodeSuggestionsApiStatusService>(relaxUnitFun = true)
   val pluginMessageService = mockk<PluginMessageService>()
 
-  val client = GitLabLanguageServerClient(codeSuggestionsApiStatusMonitor, pluginMessageService)
+  val client = GitLabLanguageServerClient(pluginMessageService)
 
   extensions(LoggingKotestExtension)
 
