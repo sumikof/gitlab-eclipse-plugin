@@ -147,11 +147,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
 
         val sessionSpy = spyk(session)
-        every { sessionSpy.requestCodeSuggestion(any()) } just Runs
+        every { sessionSpy.requestCodeSuggestion() } just Runs
 
         sessionSpy.documentChanged(event)
 
-        verify { sessionSpy.requestCodeSuggestion(8) }
+        verify { sessionSpy.requestCodeSuggestion() }
         verify(exactly = 0) { renderer.clear() }
       }
 
@@ -159,8 +159,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.setSkipNextSuggestion()
 
         val event = mockk<DocumentEvent> {
-          every { offset } returns 10
-          every { text } returns "abc" // offset will be 13 (10 + 3)
+          every { text } returns "abc"
         }
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
@@ -168,7 +167,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
-        coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 0, 13) }
+        coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 1, 10) }
       }
 
       it("should not request code suggestions when text is empty") {
@@ -183,7 +182,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should cancel displayed code suggestions when document is about to change") {
         every { renderer.isCodeSuggestionDisplayed() } returns true
         val event = mockk<DocumentEvent> {
-          every { offset } returns 5
           every { text } returns "abc"
         }
 

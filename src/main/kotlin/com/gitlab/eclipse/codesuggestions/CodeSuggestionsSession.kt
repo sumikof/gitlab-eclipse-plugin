@@ -50,7 +50,7 @@ class CodeSuggestionsSession(
 
   override fun documentChanged(event: DocumentEvent) {
     if (!skipNextSuggestion && event.text.isNotEmpty()) {
-      requestCodeSuggestion(event.offset + event.text.length)
+      requestCodeSuggestion()
     }
 
     skipNextSuggestion = false
@@ -64,7 +64,7 @@ class CodeSuggestionsSession(
     }
   }
 
-  fun requestCodeSuggestion(requestOffset: Int? = null) {
+  fun requestCodeSuggestion() {
     try {
       if (!isEnabled()) return
 
@@ -72,7 +72,7 @@ class CodeSuggestionsSession(
       job = coroutineScope.launch {
         delay(KEY_PRESS_DEBOUNCE)
 
-        val offset = requestOffset ?: currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
+        val offset = currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
         val line = document.getLineOfOffset(offset)
         val column = offset - document.getLineOffset(line)
 
