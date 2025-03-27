@@ -10,13 +10,7 @@ import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
-import io.mockk.clearAllMocks
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.mockkObject
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
-import io.mockk.verify
+import io.mockk.*
 import org.eclipse.jface.resource.ImageDescriptor
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.ui.menus.UIElement
@@ -133,6 +127,20 @@ class CodeSuggestionsStatusHandlerTest : DescribeSpec({
       verify {
         ThemeUtils.getThemedIcon("duo_off_edit")
         element.setText("Code Suggestions: Disabled (authentication-required)")
+        element.setIcon(any())
+      }
+    }
+
+    it("should show API error status when code-suggestions-api-error check is engaged") {
+      every { codeSuggestionsStateService.getFirstEngagedCheck() } returns FeatureStateChangeCheck(
+        checkId = CodeSuggestionsStatusHandler.API_ERROR_CHECK_ID,
+        engaged = true
+      )
+      handler.updateElement(element, mutableMapOf())
+
+      verify {
+        ThemeUtils.getThemedIcon("duo_off_edit")
+        element.setText("Code Suggestions: Unavailable (${CodeSuggestionsStatusHandler.API_ERROR_CHECK_ID})")
         element.setIcon(any())
       }
     }
