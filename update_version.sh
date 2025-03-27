@@ -111,20 +111,22 @@ echo "Updating feature/feature.xml"
 FEATURE_AWK_COMMAND=''
 if [[ "$PREPARE_RELEASE" = "true" ]]; then
     # If we're preparing for a release, we only need to remove the .qualifier from the feature version.
-    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/ && !f {sub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "version=\"'"$SEMANTIC_VERSION"'\""); f=1} 1'
+    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/ && !f {sub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/, "version=\"'"$SEMANTIC_VERSION"'\""); f=1} 1'
 else
     # If we're not preparing a release, we need to increment all versions in the feature.xml.
-    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/ {gsub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "version=\"'"$TYCHO_VERSION"'\"")} 1'
+    FEATURE_AWK_COMMAND='/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/ {gsub(/version="[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/, "version=\"'"$TYCHO_VERSION"'\"")} 1'
 fi
 update_file "feature/feature.xml" "$FEATURE_AWK_COMMAND" || exit 1
 
 # Update update-site/category.xml
 echo "Updating update-site/category.xml"
 CATEGORY_AWK_VERSION="$TYCHO_VERSION"
+CATEGORY_AWK_URL="$TYCHO_VERSION.jar"
 if [[ "$PREPARE_RELEASE" = "true" ]]; then
     CATEGORY_AWK_VERSION="$SEMANTIC_VERSION"
+    CATEGORY_AWK_URL="$SEMANTIC_VERSION.jar"
 fi
-CATEGORY_AWK_COMMAND='/version=/{sub(/\"[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?"/, "\"'"$CATEGORY_AWK_VERSION"'\""); f=1} /url="features\/com\.gitlab\.eclipse\.feature_/{sub(/[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?qualifier?/, "'"$CATEGORY_AWK_VERSION"'"); f=1} 1'
+CATEGORY_AWK_COMMAND='/version=/{sub(/\"[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/, "\"'"$CATEGORY_AWK_VERSION"'\""); f=1} /url="features\/com\.gitlab\.eclipse\.feature_/{sub(/[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?\.jar/, "'"$CATEGORY_AWK_URL"'"); f=1} 1'
 update_file "update-site/category.xml" "$CATEGORY_AWK_COMMAND" || exit 1
 
 # Update build.gradle.kts
