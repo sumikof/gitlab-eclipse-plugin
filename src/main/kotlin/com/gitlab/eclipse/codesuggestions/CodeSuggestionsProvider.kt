@@ -28,11 +28,38 @@ class CodeSuggestionsProvider(
 
   private var ongoingRequest: CompletableFuture<*>? = null
 
-  suspend fun provide(
+  suspend fun provideAutomaticSuggestion(
     fileUri: String,
     cursorLine: Int,
     cursorColumn: Int
   ): CodeSuggestion? {
+    return fetchSuggestions(
+      fileUri,
+      cursorLine,
+      cursorColumn,
+      InlineCompletionTriggerKind.AUTOMATIC
+    ).firstOrNull()
+  }
+
+  suspend fun provideInvokedSuggestions(
+    fileUri: String,
+    cursorLine: Int,
+    cursorColumn: Int
+  ): List<CodeSuggestion> {
+    return fetchSuggestions(
+      fileUri,
+      cursorLine,
+      cursorColumn,
+      InlineCompletionTriggerKind.INVOKED
+    )
+  }
+
+  private suspend fun fetchSuggestions(
+    fileUri: String,
+    cursorLine: Int,
+    cursorColumn: Int,
+    triggerKind: InlineCompletionTriggerKind
+  ): List<CodeSuggestion> {
     try {
       val languageServer: GitLabLanguageServer = checkNotNull(gitLabLanguageServerWrapper.languageServer)
 
@@ -42,7 +69,7 @@ class CodeSuggestionsProvider(
         InlineCompletionParams(
           textDocumentIdentifier = TextDocumentIdentifier(fileUri),
           cursorPosition = Position(cursorLine, cursorColumn),
-          context = InlineCompletionContext(InlineCompletionTriggerKind.AUTOMATIC)
+          context = InlineCompletionContext(triggerKind)
         )
       ).also { ongoingRequest = it }
 
@@ -50,13 +77,13 @@ class CodeSuggestionsProvider(
 
       return (result.left ?: result.right?.items)
         ?.map { it.createCodeSuggestion() }
-        ?.firstOrNull()
+        .orEmpty()
     } catch (_: CancellationException) {
       ongoingRequest?.cancel(true)
-      return null
+      return emptyList()
     } catch (e: Throwable) {
       logger.error("Error providing code suggestions.", e)
-      return null
+      return emptyList()
     }
   }
 

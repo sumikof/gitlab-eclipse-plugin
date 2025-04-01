@@ -82,7 +82,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { document.getLineOfOffset(10) } returns 1
     every { document.getLineOffset(1) } returns 0
 
-    coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
+    coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns codeSuggestion
 
     every { renderer.isCodeSuggestionDisplayed() } returns false
     every { renderer.dispose() } just Runs
@@ -163,11 +163,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
-        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+        coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
 
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
-        coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 1, 10) }
+        coVerify(exactly = 1) { codeSuggestionsProvider.provideAutomaticSuggestion("file://file.test", 1, 10) }
       }
 
       it("should not request code suggestions when text is empty") {
@@ -176,7 +176,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
         session.documentChanged(event)
 
-        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+        coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
       }
 
       it("should cancel displayed code suggestions when document is about to change") {
@@ -197,7 +197,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         session.requestCodeSuggestion()
 
-        coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+        coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
       }
 
       it("should not request code suggestions when cursor is after bracket pairs") {
@@ -213,12 +213,18 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
           session.requestCodeSuggestion()
 
-          coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
+          coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
         }
       }
 
       it("should handle exceptions gracefully") {
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } throws RuntimeException("Test exception")
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } throws RuntimeException("Test exception")
 
         shouldNotThrow<Exception> {
           session.requestCodeSuggestion()
@@ -276,10 +282,26 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify { renderer.display(codeSuggestion.text, 10) }
       }
 
+      it("should handle null suggestion") {
+        coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns null
+
+        session.requestCodeSuggestion()
+
+        coroutineScope.advanceUntilIdle()
+        verify(exactly = 0) { renderer.display(any(), any()) }
+        verify { annotationManager.hide() }
+      }
+
       it("should not register the current session as a listener for a non-streaming suggestion") {
         every { textWidget.caretOffset } returns 10
         val nonStreamingCodeSuggestion = CodeSuggestion(null, "trackingId", null, "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns nonStreamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns nonStreamingCodeSuggestion
 
         session.requestCodeSuggestion()
 
@@ -289,7 +311,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should register the current session as a listener for streaming suggestions") {
         every { textWidget.caretOffset } returns 10
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
 
         session.requestCodeSuggestion()
 
@@ -332,7 +360,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
       it("should cancel ongoing streaming code suggestion at its current state") {
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
@@ -356,7 +390,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
       it("should cancel ongoing streaming code suggestion") {
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
@@ -386,7 +426,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
       it("should cancel ongoing streaming code suggestion") {
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
@@ -422,7 +468,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
       it("should cancel ongoing streaming code suggestion") {
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
@@ -455,7 +507,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should update the renderer with new text when stream of the current suggestion is updated") {
         every { textWidget.caretOffset } returns 10
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
 
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
@@ -468,7 +526,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       it("should ignore the stream update when the current suggestion has changed") {
         every { textWidget.caretOffset } returns 10
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
-        coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns streamingCodeSuggestion
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
 
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
@@ -489,6 +553,111 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.onSuggestionStreamComplete()
 
         verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 10) }
+      }
+    }
+
+    describe("cycle suggestions") {
+      it("should cycle to next suggestion") {
+        every { textWidget.caretOffset } returns 10
+        val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
+        val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
+        coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
+        coEvery { codeSuggestionsProvider.provideInvokedSuggestions(any(), any(), any()) } returns listOf(suggestion2)
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
+
+        session.cycleToNextSuggestion()
+
+        verify { renderer.update("suggestion 2") }
+      }
+
+      it("should cycle to previous suggestion") {
+        every { textWidget.caretOffset } returns 10
+        val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
+        val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
+        val suggestion3 = CodeSuggestion(null, "track3", 3, "suggestion 3")
+        coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
+        coEvery { codeSuggestionsProvider.provideInvokedSuggestions(any(), any(), any()) } returns listOf(
+          suggestion2,
+          suggestion3
+        )
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
+
+        session.cycleToPreviousSuggestion()
+
+        // Should cycle to the last suggestion when going backward from the first
+        verify { renderer.update("suggestion 3") }
+        verify { telemetryService.send(suggestion3, any()) }
+      }
+
+      it("should wrap around when cycling past the end of suggestions") {
+        every { textWidget.caretOffset } returns 10
+        val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
+        val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
+        coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
+        coEvery { codeSuggestionsProvider.provideInvokedSuggestions(any(), any(), any()) } returns listOf(suggestion2)
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
+
+        session.cycleToNextSuggestion() // To suggestion 2
+        session.cycleToNextSuggestion() // Should wrap back to suggestion 1
+
+        verify(exactly = 1) { renderer.update("suggestion 2") }
+        verify(exactly = 1) { renderer.update("suggestion 1") }
+      }
+
+      it("should do nothing if there's only one suggestion") {
+        every { textWidget.caretOffset } returns 10
+        val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
+        coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
+        coEvery { codeSuggestionsProvider.provideInvokedSuggestions(any(), any(), any()) } returns emptyList()
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        every { renderer.position } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
+
+        session.cycleToNextSuggestion()
+
+        verify(exactly = 0) { renderer.update(any()) }
+      }
+
+      // add test to ignore cycle request if code suggestion is still streaming
+      it("should ignore cycle request if code suggestion is still streaming") {
+        val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+        coEvery {
+          codeSuggestionsProvider.provideAutomaticSuggestion(
+            any(),
+            any(),
+            any()
+          )
+        } returns streamingCodeSuggestion
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        session.cycleToNextSuggestion()
+
+        verify(exactly = 0) { renderer.update(any()) }
+        verify(exactly = 0) { streamingCodeSuggestionsManager.cancel(any()) }
       }
     }
   }
