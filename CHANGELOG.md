@@ -6,6 +6,8 @@
 
 ### Changed
 
+- Changed Code Suggestions status text in Duo menu when Code Suggestions API is unavailable ([!183](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/183))
+
 ### Removed
 
 ### Fixed

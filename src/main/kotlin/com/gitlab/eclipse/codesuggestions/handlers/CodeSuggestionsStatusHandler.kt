@@ -42,8 +42,17 @@ class CodeSuggestionsStatusHandler : AbstractHandler(), IElementUpdater {
       element.setText("Code Suggestions: Enabled")
       element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit", iconTone))
     } else {
-      element.setText("Code Suggestions: Disabled (${engagedCheck.checkId})")
+      if (engagedCheck.checkId == API_ERROR_CHECK_ID) {
+        "Code Suggestions: Unavailable (${engagedCheck.checkId})"
+      } else {
+        "Code Suggestions: Disabled (${engagedCheck.checkId})"
+      }.let(element::setText)
+
       element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit", iconTone))
     }
+  }
+
+  companion object {
+    const val API_ERROR_CHECK_ID = "code-suggestions-api-error"
   }
 }

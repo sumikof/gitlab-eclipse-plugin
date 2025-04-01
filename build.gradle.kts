@@ -32,7 +32,7 @@ plugins {
 
   id("io.gitlab.arturbosch.detekt") version "1.23.8"
 
-  id("com.github.gmazzo.buildconfig") version "5.6.0"
+  id("com.github.gmazzo.buildconfig") version "5.6.2"
 }
 
 allprojects {
@@ -135,7 +135,7 @@ dependencies {
   // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:33.4.5-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.1.20")
-  implementation("io.insert-koin:koin-core:4.0.3")
+  implementation("io.insert-koin:koin-core:4.0.4")
 
   testImplementation(kotlin("test"))
   testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
