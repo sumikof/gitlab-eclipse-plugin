@@ -21,6 +21,18 @@
                 name="Accept Suggestion"
                 categoryId="gitlab-eclipse-plugin"
         />
+
+        <command
+                id="com.gitlab.eclipse.codesuggestions.cycleSuggestion.next"
+                name="Cycle to Next Suggestion"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.codesuggestions.cycleSuggestion.prev"
+                name="Cycle to Previous Suggestion"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.bindings">
@@ -41,6 +53,20 @@
         <key
                 sequence="TAB"
                 commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="M3+]"
+                commandId="com.gitlab.eclipse.codesuggestions.cycleSuggestion.next"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="M3+["
+                commandId="com.gitlab.eclipse.codesuggestions.cycleSuggestion.prev"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -113,6 +139,16 @@
         <handler
                 class="com.gitlab.eclipse.codesuggestions.handlers.RequestCodeSuggestionHandler"
                 commandId="com.gitlab.eclipse.codesuggestions.requestSuggestion"
+        />
+
+        <handler
+                class="com.gitlab.eclipse.codesuggestions.handlers.CycleToNextCodeSuggestionHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.cycleSuggestion.next"
+        />
+
+        <handler
+                class="com.gitlab.eclipse.codesuggestions.handlers.CycleToPreviousCodeSuggestionHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.cycleSuggestion.prev"
         />
 
         <handler
@@ -220,7 +256,7 @@
                                 <equals value="light"/>
                             </with>
                             <with variable="os">
-                                <equals value="windows" />
+                                <equals value="windows"/>
                             </with>
                         </or>
                     </visibleWhen>

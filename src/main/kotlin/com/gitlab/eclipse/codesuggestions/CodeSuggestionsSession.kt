@@ -2,11 +2,7 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
-import com.gitlab.eclipse.codesuggestions.listeners.CaretMovementReason
-import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsCaretListener
-import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsKeyListener
-import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
-import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
+import com.gitlab.eclipse.codesuggestions.listeners.*
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.telemetry.TelemetryService
@@ -244,6 +240,14 @@ class CodeSuggestionsSession(
       logger.warn("Error checking bounding characters.", e)
       return false
     }
+  }
+
+  fun cycleToPreviousSuggestion() {
+    // TODO in next MR
+  }
+
+  fun cycleToNextSuggestion() {
+    // TODO in next MR
   }
 
   companion object {
