@@ -9,6 +9,7 @@ import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
 import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.GlyphMetrics
+import org.eclipse.swt.graphics.Point
 import org.eclipse.swt.graphics.TextLayout
 
 @Suppress("TooManyFunctions")
@@ -26,7 +27,7 @@ class CodeSuggestionsRenderer(
     textWidget.addPaintListener(this)
   }
 
-  var position: Position? = null
+  var documentPosition: Position? = null
     private set
 
   var text: String? = null
@@ -39,24 +40,27 @@ class CodeSuggestionsRenderer(
       val lines = text?.lines()
         ?: return
 
-      val offset = position?.offset
+      val offset = documentPosition?.offset
+        ?: return
+
+      val position = textWidget.caret.location
         ?: return
 
       if (isEndOfLine(offset)) {
-        renderSuffix(lines, offset, paintEvent)
+        renderSuffix(lines, position, paintEvent)
       } else {
-        renderInline(lines, offset, paintEvent)
+        renderInline(lines, offset, position, paintEvent)
       }
 
       if (lines.size > 1) {
-        renderBlock(lines.drop(1), offset, paintEvent)
+        renderBlock(lines.drop(1), offset, position, paintEvent)
       }
     } catch (e: Exception) {
       logger.error("Error rendering code suggestion.", e)
     }
   }
 
-  private fun renderInline(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
+  private fun renderInline(lines: List<String>, offset: Int, position: Point, paintEvent: PaintEvent) {
     val inline = lines.firstOrNull() ?: return
 
     val character = textWidget.getText(offset, offset)
@@ -75,30 +79,30 @@ class CodeSuggestionsRenderer(
 
     textWidget.setStyleRange(characterStyleRange)
 
-    val caretPos = textWidget.getLocationAtOffset(offset)
     paintEvent.gc.font = textWidget.font
     paintEvent.gc.foreground = GHOST_COLOR
-    paintEvent.gc.drawString(inline, caretPos.x, caretPos.y, true)
+    paintEvent.gc.drawString(inline, position.x, position.y, true)
 
     // Redraw the extended character because GlyphMetrics clips it.
     paintEvent.gc.foreground = suggestionCharacterStyle?.foreground ?: textWidget.foreground
-    paintEvent.gc.drawString(character, paintEvent.gc.stringExtent(inline).x + characterBounds.x, caretPos.y, true)
+    paintEvent.gc.drawString(character, paintEvent.gc.stringExtent(inline).x + characterBounds.x, position.y, true)
   }
 
-  private fun renderSuffix(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
+  private fun renderSuffix(lines: List<String>, position: Point, paintEvent: PaintEvent) {
     val suffix = lines.firstOrNull() ?: return
 
-    paintEvent.gc.font = textWidget.font
+    val layout = TextLayout(textWidget.display).apply {
+      text = suffix
+      font = textWidget.font
+      tabs = textWidget.tabStops
+    }
     paintEvent.gc.foreground = GHOST_COLOR
-
-    val caretPos = textWidget.getLocationAtOffset(offset)
-    paintEvent.gc.drawString(suffix, caretPos.x, caretPos.y, true)
+    layout.draw(paintEvent.gc, position.x, position.y)
+    layout.dispose()
   }
 
-  private fun renderBlock(lines: List<String>, offset: Int, paintEvent: PaintEvent) {
-    val caretPos = textWidget.getLocationAtOffset(offset)
+  private fun renderBlock(lines: List<String>, offset: Int, position: Point, paintEvent: PaintEvent) {
     val currentLine = textWidget.getLineAtOffset(offset)
-
     if (currentLine != textWidget.lineCount - 1) {
       textWidget.setLineSpacingProvider { lineIndex ->
         when {
@@ -116,16 +120,16 @@ class CodeSuggestionsRenderer(
       }
 
       paintEvent.gc.foreground = GHOST_COLOR
-      layout.draw(paintEvent.gc, textWidget.leftMargin, caretPos.y + (index + 1) * textWidget.lineHeight)
+      layout.draw(paintEvent.gc, textWidget.leftMargin, position.y + (index + 1) * textWidget.lineHeight)
       layout.dispose()
     }
   }
 
   fun display(text: String, offset: Int) {
     this.text = text
-    this.position = Position(offset)
+    this.documentPosition = Position(offset)
 
-    document.addPosition(position)
+    document.addPosition(documentPosition)
 
     textWidget.redrawNow()
   }
@@ -154,10 +158,10 @@ class CodeSuggestionsRenderer(
     }
 
     textWidget.setLineSpacingProvider(null)
-    document.removePosition(position)
+    document.removePosition(documentPosition)
 
     text = null
-    position = null
+    documentPosition = null
     suggestionCharacterStyle = null
   }
 

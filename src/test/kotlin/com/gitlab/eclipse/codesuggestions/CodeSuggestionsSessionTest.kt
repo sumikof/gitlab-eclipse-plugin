@@ -2,6 +2,8 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
+import com.gitlab.eclipse.codesuggestions.listeners.CaretMovementReason
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsCaretListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsKeyListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
@@ -56,6 +58,8 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
     mockkStatic(DocumentUndoManagerRegistry::getDocumentUndoManager)
 
+    mockkConstructor(CodeSuggestionsCaretListener::class)
+
     startKoin {
       modules(
         module {
@@ -72,8 +76,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { codeSuggestionsStateService.isEnabled } returns true
 
     every { textWidget.caretOffset } returns 10
+
     every { textWidget.addKeyListener(any()) } just Runs
     every { textWidget.removeKeyListener(any()) } just Runs
+    every { textWidget.addCaretListener(any()) } just Runs
+    every { textWidget.removeCaretListener(any()) } just Runs
 
     every { DocumentUndoManagerRegistry.getDocumentUndoManager(document) } returns documentUndoManager
     every { document.uri } returns "file://file.test"
@@ -81,6 +88,8 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { document.removeDocumentListener(any()) } just Runs
     every { document.getLineOfOffset(10) } returns 1
     every { document.getLineOffset(1) } returns 0
+
+    every { anyConstructed<CodeSuggestionsCaretListener>().setCaretMovementReason(any()) } returns Unit
 
     coEvery { codeSuggestionsProvider.provide(any(), any(), any()) } returns codeSuggestion
 
@@ -112,12 +121,13 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
   describe("CodeSuggestionsSession") {
     describe("initialization") {
-      it("should add itself as key, mouse, and document listeners during instantiation") {
+      it("should add itself as caret, key, mouse, undo and document listeners during instantiation") {
         verify {
           documentUndoManager.addDocumentUndoListener(any<CodeSuggestionsUndoListener>())
           document.addDocumentListener(session)
           textWidget.addKeyListener(any<CodeSuggestionsKeyListener>())
           textWidget.addMouseListener(any<CodeSuggestionsMouseListener>())
+          textWidget.addCaretListener(any<CodeSuggestionsCaretListener>())
         }
       }
 
@@ -149,6 +159,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         val sessionSpy = spyk(session)
         every { sessionSpy.requestCodeSuggestion() } just Runs
 
+        sessionSpy.setDocumentChangeReason(DocumentChangeReason.USER_TYPED)
         sessionSpy.documentChanged(event)
 
         verify { sessionSpy.requestCodeSuggestion() }
@@ -156,15 +167,16 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       }
 
       it("should not automatically request code suggestions if it should skip next suggestion") {
-        session.setSkipNextSuggestion()
-
         val event = mockk<DocumentEvent> {
           every { text } returns "abc"
         }
+
+        session.setDocumentChangeReason(DocumentChangeReason.UNDO)
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
         coVerify(exactly = 0) { codeSuggestionsProvider.provide(any(), any(), any()) }
 
+        session.setDocumentChangeReason(DocumentChangeReason.USER_TYPED)
         session.documentChanged(event)
         coroutineScope.advanceUntilIdle()
         coVerify(exactly = 1) { codeSuggestionsProvider.provide("file://file.test", 1, 10) }
@@ -188,6 +200,19 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.documentAboutToBeChanged(event)
 
         verify { renderer.clear() }
+      }
+
+      it("should set the caret change reason to user typing if the document change was caused by a user typing") {
+        val event = mockk<DocumentEvent> {
+          every { text } returns "abc"
+        }
+
+        session.setDocumentChangeReason(DocumentChangeReason.USER_TYPED)
+        session.documentAboutToBeChanged(event)
+
+        verify {
+          anyConstructed<CodeSuggestionsCaretListener>().setCaretMovementReason(CaretMovementReason.USER_TYPED)
+        }
       }
     }
 
@@ -307,7 +332,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     describe("acceptCodeSuggestion") {
       beforeEach {
         every { renderer.text } returns "suggested text"
-        every { renderer.position } returns mockk<Position> {
+        every { renderer.documentPosition } returns mockk<Position> {
           every { getOffset() } returns 10
         }
       }
@@ -327,6 +352,14 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         verify {
           renderer.clear()
           annotationManager.hide()
+        }
+      }
+
+      it("should set caret movement reason to suggestion accepted") {
+        session.acceptCodeSuggestion()
+
+        verify {
+          anyConstructed<CodeSuggestionsCaretListener>().setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
         }
       }
 
@@ -413,10 +446,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           annotationManager.hide()
 
           document.removeDocumentListener(session)
-
           documentUndoManager.removeDocumentUndoListener(any<CodeSuggestionsUndoListener>())
+
           textWidget.removeKeyListener(any<CodeSuggestionsKeyListener>())
           textWidget.removeMouseListener(any<CodeSuggestionsMouseListener>())
+          textWidget.removeCaretListener(any<CodeSuggestionsCaretListener>())
         }
       }
 
@@ -443,10 +477,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           annotationManager.hide()
 
           document.removeDocumentListener(session)
-
           documentUndoManager.removeDocumentUndoListener(any<CodeSuggestionsUndoListener>())
+
           textWidget.removeKeyListener(any<CodeSuggestionsKeyListener>())
           textWidget.removeMouseListener(any<CodeSuggestionsMouseListener>())
+          textWidget.removeCaretListener(any<CodeSuggestionsCaretListener>())
         }
       }
     }
@@ -482,7 +517,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
     describe("onSuggestionStreamComplete") {
       it("should request annotation manager to display ready icon when stream is complete") {
-        every { renderer.position } returns mockk<Position> {
+        every { renderer.documentPosition } returns mockk<Position> {
           every { getOffset() } returns 10
         }
 
