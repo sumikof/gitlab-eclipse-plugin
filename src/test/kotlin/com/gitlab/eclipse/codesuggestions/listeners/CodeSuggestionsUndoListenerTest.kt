@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.codesuggestions.listeners
 
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsSession
+import com.gitlab.eclipse.codesuggestions.DocumentChangeReason
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.clearAllMocks
@@ -46,11 +47,34 @@ class CodeSuggestionsUndoListenerTest : DescribeSpec({
     verify { documentUndoManager.addDocumentUndoListener(listener) }
   }
 
-  it("should set skip next suggestion when undo notification is received") {
-    val undoEvent = mockk<DocumentUndoEvent>()
+  it("should update document change reason when about to undo notification is received") {
+    val undoEvent = mockk<DocumentUndoEvent> {
+      every { eventType } returns DocumentUndoEvent.ABOUT_TO_UNDO
+    }
+
     listener.documentUndoNotification(undoEvent)
 
-    verify { session.setSkipNextSuggestion() }
+    verify { session.setDocumentChangeReason(DocumentChangeReason.UNDO) }
+  }
+
+  it("should update document change reason when about to redo notification is received") {
+    val undoEvent = mockk<DocumentUndoEvent> {
+      every { eventType } returns DocumentUndoEvent.ABOUT_TO_REDO
+    }
+
+    listener.documentUndoNotification(undoEvent)
+
+    verify { session.setDocumentChangeReason(DocumentChangeReason.UNDO) }
+  }
+
+  it("should not update document change reason when other notification is received") {
+    val undoEvent = mockk<DocumentUndoEvent> {
+      every { eventType } returns DocumentUndoEvent.REDONE
+    }
+
+    listener.documentUndoNotification(undoEvent)
+
+    verify(exactly = 0) { session.setDocumentChangeReason(any()) }
   }
 
   it("should unregister itself as a document undo listener when disposed") {

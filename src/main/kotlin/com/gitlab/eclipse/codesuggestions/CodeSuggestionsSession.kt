@@ -2,6 +2,8 @@ package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationType
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
+import com.gitlab.eclipse.codesuggestions.listeners.CaretMovementReason
+import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsCaretListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsKeyListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsMouseListener
 import com.gitlab.eclipse.codesuggestions.listeners.CodeSuggestionsUndoListener
@@ -37,23 +39,28 @@ class CodeSuggestionsSession(
 
   private var job: Job? = null
 
-  private var skipNextSuggestion: Boolean = false
+  private var documentChangeReason: DocumentChangeReason = DocumentChangeReason.USER_TYPED
   private var codeSuggestion: CodeSuggestion? = null
 
+  private val undoListener = CodeSuggestionsUndoListener(document, this)
   private val keyListener = CodeSuggestionsKeyListener(textWidget, this)
   private val mouseListener = CodeSuggestionsMouseListener(textWidget, this)
-  private val undoListener = CodeSuggestionsUndoListener(document, this)
+  private val caretListener = CodeSuggestionsCaretListener(textWidget, this)
 
   override fun documentAboutToBeChanged(event: DocumentEvent) {
+    if (documentChangeReason == DocumentChangeReason.USER_TYPED) {
+      caretListener.setCaretMovementReason(CaretMovementReason.USER_TYPED)
+    }
+
     cancelCodeSuggestion()
   }
 
   override fun documentChanged(event: DocumentEvent) {
-    if (!skipNextSuggestion && event.text.isNotEmpty()) {
+    if (documentChangeReason == DocumentChangeReason.USER_TYPED && event.text.isNotEmpty()) {
       requestCodeSuggestion()
     }
 
-    skipNextSuggestion = false
+    documentChangeReason = DocumentChangeReason.USER_TYPED
   }
 
   init {
@@ -116,7 +123,7 @@ class CodeSuggestionsSession(
 
   override fun onSuggestionStreamComplete() {
     currentDisplay.syncExec {
-      val suggestionPosition = codeSuggestionsRenderer.position
+      val suggestionPosition = codeSuggestionsRenderer.documentPosition
 
       if (suggestionPosition != null) {
         annotationManager.display(CodeSuggestionAnnotationType.READY, suggestionPosition.offset)
@@ -127,7 +134,7 @@ class CodeSuggestionsSession(
   }
 
   fun acceptCodeSuggestion() {
-    val offset = codeSuggestionsRenderer.position?.offset
+    val offset = codeSuggestionsRenderer.documentPosition?.offset
       ?: return
 
     val text = codeSuggestionsRenderer.text
@@ -136,6 +143,7 @@ class CodeSuggestionsSession(
     codeSuggestionsRenderer.clear()
     annotationManager.hide()
 
+    caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
     document.replace(offset, 0, text)
     textWidget.caretOffset = offset + text.length
 
@@ -188,8 +196,8 @@ class CodeSuggestionsSession(
 
   fun isCodeSuggestionDisplayed() = codeSuggestionsRenderer.isCodeSuggestionDisplayed()
 
-  fun setSkipNextSuggestion() {
-    skipNextSuggestion = true
+  fun setDocumentChangeReason(reason: DocumentChangeReason) {
+    documentChangeReason = reason
   }
 
   fun dispose() {
@@ -217,6 +225,7 @@ class CodeSuggestionsSession(
     }
 
     annotationManager.hide()
+    caretListener.dispose()
     keyListener.dispose()
     mouseListener.dispose()
     undoListener.dispose()
