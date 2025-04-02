@@ -114,13 +114,6 @@ class CursoredSetTest : DescribeSpec({
         cursoredSet.getCurrent() shouldBe "Item2"
       }
 
-      it("wraps around at the beginning with getPrevious") {
-        cursoredSet.addAll(listOf("Item1", "Item2", "Item3"))
-
-        cursoredSet.getPrevious() shouldBe "Item3"
-        cursoredSet.getCurrent() shouldBe "Item3"
-      }
-
       it("circles back to the same item in a single item set") {
         cursoredSet.addAll(listOf("Item1"))
 

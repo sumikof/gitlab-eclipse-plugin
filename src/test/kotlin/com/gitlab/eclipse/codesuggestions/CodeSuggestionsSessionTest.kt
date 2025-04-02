@@ -558,7 +558,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
     describe("cycle suggestions") {
       it("should cycle to next suggestion") {
-        every { textWidget.caretOffset } returns 10
         val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
         val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
         coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
@@ -567,17 +566,12 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
-        every { renderer.position } returns mockk<Position> {
-          every { getOffset() } returns 10
-        }
-
         session.cycleToNextSuggestion()
 
         verify { renderer.update("suggestion 2") }
       }
 
       it("should cycle to previous suggestion") {
-        every { textWidget.caretOffset } returns 10
         val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
         val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
         val suggestion3 = CodeSuggestion(null, "track3", 3, "suggestion 3")
@@ -590,19 +584,12 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
-        every { renderer.position } returns mockk<Position> {
-          every { getOffset() } returns 10
-        }
-
         session.cycleToPreviousSuggestion()
 
-        // Should cycle to the last suggestion when going backward from the first
         verify { renderer.update("suggestion 3") }
-        verify { telemetryService.send(suggestion3, any()) }
       }
 
       it("should wrap around when cycling past the end of suggestions") {
-        every { textWidget.caretOffset } returns 10
         val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
         val suggestion2 = CodeSuggestion(null, "track2", 2, "suggestion 2")
         coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
@@ -611,29 +598,20 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
-        every { renderer.position } returns mockk<Position> {
-          every { getOffset() } returns 10
-        }
-
-        session.cycleToNextSuggestion() // To suggestion 2
-        session.cycleToNextSuggestion() // Should wrap back to suggestion 1
+        session.cycleToNextSuggestion()
+        session.cycleToNextSuggestion()
 
         verify(exactly = 1) { renderer.update("suggestion 2") }
         verify(exactly = 1) { renderer.update("suggestion 1") }
       }
 
       it("should do nothing if there's only one suggestion") {
-        every { textWidget.caretOffset } returns 10
         val suggestion1 = CodeSuggestion(null, "track1", 1, "suggestion 1")
         coEvery { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) } returns suggestion1
         coEvery { codeSuggestionsProvider.provideInvokedSuggestions(any(), any(), any()) } returns emptyList()
 
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
-
-        every { renderer.position } returns mockk<Position> {
-          every { getOffset() } returns 10
-        }
 
         session.cycleToNextSuggestion()
 

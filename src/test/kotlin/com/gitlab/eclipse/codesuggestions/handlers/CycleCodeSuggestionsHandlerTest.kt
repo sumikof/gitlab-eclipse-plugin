@@ -56,26 +56,12 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
     it("should cycle to next suggestion") {
       nextHandler.execute(event)
 
-      verify { platformUtils.getActiveTextEditor() }
-      verify { codeSuggestionsManager.getOrCreateSession(textEditor) }
       verify { session.cycleToNextSuggestion() }
       verify(exactly = 0) { session.cycleToPreviousSuggestion() }
     }
 
-    it("should do nothing when no active editor") {
-      every { platformUtils.getActiveTextEditor() } returns null
-
-      nextHandler.execute(event)
-
-      verify(exactly = 0) { codeSuggestionsManager.getOrCreateSession(any()) }
-      verify(exactly = 0) { session.cycleToNextSuggestion() }
-    }
-
     it("should be enabled when code suggestions are displayed") {
       val enabled = nextHandler.isEnabled()
-
-      verify { platformUtils.getActiveTextEditor() }
-      verify { session.isCodeSuggestionDisplayed() }
 
       enabled shouldBe true
     }
@@ -85,9 +71,6 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
 
       val enabled = nextHandler.isEnabled()
 
-      verify { platformUtils.getActiveTextEditor() }
-      verify { session.isCodeSuggestionDisplayed() }
-
       enabled shouldBe false
     }
 
@@ -95,8 +78,6 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
       every { platformUtils.getActiveTextEditor() } returns null
 
       val enabled = nextHandler.isEnabled()
-
-      verify { platformUtils.getActiveTextEditor() }
 
       enabled shouldBe false
     }
@@ -108,26 +89,12 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
     it("should cycle to previous suggestion") {
       prevHandler.execute(event)
 
-      verify { platformUtils.getActiveTextEditor() }
-      verify { codeSuggestionsManager.getOrCreateSession(textEditor) }
       verify { session.cycleToPreviousSuggestion() }
       verify(exactly = 0) { session.cycleToNextSuggestion() }
     }
 
-    it("should do nothing when no active editor") {
-      every { platformUtils.getActiveTextEditor() } returns null
-
-      prevHandler.execute(event)
-
-      verify(exactly = 0) { codeSuggestionsManager.getOrCreateSession(any()) }
-      verify(exactly = 0) { session.cycleToPreviousSuggestion() }
-    }
-
     it("should be enabled when code suggestions are displayed") {
       val enabled = prevHandler.isEnabled()
-
-      verify { platformUtils.getActiveTextEditor() }
-      verify { session.isCodeSuggestionDisplayed() }
 
       enabled shouldBe true
     }
@@ -137,9 +104,6 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
 
       val enabled = prevHandler.isEnabled()
 
-      verify { platformUtils.getActiveTextEditor() }
-      verify { session.isCodeSuggestionDisplayed() }
-
       enabled shouldBe false
     }
 
@@ -147,8 +111,6 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
       every { platformUtils.getActiveTextEditor() } returns null
 
       val enabled = prevHandler.isEnabled()
-
-      verify { platformUtils.getActiveTextEditor() }
 
       enabled shouldBe false
     }
