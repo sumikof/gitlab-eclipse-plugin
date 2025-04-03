@@ -5,10 +5,14 @@ import com.gitlab.eclipse.utils.system.Arch
 import com.gitlab.eclipse.utils.system.OS
 import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.core.runtime.FileLocator
-import org.eclipse.core.runtime.Path
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
+import java.io.File
+import java.io.FileOutputStream
+import java.util.jar.JarFile
+import kotlin.sequences.forEach
 
+@Suppress("NestedBlockDepth")
 class LanguageServerInstaller {
   private val logger = logger<LanguageServerInstaller>()
 
@@ -16,35 +20,56 @@ class LanguageServerInstaller {
     try {
       val bundle: Bundle? = Platform.getBundle("com.gitlab.eclipse.$languageServerBundle")
 
-      val bin = if (bundle != null) {
-        FileLocator.find(bundle, Path.fromOSString("/bin/gitlab-lsp"))
+      val bundleJar = if (bundle != null) {
+        FileLocator.getBundleFileLocation(bundle).map { JarFile(it) }.orElse(null)
       } else {
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
         return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/$languageServerBinary"
       }
 
-      return bin?.let { binary ->
-        val destination = bundle.getDataFile("gitlab-lsp")
+      return bundleJar?.let { jar ->
+        val destination = bundle.getDataFile("lsp")
 
         if (!destination.exists()) {
           logger.info("Installing language server binary to ${destination.absolutePath}.")
-          destination.createNewFile()
-          destination.writeBytes(binary.readBytes())
+
+          destination.mkdir()
+          jar.use { it.extractTo(destination) }
         }
 
-        if (!destination.canExecute()) {
-          destination.setExecutable(true, false)
-          logger.info("Successfully made file ${destination.absolutePath} executable.")
+        val lspBinary = destination.resolve("bin/gitlab-lsp")
+        if (!lspBinary.canExecute()) {
+          lspBinary.setExecutable(true, false)
+          logger.info("Successfully made file ${lspBinary.absolutePath} executable.")
         }
 
-        logger.info("Successfully installed language server in ${destination.absolutePath}.")
-        return@let destination.absolutePath
+        logger.info("Successfully installed language server binaries in ${destination.absolutePath}.")
+        return@let lspBinary.absolutePath
       }
     } catch (e: Throwable) {
       logger.error(e.message, e)
     }
 
     return null
+  }
+
+  @Suppress("NestedBlockDepth")
+  private fun JarFile.extractTo(destination: File) {
+    entries().asSequence().forEach { entry ->
+      val file = File(destination, entry.name)
+
+      if (entry.isDirectory) {
+        file.mkdirs()
+      } else {
+        file.parentFile?.mkdirs()
+
+        getInputStream(entry).use { input ->
+          FileOutputStream(file).use { output ->
+            input.copyTo(output)
+          }
+        }
+      }
+    }
   }
 
   private val languageServerBundle
