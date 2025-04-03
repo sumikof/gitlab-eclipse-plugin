@@ -6,6 +6,9 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.utils.CodeFormatter
 import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.coEvery
@@ -75,114 +78,104 @@ class CodeSuggestionsProviderTest : DescribeSpec({
     )
   }
 
-  it("returns null when language server is null") {
-    every { languageServerWrapper.languageServer } returns null
+  describe("provideAutomaticSuggestion") {
+    it("returns null when language server is null") {
+      every { languageServerWrapper.languageServer } returns null
 
-    codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe null
-  }
-
-  it("returns null when language server throws exception") {
-    coEvery { languageServer.inlineCompletion(any()) } throws RuntimeException("Test exception")
-
-    codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe null
-  }
-
-  it("returns null when language server returns empty list") {
-    emptyList<String>().asLeftResponse()
-
-    codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe null
-  }
-
-  it("returns null when language server returns empty completion list") {
-    emptyList<String>().asRightResponse()
-
-    codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) shouldBe null
-  }
-
-  it("cancels ongoing request before making a new one") {
-    val firstRequest = CompletableFuture<Either<List<CompletionItem>, CompletionList>>()
-    val secondRequest = CompletableFuture.completedFuture(
-      Either.forLeft<List<CompletionItem>, CompletionList>(emptyList())
-    )
-    coEvery { languageServer.inlineCompletion(any()) } returnsMany listOf(firstRequest, secondRequest)
-
-    val job1 = launch { codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) }
-    delay(100)
-    val job2 = launch { codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn) }
-    job2.join()
-
-    firstRequest.isCancelled shouldBe true
-    job1.join()
-  }
-
-  it("stores returns the first suggestion on automatic requests") {
-    val item1 = CompletionItem().apply {
-      insertText = suggestionText
-      command = Command().apply {
-        command = "gitlab.ls.codeSuggestionAccepted"
-        arguments = listOf(JsonPrimitive("tracking-1"), JsonPrimitive(1))
-      }
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
     }
 
-    val item2 = CompletionItem().apply {
-      insertText = "val y=10"
-      command = Command().apply {
-        command = "gitlab.ls.codeSuggestionAccepted"
-        arguments = listOf(JsonPrimitive("tracking-2"), JsonPrimitive(2))
-      }
+    it("returns null when language server throws exception") {
+      coEvery { languageServer.inlineCompletion(any()) } throws RuntimeException("Test exception")
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
     }
 
-    coEvery { languageServer.inlineCompletion(any()) } returns CompletableFuture.completedFuture(
-      Either.forLeft(listOf(item1, item2))
-    )
-    every { codeFormatter.format("val y=10") } returns "val y = 10"
+    it("returns null when language server returns empty list") {
+      emptyList<String>().asLeftResponse()
 
-    val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
-
-    result?.text shouldBe formattedText
-    result?.trackingId shouldBe "tracking-1"
-    result?.optionId shouldBe 1
-  }
-
-  it("returns formatted suggestion when language server returns a list of CompletionItem") {
-    listOf(suggestionText).asLeftResponse()
-
-    val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
-
-    result?.text shouldBe formattedText
-    result?.trackingId shouldBe trackingId
-    result?.optionId shouldBe optionId
-  }
-
-  it("returns formatted suggestion when language server returns a CompletionList") {
-    listOf(suggestionText).asRightResponse()
-
-    val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
-
-    result?.text shouldBe formattedText
-    result?.trackingId shouldBe trackingId
-    result?.optionId shouldBe optionId
-  }
-
-  it("returns a streaming code suggestion when language server returns a streaming suggestion") {
-    val streamId = "stream-123"
-    val item = CompletionItem().apply {
-      insertText = suggestionText
-      command = Command().apply {
-        command = "gitlab.ls.startStreaming"
-        arguments = listOf(JsonPrimitive(streamId), JsonPrimitive(trackingId))
-      }
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
     }
 
-    coEvery { languageServer.inlineCompletion(any()) } returns CompletableFuture.completedFuture(
-      Either.forLeft(listOf(item))
-    )
+    it("returns a formatted suggestion when language server returns a valid suggestion") {
+      listOf(suggestionText).asLeftResponse()
 
-    val result = codeSuggestionsProvider.provide(fileUri, cursorLine, cursorColumn)
+      val result = codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn)
 
-    result?.text shouldBe formattedText
-    result?.streamId shouldBe streamId
-    result?.trackingId shouldBe trackingId
-    result?.optionId shouldBe null
+      result?.text shouldBe formattedText
+      result?.trackingId shouldBe trackingId
+      result?.optionId shouldBe optionId
+    }
+  }
+
+  describe("provideInvokedSuggestions") {
+    it("returns empty list when language server is null") {
+      every { languageServerWrapper.languageServer } returns null
+
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+    }
+
+    it("returns empty list when language server throws exception") {
+      coEvery { languageServer.inlineCompletion(any()) } throws RuntimeException("Test exception")
+
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+    }
+
+    it("returns empty list when language server returns empty list") {
+      emptyList<String>().asLeftResponse()
+
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+    }
+
+    it("returns all suggestions when language server returns a list of CompletionItems") {
+      val texts = listOf(suggestionText, "val y=10", "val z=15")
+      texts.asLeftResponse()
+
+      every { codeFormatter.format("val y=10") } returns "val y = 10"
+      every { codeFormatter.format("val z=15") } returns "val z = 15"
+
+      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn)
+
+      results shouldHaveSize 3
+      results[0].text shouldBe formattedText
+      results[0].trackingId shouldBe trackingId
+      results[0].optionId shouldBe optionId
+    }
+
+    it("returns all suggestions when language server returns a CompletionList") {
+      val texts = listOf(suggestionText, "val y=10")
+      texts.asRightResponse()
+
+      every { codeFormatter.format("val y=10") } returns "val y = 10"
+
+      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn)
+
+      results shouldHaveSize 2
+      results[0].text shouldBe formattedText
+      results[0].trackingId shouldBe trackingId
+      results[0].optionId shouldBe optionId
+
+      results[1].text shouldBe "val y = 10"
+      results[1].trackingId shouldBe trackingId
+      results[1].optionId shouldBe optionId
+    }
+  }
+
+  describe("fetchSuggestions") {
+    it("cancels ongoing request before making a new one") {
+      val firstRequest = CompletableFuture<Either<List<CompletionItem>, CompletionList>>()
+      val secondRequest = CompletableFuture.completedFuture(
+        Either.forLeft<List<CompletionItem>, CompletionList>(emptyList())
+      )
+      coEvery { languageServer.inlineCompletion(any()) } returnsMany listOf(firstRequest, secondRequest)
+
+      val job1 = launch { codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn) }
+      delay(100)
+      val job2 = launch { codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn) }
+      job2.join()
+
+      firstRequest.isCancelled shouldBe true
+      job1.join()
+    }
   }
 })

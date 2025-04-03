@@ -7,6 +7,7 @@ import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
+import com.gitlab.eclipse.utils.CursoredSet
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.uri
@@ -36,7 +37,9 @@ class CodeSuggestionsSession(
   private var job: Job? = null
 
   private var documentChangeReason: DocumentChangeReason = DocumentChangeReason.USER_TYPED
-  private var codeSuggestion: CodeSuggestion? = null
+
+  private val codeSuggestions: CursoredSet<CodeSuggestion> = CursoredSet()
+  private val currentSuggestion get() = codeSuggestions.getCurrent()
 
   private val undoListener = CodeSuggestionsUndoListener(document, this)
   private val keyListener = CodeSuggestionsKeyListener(textWidget, this)
@@ -81,26 +84,21 @@ class CodeSuggestionsSession(
 
         annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
 
-        val suggestion = codeSuggestionsProvider.provide(
+        codeSuggestions.clear()
+        val suggestion = codeSuggestionsProvider.provideAutomaticSuggestion(
           fileUri = document.uri,
           cursorLine = line,
           cursorColumn = column
-        ).also { codeSuggestion = it }
+        )
 
-        if (suggestion == null) {
+        if (suggestion != null) {
+          codeSuggestions.add(suggestion)
+        } else {
           annotationManager.hide()
           return@launch
         }
 
-        currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
-        telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
-
-        val streamId = suggestion.streamId
-        if (streamId == null) {
-          annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
-        } else {
-          streamingCodeSuggestionsManager.register(streamId, this@CodeSuggestionsSession)
-        }
+        displayCurrentSuggestion(offset)
       }
     } catch (e: Exception) {
       logger.error("Error requesting code suggestion.", e)
@@ -108,9 +106,9 @@ class CodeSuggestionsSession(
   }
 
   override fun onSuggestionStreamUpdate(streamId: String, text: String) {
-    if (codeSuggestion?.streamId != streamId) {
-      return
-    }
+    if (currentSuggestion?.streamId != streamId) return
+
+    currentSuggestion?.text = text
 
     currentDisplay.syncExec {
       codeSuggestionsRenderer.update(text)
@@ -120,7 +118,6 @@ class CodeSuggestionsSession(
   override fun onSuggestionStreamComplete() {
     currentDisplay.syncExec {
       val suggestionPosition = codeSuggestionsRenderer.documentPosition
-
       if (suggestionPosition != null) {
         annotationManager.display(CodeSuggestionAnnotationType.READY, suggestionPosition.offset)
       } else {
@@ -130,6 +127,8 @@ class CodeSuggestionsSession(
   }
 
   fun acceptCodeSuggestion() {
+    cancelStreaming()
+
     val offset = codeSuggestionsRenderer.documentPosition?.offset
       ?: return
 
@@ -143,28 +142,19 @@ class CodeSuggestionsSession(
     document.replace(offset, 0, text)
     textWidget.caretOffset = offset + text.length
 
-    codeSuggestion?.let {
-      telemetryService.send(it, TelemetryAction.SUGGESTION_ACCEPTED)
-
-      val stream = it.streamId
-      if (stream != null) {
-        streamingCodeSuggestionsManager.cancel(stream)
-      }
-    }
+    codeSuggestions.clear()
   }
 
   fun cancelCodeSuggestion() {
     try {
       job?.cancel()
 
-      codeSuggestion?.streamId?.let { stream ->
-        streamingCodeSuggestionsManager.cancel(stream)
-      }
+      cancelStreaming()
 
       annotationManager.hide()
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
 
-      codeSuggestion = null
+      codeSuggestions.clear()
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
     }
@@ -175,7 +165,7 @@ class CodeSuggestionsSession(
       codeSuggestionsRenderer.reject()
       annotationManager.hide()
 
-      codeSuggestion?.let {
+      currentSuggestion?.let {
         telemetryService.send(it, TelemetryAction.SUGGESTION_REJECTED)
 
         val stream = it.streamId
@@ -184,7 +174,7 @@ class CodeSuggestionsSession(
         }
       }
 
-      codeSuggestion = null
+      codeSuggestions.clear()
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
     }
@@ -203,10 +193,9 @@ class CodeSuggestionsSession(
       logger.error("Error cancelling ongoing code suggestion request.", e)
     }
 
-    codeSuggestion?.streamId?.let { stream ->
-      streamingCodeSuggestionsManager.cancel(stream)
-    }
-    codeSuggestion = null
+    cancelStreaming()
+
+    codeSuggestions.clear()
 
     try {
       codeSuggestionsRenderer.dispose()
@@ -227,6 +216,72 @@ class CodeSuggestionsSession(
     undoListener.dispose()
   }
 
+  private fun cancelStreaming() {
+    try {
+      currentSuggestion?.streamId?.let { stream ->
+        streamingCodeSuggestionsManager.cancel(stream)
+      }
+    } catch (e: Exception) {
+      logger.error("Error canceling streaming suggestion.", e)
+    }
+  }
+
+  fun cycleCodeSuggestion(direction: CycleDirection = CycleDirection.NEXT) {
+    // If it's a streaming suggestion, don't get more suggestions
+    if (currentSuggestion?.streamId != null) return
+
+    try {
+      job?.cancel()
+      job = coroutineScope.launch {
+        val offset = currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
+
+        if (codeSuggestions.size <= 1) {
+          annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
+
+          val added: Boolean
+          val line = document.getLineOfOffset(offset)
+          val column = offset - document.getLineOffset(line)
+
+          added = codeSuggestionsProvider.provideInvokedSuggestions(
+            fileUri = document.uri,
+            cursorLine = line,
+            cursorColumn = column
+          ).let(codeSuggestions::addAll)
+
+          if (!added) return@launch
+        }
+
+        when (direction) {
+          CycleDirection.NEXT -> codeSuggestions.getNext()
+          CycleDirection.PREVIOUS -> codeSuggestions.getPrevious()
+        }?.let { suggestion ->
+          currentDisplay.syncExec {
+            codeSuggestionsRenderer.update(suggestion.text)
+            annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
+          }
+
+          // Send telemetry with the current suggestion
+          telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
+        }
+      }
+    } catch (e: Exception) {
+      logger.error("Error cycling code suggestion.", e)
+    }
+  }
+
+  private fun displayCurrentSuggestion(offset: Int) {
+    currentSuggestion?.let { suggestion ->
+      currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
+      telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
+      val streamId = suggestion.streamId
+      if (streamId == null) {
+        annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
+      } else {
+        streamingCodeSuggestionsManager.register(streamId, this@CodeSuggestionsSession)
+      }
+    }
+  }
+
   private fun isEnabled() = service<CodeSuggestionsStateService>().isEnabled && !isCursorAfterBracketPair()
 
   private fun isCursorAfterBracketPair(): Boolean {
@@ -240,14 +295,6 @@ class CodeSuggestionsSession(
       logger.warn("Error checking bounding characters.", e)
       return false
     }
-  }
-
-  fun cycleToPreviousSuggestion() {
-    // TODO in next MR
-  }
-
-  fun cycleToNextSuggestion() {
-    // TODO in next MR
   }
 
   companion object {

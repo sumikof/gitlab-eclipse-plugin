@@ -1,9 +1,7 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.codesuggestions.CodeSuggestionsSession
+import com.gitlab.eclipse.codesuggestions.CycleDirection
 
 class CycleToPreviousCodeSuggestionHandler : CycleCodeSuggestionHandler() {
-  override fun cycleSuggestion(session: CodeSuggestionsSession) {
-    session.cycleToPreviousSuggestion()
-  }
+  override val cycleDirection = CycleDirection.PREVIOUS
 }
