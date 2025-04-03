@@ -2,7 +2,7 @@ package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
-import com.gitlab.eclipse.codesuggestions.CodeSuggestionsSession
+import com.gitlab.eclipse.codesuggestions.CycleDirection
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.logger
@@ -19,7 +19,7 @@ abstract class CycleCodeSuggestionHandler : AbstractHandler() {
       val textEditor = platformUtils.getActiveTextEditor() ?: return
       val session = codeSuggestionsManager.getOrCreateSession(textEditor)
 
-      cycleSuggestion(session)
+      session.cycleCodeSuggestion(cycleDirection)
     } catch (e: Exception) {
       logger.error("Failed to cycle through code suggestions.", e)
     }
@@ -32,5 +32,5 @@ abstract class CycleCodeSuggestionHandler : AbstractHandler() {
       .isCodeSuggestionDisplayed()
   }
 
-  protected abstract fun cycleSuggestion(session: CodeSuggestionsSession)
+  protected abstract val cycleDirection: CycleDirection
 }

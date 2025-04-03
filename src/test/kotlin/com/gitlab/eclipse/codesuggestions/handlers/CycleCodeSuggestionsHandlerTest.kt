@@ -3,6 +3,7 @@ package com.gitlab.eclipse.codesuggestions.handlers
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsSession
+import com.gitlab.eclipse.codesuggestions.CycleDirection
 import com.gitlab.eclipse.utils.PlatformUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -38,8 +39,7 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
     every { platformUtils.getActiveTextEditor() } returns textEditor
     every { codeSuggestionsManager.getOrCreateSession(textEditor) } returns session
     every { session.isCodeSuggestionDisplayed() } returns true
-    every { session.cycleToNextSuggestion() } returns Unit
-    every { session.cycleToPreviousSuggestion() } returns Unit
+    every { session.cycleCodeSuggestion(any()) } returns Unit
     every { event.parameters } returns null
   }
 
@@ -57,8 +57,7 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
     it("should cycle to next suggestion") {
       nextHandler.execute(event)
 
-      verify { session.cycleToNextSuggestion() }
-      verify(exactly = 0) { session.cycleToPreviousSuggestion() }
+      verify { session.cycleCodeSuggestion(CycleDirection.NEXT) }
     }
 
     // TODO: Remove this once Code Suggestions feature flag is removed
@@ -93,8 +92,7 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
     it("should cycle to previous suggestion") {
       prevHandler.execute(event)
 
-      verify { session.cycleToPreviousSuggestion() }
-      verify(exactly = 0) { session.cycleToNextSuggestion() }
+      verify { session.cycleCodeSuggestion(CycleDirection.PREVIOUS) }
     }
 
     // TODO: Remove this once Code Suggestions feature flag is removed

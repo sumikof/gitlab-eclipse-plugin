@@ -38,8 +38,8 @@ class StreamingCodeSuggestionsManager(
     }
   }
 
-  private fun complete(id: String) {
-    val listener = inProgressStreams.remove(id)
+  private fun complete(streamId: String) {
+    val listener = inProgressStreams.remove(streamId)
       ?: return
 
     listener.onSuggestionStreamComplete()
