@@ -24,11 +24,9 @@ class CodeSuggestionsManagerTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   fun createCodeSuggestionsManager(
-    isCodeSuggestionsEnabled: Boolean = true,
     createCodeSuggestionsSession: (ITextEditor) -> CodeSuggestionsSession
   ) = CodeSuggestionsManager(
     platformUtils = platformUtils,
-    isCodeSuggestionsEnabled = isCodeSuggestionsEnabled,
     createCodeSuggestionsSession = createCodeSuggestionsSession
   )
 
@@ -57,22 +55,8 @@ class CodeSuggestionsManagerTest : DescribeSpec({
   }
 
   describe("CodeSuggestionsManager") {
-    it("should not set up listeners for workbench, windows and pages if code suggestions are disabled") {
-      createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = false,
-        createCodeSuggestionsSession = { _ -> session }
-      )
-
-      verify(exactly = 0) {
-        workbench.addWindowListener(any<IWindowListener>())
-        window.addPageListener(any<IPageListener>())
-        page.addPartListener(any<IPartListener2>())
-      }
-    }
-
     it("should set up listeners for workbench, windows and pages during initialization") {
       createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
         createCodeSuggestionsSession = { _ -> session }
       )
 
@@ -88,7 +72,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       every { sessionFactory.invoke(any()) } returns session
 
       createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
         createCodeSuggestionsSession = sessionFactory
       )
 
@@ -102,7 +85,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
 
     it("should end the Code Suggestion session when editor is closed") {
       createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
         createCodeSuggestionsSession = { _ -> session }
       )
 
@@ -130,7 +112,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
       }
 
       val manager = createCodeSuggestionsManager(
-        isCodeSuggestionsEnabled = true,
         createCodeSuggestionsSession = sessionFactory
       )
 
@@ -159,7 +140,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
     describe("getOrCreateSession") {
       it("should return existing session for editor if it exists") {
         val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
           createCodeSuggestionsSession = { _ -> session }
         )
 
@@ -182,7 +162,6 @@ class CodeSuggestionsManagerTest : DescribeSpec({
         every { platformUtils.getTextWidget(newEditor) } returns mockk(relaxed = true)
 
         val manager = createCodeSuggestionsManager(
-          isCodeSuggestionsEnabled = true,
           createCodeSuggestionsSession = sessionFactory
         )
 

@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.PlatformUtils
@@ -24,5 +23,10 @@ class RejectCodeSuggestionsHandler : AbstractHandler() {
     }
   }
 
-  override fun isEnabled() = BuildConfig.CODE_SUGGESTIONS_ENABLED
+  override fun isEnabled(): Boolean {
+    val textEditor = platformUtils.getActiveTextEditor()
+      ?: return false
+
+    return codeSuggestionsManager.getOrCreateSession(textEditor).isCodeSuggestionDisplayed()
+  }
 }

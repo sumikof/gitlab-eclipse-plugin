@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions
 
-import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.ui.*
@@ -9,7 +8,6 @@ import org.eclipse.ui.texteditor.ITextEditor
 @Suppress("ParameterListWrapping", "EmptyFunctionBlock", "TooManyFunctions")
 internal class CodeSuggestionsManager(
   platformUtils: PlatformUtils,
-  isCodeSuggestionsEnabled: Boolean = BuildConfig.CODE_SUGGESTIONS_ENABLED,
   private val createCodeSuggestionsSession: (ITextEditor) -> CodeSuggestionsSession,
 ) {
   private val logger = logger<CodeSuggestionsManager>()
@@ -17,9 +15,7 @@ internal class CodeSuggestionsManager(
 
   init {
     try {
-      if (isCodeSuggestionsEnabled) {
-        platformUtils.getWorkbench().setupWorkbenchListeners()
-      }
+      platformUtils.getWorkbench().setupWorkbenchListeners()
     } catch (e: Exception) {
       logger.error("Error setting up platform listeners", e)
     }

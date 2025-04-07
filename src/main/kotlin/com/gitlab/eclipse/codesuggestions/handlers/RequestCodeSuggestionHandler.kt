@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.PlatformUtils
@@ -28,6 +27,6 @@ class RequestCodeSuggestionHandler : AbstractHandler() {
     val textEditor = platformUtils.getActiveTextEditor()
       ?: return false
 
-    return BuildConfig.CODE_SUGGESTIONS_ENABLED && !codeSuggestionsManager.getOrCreateSession(textEditor).isCodeSuggestionDisplayed()
+    return !codeSuggestionsManager.getOrCreateSession(textEditor).isCodeSuggestionDisplayed()
   }
 }

@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsSession
 import com.gitlab.eclipse.codesuggestions.CycleDirection
@@ -60,29 +59,26 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
       verify { session.cycleCodeSuggestion(CycleDirection.NEXT) }
     }
 
-    // TODO: Remove this once Code Suggestions feature flag is removed
-    if (BuildConfig.CODE_SUGGESTIONS_ENABLED) {
-      it("should be enabled when code suggestions are displayed") {
-        val enabled = nextHandler.isEnabled()
+    it("should be enabled when code suggestions are displayed") {
+      val enabled = nextHandler.isEnabled()
 
-        enabled shouldBe true
-      }
+      enabled shouldBe true
+    }
 
-      it("should be disabled when no code suggestions are displayed") {
-        every { session.isCodeSuggestionDisplayed() } returns false
+    it("should be disabled when no code suggestions are displayed") {
+      every { session.isCodeSuggestionDisplayed() } returns false
 
-        val enabled = nextHandler.isEnabled()
+      val enabled = nextHandler.isEnabled()
 
-        enabled shouldBe false
-      }
+      enabled shouldBe false
+    }
 
-      it("should be disabled when no active editor") {
-        every { platformUtils.getActiveTextEditor() } returns null
+    it("should be disabled when no active editor") {
+      every { platformUtils.getActiveTextEditor() } returns null
 
-        val enabled = nextHandler.isEnabled()
+      val enabled = nextHandler.isEnabled()
 
-        enabled shouldBe false
-      }
+      enabled shouldBe false
     }
   }
 
@@ -95,29 +91,26 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
       verify { session.cycleCodeSuggestion(CycleDirection.PREVIOUS) }
     }
 
-    // TODO: Remove this once Code Suggestions feature flag is removed
-    if (BuildConfig.CODE_SUGGESTIONS_ENABLED) {
-      it("should be enabled when code suggestions are displayed") {
-        val enabled = prevHandler.isEnabled()
+    it("should be enabled when code suggestions are displayed") {
+      val enabled = prevHandler.isEnabled()
 
-        enabled shouldBe true
-      }
+      enabled shouldBe true
+    }
 
-      it("should be disabled when no code suggestions are displayed") {
-        every { session.isCodeSuggestionDisplayed() } returns false
+    it("should be disabled when no code suggestions are displayed") {
+      every { session.isCodeSuggestionDisplayed() } returns false
 
-        val enabled = prevHandler.isEnabled()
+      val enabled = prevHandler.isEnabled()
 
-        enabled shouldBe false
-      }
+      enabled shouldBe false
+    }
 
-      it("should be disabled when no active editor") {
-        every { platformUtils.getActiveTextEditor() } returns null
+    it("should be disabled when no active editor") {
+      every { platformUtils.getActiveTextEditor() } returns null
 
-        val enabled = prevHandler.isEnabled()
+      val enabled = prevHandler.isEnabled()
 
-        enabled shouldBe false
-      }
+      enabled shouldBe false
     }
   }
 })
