@@ -5,6 +5,12 @@
         <category name="GitLab Duo" id="gitlab-eclipse-plugin"/>
 
         <command
+                id="com.gitlab.eclipse.codesuggestions.acceptSuggestionLine"
+                name="Accept Suggestion Line"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.codesuggestions.requestSuggestion"
                 name="Request Suggestion"
                 categoryId="gitlab-eclipse-plugin">
@@ -126,6 +132,11 @@
     </extension>
 
     <extension point="org.eclipse.ui.handlers">
+        <handler
+                class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsLineHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionLine"
+        />
+
         <handler
                 class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsHandler"
                 commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"

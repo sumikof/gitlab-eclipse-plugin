@@ -33,6 +33,7 @@ class CodeSuggestionsRenderer(
   var text: String? = null
     private set
 
+  private var height: Int? = null
   private var suggestionCharacterStyle: StyleRange? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
@@ -106,7 +107,7 @@ class CodeSuggestionsRenderer(
     if (currentLine != textWidget.lineCount - 1) {
       textWidget.setLineSpacingProvider { lineIndex ->
         when {
-          lineIndex == currentLine -> lines.size * textWidget.lineHeight
+          lineIndex == currentLine -> height
           else -> null
         }
       }
@@ -126,8 +127,11 @@ class CodeSuggestionsRenderer(
   }
 
   fun display(text: String, offset: Int) {
+    document.removePosition(documentPosition)
+
     this.text = text
     this.documentPosition = Position(offset)
+    setHeight(text.lines().size)
 
     document.addPosition(documentPosition)
 
@@ -136,6 +140,7 @@ class CodeSuggestionsRenderer(
 
   fun update(newText: String) {
     this.text = newText
+    setHeight(newText.lines().size)
 
     textWidget.redrawNow()
   }
@@ -179,5 +184,9 @@ class CodeSuggestionsRenderer(
   private fun StyledText.redrawNow() {
     redraw()
     update()
+  }
+
+  private fun setHeight(numberOfLines: Int) {
+    height = (numberOfLines - 1) * textWidget.lineHeight
   }
 }
