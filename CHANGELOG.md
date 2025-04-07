@@ -6,14 +6,21 @@
 
 ### Changed
 
-- Changed Code Suggestions status text in Duo menu when Code Suggestions API is unavailable ([!183](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/183))
-
 ### Removed
 
 ### Fixed
 
-- Manually requesting code suggestions causing a SWT thread error ([!179](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/179))
-- Always use caret offset for code suggestions ([!181](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/181))
+## 0.5.0 (2025-04-07)
+
+### Added
+
+- Deployed the initial version of Code Suggestions feature ([!198](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/198))
+
+### Changed
+
+### Removed
+
+### Fixed
 
 ## 0.4.1 (2025-03-25)
 
