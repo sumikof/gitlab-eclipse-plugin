@@ -81,10 +81,6 @@
             <variable name="theme_tone" priorityLevel="workbench"/>
         </sourceProvider>
 
-        <sourceProvider provider="com.gitlab.eclipse.utils.BuildFlagSourceProvider">
-            <variable name="code_suggestions_enabled" priorityLevel="workbench"/>
-        </sourceProvider>
-
         <sourceProvider provider="com.gitlab.eclipse.utils.system.SystemSourceProvider">
             <variable name="os" priorityLevel="workbench"/>
         </sourceProvider>

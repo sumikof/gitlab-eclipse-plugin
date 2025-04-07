@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.CycleDirection
 import com.gitlab.eclipse.inject.lazyService
@@ -28,8 +27,7 @@ abstract class CycleCodeSuggestionHandler : AbstractHandler() {
   override fun isEnabled(): Boolean {
     val textEditor = platformUtils.getActiveTextEditor() ?: return false
 
-    return BuildConfig.CODE_SUGGESTIONS_ENABLED && codeSuggestionsManager.getOrCreateSession(textEditor)
-      .isCodeSuggestionDisplayed()
+    return codeSuggestionsManager.getOrCreateSession(textEditor).isCodeSuggestionDisplayed()
   }
 
   protected abstract val cycleDirection: CycleDirection
