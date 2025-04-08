@@ -77,7 +77,7 @@ buildConfig {
   buildConfigField(
     "String",
     "SNOWPLOW_COLLECTOR_URL",
-    "\"${if (isLocalBuild) "http://localhost:9090" else "https://snowplowprd.trx.gitlab.net" }\""
+    "\"${if (isLocalBuild) "http://localhost:9090" else "https://snowplowprd.trx.gitlab.net"}\""
   )
   buildConfigField(
     "Boolean",
@@ -373,6 +373,47 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
   }
 }
 
+tasks.register("lspDownloadBinaries") {
+  dependsOn(":lspDownloadGenericPackageFilesJson")
+
+  val buildDir = rootProject.layout.buildDirectory
+  val gitlabLspDir = buildDir.get().asFile.resolve("gitlab-lsp")
+  val outputFile = gitlabLspDir.resolve("lsp-binaries.tar.gz")
+
+  outputs.dir(gitlabLspDir)
+
+  doLast {
+    val packageFiles = JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
+      ?: error("Unexpected format for package_files.json")
+
+    val lspTarball = packageFiles.firstOrNull {
+      val fileName = it["file_name"]?.toString()
+        ?: return@firstOrNull false
+
+      return@firstOrNull fileName.startsWith("gitlab-lsp") && fileName.endsWith(".tar.gz")
+    } ?: error("Unable to find gitlab-lsp tarball in package_files.json")
+
+    val lspTarballId = lspTarball["id"] as? Number
+      ?: error("Invalid value for id for gitlab-lsp tarball.")
+
+    URI(
+      "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$lspTarballId/download"
+    ).toURL()
+      .openStream().use { input ->
+        outputFile.outputStream().use { output ->
+          input.copyTo(output)
+        }
+      }
+
+    copy {
+      from(tarTree(outputFile))
+      into(gitlabLspDir)
+    }
+
+    outputFile.delete()
+  }
+}
+
 subprojects {
   if (project.name.startsWith("gitlab-language-server.")) {
     @Suppress("CyclomaticComplexMethod", "LongMethod")
@@ -393,56 +434,18 @@ subprojects {
         else -> error("Expected a Language Server binary to be declared for OSGi platform.")
       }
 
-      tasks.register("lspDownloadBinaries") {
-        dependsOn(":lspDownloadGenericPackageFilesJson")
-
-        val buildDir = rootProject.layout.buildDirectory.get().asFile
-        val gitlabLspDir = buildDir.resolve("gitlab-lsp")
-        val binDir = gitlabLspDir.resolve("bin")
-
-        inputs.file(gitlabLspDir.resolve("package_files.json"))
-        outputs.file(binDir.resolve("gitlab-lsp-$languageServerPlatform"))
-
-        @Suppress("UNCHECKED_CAST")
-        doLast {
-          val packageFiles =
-            JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
-              ?: error("Unexpected format for package_files.json")
-
-          binDir.mkdirs()
-
-          packageFiles.forEach { file ->
-            val id = file["id"] as? Number ?: error("Invalid value for id for package file")
-            val fileName =
-              file["file_name"] as? String
-                ?: error("Invalid value for file_name for package file with id $id")
-            if (fileName == "gitlab-lsp-$languageServerPlatform") {
-              val output = binDir.resolve(fileName)
-              val url =
-                "https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/package_files/$id/download"
-
-              logger.quiet("Downloading $fileName...")
-
-              ant.withGroovyBuilder {
-                "get"(
-                  "src" to url,
-                  "dest" to output
-                )
-              }
-
-              output.setExecutable(true, false)
-              return@doLast
-            }
-          }
-          error("No platform specific binary found for language server version.")
-        }
-      }
-
       tasks.withType<Jar> {
-        dependsOn("lspDownloadBinaries")
+        dependsOn(":lspDownloadBinaries")
+
         from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
           include("bin/gitlab-lsp-$languageServerPlatform")
           rename { "gitlab-lsp" }
+        }
+
+        from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
+          include("bin/vendor/**")
+          include("bin/webviews/**")
+          include("bin/tree-sitter.wasm")
         }
 
         manifest {
