@@ -4,6 +4,7 @@ import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionAnnotationTyp
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
 import com.gitlab.eclipse.codesuggestions.listeners.*
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
+import com.gitlab.eclipse.codesuggestions.tooltip.CodeSuggestionsTooltip
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
@@ -45,6 +46,7 @@ class CodeSuggestionsSession(
   private val keyListener = CodeSuggestionsKeyListener(textWidget, this)
   private val mouseListener = CodeSuggestionsMouseListener(textWidget, this)
   private val caretListener = CodeSuggestionsCaretListener(textWidget, this)
+  private val codeSuggestionsTooltip = CodeSuggestionsTooltip(textWidget, this)
 
   override fun documentAboutToBeChanged(event: DocumentEvent) {
     if (documentChangeReason == DocumentChangeReason.USER_TYPED) {
@@ -73,6 +75,8 @@ class CodeSuggestionsSession(
   fun requestCodeSuggestion() {
     try {
       if (!isEnabled()) return
+
+      codeSuggestionsTooltip.hide()
 
       job?.cancel()
       job = coroutineScope.launch {
@@ -129,6 +133,8 @@ class CodeSuggestionsSession(
   fun acceptCodeSuggestion() {
     cancelStreaming()
 
+    codeSuggestionsTooltip.hide()
+
     val offset = codeSuggestionsRenderer.documentPosition?.offset
       ?: return
 
@@ -149,6 +155,8 @@ class CodeSuggestionsSession(
     try {
       job?.cancel()
 
+      codeSuggestionsTooltip.hide()
+
       cancelStreaming()
 
       annotationManager.hide()
@@ -164,6 +172,8 @@ class CodeSuggestionsSession(
     try {
       codeSuggestionsRenderer.reject()
       annotationManager.hide()
+
+      codeSuggestionsTooltip.hide()
 
       currentSuggestion?.let {
         telemetryService.send(it, TelemetryAction.SUGGESTION_REJECTED)
@@ -182,6 +192,8 @@ class CodeSuggestionsSession(
 
   fun isCodeSuggestionDisplayed() = codeSuggestionsRenderer.isCodeSuggestionDisplayed()
 
+  fun getCodeSuggestionPosition() = codeSuggestionsRenderer.documentPosition
+
   fun setDocumentChangeReason(reason: DocumentChangeReason) {
     documentChangeReason = reason
   }
@@ -189,6 +201,7 @@ class CodeSuggestionsSession(
   fun dispose() {
     try {
       job?.cancel()
+      codeSuggestionsTooltip.dispose()
     } catch (e: Exception) {
       logger.error("Error cancelling ongoing code suggestion request.", e)
     }
