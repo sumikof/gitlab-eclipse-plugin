@@ -10,6 +10,7 @@ import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.uri
 import io.kotest.assertions.throwables.shouldNotThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -670,10 +671,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
         coroutineScope.advanceUntilIdle()
 
+        val position = session.getSuggestionInfo().first
+
         session.cycleCodeSuggestion(CycleDirection.NEXT)
 
-        verify(exactly = 0) { renderer.update(any()) }
-        verify(exactly = 0) { streamingCodeSuggestionsManager.cancel(any()) }
+        session.getSuggestionInfo().first shouldBe position
       }
     }
   }
