@@ -7,7 +7,10 @@ package com.gitlab.eclipse.utils
  */
 class CursoredSet<T> {
   private val items = mutableListOf<T>()
-  private var currentIndex: Int = -1
+
+  // -1 indicates no current item (empty collection), 0+ indicates position in items list
+  var currentIndex: Int = -1
+    private set
 
   val size: Int
     get() = items.size

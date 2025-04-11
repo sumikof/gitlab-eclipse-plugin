@@ -142,5 +142,35 @@ class CursoredSetTest : DescribeSpec({
         cursoredSet.getNext() shouldBe "Item2"
       }
     }
+
+    describe("current index") {
+      it("returns -1 when empty") {
+        cursoredSet.currentIndex shouldBe -1
+      }
+
+      it("returns 0 after adding first item") {
+        cursoredSet.add("Item1")
+        cursoredSet.currentIndex shouldBe 0
+      }
+
+      it("updates index when navigating") {
+        cursoredSet.addAll(listOf("Item1", "Item2", "Item3"))
+
+        cursoredSet.currentIndex shouldBe 0
+        cursoredSet.getNext()
+        cursoredSet.currentIndex shouldBe 1
+        cursoredSet.getNext()
+        cursoredSet.currentIndex shouldBe 2
+        cursoredSet.getPrevious()
+        cursoredSet.currentIndex shouldBe 1
+      }
+
+      it("resets to -1 after clearing") {
+        cursoredSet.add("Item1")
+        cursoredSet.currentIndex shouldBe 0
+        cursoredSet.clear()
+        cursoredSet.currentIndex shouldBe -1
+      }
+    }
   }
 })

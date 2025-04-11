@@ -42,6 +42,9 @@ class CodeSuggestionsSession(
   private val codeSuggestions: CursoredSet<CodeSuggestion> = CursoredSet()
   private val currentSuggestion get() = codeSuggestions.getCurrent()
 
+  // Tracks whether we've attempted to load additional suggestions beyond the initial one
+  private var hasLoadedAdditionalSuggestions = false
+
   private val undoListener = CodeSuggestionsUndoListener(document, this)
   private val keyListener = CodeSuggestionsKeyListener(textWidget, this)
   private val mouseListener = CodeSuggestionsMouseListener(textWidget, this)
@@ -72,6 +75,16 @@ class CodeSuggestionsSession(
     }
   }
 
+  /**
+   * Updates the tooltip with current suggestion information
+   * Called after suggestion navigation or when suggestions are loaded
+   */
+  fun updateTooltip() {
+    val position = codeSuggestions.currentIndex + 1
+    val totalCount = codeSuggestions.size
+    codeSuggestionsTooltip.updateSuggestionDisplay(position, totalCount, hasLoadedAdditionalSuggestions)
+  }
+
   fun requestCodeSuggestion() {
     try {
       if (!isEnabled()) return
@@ -89,6 +102,8 @@ class CodeSuggestionsSession(
         annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
 
         codeSuggestions.clear()
+        hasLoadedAdditionalSuggestions = false
+
         val suggestion = codeSuggestionsProvider.provideAutomaticSuggestion(
           fileUri = document.uri,
           cursorLine = line,
@@ -109,8 +124,62 @@ class CodeSuggestionsSession(
     }
   }
 
+  /**
+   * Gets information about the current suggestion state
+   *
+   * @return Triple containing:
+   *         - Current position (1-based index)
+   *         - Total count of suggestions
+   *         - Whether additional suggestions have been loaded
+   */
+  fun getSuggestionInfo(): Triple<Int, Int, Boolean> {
+    return Triple(
+      codeSuggestions.currentIndex + 1,
+      codeSuggestions.size,
+      hasLoadedAdditionalSuggestions
+    )
+  }
+
+  /**
+   * Loads additional code suggestions beyond the initial automatic one
+   * If suggestions are already loaded or streaming, completes immediately
+   *
+   * @param onComplete Callback to execute when loading completes (successful or not)
+   */
+  fun loadAdditionalSuggestions(onComplete: () -> Unit = { }) {
+    if (currentSuggestion?.streamId != null || codeSuggestions.size > 1 || hasLoadedAdditionalSuggestions) {
+      hasLoadedAdditionalSuggestions = true
+      onComplete()
+      return
+    }
+
+    job?.cancel()
+    job = coroutineScope.launch {
+      try {
+        val offset = currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
+        val line = document.getLineOfOffset(offset)
+        val column = offset - document.getLineOffset(line)
+
+        annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
+
+        codeSuggestionsProvider.provideInvokedSuggestions(
+          fileUri = document.uri,
+          cursorLine = line,
+          cursorColumn = column
+        ).let(codeSuggestions::addAll)
+      } catch (e: Exception) {
+        logger.error("Error loading additional suggestions.", e)
+      } finally {
+        hasLoadedAdditionalSuggestions = true
+        onComplete()
+      }
+    }
+  }
+
   override fun onSuggestionStreamUpdate(streamId: String, text: String) {
     if (currentSuggestion?.streamId != streamId) return
+
+    codeSuggestionsTooltip.hide()
 
     currentSuggestion?.text = text
 
@@ -149,6 +218,7 @@ class CodeSuggestionsSession(
     textWidget.caretOffset = offset + text.length
 
     codeSuggestions.clear()
+    hasLoadedAdditionalSuggestions = false
   }
 
   fun cancelCodeSuggestion() {
@@ -163,6 +233,7 @@ class CodeSuggestionsSession(
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
 
       codeSuggestions.clear()
+      hasLoadedAdditionalSuggestions = false
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
     }
@@ -185,6 +256,7 @@ class CodeSuggestionsSession(
       }
 
       codeSuggestions.clear()
+      hasLoadedAdditionalSuggestions = false
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
     }
@@ -209,6 +281,7 @@ class CodeSuggestionsSession(
     cancelStreaming()
 
     codeSuggestions.clear()
+    hasLoadedAdditionalSuggestions = false
 
     try {
       codeSuggestionsRenderer.dispose()
@@ -239,46 +312,36 @@ class CodeSuggestionsSession(
     }
   }
 
-  fun cycleCodeSuggestion(direction: CycleDirection = CycleDirection.NEXT) {
-    // If it's a streaming suggestion, don't get more suggestions
-    if (currentSuggestion?.streamId != null) return
-
-    try {
-      job?.cancel()
-      job = coroutineScope.launch {
-        val offset = currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
-
-        if (codeSuggestions.size <= 1) {
-          annotationManager.display(CodeSuggestionAnnotationType.LOADING, offset)
-
-          val added: Boolean
-          val line = document.getLineOfOffset(offset)
-          val column = offset - document.getLineOffset(line)
-
-          added = codeSuggestionsProvider.provideInvokedSuggestions(
-            fileUri = document.uri,
-            cursorLine = line,
-            cursorColumn = column
-          ).let(codeSuggestions::addAll)
-
-          if (!added) return@launch
-        }
-
-        when (direction) {
+  /**
+   * Cycles to the next or previous suggestion in the list
+   * Loads additional suggestions if needed and updates the UI
+   *
+   * @param direction Direction to cycle (NEXT or PREVIOUS, defaults to NEXT)
+   */
+  fun cycleCodeSuggestion(
+    direction: CycleDirection = CycleDirection.NEXT,
+  ) {
+    loadAdditionalSuggestions {
+      try {
+        val suggestion = when (direction) {
           CycleDirection.NEXT -> codeSuggestions.getNext()
           CycleDirection.PREVIOUS -> codeSuggestions.getPrevious()
-        }?.let { suggestion ->
+        }
+
+        if (suggestion != null) {
           currentDisplay.syncExec {
+            val offset = currentDisplay.syncCall<Int, Exception> { textWidget.caretOffset }
             codeSuggestionsRenderer.update(suggestion.text)
             annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
           }
 
-          // Send telemetry with the current suggestion
           telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
         }
+      } catch (e: Exception) {
+        logger.error("Error cycling code suggestion.", e)
+      } finally {
+        updateTooltip()
       }
-    } catch (e: Exception) {
-      logger.error("Error cycling code suggestion.", e)
     }
   }
 
