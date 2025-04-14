@@ -133,7 +133,7 @@ dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
   // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
-  implementation("com.google.guava:guava:33.4.7-jre")
+  implementation("com.google.guava:guava:33.4.8-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.1.20")
   implementation("io.insert-koin:koin-core:4.0.4")
 
