@@ -8,8 +8,10 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.Launcher
+import org.osgi.framework.Bundle
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.IOException
@@ -39,7 +41,7 @@ class GitLabLanguageServerProcessProvider(
 
   private var pullStdErrLogsExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
-  fun start() {
+  fun start(bundle: Bundle) {
     val languageServerInstallationPath = languageServerInstaller.install()
       ?: error("Language server installation failed")
 
@@ -70,18 +72,23 @@ class GitLabLanguageServerProcessProvider(
     logger.info("Language server started successfully.")
     languageServerWrapper.registerLanguageServer(languageServerProxy.remoteProxy)
 
-    languageServerProxy.remoteProxy.initialize(getInitializationOptions()).handleAsync { result, err ->
-      if (err != null) {
-        logger.error("Failed to initialize Language Server", err)
-      } else {
-        logger.info("Initialized Language Server: $result")
-        languageServerProxy.remoteProxy.initialized(null)
-        languageServerConfigurationService.sendConfiguration()
-        languageServerOpenFilesService.sendOpenTabs()
-        languageServerWebviewService.sendThemeChange()
-        languageServerWebviewService.subscribeToThemeChanges()
-      }
-    }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    languageServerProxy
+      .remoteProxy
+      .initialize(
+        getInitializationOptions(bundle.version.toString())
+      )
+      .handleAsync { result, err ->
+        if (err != null) {
+          logger.error("Failed to initialize Language Server", err)
+        } else {
+          logger.info("Initialized Language Server: $result")
+          languageServerProxy.remoteProxy.initialized(null)
+          languageServerConfigurationService.sendConfiguration()
+          languageServerOpenFilesService.sendOpenTabs()
+          languageServerWebviewService.sendThemeChange()
+          languageServerWebviewService.subscribeToThemeChanges()
+        }
+      }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
   }
 
   fun stop() {
@@ -124,7 +131,7 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
-  private fun getInitializationOptions() = InitializeParams().apply {
+  private fun getInitializationOptions(pluginVersion: String) = InitializeParams().apply {
     processId = process?.pid()?.toInt()
     capabilities = ClientCapabilities(
       WorkspaceClientCapabilities().also { capabilities ->
@@ -151,13 +158,13 @@ class GitLabLanguageServerProcessProvider(
     )
     initializationOptions = mapOf(
       "extension" to mapOf(
-        "name" to "gitlab-eclipse-plugin",
-        "version" to System.getProperty("eclipse.buildId")
+        "name" to "GitLab Duo",
+        "version" to pluginVersion
       ),
       "ide" to mapOf(
-        "name" to "gitlab-eclipse-plugin",
-        "vendor" to "GitLab",
-        "version" to System.getProperty("eclipse.buildId")
+        "name" to "Eclipse",
+        "vendor" to "Eclipse",
+        "version" to Platform.getBundle("org.eclipse.platform").version.toString()
       ),
     )
     workspaceFolders = workspaceFolders

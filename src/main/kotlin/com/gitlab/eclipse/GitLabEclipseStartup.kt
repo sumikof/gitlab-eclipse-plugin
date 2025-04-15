@@ -28,7 +28,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       )
     }
 
-    service<GitLabLanguageServerProcessProvider>().start()
+    service<GitLabLanguageServerProcessProvider>().start(context.bundle)
     service<OAuthTokenProvider>().startTokenRefreshTimer()
   }
 
