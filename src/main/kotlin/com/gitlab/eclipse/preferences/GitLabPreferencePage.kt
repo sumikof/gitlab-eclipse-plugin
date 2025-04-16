@@ -6,10 +6,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
-import org.eclipse.jface.preference.BooleanFieldEditor
-import org.eclipse.jface.preference.FieldEditorPreferencePage
-import org.eclipse.jface.preference.FileFieldEditor
-import org.eclipse.jface.preference.StringFieldEditor
+import org.eclipse.jface.preference.*
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
 import org.eclipse.ui.preferences.ScopedPreferenceStore
@@ -50,9 +47,10 @@ class GitLabPreferencePage(
 
     // Language Server
     addField(
-      StringFieldEditor(
+      ComboFieldEditor(
         PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL,
         "Language Server Log Level",
+        LogLevel.toFieldEditorOptions(),
         fieldEditorParent
       )
     )

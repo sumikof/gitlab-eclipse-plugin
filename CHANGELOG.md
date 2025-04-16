@@ -6,6 +6,8 @@
 
 ### Changed
 
+- Changed the log level field in the preferences page from a text field into a dropdown. ([!216](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/216))
+
 ### Removed
 
 ### Fixed
