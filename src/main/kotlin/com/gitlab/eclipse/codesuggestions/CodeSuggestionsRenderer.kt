@@ -15,7 +15,7 @@ import org.eclipse.swt.graphics.TextLayout
 @Suppress("TooManyFunctions")
 class CodeSuggestionsRenderer(
   private val document: IDocument,
-  private val textWidget: StyledText,
+  private val textWidget: StyledText
 ) : PaintListener {
   private val logger by lazy { logger<CodeSuggestionsRenderer>() }
 
@@ -54,7 +54,10 @@ class CodeSuggestionsRenderer(
       }
 
       if (lines.size > 1) {
-        renderBlock(lines.drop(1), offset, position, paintEvent)
+        renderBlock(lines.drop(1), position, paintEvent)
+        height?.let { textWidget.setLineVerticalIndent(textWidget.getLineAtOffset(offset) + 1, it) }
+      } else {
+        textWidget.setLineVerticalIndent(textWidget.getLineAtOffset(offset) + 1, 0)
       }
     } catch (e: Exception) {
       logger.error("Error rendering code suggestion.", e)
@@ -102,17 +105,7 @@ class CodeSuggestionsRenderer(
     layout.dispose()
   }
 
-  private fun renderBlock(lines: List<String>, offset: Int, position: Point, paintEvent: PaintEvent) {
-    val currentLine = textWidget.getLineAtOffset(offset)
-    if (currentLine != textWidget.lineCount - 1) {
-      textWidget.setLineSpacingProvider { lineIndex ->
-        when {
-          lineIndex == currentLine -> height
-          else -> null
-        }
-      }
-    }
-
+  private fun renderBlock(lines: List<String>, position: Point, paintEvent: PaintEvent) {
     lines.forEachIndexed { index, line ->
       val layout = TextLayout(textWidget.display).apply {
         text = line
@@ -162,7 +155,7 @@ class CodeSuggestionsRenderer(
       textWidget.setStyleRange(style)
     }
 
-    textWidget.setLineSpacingProvider(null)
+    textWidget.setLineVerticalIndent(textWidget.getLineAtOffset(textWidget.caretOffset), 0)
     document.removePosition(documentPosition)
 
     text = null

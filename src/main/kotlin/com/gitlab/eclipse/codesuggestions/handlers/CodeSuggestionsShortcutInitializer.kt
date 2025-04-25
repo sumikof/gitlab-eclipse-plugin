@@ -10,6 +10,7 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.commands.ICommandService
 import org.eclipse.ui.keys.IBindingService
 
+@Suppress("SpreadOperator")
 class CodeSuggestionsShortcutInitializer {
   private val logger by lazy { logger<CodeSuggestionsShortcutInitializer>() }
 

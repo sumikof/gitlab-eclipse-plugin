@@ -21,7 +21,7 @@ import org.eclipse.ui.plugin.AbstractUIPlugin
 import org.koin.core.context.startKoin
 import org.osgi.framework.BundleContext
 
-@Suppress("unused")
+@Suppress("unused", "SpreadOperator")
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
     startKoin {

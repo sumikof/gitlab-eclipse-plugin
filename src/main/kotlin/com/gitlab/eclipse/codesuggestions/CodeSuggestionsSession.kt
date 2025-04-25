@@ -55,7 +55,12 @@ class CodeSuggestionsSession(
       caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
 
       cancelStreaming()
-      currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
+      currentDisplay.syncExec {
+        textWidget.setLineVerticalIndent(
+          textWidget.getLineAtOffset(textWidget.caretOffset) + 1,
+          0
+        )
+      }
       return
     }
 
@@ -69,7 +74,7 @@ class CodeSuggestionsSession(
 
     if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
       currentDisplay.syncExec {
-        codeSuggestionsRenderer.display(currentSuggestion?.text ?: "", textWidget.caretOffset + event.text.length)
+        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), textWidget.caretOffset + event.text.length)
       }
     }
 
@@ -173,7 +178,7 @@ class CodeSuggestionsSession(
     }
 
     val currentLine = lines.first()
-    var textToInsert = StringBuilder().apply {
+    val textToInsert = StringBuilder().apply {
       append(currentLine)
       append("\n")
     }
@@ -203,6 +208,7 @@ class CodeSuggestionsSession(
     currentSuggestion?.text = remainingText
 
     currentDisplay.syncExec {
+      textWidget.setLineVerticalIndent(textWidget.getLineAtOffset(offset) + 1, 0)
       document.replace(offset, 0, textToInsert.toString())
       textWidget.caretOffset = offset + textToInsert.length
     }
