@@ -7,10 +7,7 @@ import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
-import org.eclipse.swt.graphics.Color
-import org.eclipse.swt.graphics.GlyphMetrics
-import org.eclipse.swt.graphics.Point
-import org.eclipse.swt.graphics.TextLayout
+import org.eclipse.swt.graphics.*
 
 @Suppress("TooManyFunctions")
 class CodeSuggestionsRenderer(
@@ -33,6 +30,7 @@ class CodeSuggestionsRenderer(
   var text: String? = null
     private set
 
+  private var height: Int? = null
   private var suggestionCharacterStyle: StyleRange? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
@@ -53,7 +51,7 @@ class CodeSuggestionsRenderer(
       }
 
       if (lines.size > 1) {
-        renderBlock(lines.drop(1), offset, position, paintEvent)
+        renderBlock(lines.drop(1), offset, position, paintEvent.gc)
       }
     } catch (e: Exception) {
       logger.error("Error rendering code suggestion.", e)
@@ -101,12 +99,12 @@ class CodeSuggestionsRenderer(
     layout.dispose()
   }
 
-  private fun renderBlock(lines: List<String>, offset: Int, position: Point, paintEvent: PaintEvent) {
+  private fun renderBlock(lines: List<String>, offset: Int, position: Point, gc: GC) {
     val currentLine = textWidget.getLineAtOffset(offset)
     if (currentLine != textWidget.lineCount - 1) {
       textWidget.setLineSpacingProvider { lineIndex ->
         when {
-          lineIndex == currentLine -> lines.size * textWidget.lineHeight
+          lineIndex == currentLine -> height
           else -> null
         }
       }
@@ -119,15 +117,29 @@ class CodeSuggestionsRenderer(
         tabs = textWidget.tabStops
       }
 
-      paintEvent.gc.foreground = GHOST_COLOR
-      layout.draw(paintEvent.gc, textWidget.leftMargin, position.y + (index + 1) * textWidget.lineHeight)
+      val lineY = position.y + (index + 1) * textWidget.lineHeight
+
+      // Remove the whole line's highlight
+      gc.background = textWidget.background
+      gc.fillRectangle(
+        0,
+        lineY,
+        textWidget.clientArea.width,
+        textWidget.lineHeight
+      )
+
+      gc.foreground = GHOST_COLOR
+      layout.draw(gc, textWidget.leftMargin, lineY)
       layout.dispose()
     }
   }
 
   fun display(text: String, offset: Int) {
+    document.removePosition(documentPosition)
+
     this.text = text
     this.documentPosition = Position(offset)
+    setHeight(text.lines().size)
 
     document.addPosition(documentPosition)
 
@@ -136,6 +148,7 @@ class CodeSuggestionsRenderer(
 
   fun update(newText: String) {
     this.text = newText
+    setHeight(newText.lines().size)
 
     textWidget.redrawNow()
   }
@@ -179,5 +192,9 @@ class CodeSuggestionsRenderer(
   private fun StyledText.redrawNow() {
     redraw()
     update()
+  }
+
+  private fun setHeight(numberOfLines: Int) {
+    height = (numberOfLines - 1) * textWidget.lineHeight
   }
 }
