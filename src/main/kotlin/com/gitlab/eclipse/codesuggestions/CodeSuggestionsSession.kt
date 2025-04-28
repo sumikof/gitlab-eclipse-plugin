@@ -56,12 +56,26 @@ class CodeSuggestionsSession(
       caretListener.setCaretMovementReason(CaretMovementReason.USER_TYPED)
     }
 
+    if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
+      caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
+
+      cancelStreaming()
+      currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
+      return
+    }
+
     cancelCodeSuggestion()
   }
 
   override fun documentChanged(event: DocumentEvent) {
     if (documentChangeReason == DocumentChangeReason.USER_TYPED && event.text.isNotEmpty()) {
       requestCodeSuggestion()
+    }
+
+    if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
+      currentDisplay.syncExec {
+        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), textWidget.caretOffset + event.text.length)
+      }
     }
 
     documentChangeReason = DocumentChangeReason.USER_TYPED
@@ -219,6 +233,56 @@ class CodeSuggestionsSession(
 
     codeSuggestions.clear()
     hasLoadedAdditionalSuggestions = false
+  }
+
+  fun acceptCodeSuggestionLine() {
+    val offset = codeSuggestionsRenderer.documentPosition?.offset
+      ?: return
+
+    val text = codeSuggestionsRenderer.text
+      ?: return
+
+    val lines = text.lines()
+    if (lines.isEmpty()) {
+      return
+    } else if (lines.size == 1) {
+      return acceptCodeSuggestion()
+    }
+
+    val currentLine = lines.first()
+    val textToInsert = StringBuilder().apply {
+      append(currentLine)
+      append("\n")
+    }
+
+    val subsequentEmptyLines = lines.drop(1).takeWhile { it.isBlank() }
+    subsequentEmptyLines.forEach {
+      textToInsert.append(it)
+      textToInsert.append("\n")
+    }
+
+    val nonEmptyLineAfterEmptyLines = lines.getOrNull(1 + subsequentEmptyLines.size)
+    if (nonEmptyLineAfterEmptyLines != null) {
+      val leadingBlankSequence = nonEmptyLineAfterEmptyLines.takeWhile { it.isWhitespace() }
+
+      if (leadingBlankSequence.isNotEmpty()) {
+        textToInsert.append(leadingBlankSequence)
+      }
+    }
+
+    if (textToInsert.toString() == text) {
+      return acceptCodeSuggestion()
+    }
+
+    documentChangeReason = DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED
+
+    val remainingText = text.removePrefix(textToInsert.toString())
+    currentSuggestion?.text = remainingText
+
+    currentDisplay.syncExec {
+      document.replace(offset, 0, textToInsert.toString())
+      textWidget.caretOffset = offset + textToInsert.length
+    }
   }
 
   fun cancelCodeSuggestion() {
