@@ -15,7 +15,7 @@ class ShowDocumentation : AbstractHandler() {
   override fun execute(event: ExecutionEvent): Any? {
     logger.info("Showing GitLab for Eclipse settings.")
     PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(
-      URI.create("https://docs.gitlab.com/ee/editor_extensions/eclipse/").toURL()
+      URI.create("https://docs.gitlab.com/editor_extensions/eclipse/").toURL()
     )
     return null
   }
