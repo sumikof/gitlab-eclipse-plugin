@@ -9,7 +9,7 @@
     <parent>
         <groupId>com.gitlab.eclipse</groupId>
         <artifactId>plugin-group</artifactId>
-        <version>0.5.1-SNAPSHOT</version>
+        <version>0.6.0</version>
         <relativePath>../</relativePath>
     </parent>
 </project>
