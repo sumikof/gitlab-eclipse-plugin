@@ -4,6 +4,16 @@
 
 ### Added
 
+### Changed
+
+### Removed
+
+### Fixed
+
+## 0.6.0 (2025-05-01)
+
+### Added
+
 - Accept code suggestions line by line ([!200](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/200))
 
 ### Changed
