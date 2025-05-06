@@ -45,7 +45,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
 
         val result = tokenProviderManager.getToken()
 
-        assertEquals(result, "oauth_token")
+        assertEquals(result, "pat_token")
       }
 
       it("returns PAT when OAuth is not available") {

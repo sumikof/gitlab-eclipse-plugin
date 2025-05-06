@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
@@ -14,8 +15,9 @@ import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
 class OAuthTokenProviderTest : DescribeSpec({
-  val tokenProvider = OAuthTokenProvider()
   val oAuthService = mockk<GitLabOAuthService>()
+  val languageServerConfigurationService = mockk<GitLabLanguageServerConfigurationService>()
+  val tokenProvider = OAuthTokenProvider(languageServerConfigurationService)
 
   extensions(LoggingKotestExtension)
 
@@ -23,8 +25,13 @@ class OAuthTokenProviderTest : DescribeSpec({
     modules(
       module {
         single<GitLabOAuthService> { oAuthService }
+        single<GitLabLanguageServerConfigurationService> { languageServerConfigurationService }
       }
     )
+  }
+
+  beforeEach {
+    every { languageServerConfigurationService.sendConfiguration() } just Runs
   }
 
   afterEach { clearAllMocks() }

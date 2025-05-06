@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import java.time.Duration
@@ -9,9 +10,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
-class OAuthTokenProvider : TokenProvider {
+class OAuthTokenProvider(
+  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service()
+) : TokenProvider {
   private var currentToken: GitLabAuthorizationToken? = null
   private val logger by lazy { logger<OAuthTokenProvider>() }
+
   var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
   override fun getToken(): String {
@@ -21,6 +25,7 @@ class OAuthTokenProvider : TokenProvider {
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     this.currentToken = newToken
+    languageServiceConfigurationService.sendConfiguration()
   }
 
   private fun refreshTokenIfExpired() {
