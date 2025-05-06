@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
@@ -60,6 +61,7 @@ class GitLabLanguageServerClient(
   ): CompletableFuture<Void> = CompletableFuture.runAsync {
     changes.forEach { change ->
       when (change.featureId) {
+        "authentication" -> service<AuthenticationStateService>().update(change)
         "chat" -> service<DuoChatStateService>().update(change)
         "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
         else -> return@forEach

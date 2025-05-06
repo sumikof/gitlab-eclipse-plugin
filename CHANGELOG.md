@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a user notification when authentication is not set ([!229](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/229))
+
 ### Changed
 
 ### Removed

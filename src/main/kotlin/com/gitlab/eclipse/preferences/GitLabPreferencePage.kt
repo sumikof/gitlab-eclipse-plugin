@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.preferences
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
@@ -13,7 +14,8 @@ import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 @Suppress("ForbiddenComment", "LongMethod")
 class GitLabPreferencePage(
-  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service()
+  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
+  private val authenticationStateService: AuthenticationStateService = service()
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
   init {
     description = "GitLab Duo plugin preferences"
@@ -107,6 +109,7 @@ class GitLabPreferencePage(
   override fun performOk(): Boolean {
     super.performOk()
     languageServiceConfigurationService.sendConfiguration()
+    authenticationStateService.resetAuthenticatedState()
     return true // super.performOk() always returns true
   }
 }
