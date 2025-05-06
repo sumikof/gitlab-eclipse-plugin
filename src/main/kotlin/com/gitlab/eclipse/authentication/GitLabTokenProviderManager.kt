@@ -8,7 +8,7 @@ class GitLabTokenProviderManager {
     Pair(TokenProviderType.PAT, service<PatTokenProvider>())
   )
 
-  fun getToken(tokenProviderType: TokenProviderType = TokenProviderType.OAUTH): String {
+  fun getToken(tokenProviderType: TokenProviderType = TokenProviderType.PAT): String {
     val tokenByType = tokenProviders[tokenProviderType]?.getToken()
     if (tokenByType?.isNotEmpty() == true) {
       return tokenByType

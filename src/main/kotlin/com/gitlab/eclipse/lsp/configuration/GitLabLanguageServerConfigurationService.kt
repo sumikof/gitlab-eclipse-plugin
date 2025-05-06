@@ -1,7 +1,7 @@
 package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.BuildConfig
-import com.gitlab.eclipse.authentication.PatTokenProvider
+import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
@@ -39,7 +39,7 @@ class GitLabLanguageServerConfigurationService(
         preferenceStore.getBoolean(TELEMETRY_ENABLED),
         BuildConfig.SNOWPLOW_COLLECTOR_URL
       ),
-      token = service<PatTokenProvider>().getToken(),
+      token = service<GitLabTokenProviderManager>().getToken(),
       httpAgentOptions = HttpAgentOptions(
         ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() }
       ),

@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.authentication.GitLabOAuthService
+import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.PatTokenProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -16,6 +17,7 @@ val languageServerModule = module {
   single<PatTokenProvider> { PatTokenProvider() }
   single<OAuthTokenProvider> { OAuthTokenProvider() }
   single<GitLabOAuthService> { GitLabOAuthService() }
+  single<GitLabTokenProviderManager> { GitLabTokenProviderManager() }
 
   single<LanguageServerProxyManager> { LanguageServerProxyManager() }
   single<LanguageServerInstaller> { LanguageServerInstaller() }
