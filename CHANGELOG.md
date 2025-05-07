@@ -8,6 +8,8 @@
 
 ### Changed
 
+- Grouped related settings in preferences ([!231](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/231))
+
 ### Removed
 
 ### Fixed
