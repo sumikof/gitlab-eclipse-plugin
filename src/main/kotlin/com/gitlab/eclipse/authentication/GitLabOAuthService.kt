@@ -7,6 +7,7 @@ import com.github.scribejava.core.oauth.OAuth20Service
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.utils.logger
 import com.google.gson.GsonBuilder
 import fi.iki.elonen.NanoHTTPD
 import java.awt.Desktop
@@ -25,6 +26,8 @@ class GitLabOAuthService {
     private const val CALLBACK_PORT = 63343
     private const val SCOPE = "api"
   }
+
+  private val logger by lazy { logger<GitLabOAuthService>() }
 
   private val oauthService: OAuth20Service = ServiceBuilder(CLIENT_ID)
     .debug()
@@ -52,21 +55,29 @@ class GitLabOAuthService {
 
     // Start the local HTTP server to listen for the callback
     val future = CompletableFuture<String>()
-    val server = createServer(CALLBACK_PORT) { code ->
-      // Exchange code for an access token
-      val tokenRequest = AccessTokenRequestParams(code)
-        .scope(SCOPE)
-        .pkceCodeVerifier(codeVerifier)
+    try {
+      val server = createServer(CALLBACK_PORT) { code ->
+        // Exchange code for an access token
+        val tokenRequest = AccessTokenRequestParams(code)
+          .scope(SCOPE)
+          .pkceCodeVerifier(codeVerifier)
 
-      val token = oauthService.getAccessToken(tokenRequest)
-      val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
+        val token = oauthService.getAccessToken(tokenRequest)
+        val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
 
-      service<OAuthTokenProvider>().updateToken(gitlabToken)
-      service<OAuthTokenProvider>().startTokenRefreshTimer(gitlabToken.expiresIn)
+        service<OAuthTokenProvider>().updateToken(gitlabToken)
+        service<OAuthTokenProvider>().startTokenRefreshTimer(gitlabToken.expiresIn)
 
-      future.complete(code)
+        future.complete(code)
+      }
+      server.start()
+    } catch (e: java.net.BindException) {
+      logger.error("Port $CALLBACK_PORT is already in use. Cannot start the OAuth callback server.", e)
+      future.completeExceptionally(e)
+    } catch (e: Exception) {
+      logger.error("Failed to start the OAuth callback server.", e)
+      future.completeExceptionally(e)
     }
-    server.start()
   }
 
   @Suppress("SwallowedException")
