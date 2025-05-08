@@ -39,6 +39,12 @@
                 name="Cycle to Previous Suggestion"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                name="Open Duo Chat Window"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.bindings">
@@ -73,6 +79,13 @@
         <key
                 sequence="M3+["
                 commandId="com.gitlab.eclipse.codesuggestions.cycleSuggestion.prev"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="M3+D"
+                commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
