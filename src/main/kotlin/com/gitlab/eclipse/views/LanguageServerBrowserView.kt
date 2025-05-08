@@ -13,8 +13,9 @@ import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
 import org.eclipse.swt.widgets.Composite
+import org.eclipse.ui.PlatformUI
+import org.eclipse.ui.keys.IBindingService
 import org.eclipse.ui.part.ViewPart
-import java.util.*
 import java.util.concurrent.TimeUnit
 
 class LanguageServerBrowserView : ViewPart() {
@@ -29,6 +30,20 @@ class LanguageServerBrowserView : ViewPart() {
 
     browser = Browser(parent, browserStyle)
     setBrowserContent()
+
+    // Append keyboard shortcut to the title
+    try {
+      PlatformUI
+        .getWorkbench()
+        .getService(IBindingService::class.java)
+        .getActiveBindingsFor("gitlab-eclipse-plugin.commands.OpenDuoChat")
+        .firstOrNull()
+        ?.let {
+          partName += " (${it.format()})"
+        }
+    } catch (e: Exception) {
+      logger.error("Failed to update title with keybinding", e)
+    }
   }
 
   fun refresh() {
