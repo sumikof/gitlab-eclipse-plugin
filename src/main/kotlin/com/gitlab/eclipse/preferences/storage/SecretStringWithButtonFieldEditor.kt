@@ -1,17 +1,24 @@
 package com.gitlab.eclipse.preferences.storage
 
-import org.eclipse.jface.preference.StringFieldEditor
+import org.eclipse.jface.preference.StringButtonFieldEditor
 import org.eclipse.swt.SWT
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Text
 
-class SecretStringFieldEditor(
+class SecretStringWithButtonFieldEditor(
   private val secretStorage: SecretStorage,
-  secretName: String?,
-  labelText: String?,
-  parent: Composite?
-) : StringFieldEditor(secretName, labelText, parent) {
-  override fun doLoad() {
+  secretName: String,
+  labelText: String,
+  buttonText: String,
+  parent: Composite?,
+  private val buttonAction: () -> Unit
+) : StringButtonFieldEditor(secretName, labelText, parent) {
+
+  init {
+    setChangeButtonText(buttonText)
+  }
+
+  public override fun doLoad() {
     val textField = textControl
     if (textField != null) {
       val value = secretStorage.getSecret(preferenceName).orEmpty()
@@ -50,5 +57,10 @@ class SecretStringFieldEditor(
 
   override fun createTextWidget(parent: Composite): Text {
     return Text(parent, SWT.SINGLE or SWT.BORDER or SWT.PASSWORD)
+  }
+
+  override fun changePressed(): String? {
+    buttonAction()
+    return null
   }
 }

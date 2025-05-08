@@ -6,10 +6,11 @@ import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.storage.SecretStorage
-import com.gitlab.eclipse.preferences.storage.SecretStringFieldEditor
+import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
 import org.eclipse.jface.preference.*
 import org.eclipse.swt.SWT
 import org.eclipse.swt.graphics.Font
+import org.eclipse.swt.program.Program
 import org.eclipse.swt.widgets.Label
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
@@ -41,12 +42,19 @@ class GitLabPreferencePage(
 
     // TODO: Ensure first-time load succeeds given empty value does not break the entire page.
     addField(
-      SecretStringFieldEditor(
+      SecretStringWithButtonFieldEditor(
         SecretStorage("gitlab.com"),
         "personal_access_token",
         "Personal Access Token",
+        "Generate token",
         fieldEditorParent
-      )
+      ) {
+        val gitLabUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+        val tokenUrl =
+          "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
+
+        Program.launch(tokenUrl)
+      }
     )
 
     if (BuildConfig.OAUTH_ENABLED) {

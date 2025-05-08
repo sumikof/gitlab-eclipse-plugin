@@ -5,6 +5,7 @@
 ### Added
 
 - Added a user notification when authentication is not set ([!229](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/229))
+- Added a button to generate PAT ([!235](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/235))
 
 ### Changed
 
