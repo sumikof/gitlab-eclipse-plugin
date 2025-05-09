@@ -50,4 +50,8 @@ class ButtonFieldEditor(
     super.setEnabled(enabled, parent)
     button.isEnabled = enabled
   }
+
+  fun setButtonText(text: String) {
+    button.text = text
+  }
 }

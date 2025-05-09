@@ -7,6 +7,7 @@
 - Added a user notification when authentication is not set ([!229](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/229))
 - Added a button to generate PAT ([!235](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/235))
 - Added keyboard shortcut to open Duo Chat window ([!236](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/236))
+- Added a verify setup button in preferences to perform health checks ([!238](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/238))
 
 ### Changed
 

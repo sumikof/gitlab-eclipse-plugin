@@ -5,11 +5,17 @@ import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
+import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest
+import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationService
+import com.gitlab.eclipse.preferences.healthcheck.HealthCheckFieldEditor
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
+import com.gitlab.eclipse.utils.currentDisplay
+import com.gitlab.eclipse.utils.makeBoldFont
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import org.eclipse.jface.preference.*
 import org.eclipse.swt.SWT
-import org.eclipse.swt.graphics.Font
 import org.eclipse.swt.program.Program
 import org.eclipse.swt.widgets.Label
 import org.eclipse.ui.IWorkbench
@@ -25,7 +31,9 @@ class GitLabPreferencePage(
     // Connection
     addLabel("Connection")
 
-    addField(StringFieldEditor(PreferenceConstants.GITLAB_INSTANCE_URL, "URL to GitLab instance", fieldEditorParent))
+    val urlField =
+      StringFieldEditor(PreferenceConstants.GITLAB_INSTANCE_URL, "URL to GitLab instance", fieldEditorParent)
+        .also(::addField)
 
     addField(
       BooleanFieldEditor(
@@ -40,22 +48,19 @@ class GitLabPreferencePage(
     // Authentication
     addLabel("Authentication")
 
-    // TODO: Ensure first-time load succeeds given empty value does not break the entire page.
-    addField(
-      SecretStringWithButtonFieldEditor(
-        SecretStorage("gitlab.com"),
-        "personal_access_token",
-        "Personal Access Token",
-        "Generate token",
-        fieldEditorParent
-      ) {
-        val gitLabUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
-        val tokenUrl =
-          "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
+    val tokenField = SecretStringWithButtonFieldEditor(
+      SecretStorage("gitlab.com"),
+      "personal_access_token",
+      "Personal Access Token",
+      "Generate token",
+      fieldEditorParent
+    ) {
+      val gitLabUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+      val tokenUrl =
+        "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
 
-        Program.launch(tokenUrl)
-      }
-    )
+      Program.launch(tokenUrl)
+    }.also(::addField)
 
     if (BuildConfig.OAUTH_ENABLED) {
       addField(
@@ -67,6 +72,39 @@ class GitLabPreferencePage(
         }
       )
     }
+
+    // Health Checks
+    var verifySetupFieldEditor: ButtonFieldEditor? = null
+    var healthCheckFieldEditor: HealthCheckFieldEditor? = null
+    val verifySetupText = "Verify Setup"
+
+    verifySetupFieldEditor = ButtonFieldEditor(
+      verifySetupText,
+      fieldEditorParent
+    ) {
+      healthCheckFieldEditor?.resetStatus()
+      verifySetupFieldEditor?.setButtonText("Verifying...")
+      verifySetupFieldEditor?.setEnabled(false, fieldEditorParent)
+
+      service<CoroutineScope>().launch {
+        val request = currentDisplay.syncCall<ConfigurationValidationRequest, Exception> {
+          ConfigurationValidationRequest(
+            baseUrl = urlField.stringValue,
+            token = tokenField.stringValue
+          )
+        }
+
+        val results = ConfigurationValidationService().validateConfiguration(request)
+
+        currentDisplay.asyncExec {
+          healthCheckFieldEditor?.updateStatus(results)
+          verifySetupFieldEditor?.setButtonText(verifySetupText)
+          verifySetupFieldEditor?.setEnabled(true, fieldEditorParent)
+        }
+      }
+    }.also(::addField)
+
+    healthCheckFieldEditor = HealthCheckFieldEditor(fieldEditorParent).also(::addField)
 
     addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
 
@@ -123,17 +161,7 @@ class GitLabPreferencePage(
   private fun addLabel(label: String) {
     Label(fieldEditorParent, SWT.WRAP).apply {
       text = label
-
-      // make the font bold
-      val currentFont = font
-      val fontData = currentFont.fontData
-      for (fd in fontData) {
-        fd.style = fd.style or SWT.BOLD
-      }
-      val boldFont = Font(display, fontData)
-      font = boldFont
-
-      addDisposeListener { boldFont.dispose() }
+      font = makeBoldFont(font)
     }
 
     addEmptyControls(EMPTY_CONTROLS_AFTER_LABEL)

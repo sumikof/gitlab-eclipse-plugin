@@ -1,9 +1,11 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams
 import com.gitlab.eclipse.lsp.messages.InlineCompletionParams
 import com.gitlab.eclipse.lsp.messages.StreamWithId
 import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.lsp.webview.ThemeChangedParams
+import com.gitlab.eclipse.preferences.healthcheck.FeatureStateParams
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
@@ -34,4 +36,9 @@ interface GitLabLanguageServer : LanguageServer {
 
   @JsonNotification("cancelStreaming")
   fun cancelStreaming(params: StreamWithId)
+
+  @JsonRequest("$/gitlab/validateConfiguration")
+  fun validateConfiguration(
+    params: GitLabLanguageServerConfigurationParams
+  ): CompletableFuture<List<FeatureStateParams>>
 }
