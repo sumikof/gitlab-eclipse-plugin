@@ -38,41 +38,6 @@ class CodeSuggestionsAnnotationImageProviderTest : DescribeSpec({
     unmockkAll()
   }
 
-  describe("getManagedImage") {
-    it("should return no annotation image for a non code suggestions annotation") {
-      val annotation = Annotation("some.other.type", false, "Not a code suggestion")
-
-      val image = imageProvider.getManagedImage(annotation)
-
-      image shouldBe null
-    }
-
-    it("should provide a duo_load_edit image for loading code suggestions") {
-      val annotation = CodeSuggestionAnnotation(CodeSuggestionAnnotationType.LOADING)
-
-      val image = imageProvider.getManagedImage(annotation)
-
-      image shouldBe ThemeUtils.getThemedIcon("duo_load_edit")?.createImage()
-    }
-
-    it("should provide a duo_on_edit image for code suggestions ready") {
-      val annotation = CodeSuggestionAnnotation(CodeSuggestionAnnotationType.READY)
-
-      val image = imageProvider.getManagedImage(annotation)
-
-      image shouldBe ThemeUtils.getThemedIcon("duo_on_edit")?.createImage()
-    }
-
-    it("should return null if an exception is thrown when loading the image") {
-      val annotation = CodeSuggestionAnnotation(CodeSuggestionAnnotationType.READY)
-      every { ThemeUtils.getThemedIcon(any()) } throws RuntimeException("Failed to load image")
-
-      val image = imageProvider.getManagedImage(annotation)
-
-      image shouldBe null
-    }
-  }
-
   describe("getImageDescriptorId") {
     it("should return null for a non code suggestions annotation") {
       val annotation = Annotation("some.other.type", false, "Not a code suggestion")

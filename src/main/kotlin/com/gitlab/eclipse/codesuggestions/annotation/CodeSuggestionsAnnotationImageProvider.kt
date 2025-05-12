@@ -10,22 +10,10 @@ import org.eclipse.ui.texteditor.IAnnotationImageProvider
 class CodeSuggestionsAnnotationImageProvider : IAnnotationImageProvider {
   private val logger by lazy { logger<CodeSuggestionsAnnotationImageProvider>() }
 
-  override fun getManagedImage(annotation: Annotation): Image? {
-    return try {
-      val codeSuggestionsAnnotation = annotation as CodeSuggestionAnnotation
-
-      when (codeSuggestionsAnnotation.type) {
-        CodeSuggestionAnnotationType.LOADING -> ThemeUtils.getThemedIcon("duo_load_edit")?.createImage()
-        CodeSuggestionAnnotationType.READY -> ThemeUtils.getThemedIcon("duo_on_edit")?.createImage()
-      }
-    } catch (e: ClassCastException) {
-      logger.error("Annotation ${annotation.type} is not a CodeSuggestionAnnotation.", e)
-      null
-    } catch (e: Exception) {
-      logger.warn("Unable to load image for annotation ${annotation.type}", e)
-      null
-    }
-  }
+  // Images created by this method need to be managed by this class.
+  // Returning null will result in Eclipse using getImageDescriptorId and getImageDescriptor to create images.
+  // The images will be managed by Eclipse image registry.
+  override fun getManagedImage(annotation: Annotation): Image? = null
 
   override fun getImageDescriptorId(annotation: Annotation): String? {
     return try {
