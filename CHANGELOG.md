@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- Avoid not displaying a code suggestion when its formatting fails ([!241](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/241))
+
 ## 0.6.0 (2025-05-01)
 
 ### Added
