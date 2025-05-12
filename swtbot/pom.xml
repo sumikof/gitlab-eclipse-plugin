@@ -72,7 +72,7 @@
                 <os.name>linux</os.name>
                 <ws.name>gtk</ws.name>
                 <arch.name>x86_64</arch.name>
-                <platform.plugin.id>com.gitlab.eclipse.gitlab-language-server.gtk.linux.x86_84</platform.plugin.id>
+                <platform.plugin.id>com.gitlab.eclipse.gitlab-language-server.gtk.linux.x86_64</platform.plugin.id>
             </properties>
         </profile>
     </profiles>
