@@ -50,16 +50,21 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
     val snippetStartOffset = prefix.length + inlinePart.length
     val snippetEndOffset = prefix.length + trimmedSnippet.length
 
-    val formatting = formatter.format(
-      CodeFormatter.K_COMPILATION_UNIT,
-      documentWithCodeSnippet.get(),
-      snippetStartOffset,
-      snippetEndOffset - snippetStartOffset,
-      0,
-      null
-    )
+    val textEdit = try {
+      formatter.format(
+        CodeFormatter.K_COMPILATION_UNIT,
+        documentWithCodeSnippet.get(),
+        snippetStartOffset,
+        snippetEndOffset - snippetStartOffset,
+        0,
+        null
+      )
+    } catch (_: IndexOutOfBoundsException) {
+      // Can happen if the code is not valid code. In that case, we don't format it.
+      return trimmedSnippet
+    }
 
-    formatting.apply(documentWithCodeSnippet)
+    textEdit.apply(documentWithCodeSnippet)
 
     val indentedCodeEndOffset = documentWithCodeSnippet
       .getLineOfOffset(snippetStartOffset)
