@@ -10,6 +10,7 @@
     <modules>
         <module>feature</module>
         <module>update-site</module>
+        <module>swtbot</module>
     </modules>
 
     <properties>
