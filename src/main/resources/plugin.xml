@@ -47,6 +47,14 @@
         </command>
     </extension>
 
+    <extension point="org.eclipse.ui.contexts">
+        <context
+            name="Code Suggestions context"
+            id="com.gitlab.eclipse.codesuggestions.context"
+            parentId="org.eclipse.ui.textEditorScope">
+        </context>
+    </extension>
+
     <extension point="org.eclipse.ui.bindings">
         <key
                 sequence="M1+."
@@ -66,6 +74,13 @@
                 sequence="TAB"
                 commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestion"
                 contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="M1+ARROW_RIGHT"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionLine"
+                contextId="com.gitlab.eclipse.codesuggestions.context"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
 

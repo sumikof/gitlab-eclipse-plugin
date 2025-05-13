@@ -37,6 +37,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>()
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
+  val codeSuggestionCommandContext = mockk<CodeSuggestionsCommandContext>(relaxUnitFun = true)
   val codeSuggestion = CodeSuggestion(streamId = null, "foo", 123, "sample suggestion")
 
   val annotationManager = mockk<CodeSuggestionsSessionAnnotationManager>(relaxUnitFun = true)
@@ -101,6 +102,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       renderer,
       annotationManager,
       streamingCodeSuggestionsManager,
+      codeSuggestionCommandContext,
       telemetryService,
       coroutineScope
     )
@@ -139,6 +141,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
             renderer,
             annotationManager,
             streamingCodeSuggestionsManager,
+            codeSuggestionCommandContext,
             telemetryService,
             coroutineScope
           )
@@ -295,6 +298,15 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
       }
 
+      it("should active command context when a suggestion is displayed") {
+        every { textWidget.caretOffset } returns 10
+
+        session.requestCodeSuggestion()
+        coroutineScope.advanceUntilIdle()
+
+        verify { codeSuggestionCommandContext.activate() }
+      }
+
       it("should use the caret offset when no explicit offset is provided") {
         every { textWidget.caretOffset } returns 10
 
@@ -406,6 +418,12 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           streamingCodeSuggestionsManager.cancel("streamId")
         }
       }
+
+      it("should deactivate code suggestions command context") {
+        session.acceptCodeSuggestion()
+
+        verify { codeSuggestionCommandContext.deactivate() }
+      }
     }
 
     describe("cancelCodeSuggestion") {
@@ -416,6 +434,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           renderer.clear()
           annotationManager.hide()
         }
+      }
+
+      it("should deactivate code suggestions command context") {
+        session.cancelCodeSuggestion()
+        verify { codeSuggestionCommandContext.deactivate() }
       }
 
       it("should cancel ongoing streaming code suggestion") {
@@ -454,6 +477,11 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
       }
 
+      it("should deactivate code suggestions command context") {
+        session.rejectCodeSuggestion()
+        verify { codeSuggestionCommandContext.deactivate() }
+      }
+
       it("should cancel ongoing streaming code suggestion") {
         val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
         coEvery {
@@ -486,6 +514,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
         verify {
           renderer.dispose()
+          codeSuggestionCommandContext.deactivate()
           annotationManager.hide()
 
           document.removeDocumentListener(session)
