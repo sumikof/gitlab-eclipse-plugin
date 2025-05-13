@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.preferences
 
+import com.gitlab.eclipse.authentication.TokenProviderType
 import org.eclipse.core.runtime.preferences.AbstractPreferenceInitializer
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 
@@ -11,5 +12,6 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, true)
     store.setDefault(PreferenceConstants.IGNORE_CERTIFICATE_ERRORS, false)
     store.setDefault(PreferenceConstants.CA_CERTIFICATE, "")
+    store.setDefault(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.PAT.name)
   }
 }

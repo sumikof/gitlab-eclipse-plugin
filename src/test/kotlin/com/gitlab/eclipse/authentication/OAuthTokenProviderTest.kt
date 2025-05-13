@@ -2,10 +2,12 @@ package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
 import kotlinx.coroutines.delay
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -17,21 +19,26 @@ import kotlin.time.Duration.Companion.seconds
 class OAuthTokenProviderTest : DescribeSpec({
   val oAuthService = mockk<GitLabOAuthService>()
   val languageServerConfigurationService = mockk<GitLabLanguageServerConfigurationService>()
-  val tokenProvider = OAuthTokenProvider(languageServerConfigurationService)
+  val scopedPreferenceStore = mockk<ScopedPreferenceStore>()
+  val tokenProvider = OAuthTokenProvider(languageServerConfigurationService, scopedPreferenceStore)
 
   extensions(LoggingKotestExtension)
 
   startKoin {
     modules(
       module {
-        single<GitLabOAuthService> { oAuthService }
+        single<ScopedPreferenceStore> { scopedPreferenceStore }
         single<GitLabLanguageServerConfigurationService> { languageServerConfigurationService }
+        single<GitLabOAuthService> { oAuthService }
       }
     )
   }
 
   beforeEach {
     every { languageServerConfigurationService.sendConfiguration() } just Runs
+    every {
+      scopedPreferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
+    } just Runs
   }
 
   afterEach { clearAllMocks() }
@@ -71,6 +78,27 @@ class OAuthTokenProviderTest : DescribeSpec({
 
         assertEquals(newTokenValue, tokenProvider.getToken())
       }
+    }
+  }
+
+  describe("updateToken") {
+    it("should update the token and set authentication type to OAUTH") {
+      val tokenValue = "test_token"
+      val mockToken = GitLabAuthorizationToken(
+        accessToken = tokenValue,
+        refreshToken = "refresh_token",
+        expiresIn = 3600,
+        createdAt = Instant.now().epochSecond
+      )
+
+      tokenProvider.updateToken(mockToken)
+
+      verify {
+        scopedPreferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
+      }
+      verify { languageServerConfigurationService.sendConfiguration() }
+
+      tokenProvider.getToken() shouldBe tokenValue
     }
   }
 
@@ -114,6 +142,7 @@ class OAuthTokenProviderTest : DescribeSpec({
     afterSpec { unmockkAll() }
 
     it("timer shouldn't start when the token is null") {
+      every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
       tokenProvider.updateToken(null)
       tokenProvider.startTokenRefreshTimer(timerRefreshInSeconds)
 
@@ -130,6 +159,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         GitLabAuthorizationToken("new_token", "refresh_token", 3600, Instant.now().epochSecond)
 
       every { oAuthService.refreshToken(any()) } returns newToken
+      every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
 
       val expiredToken = GitLabAuthorizationToken(
         "expired_token",
