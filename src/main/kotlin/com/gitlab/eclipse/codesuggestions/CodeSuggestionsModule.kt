@@ -1,7 +1,6 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
-import com.gitlab.eclipse.codesuggestions.handlers.CodeSuggestionsShortcutInitializer
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.utils.PlatformUtils
 import org.eclipse.ui.texteditor.ITextEditor
@@ -32,6 +31,7 @@ val codeSuggestionsModule = module {
       codeSuggestionsRenderer = CodeSuggestionsRenderer(document, textWidget),
       annotationManager = CodeSuggestionsSessionAnnotationManager(textEditor),
       streamingCodeSuggestionsManager = get(),
+      codeSuggestionsCommandContext = CodeSuggestionsCommandContext(get()),
       coroutineScope = get(),
       telemetryService = get()
     )
@@ -45,5 +45,4 @@ val codeSuggestionsModule = module {
   }
 
   single<CodeSuggestionsStateService> { CodeSuggestionsStateService() }
-  single<CodeSuggestionsShortcutInitializer>(createdAtStart = true) { CodeSuggestionsShortcutInitializer() }
 }

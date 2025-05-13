@@ -30,6 +30,7 @@ class CodeSuggestionsSession(
   private val codeSuggestionsRenderer: CodeSuggestionsRenderer,
   private val annotationManager: CodeSuggestionsSessionAnnotationManager,
   private val streamingCodeSuggestionsManager: StreamingCodeSuggestionsManager,
+  private val codeSuggestionsCommandContext: CodeSuggestionsCommandContext,
   private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
 ) : IDocumentListener, StreamingCodeSuggestionsListener {
@@ -232,6 +233,7 @@ class CodeSuggestionsSession(
     textWidget.caretOffset = offset + text.length
 
     codeSuggestions.clear()
+    codeSuggestionsCommandContext.deactivate()
     hasLoadedAdditionalSuggestions = false
   }
 
@@ -297,6 +299,7 @@ class CodeSuggestionsSession(
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
 
       codeSuggestions.clear()
+      codeSuggestionsCommandContext.deactivate()
       hasLoadedAdditionalSuggestions = false
     } catch (e: Exception) {
       logger.error("Error canceling code suggestion.", e)
@@ -320,6 +323,7 @@ class CodeSuggestionsSession(
       }
 
       codeSuggestions.clear()
+      codeSuggestionsCommandContext.deactivate()
       hasLoadedAdditionalSuggestions = false
     } catch (e: Exception) {
       logger.error("Error rejecting code suggestion.", e)
@@ -346,6 +350,7 @@ class CodeSuggestionsSession(
 
     codeSuggestions.clear()
     hasLoadedAdditionalSuggestions = false
+    codeSuggestionsCommandContext.deactivate()
 
     try {
       codeSuggestionsRenderer.dispose()
@@ -412,7 +417,9 @@ class CodeSuggestionsSession(
   private fun displayCurrentSuggestion(offset: Int) {
     currentSuggestion?.let { suggestion ->
       currentDisplay.syncExec { codeSuggestionsRenderer.display(suggestion.text, offset) }
+      codeSuggestionsCommandContext.activate()
       telemetryService.send(suggestion, TelemetryAction.SUGGESTION_SHOWN)
+
       val streamId = suggestion.streamId
       if (streamId == null) {
         annotationManager.display(CodeSuggestionAnnotationType.READY, offset)
