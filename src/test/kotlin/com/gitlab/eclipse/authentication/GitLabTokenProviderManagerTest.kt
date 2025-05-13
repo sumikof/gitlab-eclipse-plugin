@@ -1,10 +1,9 @@
 package com.gitlab.eclipse.authentication
 
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import io.kotest.core.spec.style.DescribeSpec
-import io.mockk.clearAllMocks
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.unmockkAll
+import io.mockk.*
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -14,6 +13,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
   lateinit var tokenProviderManager: GitLabTokenProviderManager
   val oAuthTokenProvider = mockk<OAuthTokenProvider>()
   val patTokenProvider = mockk<PatTokenProvider>()
+  val scopedPreferenceStore = mockk<ScopedPreferenceStore>()
 
   beforeSpec {
     startKoin {
@@ -21,13 +21,14 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
         module {
           single<OAuthTokenProvider> { oAuthTokenProvider }
           single<PatTokenProvider> { patTokenProvider }
+          single<ScopedPreferenceStore> { scopedPreferenceStore }
         }
       )
     }
   }
 
   beforeTest {
-    tokenProviderManager = GitLabTokenProviderManager()
+    tokenProviderManager = GitLabTokenProviderManager(scopedPreferenceStore)
   }
 
   afterEach { clearAllMocks() }
@@ -42,6 +43,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
       it("returns OAuth token when available") {
         every { oAuthTokenProvider.getToken() } returns "oauth_token"
         every { patTokenProvider.getToken() } returns "pat_token"
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "PAT"
 
         val result = tokenProviderManager.getToken()
 
@@ -51,6 +53,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
       it("returns PAT when OAuth is not available") {
         every { oAuthTokenProvider.getToken() } returns ""
         every { patTokenProvider.getToken() } returns "pat_token"
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "PAT"
 
         val result = tokenProviderManager.getToken()
 
@@ -60,8 +63,9 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
       it("returns PAT when explicitly requested") {
         every { oAuthTokenProvider.getToken() } returns "oauth_token"
         every { patTokenProvider.getToken() } returns "pat_token"
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "PAT"
 
-        val result = tokenProviderManager.getToken(TokenProviderType.PAT)
+        val result = tokenProviderManager.getToken()
 
         assertEquals(result, "pat_token")
       }
@@ -69,6 +73,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
       it("returns empty string when no tokens are available") {
         every { oAuthTokenProvider.getToken() } returns ""
         every { patTokenProvider.getToken() } returns ""
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "OAUTH"
 
         val result = tokenProviderManager.getToken()
 

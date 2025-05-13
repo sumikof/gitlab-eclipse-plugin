@@ -20,10 +20,10 @@ import java.util.concurrent.CompletableFuture
 class GitLabOAuthService {
   companion object {
     private const val CLIENT_ID = "ee276bb6507af1f6a7eb086d1a07c5cd1bc3c192b631a214d9f8bba35fb9178a"
-    private const val REDIRECT_URI = "http://127.0.0.1:63343/api/oauth/gitlab/authorization"
+    private const val CALLBACK_PORT = 63343
+    private const val REDIRECT_URI = "http://127.0.0.1:$CALLBACK_PORT/api/oauth/gitlab/authorization"
     private const val AUTHORIZATION_ENDPOINT = "https://gitlab.com/oauth/authorize"
     private const val TOKEN_ENDPOINT = "https://gitlab.com/oauth/token"
-    private const val CALLBACK_PORT = 63343
     private const val SCOPE = "api"
   }
 

@@ -2,8 +2,10 @@ package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.Executors
@@ -11,7 +13,8 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 class OAuthTokenProvider(
-  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service()
+  private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
+  private val preferenceStore: ScopedPreferenceStore = service()
 ) : TokenProvider {
   private var currentToken: GitLabAuthorizationToken? = null
   private val logger by lazy { logger<OAuthTokenProvider>() }
@@ -24,6 +27,7 @@ class OAuthTokenProvider(
   }
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {
+    preferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
     this.currentToken = newToken
     languageServiceConfigurationService.sendConfiguration()
   }
@@ -50,6 +54,10 @@ class OAuthTokenProvider(
   fun startTokenRefreshTimer(
     refreshIntervalInSeconds: Int = currentToken?.expiresIn ?: DEFAULT_REFRESH_INTERVAL_SECONDS
   ) {
+    if (preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) != TokenProviderType.OAUTH.name) {
+      return
+    }
+
     if (currentToken == null) {
       logger.info("Canceling the timer for token refresh.")
       scheduler.shutdownNow()
