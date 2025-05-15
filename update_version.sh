@@ -41,6 +41,8 @@ update_file() {
 
 # The new version number (e.g., 0.1.1)
 SEMANTIC_VERSION=
+# The next planned version number (e.g., 0.1.2 if the input if 0.1.1)
+NEXT_SEMANTIC_VERSION=
 # The maven version number  (e.g., 0.1.1-SNAPSHOT)
 MAVEN_VERSION=
 # The maven tycho version number  (e.g., 0.1.1.qualifier)
@@ -128,6 +130,20 @@ if [[ "$PREPARE_RELEASE" = "true" ]]; then
 fi
 CATEGORY_AWK_COMMAND='/version=/{sub(/\"[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?"/, "\"'"$CATEGORY_AWK_VERSION"'\""); f=1} /url="features\/com\.gitlab\.eclipse\.feature_/{sub(/[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.?(qualifier)?\.jar/, "'"$CATEGORY_AWK_URL"'"); f=1} 1'
 update_file "update-site/category.xml" "$CATEGORY_AWK_COMMAND" || exit 1
+
+# Update swtbot/pom.xml version tag
+echo "Updating swtbot/pom.xml version tag..."
+POM_AWK_COMMAND='/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/ && !f {sub(/<version>[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?<\/version>/, "<version>'"$MAVEN_VERSION"'</version>"); f=1} 1'
+update_file "swtbot/pom.xml" "$POM_AWK_COMMAND" || exit 1
+
+# Update swtbot/pom.xml plugin.version.range
+if [[ "$PREPARE_RELEASE" = "false" ]]; then
+  echo "Updating swtbot/pom.xml plugin.version.range..."
+  IFS="." read -ra VERSION_PARTS <<<"$SEMANTIC_VERSION"
+  NEXT_SEMANTIC_VERSION="${VERSION_PARTS[0]}.${VERSION_PARTS[1]}.$((VERSION_PARTS[2] + 1))"
+  POM_AWK_COMMAND='/<plugin.version.range>/ && !f {sub(/<plugin.version.range>\[[0-9]+\.[0-9]+\.[0-9]+,[0-9]+\.[0-9]+\.[0-9]+/, "<plugin.version.range>['$SEMANTIC_VERSION','$NEXT_SEMANTIC_VERSION'"); f=1} 1'
+  update_file "swtbot/pom.xml" "$POM_AWK_COMMAND" || exit 1
+fi
 
 # Update build.gradle.kts
 echo "Updating build.gradle.kts..."
