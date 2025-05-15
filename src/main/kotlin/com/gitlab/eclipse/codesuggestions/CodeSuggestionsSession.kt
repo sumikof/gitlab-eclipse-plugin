@@ -22,7 +22,7 @@ import org.eclipse.jface.text.IDocumentListener
 import org.eclipse.swt.custom.StyledText
 import kotlin.time.Duration.Companion.milliseconds
 
-@Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions")
+@Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions", "LoopWithTooManyJumpStatements")
 class CodeSuggestionsSession(
   private val textWidget: StyledText,
   private val document: IDocument,
@@ -237,6 +237,54 @@ class CodeSuggestionsSession(
     hasLoadedAdditionalSuggestions = false
   }
 
+  fun acceptCodeSuggestionWord() {
+    val offset = codeSuggestionsRenderer.documentPosition?.offset
+      ?: return
+
+    val text = codeSuggestionsRenderer.text
+      ?: return
+
+    val wordToAccept = StringBuilder()
+    var traversedLeadingWhiteSpaces = false
+    for (index in text.indices) {
+      val char = text[index]
+      if (!char.isWhitespace()) {
+        traversedLeadingWhiteSpaces = true
+      }
+
+      if (char.isWhitespace() && traversedLeadingWhiteSpaces) {
+        break
+      }
+
+      if (char in INDIVIDUAL_BRACKET) {
+        if (wordToAccept.isBlank()) {
+          wordToAccept.append(char)
+        }
+
+        break
+      }
+
+      wordToAccept.append(char)
+    }
+
+    if (wordToAccept.isBlank()) {
+      return
+    }
+
+    if (wordToAccept.toString() == text) {
+      return acceptCodeSuggestion()
+    }
+
+    documentChangeReason = DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED
+
+    currentSuggestion?.text = text.substring(wordToAccept.length)
+    currentDisplay.syncExec {
+      document.replace(offset, 0, wordToAccept.toString())
+      textWidget.caretOffset = offset + wordToAccept.length
+      annotationManager.display(CodeSuggestionAnnotationType.READY, textWidget.caretOffset)
+    }
+  }
+
   fun acceptCodeSuggestionLine() {
     val offset = codeSuggestionsRenderer.documentPosition?.offset
       ?: return
@@ -284,6 +332,7 @@ class CodeSuggestionsSession(
     currentDisplay.syncExec {
       document.replace(offset, 0, textToInsert.toString())
       textWidget.caretOffset = offset + textToInsert.length
+      annotationManager.display(CodeSuggestionAnnotationType.READY, textWidget.caretOffset)
     }
   }
 
@@ -446,6 +495,7 @@ class CodeSuggestionsSession(
 
   companion object {
     private val BLOCKED_BRACKET_PAIRS = setOf("[]", "{}", "()")
+    private val INDIVIDUAL_BRACKET = arrayOf('(', ')', '[', ']', '{', '}')
     private val KEY_PRESS_DEBOUNCE = 150.milliseconds
   }
 }
