@@ -11,6 +11,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.codesuggestions.acceptSuggestionWord"
+                name="Accept Suggestion Word"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.codesuggestions.requestSuggestion"
                 name="Request Suggestion"
                 categoryId="gitlab-eclipse-plugin">
@@ -80,6 +86,13 @@
         <key
                 sequence="M1+ARROW_RIGHT"
                 commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionLine"
+                contextId="com.gitlab.eclipse.codesuggestions.context"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <key
+                sequence="M3+ARROW_RIGHT"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionWord"
                 contextId="com.gitlab.eclipse.codesuggestions.context"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -159,6 +172,11 @@
         <handler
                 class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsLineHandler"
                 commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionLine"
+        />
+
+        <handler
+                class="com.gitlab.eclipse.codesuggestions.handlers.AcceptCodeSuggestionsWordHandler"
+                commandId="com.gitlab.eclipse.codesuggestions.acceptSuggestionWord"
         />
 
         <handler

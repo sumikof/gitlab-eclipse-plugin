@@ -26,3 +26,7 @@ complexity:
 exceptions:
   TooGenericExceptionCaught:
     active: false
+
+performance:
+  ArrayPrimitive:
+    active: false

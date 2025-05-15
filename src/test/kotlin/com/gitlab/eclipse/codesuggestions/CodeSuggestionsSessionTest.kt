@@ -29,6 +29,7 @@ import org.koin.core.context.stopKoin
 import org.koin.dsl.module
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass")
 class CodeSuggestionsSessionTest : DescribeSpec({
   val textWidget = mockk<StyledText>(relaxed = true)
 
@@ -614,6 +615,168 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.onSuggestionStreamComplete()
 
         verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 10) }
+      }
+    }
+
+    describe("acceptCodeSuggestionWord") {
+      beforeEach {
+        every { renderer.documentPosition } returns mockk<Position> {
+          every { getOffset() } returns 10
+        }
+      }
+
+      it("should accept the first word of a suggestion") {
+        every { renderer.text } returns "first word and more text"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, "first")
+          textWidget.caretOffset = 15
+        }
+      }
+
+      it("should accept the entire suggestion if it's a single word") {
+        every { renderer.text } returns "singleword"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, "singleword")
+          textWidget.caretOffset = 20
+        }
+      }
+
+      it("should include leading whitespace when accepting the first word of a suggestion") {
+        every { renderer.text } returns "   leadingSpaces nextWord"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, "   leadingSpaces")
+          textWidget.caretOffset = 26 // 10 + "   leadingSpaces".length (16)
+        }
+      }
+
+      it("should stop at new lines when accepting the first word of a suggestion") {
+        every { renderer.text } returns "first\nsecond"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, "first")
+          textWidget.caretOffset = 15
+        }
+      }
+
+      it("should consider parentheses as a word when accepting a code suggestion word") {
+        every { renderer.text } returns " ()"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, " (")
+          textWidget.caretOffset = 12
+        }
+      }
+
+      it("should consider brackets as a word when accepting a code suggestion word") {
+        every { renderer.text } returns " []"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, " [")
+          textWidget.caretOffset = 12
+        }
+      }
+
+      it("should consider curly brackets as a word when accepting a code suggestion word") {
+        every { renderer.text } returns " {}"
+
+        session.acceptCodeSuggestionWord()
+
+        verify {
+          document.replace(10, 0, " {")
+          textWidget.caretOffset = 12
+        }
+      }
+
+      it("should display the annotation at the new caret position") {
+        every { renderer.text } returns "word nextWord"
+        every { textWidget.caretOffset } returns 14
+
+        session.acceptCodeSuggestionWord()
+
+        verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 14) }
+      }
+
+      describe("accepted word is about to be inserted in document") {
+        it("should cancel streaming and clear the renderer when suggestion is partially accepted") {
+          val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
+          coEvery {
+            codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any())
+          } returns streamingCodeSuggestion
+
+          session.requestCodeSuggestion()
+          coroutineScope.advanceUntilIdle()
+
+          session.onSuggestionStreamUpdate(streamId = "streamId", text = "updated suggestion text")
+          coroutineScope.advanceUntilIdle()
+
+          session.acceptCodeSuggestionWord()
+
+          val documentEvent = mockk<DocumentEvent>()
+          session.documentAboutToBeChanged(documentEvent)
+          verify {
+            streamingCodeSuggestionsManager.cancel("streamId")
+            renderer.clear()
+          }
+        }
+
+        it("should notify the caret listener to ignore next caret change") {
+          every { renderer.text } returns "code suggestion"
+          session.acceptCodeSuggestionWord()
+
+          val documentEvent = mockk<DocumentEvent>()
+          session.documentAboutToBeChanged(documentEvent)
+
+          verify {
+            anyConstructed<CodeSuggestionsCaretListener>().setCaretMovementReason(
+              CaretMovementReason.SUGGESTION_ACCEPTED
+            )
+          }
+        }
+      }
+
+      describe("accepted word is inserted in document") {
+        it("should display the partially accepted suggestion") {
+          coEvery {
+            codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any())
+          } returns CodeSuggestion(
+            streamId = null,
+            "trackingId",
+            optionId = null,
+            text = "first word and more text"
+          )
+          every { renderer.text } returns "first word and more text"
+
+          session.requestCodeSuggestion()
+          coroutineScope.advanceUntilIdle()
+
+          session.acceptCodeSuggestionWord()
+          coroutineScope.advanceUntilIdle()
+
+          val documentEvent = mockk<DocumentEvent> {
+            every { text } returns "first"
+            every { length } returns 5
+          }
+          session.documentChanged(documentEvent)
+
+          verify {
+            renderer.display(" word and more text", 15)
+          }
+        }
       }
     }
 
