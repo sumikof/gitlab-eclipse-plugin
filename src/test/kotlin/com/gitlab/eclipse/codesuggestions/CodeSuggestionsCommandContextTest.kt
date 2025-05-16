@@ -1,10 +1,13 @@
 package com.gitlab.eclipse.codesuggestions
 
 import com.gitlab.eclipse.utils.PlatformUtils
+import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
 import io.mockk.verify
 import org.eclipse.ui.contexts.IContextActivation
 import org.eclipse.ui.contexts.IContextService
@@ -19,15 +22,25 @@ class CodeSuggestionsCommandContextTest : DescribeSpec({
 
   val context = CodeSuggestionsCommandContext(platformUtils)
 
+  beforeSpec {
+    mockkStatic("com.gitlab.eclipse.utils.DisplayKt")
+  }
+
   beforeEach {
     every { platformUtils.getWorkbench() } returns workbench
     every { workbench.getService(IContextService::class.java) } returns contextService
+
+    every { currentDisplay.syncExec(any()) } answers { firstArg<Runnable>().run() }
 
     every { contextService.activateContext("com.gitlab.eclipse.codesuggestions.context") } returns contextActivation
   }
 
   afterEach {
     clearAllMocks()
+  }
+
+  afterSpec {
+    unmockkAll()
   }
 
   it("should activate code suggestion context") {
