@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit
 
 class OAuthTokenProvider(
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
-  private val preferenceStore: ScopedPreferenceStore = service()
+  private val preferenceStore: ScopedPreferenceStore = service(),
+  private val oAuthSecretStorage: OAuthSecretStorage = OAuthSecretStorage()
 ) : TokenProvider {
   private var currentToken: GitLabAuthorizationToken? = null
   private val logger by lazy { logger<OAuthTokenProvider>() }
@@ -22,14 +23,47 @@ class OAuthTokenProvider(
   var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
   override fun getToken(): String {
-    refreshTokenIfExpired()
+    if (currentToken == null) {
+      loadCachedToken()
+    } else {
+      refreshTokenIfExpired()
+    }
+
     return currentToken?.accessToken.orEmpty()
   }
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {
-    preferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
+    setOAuthInPreferenceStore(true)
     this.currentToken = newToken
+    oAuthSecretStorage.setOAuthToken(currentToken)
     languageServiceConfigurationService.sendConfiguration()
+  }
+
+  private fun setOAuthInPreferenceStore(value: Boolean) {
+    val tokenProviderType = if (value) TokenProviderType.OAUTH.name else TokenProviderType.PAT.name
+    preferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, tokenProviderType)
+  }
+
+  private fun loadCachedToken() {
+    if (currentToken != null || !isOAuthEnabled()) return
+
+    try {
+      oAuthSecretStorage.getOAuthToken()?.let { cachedToken ->
+        logger.info(
+          "Loading cached token from PasswordSafe. Expiration timestamp is ${cachedToken.tokenExpirationTimestamp}"
+        )
+        currentToken = cachedToken
+        refreshTokenIfExpired()
+      } ?: run {
+        logger.info(
+          "No cached token found in PasswordSafe. Updating settings to reflect that OAuth is no longer enabled."
+        )
+        setOAuthInPreferenceStore(false)
+      }
+    } catch (e: Exception) {
+      logger.info("Failed to load cached token: ${e.message}")
+      setOAuthInPreferenceStore(false)
+    }
   }
 
   private fun refreshTokenIfExpired() {
@@ -43,6 +77,7 @@ class OAuthTokenProvider(
     if (refreshedToken == null) {
       logger.info("Failed to refresh the OAuth token.")
       NotificationUtils.show("Failed to refresh the OAuth token. Please re-authenticate.")
+      setOAuthInPreferenceStore(false)
       return
     }
 
@@ -54,7 +89,7 @@ class OAuthTokenProvider(
   fun startTokenRefreshTimer(
     refreshIntervalInSeconds: Int = currentToken?.expiresIn ?: DEFAULT_REFRESH_INTERVAL_SECONDS
   ) {
-    if (preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) != TokenProviderType.OAUTH.name) {
+    if (!isOAuthEnabled()) {
       return
     }
 
@@ -73,6 +108,9 @@ class OAuthTokenProvider(
       }
     }, 0, refreshIntervalInMillis, TimeUnit.MILLISECONDS)
   }
+
+  private fun isOAuthEnabled(): Boolean =
+    preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) == TokenProviderType.OAUTH.name
 
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")

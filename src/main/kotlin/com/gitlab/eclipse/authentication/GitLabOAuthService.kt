@@ -15,7 +15,6 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.*
-import java.util.concurrent.CompletableFuture
 
 class GitLabOAuthService {
   companion object {
@@ -43,7 +42,11 @@ class GitLabOAuthService {
     .registerTypeAdapter(GitLabAuthorizationToken::class.java, GitLabAuthorizationTokenDeserializer())
     .create()
 
+  private var oauthCallbackServer: OAuthCallbackServer? = null
+
   fun startOAuthFlow() {
+    oauthCallbackServer?.stop()
+
     val codeVerifier = generateCodeVerifier()
     val codeChallenge = generateCodeChallenge(codeVerifier)
 
@@ -51,32 +54,20 @@ class GitLabOAuthService {
     if (Desktop.isDesktopSupported()) {
       val authUrl = "${oauthService.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
       Desktop.getDesktop().browse(URI(authUrl))
+    } else {
+      logger.info("Desktop is not supported, cannot open the browser.")
+      return
     }
 
     // Start the local HTTP server to listen for the callback
-    val future = CompletableFuture<String>()
     try {
-      val server = createServer(CALLBACK_PORT) { code ->
-        // Exchange code for an access token
-        val tokenRequest = AccessTokenRequestParams(code)
-          .scope(SCOPE)
-          .pkceCodeVerifier(codeVerifier)
-
-        val token = oauthService.getAccessToken(tokenRequest)
-        val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
-
-        service<OAuthTokenProvider>().updateToken(gitlabToken)
-        service<OAuthTokenProvider>().startTokenRefreshTimer(gitlabToken.expiresIn)
-
-        future.complete(code)
-      }
-      server.start()
+      oauthCallbackServer = createServer(codeVerifier)
+      oauthCallbackServer?.start()
+      logger.info("OAuth Callback server started.")
     } catch (e: java.net.BindException) {
       logger.error("Port $CALLBACK_PORT is already in use. Cannot start the OAuth callback server.", e)
-      future.completeExceptionally(e)
     } catch (e: Exception) {
       logger.error("Failed to start the OAuth callback server.", e)
-      future.completeExceptionally(e)
     }
   }
 
@@ -91,8 +82,18 @@ class GitLabOAuthService {
     }
   }
 
-  internal fun createServer(port: Int, onCodeReceived: (String) -> Unit): NanoHTTPD {
-    return OAuthCallbackServer(port, onCodeReceived)
+  internal fun createServer(codeVerifier: String): OAuthCallbackServer {
+    return OAuthCallbackServer(CALLBACK_PORT) { code ->
+      val tokenRequest = AccessTokenRequestParams(code)
+        .scope(SCOPE)
+        .pkceCodeVerifier(codeVerifier)
+
+      val token = oauthService.getAccessToken(tokenRequest)
+      val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
+
+      service<OAuthTokenProvider>().updateToken(gitlabToken)
+      service<OAuthTokenProvider>().startTokenRefreshTimer(gitlabToken.expiresIn)
+    }
   }
 
   @Suppress("MagicNumber")
@@ -110,7 +111,8 @@ class GitLabOAuthService {
   }
 }
 
-class OAuthCallbackServer(port: Int, private val onCodeReceived: (String) -> Unit) : NanoHTTPD(port) {
+class OAuthCallbackServer(port: Int, private val onCodeReceived: (String) -> Unit) :
+  NanoHTTPD(port) {
   override fun serve(session: IHTTPSession): Response {
     val parameters = session.parameters
     val code = parameters["code"]?.firstOrNull()
