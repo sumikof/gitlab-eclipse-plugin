@@ -58,8 +58,6 @@ class CodeSuggestionsSession(
     }
 
     if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
-      caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
-
       cancelStreaming()
       currentDisplay.syncExec { codeSuggestionsRenderer.clear() }
       return
@@ -75,7 +73,9 @@ class CodeSuggestionsSession(
 
     if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
       currentDisplay.syncExec {
-        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), textWidget.caretOffset + event.text.length)
+        val newCaretOffset = textWidget.caretOffset + event.text.length
+        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), newCaretOffset)
+        annotationManager.display(CodeSuggestionAnnotationType.READY, newCaretOffset)
       }
     }
 
@@ -276,13 +276,11 @@ class CodeSuggestionsSession(
     }
 
     documentChangeReason = DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED
-
     currentSuggestion?.text = text.substring(wordToAccept.length)
-    currentDisplay.syncExec {
-      document.replace(offset, 0, wordToAccept.toString())
-      textWidget.caretOffset = offset + wordToAccept.length
-      annotationManager.display(CodeSuggestionAnnotationType.READY, textWidget.caretOffset)
-    }
+    document.replace(offset, 0, wordToAccept.toString())
+
+    caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
+    textWidget.caretOffset = textWidget.caretOffset + wordToAccept.length
   }
 
   fun acceptCodeSuggestionLine() {
@@ -325,15 +323,11 @@ class CodeSuggestionsSession(
     }
 
     documentChangeReason = DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED
+    currentSuggestion?.text = text.removePrefix(textToInsert.toString())
+    document.replace(offset, 0, textToInsert.toString())
 
-    val remainingText = text.removePrefix(textToInsert.toString())
-    currentSuggestion?.text = remainingText
-
-    currentDisplay.syncExec {
-      document.replace(offset, 0, textToInsert.toString())
-      textWidget.caretOffset = offset + textToInsert.length
-      annotationManager.display(CodeSuggestionAnnotationType.READY, textWidget.caretOffset)
-    }
+    caretListener.setCaretMovementReason(CaretMovementReason.SUGGESTION_ACCEPTED)
+    textWidget.caretOffset = textWidget.caretOffset + textToInsert.length
   }
 
   fun cancelCodeSuggestion() {

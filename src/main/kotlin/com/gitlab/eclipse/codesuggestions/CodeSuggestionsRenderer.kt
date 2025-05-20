@@ -190,8 +190,7 @@ class CodeSuggestionsRenderer(
   }
 
   private fun StyledText.redrawNow() {
-    redraw()
-    update()
+    setRedraw(true)
   }
 
   private fun setHeight(numberOfLines: Int) {
