@@ -20,7 +20,8 @@ class OAuthTokenProviderTest : DescribeSpec({
   val oAuthService = mockk<GitLabOAuthService>()
   val languageServerConfigurationService = mockk<GitLabLanguageServerConfigurationService>()
   val scopedPreferenceStore = mockk<ScopedPreferenceStore>()
-  val tokenProvider = OAuthTokenProvider(languageServerConfigurationService, scopedPreferenceStore)
+  val oauthSecretStorage = mockk<OAuthSecretStorage>()
+  val tokenProvider = OAuthTokenProvider(languageServerConfigurationService, scopedPreferenceStore, oauthSecretStorage)
 
   extensions(LoggingKotestExtension)
 
@@ -39,6 +40,7 @@ class OAuthTokenProviderTest : DescribeSpec({
     every {
       scopedPreferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
     } just Runs
+    every { oauthSecretStorage.setOAuthToken(any()) } just Runs
   }
 
   afterEach { clearAllMocks() }

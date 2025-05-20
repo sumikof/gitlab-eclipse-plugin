@@ -23,6 +23,7 @@ data class GitLabAuthorizationToken(
   val createdAt: Long,
 
   // Making the token expired earlier to prevent the scenario where a delayed request might send an expired token to the server
+  @Transient
   val tokenExpirationTimestamp: Instant = Instant.ofEpochSecond(
     createdAt.plus(expiresIn).minus(TOKEN_EXPIRATION_BUFFER_SECONDS)
   )
