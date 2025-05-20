@@ -702,15 +702,6 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         }
       }
 
-      it("should display the annotation at the new caret position") {
-        every { renderer.text } returns "word nextWord"
-        every { textWidget.caretOffset } returns 14
-
-        session.acceptCodeSuggestionWord()
-
-        verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 14) }
-      }
-
       describe("accepted word is about to be inserted in document") {
         it("should cancel streaming and clear the renderer when suggestion is partially accepted") {
           val streamingCodeSuggestion = CodeSuggestion("streamId", "trackingId", optionId = null, text = "")
@@ -776,6 +767,32 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           verify {
             renderer.display(" word and more text", 15)
           }
+        }
+
+        it("should display the annotation at the new caret position") {
+          coEvery {
+            codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any())
+          } returns CodeSuggestion(
+            streamId = null,
+            "trackingId",
+            optionId = null,
+            text = "first word and more text"
+          )
+          every { renderer.text } returns "first word and more text"
+
+          session.requestCodeSuggestion()
+          coroutineScope.advanceUntilIdle()
+
+          session.acceptCodeSuggestionWord()
+          coroutineScope.advanceUntilIdle()
+
+          val documentEvent = mockk<DocumentEvent> {
+            every { text } returns "first"
+            every { length } returns 5
+          }
+          session.documentChanged(documentEvent)
+
+          verify { annotationManager.display(CodeSuggestionAnnotationType.READY, 15) }
         }
       }
     }
