@@ -336,6 +336,19 @@ tasks.register("lspDownloadGenericPackageJson") {
   }
 }
 
+// Parse package.json to get gitlab-lsp version
+fun extractGitLabLspVersion(): String {
+  return JsonSlurper().parse(file("${rootProject.projectDir}/package.json"))
+    .let { it as? Map<String, Any> ?: error("Unexpected format for package.json.") }
+    .let {
+      it["dependencies"] as? Map<String, String> ?: error("Invalid dependencies in package.json.")
+    }
+    .let {
+      it["@gitlab-org/gitlab-lsp"]
+        ?: error("Unable to find @gitlab-org/gitlab-lsp under dependencies in package.json.")
+    }
+}
+
 tasks.register("lspDownloadGenericPackageFilesJson") {
   dependsOn(":lspDownloadGenericPackageJson")
 
@@ -349,16 +362,7 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
   doLast {
     val slurper = JsonSlurper()
 
-    // Parse package.json to get gitlab-lsp version
-    val gitlabLspVersion = slurper.parse(file("${rootProject.projectDir}/package.json"))
-      .let { it as? Map<String, Any> ?: error("Unexpected format for package.json.") }
-      .let {
-        it["dependencies"] as? Map<String, String> ?: error("Invalid dependencies in package.json.")
-      }
-      .let {
-        it["@gitlab-org/gitlab-lsp"]
-          ?: error("Unable to find @gitlab-org/gitlab-lsp under dependencies in package.json.")
-      }
+    val gitlabLspVersion = extractGitLabLspVersion()
 
     // Parse generic_packages.json to find package URL
     val lspPackages =
@@ -440,18 +444,25 @@ subprojects {
         else -> error("Expected a Language Server binary to be declared for OSGi platform.")
       }
 
-      tasks.withType<Jar> {
-        dependsOn(":lspDownloadBinaries")
+      tasks.withType<Jar> jar@{
+        val gitlabLspDir = rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")
+        val versionsFolder = gitlabLspDir.resolve("installed_versions")
+        val installedLspVersion = versionsFolder.resolve(targetPlatform)
+        val currentLspVersion = extractGitLabLspVersion()
 
-        from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
-          include("bin/gitlab-lsp-$languageServerPlatform")
-          rename { "gitlab-lsp" }
-        }
+        if (System.getenv("EQUO_IDE") != "true" || !installedLspVersion.exists() || installedLspVersion.readText() != currentLspVersion) {
+          dependsOn(":lspDownloadBinaries")
 
-        from(rootProject.layout.buildDirectory.get().asFile.resolve("gitlab-lsp")) {
-          include("bin/vendor/**")
-          include("bin/webviews/**")
-          include("bin/tree-sitter.wasm")
+          from(gitlabLspDir) {
+            include("bin/gitlab-lsp-$languageServerPlatform")
+            rename { "gitlab-lsp" }
+          }
+
+          from(gitlabLspDir) {
+            include("bin/vendor/**")
+            include("bin/webviews/**")
+            include("bin/tree-sitter.wasm")
+          }
         }
 
         manifest {
@@ -464,6 +475,23 @@ subprojects {
           attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
           attributes["Fragment-Host"] = "com.gitlab.eclipse.gitlab-language-server"
           attributes["Eclipse-PlatformFilter"] = platformFilter
+        }
+
+        doLast {
+          if (!gitlabLspDir.exists()) {
+            return@doLast
+          }
+
+          if (!versionsFolder.exists()) {
+            versionsFolder.mkdir()
+          }
+
+          if (!installedLspVersion.exists()) {
+            installedLspVersion.createNewFile()
+            installedLspVersion.setWritable(true)
+          }
+
+          installedLspVersion.writeText(currentLspVersion)
         }
       }
     }
