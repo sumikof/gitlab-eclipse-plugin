@@ -12,6 +12,7 @@ import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.makeBoldFont
+import com.gitlab.eclipse.utils.makeHintFont
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.jface.preference.*
@@ -156,6 +157,19 @@ class GitLabPreferencePage(
         fieldEditorParent
       )
     )
+
+    addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
+    addLabel("Code Suggestions Enabled Languages")
+
+    addField(
+      StringFieldEditor(
+        PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES,
+        "Additional Languages",
+        fieldEditorParent
+      )
+    )
+
+    addHint("Use , to separate file extensions (ex: md, vue, sh).")
   }
 
   private fun addLabel(label: String) {
@@ -165,6 +179,11 @@ class GitLabPreferencePage(
     }
 
     addEmptyControls(EMPTY_CONTROLS_AFTER_LABEL)
+  }
+
+  private fun addHint(hint: String) = Label(fieldEditorParent, SWT.WRAP).apply {
+    text = hint
+    font = makeHintFont(font)
   }
 
   /**
