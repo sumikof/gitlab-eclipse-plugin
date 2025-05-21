@@ -386,11 +386,6 @@
                     commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     label="Code Suggestions: Disabled">
-                <visibleWhen checkEnabled="false">
-                    <with variable="code_suggestions_enabled">
-                        <equals value="true"/>
-                    </with>
-                </visibleWhen>
             </command>
 
             <separator name="StatusActions" visible="true"/>
