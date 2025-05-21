@@ -12,4 +12,5 @@ object PreferenceConstants {
   const val IGNORE_CERTIFICATE_ERRORS: String = "gitlab.certificate.ignoreCertificate"
   const val CA_CERTIFICATE: String = "gitlab.certificate.caCertificate"
   const val AUTHENTICATION_TYPE: String = "gitlab.authentication.type"
+  const val CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES: String = "gitlab.codeSuggestions.additionalLanguages"
 }

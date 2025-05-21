@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
+import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsEnabledLanguageService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
@@ -28,7 +29,10 @@ class GitLabLanguageServerConfigurationService(
   fun sendConfiguration() {
     val params = GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
-      codeCompletion = CodeCompletion(enableSecretRedaction = true),
+      codeCompletion = CodeCompletion(
+        enableSecretRedaction = true,
+        additionalLanguages = service<CodeSuggestionsEnabledLanguageService>().getAdditionalLanguages()
+      ),
       featureFlags = FeatureFlags(
         remoteSecurityScans = false,
         streamCodeGenerations = preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS)
