@@ -765,7 +765,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
           session.documentChanged(documentEvent)
 
           verify {
-            renderer.display(" word and more text", 15)
+            renderer.display(" word and more text", 15, forceRedraw = false)
           }
         }
 

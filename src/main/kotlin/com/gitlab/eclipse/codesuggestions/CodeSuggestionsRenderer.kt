@@ -134,7 +134,11 @@ class CodeSuggestionsRenderer(
     }
   }
 
-  fun display(text: String, offset: Int) {
+  fun display(
+    text: String,
+    offset: Int,
+    forceRedraw: Boolean = true
+  ) {
     document.removePosition(documentPosition)
 
     this.text = text
@@ -143,7 +147,7 @@ class CodeSuggestionsRenderer(
 
     document.addPosition(documentPosition)
 
-    textWidget.redrawNow()
+    textWidget.redrawNow(forceRedraw)
   }
 
   fun update(newText: String) {
@@ -189,8 +193,17 @@ class CodeSuggestionsRenderer(
     return offset == lineEndOffset
   }
 
-  private fun StyledText.redrawNow() {
-    setRedraw(true)
+  /**
+   * The force flag should be used if textWidget updates are not happening within the same thread.
+   * Default is true to ensure UI updates are visible immediately.
+   */
+  private fun StyledText.redrawNow(force: Boolean = true) {
+    if (force) {
+      redraw()
+      update()
+    } else {
+      setRedraw(true)
+    }
   }
 
   private fun setHeight(numberOfLines: Int) {
