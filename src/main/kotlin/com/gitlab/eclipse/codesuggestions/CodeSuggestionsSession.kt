@@ -74,7 +74,7 @@ class CodeSuggestionsSession(
     if (documentChangeReason == DocumentChangeReason.SUGGESTION_PARTIALLY_ACCEPTED) {
       currentDisplay.syncExec {
         val newCaretOffset = textWidget.caretOffset + event.text.length
-        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), newCaretOffset)
+        codeSuggestionsRenderer.display(currentSuggestion?.text.orEmpty(), newCaretOffset, forceRedraw = false)
         annotationManager.display(CodeSuggestionAnnotationType.READY, newCaretOffset)
       }
     }
