@@ -3,7 +3,7 @@
 # Function to display usage information
 usage() {
     echo "Usage: $0 [--prepare-release] <new_version>"
-    echo "Updates the version number in pom.xml, build.gradle.kts, feature.xml and category.xml files."
+    echo "Updates the version number in pom.xml, build.gradle.kts, feature.xml, category.xml, and MANIFEST.MF files."
     echo ""
     echo "Arguments:"
     echo "  <new_version>  The new version number to set (e.g., 0.3.1)"
@@ -144,6 +144,11 @@ if [[ "$PREPARE_RELEASE" = "false" ]]; then
   POM_AWK_COMMAND='/<plugin.version.range>/ && !f {sub(/<plugin.version.range>\[[0-9]+\.[0-9]+\.[0-9]+,[0-9]+\.[0-9]+\.[0-9]+/, "<plugin.version.range>['$SEMANTIC_VERSION','$NEXT_SEMANTIC_VERSION'"); f=1} 1'
   update_file "swtbot/pom.xml" "$POM_AWK_COMMAND" || exit 1
 fi
+
+# Update swtbot/META-INF/MANIFEST.MF
+echo "Updating swtbot/META-INF/MANIFEST.MF..."
+MANIFEST_AWK_COMMAND='/^Bundle-Version: / {sub(/[0-9]+\.[0-9]+\.[0-9]+(\.qualifier)?/, "'$TYCHO_VERSION'"); f=1} 1'
+update_file "swtbot/META-INF/MANIFEST.MF" "$MANIFEST_AWK_COMMAND" || exit 1
 
 # Update build.gradle.kts
 echo "Updating build.gradle.kts..."
