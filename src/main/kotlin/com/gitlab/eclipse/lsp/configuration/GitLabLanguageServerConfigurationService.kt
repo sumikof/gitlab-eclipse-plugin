@@ -2,7 +2,7 @@ package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
-import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsEnabledLanguageService
+import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
@@ -31,7 +31,8 @@ class GitLabLanguageServerConfigurationService(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
         enableSecretRedaction = true,
-        additionalLanguages = service<CodeSuggestionsEnabledLanguageService>().getAdditionalLanguages()
+        additionalLanguages = service<CodeSuggestionsLanguageService>().getAdditionalLanguages(),
+        disabledSupportedLanguages = service<CodeSuggestionsLanguageService>().getDisabledLanguages(),
       ),
       featureFlags = FeatureFlags(
         remoteSecurityScans = false,

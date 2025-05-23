@@ -3,7 +3,7 @@
     <ExternalSystemSettings>
       <option name="env">
         <map>
-          <entry key="EQUO_IDE" value="false" />
+          <entry key="EQUO_IDE" value="true" />
         </map>
       </option>
       <option name="executionName" />
