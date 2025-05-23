@@ -5,6 +5,7 @@ import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
+import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationService
 import com.gitlab.eclipse.preferences.healthcheck.HealthCheckFieldEditor
@@ -160,6 +161,17 @@ class GitLabPreferencePage(
 
     addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
     addLabel("Code Suggestions Enabled Languages")
+
+    addField(
+      CheckGroupFieldEditor(
+        PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES,
+        "Supported Languages",
+        LanguageServerLanguage.Language.entries.map {
+          it.humanReadableName to it.id
+        }.toTypedArray(),
+        fieldEditorParent
+      )
+    )
 
     addField(
       StringFieldEditor(

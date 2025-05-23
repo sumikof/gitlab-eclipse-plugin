@@ -13,5 +13,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.IGNORE_CERTIFICATE_ERRORS, false)
     store.setDefault(PreferenceConstants.CA_CERTIFICATE, "")
     store.setDefault(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.PAT.name)
+    store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, "")
+    store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, "")
   }
 }
