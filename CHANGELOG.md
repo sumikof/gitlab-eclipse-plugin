@@ -4,6 +4,16 @@
 
 ### Added
 
+### Changed
+
+### Removed
+
+### Fixed
+
+## 0.7.0 (2025-05-23)
+
+### Added
+
 - Added a user notification when authentication is not set ([!229](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/229))
 - Added a button to generate PAT ([!235](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/235))
 - Added keyboard shortcut to open Duo Chat window ([!236](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/236))
@@ -13,8 +23,6 @@
 ### Changed
 
 - Grouped related settings in preferences ([!231](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/231))
-
-### Removed
 
 ### Fixed
 
