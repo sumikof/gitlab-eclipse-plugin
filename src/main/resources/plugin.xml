@@ -253,6 +253,11 @@
                 commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                 class="com.gitlab.eclipse.codesuggestions.handlers.CodeSuggestionsStatusHandler"
         />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
+                class="com.gitlab.eclipse.codesuggestions.handlers.ToggleCodeSuggestionForLanguageHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -389,6 +394,14 @@
             </command>
 
             <separator name="StatusActions" visible="true"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
+                    id="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
+                    label="No code suggestions action available."
+            />
+
+            <separator name="CodeSuggestionsLanguageActions" visible="true"/>
 
             <command
                     commandId="gitlab-eclipse-plugin.commands.showSettings"

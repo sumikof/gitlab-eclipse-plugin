@@ -3,6 +3,7 @@ package com.gitlab.eclipse.preferences
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
+import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
@@ -222,6 +223,9 @@ class GitLabPreferencePage(
     super.performOk()
     languageServiceConfigurationService.sendConfiguration()
     authenticationStateService.resetAuthenticatedState()
+
+    refreshCodeSuggestionsLanguageToggle()
+
     return true // super.performOk() always returns true
   }
 
