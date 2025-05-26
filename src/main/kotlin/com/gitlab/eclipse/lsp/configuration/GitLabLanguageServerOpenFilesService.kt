@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -60,6 +61,8 @@ class GitLabLanguageServerOpenFilesService(
         ?.getDocument(editorInput)
         ?.removeDocumentListener(this@GitLabLanguageServerOpenFilesService)
     }
+
+    refreshCodeSuggestionsLanguageToggle()
   }
 
   private fun editorActive(editorRef: IWorkbenchPartReference) {
@@ -71,6 +74,8 @@ class GitLabLanguageServerOpenFilesService(
         editorInput.file.locationURI.toASCIIString()
       )
     }
+
+    refreshCodeSuggestionsLanguageToggle()
   }
 
   @Suppress("SwallowedException")

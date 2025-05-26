@@ -31,10 +31,11 @@ object LanguageServerLanguage {
     Vue("vue", "Vue", listOf("vue"))
   }
 
-  val IFile.languageId: String
+  val IFile.language: Language?
     get() = Language
       .entries
       .firstOrNull { it.extensions.contains(fileExtension) }
-      ?.id
-      ?: fileExtension
+
+  val IFile.languageId: String
+    get() = language?.id ?: fileExtension ?: name.lowercase()
 }

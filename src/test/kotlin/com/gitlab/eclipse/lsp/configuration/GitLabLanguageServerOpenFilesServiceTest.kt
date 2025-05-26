@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.configuration
 
+import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
@@ -44,6 +45,7 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
   beforeSpec {
     mockkStatic(PlatformUI::getWorkbench)
     mockkStatic("com.gitlab.eclipse.utils.DocumentKt")
+    mockkStatic("com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageStatusKt")
 
     startKoin {
       modules(
@@ -68,6 +70,8 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
         every { offset } returns firstArg<Int>()
       }
     }
+
+    every { refreshCodeSuggestionsLanguageToggle() } returns Unit
 
     service = GitLabLanguageServerOpenFilesService(platformUtils, gitLabLanguageServerWrapper, coroutineScope)
   }
