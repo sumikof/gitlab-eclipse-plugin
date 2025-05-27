@@ -45,16 +45,6 @@ class SecretStringWithButtonFieldEditor(
     doLoad()
   }
 
-  override fun doCheckState(): Boolean {
-    val text = textControl.text
-    if (text.isEmpty()) {
-      errorMessage = "$labelText must not be empty"
-      return false
-    }
-
-    return true
-  }
-
   override fun createTextWidget(parent: Composite): Text {
     return Text(parent, SWT.SINGLE or SWT.BORDER or SWT.PASSWORD)
   }
