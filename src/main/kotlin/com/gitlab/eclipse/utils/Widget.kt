@@ -8,7 +8,7 @@ fun Widget.makeBoldFont(font: Font): Font {
   val fontData = font.fontData
 
   for (fd in fontData) {
-    fd.style = fd.style or SWT.BOLD
+    fd.setStyle(SWT.BOLD)
   }
 
   val boldFont = Font(currentDisplay, fontData)
@@ -22,8 +22,8 @@ fun Widget.makeHintFont(font: Font): Font {
   val fontData = font.fontData
 
   for (fd in fontData) {
-    fd.style = fd.style or SWT.ITALIC
-    fd.height = fd.height - 2
+    fd.setStyle(SWT.ITALIC)
+    fd.setHeight(10)
   }
 
   val hintFont = Font(currentDisplay, fontData)
