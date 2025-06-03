@@ -30,7 +30,6 @@ class CodeSuggestionsRenderer(
   var text: String? = null
     private set
 
-  private var height: Int? = null
   private var suggestionCharacterStyle: StyleRange? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
@@ -101,13 +100,11 @@ class CodeSuggestionsRenderer(
 
   private fun renderBlock(lines: List<String>, offset: Int, position: Point, gc: GC) {
     val currentLine = textWidget.getLineAtOffset(offset)
+
     if (currentLine != textWidget.lineCount - 1) {
-      textWidget.setLineSpacingProvider { lineIndex ->
-        when {
-          lineIndex == currentLine -> height
-          else -> null
-        }
-      }
+      textWidget.setLineVerticalIndent(currentLine + 1, lines.size * textWidget.lineHeight)
+    } else {
+      textWidget.setLineVerticalIndent(currentLine, lines.size * textWidget.lineHeight)
     }
 
     lines.forEachIndexed { index, line ->
@@ -119,7 +116,6 @@ class CodeSuggestionsRenderer(
 
       val lineY = position.y + (index + 1) * textWidget.lineHeight
 
-      // Remove the whole line's highlight
       gc.background = textWidget.background
       gc.fillRectangle(
         0,
@@ -143,7 +139,6 @@ class CodeSuggestionsRenderer(
 
     this.text = text
     this.documentPosition = Position(offset)
-    setHeight(text.lines().size)
 
     document.addPosition(documentPosition)
 
@@ -152,7 +147,6 @@ class CodeSuggestionsRenderer(
 
   fun update(newText: String) {
     this.text = newText
-    setHeight(newText.lines().size)
 
     textWidget.redrawNow()
   }
@@ -204,9 +198,5 @@ class CodeSuggestionsRenderer(
     } else {
       setRedraw(true)
     }
-  }
-
-  private fun setHeight(numberOfLines: Int) {
-    height = (numberOfLines - 1) * textWidget.lineHeight
   }
 }
