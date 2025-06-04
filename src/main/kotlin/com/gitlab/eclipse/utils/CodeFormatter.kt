@@ -25,8 +25,8 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
     val endOffset = selection.endOffset()
 
     val trimmedSnippet = when {
-      document.isLineEmpty(startOffset) -> snippet.trimStart('\n', '\t', ' ').trimEnd('\n', '\t', ' ')
-      else -> snippet.trimEnd('\n', '\t', ' ')
+      document.isLineEmpty(startOffset) -> snippet.trimStart { it.isWhitespace() }.trimEnd { it.isWhitespace() }
+      else -> snippet.trimEnd { it.isWhitespace() }
     }
 
     if (trimmedSnippet.lines().size == 1) {
@@ -74,7 +74,7 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
     return inlinePart + documentWithCodeSnippet.get(
       snippetStartOffset,
       indentedCodeEndOffset - snippetStartOffset
-    ).trimEnd('\n', '\t', ' ')
+    ).trimEnd { it.isWhitespace() }
   }
 
   private fun getFormatterConstants(): Map<String, String> {
