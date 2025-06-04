@@ -5,6 +5,7 @@ import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.Position
 import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.custom.StyledText
+import org.eclipse.swt.custom.StyledTextLineSpacingProvider
 import org.eclipse.swt.events.PaintEvent
 import org.eclipse.swt.events.PaintListener
 import org.eclipse.swt.graphics.*
@@ -20,8 +21,11 @@ class CodeSuggestionsRenderer(
     private val GHOST_COLOR = Color(128, 128, 128)
   }
 
+  private val lineSpacingProvider = LineSpacingProvider(0, -1)
+
   init {
     textWidget.addPaintListener(this)
+    textWidget.setLineSpacingProvider(lineSpacingProvider)
   }
 
   var documentPosition: Position? = null
@@ -30,7 +34,6 @@ class CodeSuggestionsRenderer(
   var text: String? = null
     private set
 
-  private var height: Int? = null
   private var suggestionCharacterStyle: StyleRange? = null
 
   override fun paintControl(paintEvent: PaintEvent) {
@@ -51,7 +54,7 @@ class CodeSuggestionsRenderer(
       }
 
       if (lines.size > 1) {
-        renderBlock(lines.drop(1), offset, position, paintEvent.gc)
+        renderBlock(lines.drop(1), position, paintEvent.gc)
       }
     } catch (e: Exception) {
       logger.error("Error rendering code suggestion.", e)
@@ -99,17 +102,7 @@ class CodeSuggestionsRenderer(
     layout.dispose()
   }
 
-  private fun renderBlock(lines: List<String>, offset: Int, position: Point, gc: GC) {
-    val currentLine = textWidget.getLineAtOffset(offset)
-    if (currentLine != textWidget.lineCount - 1) {
-      textWidget.setLineSpacingProvider { lineIndex ->
-        when {
-          lineIndex == currentLine -> height
-          else -> null
-        }
-      }
-    }
-
+  private fun renderBlock(lines: List<String>, position: Point, gc: GC) {
     lines.forEachIndexed { index, line ->
       val layout = TextLayout(textWidget.display).apply {
         text = line
@@ -119,8 +112,6 @@ class CodeSuggestionsRenderer(
 
       val lineY = position.y + (index + 1) * textWidget.lineHeight
 
-      // Remove the whole line's highlight
-      gc.background = textWidget.background
       gc.fillRectangle(
         0,
         lineY,
@@ -143,16 +134,16 @@ class CodeSuggestionsRenderer(
 
     this.text = text
     this.documentPosition = Position(offset)
-    setHeight(text.lines().size)
 
     document.addPosition(documentPosition)
+    updateLineSpacingProvider()
 
     textWidget.redrawNow(forceRedraw)
   }
 
   fun update(newText: String) {
     this.text = newText
-    setHeight(newText.lines().size)
+    updateLineSpacingProvider()
 
     textWidget.redrawNow()
   }
@@ -164,7 +155,10 @@ class CodeSuggestionsRenderer(
 
   fun dispose() {
     textWidget.removePaintListener(this)
+
     clear()
+
+    textWidget.setLineSpacingProvider(null)
     textWidget.redrawNow()
   }
 
@@ -173,13 +167,13 @@ class CodeSuggestionsRenderer(
       style.metrics = GlyphMetrics(0, 0, 0)
       textWidget.setStyleRange(style)
     }
+    suggestionCharacterStyle = null
 
-    textWidget.setLineSpacingProvider(null)
     document.removePosition(documentPosition)
+    documentPosition = null
 
     text = null
-    documentPosition = null
-    suggestionCharacterStyle = null
+    updateLineSpacingProvider()
   }
 
   fun isCodeSuggestionDisplayed(): Boolean {
@@ -206,7 +200,28 @@ class CodeSuggestionsRenderer(
     }
   }
 
-  private fun setHeight(numberOfLines: Int) {
-    height = (numberOfLines - 1) * textWidget.lineHeight
+  private fun updateLineSpacingProvider() {
+    val currentText = text
+    val currentOffset = documentPosition
+
+    if (currentText == null || currentOffset == null) {
+      lineSpacingProvider.line = -1
+      return
+    }
+
+    lineSpacingProvider.line = textWidget.getLineAtOffset(currentOffset.offset)
+    lineSpacingProvider.height = (currentText.lines().size - 1) * textWidget.lineHeight
+  }
+
+  private class LineSpacingProvider(
+    var height: Int,
+    var line: Int
+  ) : StyledTextLineSpacingProvider {
+    override fun getLineSpacing(lineIndex: Int): Int? {
+      return when {
+        lineIndex == line -> height
+        else -> null
+      }
+    }
   }
 }
