@@ -10,6 +10,7 @@ import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.utils.CursoredSet
 import com.gitlab.eclipse.utils.currentDisplay
+import com.gitlab.eclipse.utils.linesWithSeparators
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.uri
 import kotlinx.coroutines.CoroutineScope
@@ -290,7 +291,7 @@ class CodeSuggestionsSession(
     val text = codeSuggestionsRenderer.text
       ?: return
 
-    val lines = text.lines()
+    val lines = text.linesWithSeparators()
     if (lines.isEmpty()) {
       return
     } else if (lines.size == 1) {
@@ -300,13 +301,11 @@ class CodeSuggestionsSession(
     val currentLine = lines.first()
     val textToInsert = StringBuilder().apply {
       append(currentLine)
-      append("\n")
     }
 
     val subsequentEmptyLines = lines.drop(1).takeWhile { it.isBlank() }
     subsequentEmptyLines.forEach {
       textToInsert.append(it)
-      textToInsert.append("\n")
     }
 
     val nonEmptyLineAfterEmptyLines = lines.getOrNull(1 + subsequentEmptyLines.size)
