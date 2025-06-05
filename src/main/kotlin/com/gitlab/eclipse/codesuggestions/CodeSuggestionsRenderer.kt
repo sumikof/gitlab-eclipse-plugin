@@ -54,6 +54,11 @@ class CodeSuggestionsRenderer(
       }
 
       if (lines.size > 1) {
+        // Updating line spacing before a document change is rendered can cause an out-of-bounds exception.
+        if (lineSpacingProvider.line == -1 && documentPosition != null) {
+          updateLineSpacingProvider()
+        }
+
         renderBlock(lines.drop(1), position, paintEvent.gc)
       }
     } catch (e: Exception) {
@@ -136,7 +141,6 @@ class CodeSuggestionsRenderer(
     this.documentPosition = Position(offset)
 
     document.addPosition(documentPosition)
-    updateLineSpacingProvider()
 
     textWidget.redrawNow(forceRedraw)
   }
@@ -144,7 +148,6 @@ class CodeSuggestionsRenderer(
   fun update(newText: String) {
     this.text = newText
     updateLineSpacingProvider()
-
     textWidget.redrawNow()
   }
 
