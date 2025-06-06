@@ -129,7 +129,7 @@ dependencies {
   implementation("org.apache.logging.log4j:log4j-core:2.24.3")
   implementation("org.apache.logging.log4j:log4j-slf4j2-impl:2.24.3")
 
-  implementation("org.eclipse.jgit:org.eclipse.jgit:7.2.1.202505142326-r")
+  implementation("org.eclipse.jgit:org.eclipse.jgit:7.3.0.202506031305-r")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
   // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
