@@ -10,6 +10,20 @@
 
 ### Fixed
 
+## [0.7.2 (2025-06-06)]
+
+### Added
+
+### Changed
+
+### Removed
+
+### Fixed
+
+- Support platform specific line endings when partially accepting a suggestion ([!281](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/281))
+- Re-use the same instance of the line spacing provider ([!280](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/280))
+- Using non-existent java fields in preference page font on Windows ([!275](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/275))
+
 ## 0.7.1 (2025-05-23)
 
 ### Added
