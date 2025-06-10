@@ -142,9 +142,9 @@ dependencies {
   testImplementation("io.mockk:mockk:1.14.2")
 
   testImplementation("org.eclipse.platform:org.eclipse.text:3.14.300")
-  testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.135.0")
-  testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.19.100")
-  testImplementation("org.eclipse.platform:org.eclipse.swt:3.129.0")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.135.100")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.20.0")
+  testImplementation("org.eclipse.platform:org.eclipse.swt:3.130.0")
 
   detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.8")
 
