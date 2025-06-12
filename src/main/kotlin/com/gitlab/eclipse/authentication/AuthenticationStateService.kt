@@ -20,7 +20,7 @@ import org.eclipse.swt.widgets.Link
 @Suppress("MagicNumber")
 class AuthenticationStateService(
   private val scope: CoroutineScope = service<CoroutineScope>(),
-  private val notifDelay: Long = 500L
+  private val notifDelay: Long = 2000L
 ) {
   private var isAuthenticated: Boolean? = null
   private var showAuthNotifJob: Job? = null
@@ -33,18 +33,17 @@ class AuthenticationStateService(
     showAuthNotifJob = scope.launch {
       delay(notifDelay)
 
-      val newAuthState = featureStateChange
+      val authenticationCheck = featureStateChange
         .allChecks
-        ?.none { it.checkId == "authentication-required" && it.engaged }
+        ?.find { it.checkId == "authentication-required" }
+        ?: return@launch
 
-      if (isAuthenticated == newAuthState) return@launch
+      val newAuthenticationState = !authenticationCheck.engaged
+      if (isAuthenticated == newAuthenticationState) return@launch
 
-      isAuthenticated = newAuthState
-
+      isAuthenticated = newAuthenticationState
       if (isAuthenticated == false) {
-        currentDisplay.asyncExec {
-          showNotification()
-        }
+        currentDisplay.asyncExec { showNotification() }
       }
     }
   }
