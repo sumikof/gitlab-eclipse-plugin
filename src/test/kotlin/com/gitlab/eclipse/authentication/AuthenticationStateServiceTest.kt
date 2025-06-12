@@ -94,6 +94,35 @@ class AuthenticationStateServiceTest : DescribeSpec({
       verify(exactly = 1) { currentDisplay.asyncExec(any()) }
     }
 
+    it("should not change the authentication state if it was not present in the notification") {
+      val enableAuthStateChange = FeatureStateChange(
+        featureId = "test-feature",
+        allChecks = listOf(
+          FeatureStateChangeCheck(
+            checkId = "authentication-required",
+            engaged = false
+          )
+        )
+      )
+
+      authStateService.update(featureStateChange = enableAuthStateChange)
+      testScope.advanceTimeBy(notifDelay + 1)
+
+      val featureStateChange = FeatureStateChange(
+        featureId = "test-feature",
+        allChecks = listOf(
+          FeatureStateChangeCheck(
+            checkId = "other-check",
+            engaged = true
+          )
+        )
+      )
+
+      authStateService.update(featureStateChange = featureStateChange)
+      testScope.advanceTimeBy(notifDelay + 1)
+      verify(exactly = 0) { currentDisplay.asyncExec(any()) }
+    }
+
     it("when authentication is required, should display notification after delay") {
       val featureStateChange = FeatureStateChange(
         featureId = "test-feature",
