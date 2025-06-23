@@ -10,6 +10,18 @@
 
 ### Fixed
 
+## [0.7.3 (2025-06-23)]
+
+### Added
+
+### Changed
+
+### Removed
+
+### Fixed
+
+- Increase authentication notification delay ([!289](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/289))
+
 ## [0.7.2 (2025-06-06)]
 
 ### Added
