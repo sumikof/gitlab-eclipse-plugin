@@ -138,6 +138,7 @@ dependencies {
   implementation("io.insert-koin:koin-core:4.1.0")
 
   testImplementation(kotlin("test"))
+  testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
   testImplementation("io.kotest:kotest-runner-junit5:6.0.0")
   testImplementation("io.mockk:mockk:1.14.5")
 
