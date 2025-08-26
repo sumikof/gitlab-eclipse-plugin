@@ -17,7 +17,7 @@ val gitlabEclipsePluginProjectId = System.getenv().getOrDefault("CI_PROJECT_ID",
 val isLocalBuild by lazy { System.getenv("CI").isNullOrEmpty() }
 
 plugins {
-  kotlin("jvm") version "2.2.0"
+  kotlin("jvm") version "2.2.10"
 
   // Deploy artifacts to this project's Maven repository (e.g. GitLab Package Registry).
   `maven-publish`
@@ -134,7 +134,7 @@ dependencies {
 
   // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:33.4.8-jre")
-  implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.0")
+  implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.10")
   implementation("io.insert-koin:koin-core:4.1.0")
 
   testImplementation(kotlin("test"))
