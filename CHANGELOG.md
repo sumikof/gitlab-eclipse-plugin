@@ -10,6 +10,12 @@
 
 ### Fixed
 
+## 0.7.6 (2025-08-26)
+
+### Changed
+
+- Bumped Language Server version to 8.5.2 ([!322](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/322))
+
 ## 0.7.5 (2025-07-28)
 
 ### Fixed
