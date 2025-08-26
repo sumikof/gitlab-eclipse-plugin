@@ -1,7 +1,7 @@
 import org.gradle.jvm.tasks.Jar
 
 plugins {
-  kotlin("jvm") version "2.2.0"
+  kotlin("jvm") version "2.2.10"
   `maven-publish`
 
   // Support resolving Eclipse plug-ins as Maven dependencies.
