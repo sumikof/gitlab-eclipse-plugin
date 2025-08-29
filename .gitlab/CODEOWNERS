@@ -2,6 +2,6 @@
 *.kt
 *.kts
 
-^[Documentation Pages]
-/*.md @aqualls
-/docs/ @aqualls
+^[Documentation Pages] @scawood @aqualls @gitlab-org/tw-leadership
+/*.md
+/docs/
