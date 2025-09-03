@@ -135,7 +135,7 @@ dependencies {
   // NOTE: This dependency is needed for equoIde, we should make sure it's not included in the final plugin bundle.
   implementation("com.google.guava:guava:33.4.8-jre")
   implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.10")
-  implementation("io.insert-koin:koin-core:4.1.0")
+  implementation("io.insert-koin:koin-core:4.1.1")
 
   testImplementation(kotlin("test"))
   testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
