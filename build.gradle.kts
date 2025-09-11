@@ -37,8 +37,8 @@ plugins {
 
 allprojects {
   group = "com.gitlab.eclipse"
-  version = "0.7.6"
-  ext["bundleVersion"] = "0.7.6.${Instant.now().toEpochMilli()}"
+  version = "0.7.7"
+  ext["bundleVersion"] = "0.7.7.${Instant.now().toEpochMilli()}"
 
   repositories {
     gradlePluginPortal()
