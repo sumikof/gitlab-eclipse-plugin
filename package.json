@@ -8,6 +8,6 @@
     "url": "git@gitlab.com:gitlab-org/editor-extensions/gitlab-eclipse-plugin"
   },
   "dependencies": {
-    "@gitlab-org/gitlab-lsp": "8.26.0"
+    "@gitlab-org/gitlab-lsp": "8.27.0"
   }
 }
