@@ -45,8 +45,9 @@ class ThemeProvider {
         put("--editor-foreground-muted", themeColors.inactiveText)
         put("--editor-foreground-disabled", themeColors.inactiveText)
 
-        // Relates to the background, "alternative" is the main background and the other is the chat message bubble.
+        // Relates to the background, "alternative" is the main background and the others are for the chat message bubble.
         put("--editor-background", themeColors.secondaryColor)
+        put("--editor-selection-background", themeColors.secondaryColor)
         put("--editor-background-alternative", themeColors.primaryColor)
 
         put("--editor-border-color", themeColors.border)
