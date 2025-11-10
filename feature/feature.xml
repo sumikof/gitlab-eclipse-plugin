@@ -2,7 +2,7 @@
 <feature
         id="com.gitlab.eclipse.feature"
         label="GitLab for Eclipse"
-        version="0.7.8.qualifier">
+        version="0.7.8">
 
     <description>
         GitLab integration for Eclipse IDE including language server support
