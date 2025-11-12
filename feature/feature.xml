@@ -66,4 +66,10 @@
             ws="win32"
             arch="x86_64"
             version="0.7.9.qualifier"/>
+    <plugin
+            id="com.gitlab.eclipse.gitlab-language-server.win32.win32.aarch64"
+            os="win32"
+            ws="win32"
+            arch="aarch64"
+            version="0.7.9.qualifier"/>
 </feature>

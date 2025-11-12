@@ -434,6 +434,7 @@ subprojects {
         "cocoa.macosx.aarch64" -> "macos-arm64"
         "cocoa.macosx.x86_64" -> "macos-x64"
         "gtk.linux.x86_64" -> "linux-x64"
+        "win32.win32.aarch64" -> "win-arm64.exe"
         "win32.win32.x86_64" -> "win-x64.exe"
         else -> error("Expected a Language Server binary to be declared for OSGi platform.")
       }
@@ -441,6 +442,7 @@ subprojects {
         "cocoa.macosx.aarch64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=aarch64))"
         "cocoa.macosx.x86_64" -> "(& (osgi.ws=cocoa) (osgi.os=macosx) (osgi.arch=x86_64))"
         "gtk.linux.x86_64" -> "(& (osgi.ws=gtk) (osgi.os=linux) (osgi.arch=x86_64))"
+        "win32.win32.aarch64" -> "(& (osgi.ws=win32) (osgi.os=win32) (osgi.arch=aarch64))"
         "win32.win32.x86_64" -> "(& (osgi.ws=win32) (osgi.os=win32) (osgi.arch=x86_64))"
         else -> error("Expected a Language Server binary to be declared for OSGi platform.")
       }
