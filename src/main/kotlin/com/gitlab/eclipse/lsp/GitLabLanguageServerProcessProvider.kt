@@ -31,6 +31,19 @@ class GitLabLanguageServerProcessProvider(
 ) {
   companion object {
     private const val LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS = 30L
+    private const val BUNDLE_SYMBOLIC_NAME = "com.gitlab.eclipse.gitlab-eclipse-plugin"
+
+    /**
+     * Gets the directory for GitLab plugin state files.
+     * Uses Eclipse's state location API to ensure a consistent, writable location
+     * regardless of how Eclipse was launched or the current working directory.
+     */
+    fun getPluginStateDirectory(): File {
+      val bundle = Platform.getBundle(BUNDLE_SYMBOLIC_NAME)
+        ?: error("Unable to find bundle $BUNDLE_SYMBOLIC_NAME")
+
+      return Platform.getStateLocation(bundle).toFile()
+    }
   }
 
   private val logger = logger<GitLabLanguageServerProcessProvider>()
@@ -117,7 +130,8 @@ class GitLabLanguageServerProcessProvider(
   }
 
   private fun Process.pullStdErrLogs() {
-    logger.info("Language server logs saved to: ${File(".gitlab_plugin/language_server.log").absolutePath}.")
+    val logFile = getPluginStateDirectory().resolve("language_server.log")
+    logger.info("Language server logs saved to: ${logFile.absolutePath}.")
 
     pullStdErrLogsExecutor = Executors.newSingleThreadExecutor().apply {
       execute {
