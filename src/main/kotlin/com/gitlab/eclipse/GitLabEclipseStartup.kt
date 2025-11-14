@@ -12,6 +12,7 @@ import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.telemetry.telemetryModule
 import com.gitlab.eclipse.utils.workspaceModule
 import org.eclipse.core.commands.ParameterizedCommand
+import org.eclipse.core.runtime.Platform
 import org.eclipse.jface.bindings.Binding
 import org.eclipse.jface.bindings.keys.KeyBinding
 import org.eclipse.jface.bindings.keys.KeySequence
@@ -25,6 +26,11 @@ import org.osgi.framework.BundleContext
 @Suppress("unused", "SpreadOperator")
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
+    // Set system property for log4j2 configuration to use Eclipse's state location
+    // This ensures logs are written to a consistent location regardless of working directory
+    val stateLocation = Platform.getStateLocation(context.bundle).toFile()
+    System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
+
     startKoin {
       modules(
         workspaceModule(context),

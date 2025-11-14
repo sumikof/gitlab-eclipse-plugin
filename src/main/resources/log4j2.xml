@@ -6,14 +6,15 @@
                    https://logging.apache.org/xml/ns/log4j-config-2.xsd">
     <Appenders>
         <!--
+            Uses system property 'gitlab.plugin.state.dir' which is set by GitLabEclipseStartup
+            to ensure logs are written to Eclipse's state location rather than current working directory.
+            
             The fileName is mentioned in a log that gives a hint of the log file location in
             main/kotlin/com/gitlab/eclipse/lsp/GitLabLanguageServerProcessProvider.kt
-
-            The log must be updated as well if the fileName property changes.
          -->
         <RollingFile name="GitLabLanguageServerLogs"
-                     fileName=".gitlab_plugin/language_server.log"
-                     filePattern=".gitlab_plugin/language_server_%i.log">
+                     fileName="${sys:gitlab.plugin.state.dir}/language_server.log"
+                     filePattern="${sys:gitlab.plugin.state.dir}/language_server_%i.log">
             <PatternLayout pattern="%msg%n"/> <!-- Language server logs are already formatted -->
             <Policies>
                 <SizeBasedTriggeringPolicy size="20MB"/> <!-- ~100k lines of logs -->
