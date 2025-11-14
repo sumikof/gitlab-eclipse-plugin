@@ -74,6 +74,7 @@ class LanguageServerInstaller {
 
   private val languageServerBundle
     get() = when {
+      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.win32.win32.aarch64"
       SystemUtils.os == OS.WINDOWS -> "gitlab-language-server.win32.win32.x86_64"
       SystemUtils.os == OS.LINUX -> "gitlab-language-server.gtk.linux.x86_64"
       SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.cocoa.macosx.aarch64"
@@ -83,6 +84,7 @@ class LanguageServerInstaller {
 
   private val languageServerBinary
     get() = when {
+      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-win-arm64.exe"
       SystemUtils.os == OS.WINDOWS -> "gitlab-lsp-win-x64.exe"
       SystemUtils.os == OS.LINUX -> "gitlab-lsp-linux-x64"
       SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-macos-arm64"
