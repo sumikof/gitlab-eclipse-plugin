@@ -8,7 +8,7 @@
     <parent>
         <groupId>com.gitlab.eclipse</groupId>
         <artifactId>plugin-group</artifactId>
-        <version>0.8.0</version>
+        <version>0.8.0-SNAPSHOT</version>
         <relativePath>../</relativePath>
     </parent>
 </project>
