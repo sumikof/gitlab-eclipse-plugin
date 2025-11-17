@@ -7,9 +7,9 @@
     </category-def>
 
     <feature
-            url="features/com.gitlab.eclipse.feature_0.8.0.jar"
+            url="features/com.gitlab.eclipse.feature_0.8.0.qualifier.jar"
             id="com.gitlab.eclipse.feature"
-            version="0.8.0"
+            version="0.8.0.qualifier"
     >
         <category name="com.gitlab.eclipse.category"/>
     </feature>
