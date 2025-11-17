@@ -10,6 +10,21 @@
 
 ### Fixed
 
+## 0.8.0 (2025-11-14)
+
+### Added
+
+- Added Windows ARM64 support ([!389](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/389))
+
+### Changed
+
+- Improved Language Server log file location ([!391](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/391))
+- Bumped Language Server version to 8.41.0 ([!390](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/390))
+
+### Removed
+
+### Fixed
+
 ## 0.7.8 (2025-11-10)
 
 ### Changed
