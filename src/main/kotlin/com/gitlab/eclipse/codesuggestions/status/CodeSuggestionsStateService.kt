@@ -16,7 +16,7 @@ class CodeSuggestionsStateService {
     checks = featureStateChange.allChecks
 
     if (previousState != isEnabled) {
-      currentDisplay.syncExec { refreshCodeSuggestionsStatus() }
+      currentDisplay.asyncExec { refreshCodeSuggestionsStatus() }
     }
   }
 

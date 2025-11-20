@@ -22,7 +22,7 @@ class DuoChatStateService : AbstractSourceProvider() {
     val previousState = isEnabled
     checks = featureStateChange.allChecks
 
-    currentDisplay.syncExec {
+    currentDisplay.asyncExec {
       if (previousState != isEnabled) {
         refreshDuoChatWindow()
         refreshDuoChatStatus()
