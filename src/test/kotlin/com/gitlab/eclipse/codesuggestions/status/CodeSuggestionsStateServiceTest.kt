@@ -28,7 +28,7 @@ class CodeSuggestionsStateServiceTest : DescribeSpec({
 
   beforeEach {
     every {
-      currentDisplay.syncExec(any())
+      currentDisplay.asyncExec(any())
     } answers {
       firstArg<Runnable>().run()
     }
