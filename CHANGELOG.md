@@ -10,6 +10,12 @@
 
 ### Fixed
 
+## 0.8.1 (2025-11-20)
+
+### Fixed
+
+- Execute UI feature state updates asynchronously ([!397](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/397))
+
 ## 0.8.0 (2025-11-14)
 
 ### Added
