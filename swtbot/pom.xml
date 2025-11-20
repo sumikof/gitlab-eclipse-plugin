@@ -9,7 +9,7 @@
     <parent>
         <groupId>com.gitlab.eclipse</groupId>
         <artifactId>plugin-group</artifactId>
-        <version>0.8.1</version>
+        <version>0.8.2-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -18,7 +18,7 @@
         <maven.compiler.target>21</maven.compiler.target>
 
         <ui.test.vmargs>-Dorg.eclipse.equinox.security.storage.JavaPreferences.noEncryption=true</ui.test.vmargs>
-        <plugin.version.range>[0.8.1,0.8.2)</plugin.version.range>
+        <plugin.version.range>[0.8.2,0.8.3)</plugin.version.range>
     </properties>
 
     <profiles>
