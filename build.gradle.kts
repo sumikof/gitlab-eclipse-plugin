@@ -142,10 +142,10 @@ dependencies {
   testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
   testImplementation("io.mockk:mockk:1.14.6")
 
-  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.400")
-  testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.136.0")
-  testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.20.100")
-  testImplementation("org.eclipse.platform:org.eclipse.swt:3.131.0")
+  testImplementation("org.eclipse.platform:org.eclipse.text:3.14.500")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.137.0")
+  testImplementation("org.eclipse.platform:org.eclipse.ui.editors:3.20.200")
+  testImplementation("org.eclipse.platform:org.eclipse.swt:3.132.0")
 
   detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.8")
 
