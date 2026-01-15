@@ -44,7 +44,7 @@ git remote add security git@gitlab.com:gitlab-org/security/editor-extensions/git
 
 ### Request CVE number
 
-For exploitable security issues, request a CVE number by [creating an issue in `gitlab-org/cves` project](https://gitlab.com/gitlab-org/cves/-/issues/new). **You can do the release before the CVE number is available.** When the CVE number is assigned, add it to the [changelog entry](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/blob/main/CHANGELOG.md).
+For exploitable security issues, request a CVE number by [creating an issue in `gitlab-org/cves` project](https://gitlab.com/gitlab-org/cves/-/issues/new). You can ping the PSIRT team(`@gitlab-com/gl-security/product-security/psirt-group`) to get help filling the details of the CVE. **You can do the release before the CVE number is available.** When the CVE number is assigned, add it to the [changelog entry](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/blob/main/CHANGELOG.md).
 
 Example CVE request: [https://gitlab.com/gitlab-org/cves/-/issues/21](https://gitlab.com/gitlab-org/cves/-/issues/21)
 
