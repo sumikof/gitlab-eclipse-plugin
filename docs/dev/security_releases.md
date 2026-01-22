@@ -74,6 +74,10 @@ Follow the [regular release process](./release_process.md) within the security m
 
 Validate that the security issue is fixed in production.
 
+### Patch-release blog post coordination
+
+When releasing a security fix, ping the PSIRT team (`@gitlab-com/gl-security/product-security/psirt-group`) so they can include a note in the next GitLab patch-release blog post (for example: “On YYYY-MM-DD, the GitLab Eclipse plugin received a fix for CVE-XXXX-XXXX”).
+
 ### Backport the fix to the extension repository
 
 To backport the fix to the [Eclipse plugin repository](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin):
