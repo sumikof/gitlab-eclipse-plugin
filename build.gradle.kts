@@ -139,8 +139,8 @@ dependencies {
 
   testImplementation(kotlin("test"))
   testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
-  testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
-  testImplementation("io.mockk:mockk:1.14.7")
+  testImplementation("io.kotest:kotest-runner-junit5:6.1.1")
+  testImplementation("io.mockk:mockk:1.14.9")
 
   testImplementation("org.eclipse.platform:org.eclipse.text:3.14.500")
   testImplementation("org.eclipse.platform:org.eclipse.ui.workbench:3.137.0")
