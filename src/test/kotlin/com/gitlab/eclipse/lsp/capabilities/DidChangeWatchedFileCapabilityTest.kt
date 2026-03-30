@@ -80,21 +80,21 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
   it("stops sending events after all watchers are unregistered") {
     capability.documentChanged("file:/project/test.java")
     coroutineScope.wait(25)
-    verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
 
     clearMocks(languageServer)
 
     capability.unregister("123")
     capability.documentChanged("file:/project/test.java")
     coroutineScope.wait(25)
-    verify(exactly = 0) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 0) { languageServer.didChangeWatchedFiles(any()) }
   }
 
   it("can register new watchers after existing ones are unregistered") {
     capability.unregister("123")
     capability.documentChanged("file:/project/test.kt")
     coroutineScope.wait(25)
-    verify(exactly = 0) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 0) { languageServer.didChangeWatchedFiles(any()) }
 
     capability.register(
       id = "456",
@@ -115,37 +115,37 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
     capability.documentChanged("file:/project/test.kt")
     coroutineScope.wait(25)
-    verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
   }
 
   it("can unregister all watchers") {
     capability.documentChanged("file:/project/test.kt")
     coroutineScope.wait(25)
-    verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
 
     capability.unregisterAll()
     capability.documentChanged("file:/project/test.kt")
     coroutineScope.wait(25)
-    verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
 
     capability.documentChanged("file:/project/test.java")
     coroutineScope.wait(25)
-    verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+    verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
   }
 
   describe("documentChanged") {
     it("sends events only for watched files when they are changed") {
       capability.documentChanged("file:/project/test.kt")
       coroutineScope.wait(25)
-      verify(exactly = 1) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+      verify(exactly = 1) { languageServer.didChangeWatchedFiles(any()) }
 
       capability.documentChanged("file:/project/test.java")
       coroutineScope.wait(25)
-      verify(exactly = 2) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+      verify(exactly = 2) { languageServer.didChangeWatchedFiles(any()) }
 
       capability.documentChanged("file:/project/test.go")
       coroutineScope.wait(25)
-      verify(exactly = 2) { languageServer.workspaceService.didChangeWatchedFiles(any()) }
+      verify(exactly = 2) { languageServer.didChangeWatchedFiles(any()) }
     }
   }
 
@@ -164,7 +164,7 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
       coroutineScope.wait(25)
       verify(exactly = 1) {
-        languageServer.workspaceService.didChangeWatchedFiles(
+        languageServer.didChangeWatchedFiles(
           DidChangeWatchedFilesParams(
             listOf(
               FileEvent("file:/project/test.kt", FileChangeType.Changed)
@@ -188,7 +188,7 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
       coroutineScope.wait(25)
       verify(exactly = 1) {
-        languageServer.workspaceService.didChangeWatchedFiles(
+        languageServer.didChangeWatchedFiles(
           DidChangeWatchedFilesParams(
             listOf(
               FileEvent("file:/project/test.java", FileChangeType.Created)
@@ -212,7 +212,7 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
       coroutineScope.wait(25)
       verify(exactly = 1) {
-        languageServer.workspaceService.didChangeWatchedFiles(
+        languageServer.didChangeWatchedFiles(
           DidChangeWatchedFilesParams(
             listOf(
               FileEvent("file:/project/test.java", FileChangeType.Deleted)
@@ -253,7 +253,7 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
       coroutineScope.wait(25)
       verify(exactly = 0) {
-        languageServer.workspaceService.didChangeWatchedFiles(any())
+        languageServer.didChangeWatchedFiles(any())
       }
     }
 
@@ -282,7 +282,7 @@ class DidChangeWatchedFileCapabilityTest : DescribeSpec({
 
       coroutineScope.wait(25)
       verify(exactly = 1) {
-        languageServer.workspaceService.didChangeWatchedFiles(
+        languageServer.didChangeWatchedFiles(
           DidChangeWatchedFilesParams(
             listOf(
               FileEvent("file:/project/src/test.kt", FileChangeType.Changed)

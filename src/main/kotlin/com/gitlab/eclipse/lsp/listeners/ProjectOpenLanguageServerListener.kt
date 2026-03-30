@@ -29,7 +29,7 @@ class ProjectOpenLanguageServerListener(
           coroutineScope.launch {
             logger.info("Sending workspace folders change notification to Language Server.")
 
-            languageServerWrapper.languageServer?.workspaceService?.didChangeConfiguration(
+            languageServerWrapper.languageServer?.didChangeConfiguration(
               DidChangeConfigurationParams(
                 GitLabLanguageServerConfigurationParams(workspaceFolders = workspaceFolders)
               )
