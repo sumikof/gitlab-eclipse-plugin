@@ -42,7 +42,7 @@ interface GitLabLanguageServer {
   fun initialized(params: InitializedParams?)
 
   @JsonRequest
-  fun shutdown(): CompletableFuture<Any>
+  fun shutdown(): CompletableFuture<Any?>
 
   @JsonNotification
   fun exit()
