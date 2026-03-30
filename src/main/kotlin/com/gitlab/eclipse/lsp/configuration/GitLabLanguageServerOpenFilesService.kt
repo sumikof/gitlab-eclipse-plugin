@@ -49,7 +49,7 @@ class GitLabLanguageServerOpenFilesService(
       ?: return
 
     coroutineScope.launch {
-      gitLabLanguageServerWrapper.languageServer?.textDocumentService?.didClose(
+      gitLabLanguageServerWrapper.languageServer?.didClose(
         DidCloseTextDocumentParams(
           TextDocumentIdentifier(editorInput.file.locationURI.toASCIIString())
         )
@@ -81,7 +81,7 @@ class GitLabLanguageServerOpenFilesService(
   @Suppress("SwallowedException")
   override fun documentChanged(event: DocumentEvent) {
     coroutineScope.launch {
-      gitLabLanguageServerWrapper.languageServer?.textDocumentService?.didChange(
+      gitLabLanguageServerWrapper.languageServer?.didChange(
         DidChangeTextDocumentParams(
           VersionedTextDocumentIdentifier(
             event.document.uri,
@@ -102,7 +102,7 @@ class GitLabLanguageServerOpenFilesService(
       ?: return
 
     coroutineScope.launch {
-      gitLabLanguageServerWrapper.languageServer?.textDocumentService?.didOpen(
+      gitLabLanguageServerWrapper.languageServer?.didOpen(
         DidOpenTextDocumentParams(editorInput.toTextDocumentItem())
       )
 

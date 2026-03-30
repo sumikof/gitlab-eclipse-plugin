@@ -45,7 +45,7 @@ class DidChangeWatchedFileCapability(
       batchSendJob = coroutineScope.launch {
         while (isActive) {
           if (processBatchedEvents.isNotEmpty()) {
-            languageServerWrapper.languageServer?.workspaceService?.didChangeWatchedFiles(
+            languageServerWrapper.languageServer?.didChangeWatchedFiles(
               DidChangeWatchedFilesParams(processBatchedEvents.toList())
             )
 

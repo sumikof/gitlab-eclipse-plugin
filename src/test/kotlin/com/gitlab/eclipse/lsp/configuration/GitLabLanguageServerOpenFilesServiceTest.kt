@@ -100,7 +100,7 @@ class GitLabLanguageServerOpenFilesServiceTest : DescribeSpec({
 
       val sentParams = slot<DidChangeTextDocumentParams>()
       verify {
-        languageServer.textDocumentService.didChange(capture(sentParams))
+        languageServer.didChange(capture(sentParams))
       }
 
       sentParams.captured.textDocument.uri shouldBe documentUri
