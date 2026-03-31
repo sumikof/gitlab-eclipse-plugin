@@ -9,13 +9,59 @@ import com.gitlab.eclipse.preferences.healthcheck.FeatureStateParams
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
+import org.eclipse.lsp4j.DidChangeConfigurationParams
+import org.eclipse.lsp4j.DidChangeTextDocumentParams
+import org.eclipse.lsp4j.DidChangeWatchedFilesParams
+import org.eclipse.lsp4j.DidCloseTextDocumentParams
+import org.eclipse.lsp4j.DidOpenTextDocumentParams
+import org.eclipse.lsp4j.InitializeParams
+import org.eclipse.lsp4j.InitializeResult
+import org.eclipse.lsp4j.InitializedParams
 import org.eclipse.lsp4j.jsonrpc.messages.Either
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
-import org.eclipse.lsp4j.services.LanguageServer
 import java.util.concurrent.CompletableFuture
 
-interface GitLabLanguageServer : LanguageServer {
+/**
+ * Custom remote interface for the GitLab Language Server.
+ *
+ * This interface intentionally does NOT extend [org.eclipse.lsp4j.services.LanguageServer]
+ * to avoid a "Duplicate RPC method textDocument/inlineCompletion" conflict on Eclipse 2026-03+.
+ * LSP4J 1.0.0 added a native `textDocument/inlineCompletion` method to `TextDocumentService`,
+ * which is discovered via the `@JsonDelegate` on `LanguageServer.getTextDocumentService()`.
+ * Declaring the same method here would cause `ServiceEndpoints` to find it twice.
+ *
+ * Instead, we declare the standard LSP lifecycle methods we need directly.
+ */
+@Suppress("TooManyFunctions")
+interface GitLabLanguageServer {
+  @JsonRequest
+  fun initialize(params: InitializeParams): CompletableFuture<InitializeResult>
+
+  @JsonNotification
+  fun initialized(params: InitializedParams?)
+
+  @JsonRequest
+  fun shutdown(): CompletableFuture<Any?>
+
+  @JsonNotification
+  fun exit()
+
+  @JsonNotification("textDocument/didOpen")
+  fun didOpen(params: DidOpenTextDocumentParams)
+
+  @JsonNotification("textDocument/didClose")
+  fun didClose(params: DidCloseTextDocumentParams)
+
+  @JsonNotification("textDocument/didChange")
+  fun didChange(params: DidChangeTextDocumentParams)
+
+  @JsonNotification("workspace/didChangeConfiguration")
+  fun didChangeConfiguration(params: DidChangeConfigurationParams)
+
+  @JsonNotification("workspace/didChangeWatchedFiles")
+  fun didChangeWatchedFiles(params: DidChangeWatchedFilesParams)
+
   @JsonNotification("$/gitlab/didChangeDocumentInActiveEditor")
   fun didChangeDocumentInActiveEditor(uri: String)
 

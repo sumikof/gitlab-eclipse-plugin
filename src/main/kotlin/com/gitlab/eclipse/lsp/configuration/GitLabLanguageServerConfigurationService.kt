@@ -53,7 +53,7 @@ class GitLabLanguageServerConfigurationService(
 
     logger.info("Sending configuration change notification to Language Server.")
     coroutineScope.launch {
-      languageServerWrapper.languageServer?.workspaceService?.didChangeConfiguration(
+      languageServerWrapper.languageServer?.didChangeConfiguration(
         DidChangeConfigurationParams(params)
       )
     }
