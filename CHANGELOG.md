@@ -10,7 +10,15 @@
 
 ### Fixed
 
-- Fix plugin failing to activate on Eclipse 2026-03 due to duplicate `textDocument/inlineCompletion` LSP4J method
+## 0.8.2 (2026-03-31)
+
+### Changed
+
+- Bumped Language Server version to 8.80.0 ([!446](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/446))
+
+### Fixed
+
+- Fix plugin failing to activate on Eclipse 2026-03 due to duplicate `textDocument/inlineCompletion` LSP4J method ([!446](https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/merge_requests/446))
 
 ## 0.8.1 (2025-11-20)
 
