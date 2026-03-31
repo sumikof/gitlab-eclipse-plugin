@@ -370,7 +370,7 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
       slurper.parse(gitlabLspDir.resolve("generic_packages.json")) as? List<Map<String, Any>>
         ?: error("Unable to parse generic_packages.json")
 
-    val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion }
+    val packageUrl = lspPackages.find { it["version"] == gitlabLspVersion && it["name"] == "gitlab-language-server" }
       ?.let { it["id"] as? Number }
       ?.let { "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages/$it/package_files" }
       ?: error("Unable to find generic package for @gitlab-org/gitlab-lsp v$gitlabLspVersion.")

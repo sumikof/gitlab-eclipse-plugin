@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Fix plugin failing to activate on Eclipse 2026-03 due to duplicate `textDocument/inlineCompletion` LSP4J method
+
 ## 0.8.1 (2025-11-20)
 
 ### Fixed
