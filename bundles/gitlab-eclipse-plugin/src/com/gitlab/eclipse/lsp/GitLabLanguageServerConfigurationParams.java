@@ -42,11 +42,6 @@ public record GitLabLanguageServerConfigurationParams
 			return this;
 		}
 
-		public Builder telemetry(GitLabLanguageServerConfigurationParams.FeatureFlags featureFlags) {
-			this.featureFlags = featureFlags;
-			return this;
-		}
-
 		public Builder logLevel(String logLevel) {
 			this.logLevel = logLevel;
 			return this;
