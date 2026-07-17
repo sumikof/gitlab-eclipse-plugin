@@ -1,0 +1,10 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: GitLab Eclipse Plugin Tests
+Bundle-SymbolicName: gitlab-eclipse-plugin.tests
+Bundle-Version: 0.1.0.qualifier
+Fragment-Host: gitlab-eclipse-plugin;bundle-version="0.1.0"
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Import-Package: org.junit.jupiter.api;version="[5.0.0,6.0.0)",
+ org.junit.jupiter.api.function;version="[5.0.0,6.0.0)"
+Automatic-Module-Name: gitlab.eclipse.plugin.tests
