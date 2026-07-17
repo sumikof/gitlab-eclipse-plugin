@@ -21,9 +21,9 @@
 - **プラットフォーム判定**: `os.name`/`os.arch` → `linux-x64` / `linux-arm64` / `macos-x64` / `macos-arm64` / `win-x64`。win-arm64はアセットが存在しないため非対応(明示エラー)。判定ロジックはPOJO(`LanguageServerPlatform`)として切り出しユニットテスト対象とする。
 - **キャッシュ**: `Platform.getStateLocation()` 配下 `lsp/<version>/` に、自プラットフォームのバイナリと `vendor/` ディレクトリのみを展開して保存(tarball本体は展開後削除)。既に存在すれば再DLしない。Unix系は展開後に実行権限を付与。
 - **DL実行**: Eclipse `Job` でプログレス表示付き。tarballは `GZIPInputStream` + 自前の最小tar(ustar)リーダーでストリーミング展開し、必要エントリのみ書き出す。必要なのは通常ファイルの名前とサイズだけなので新規依存を追加しない。tarリーダーもユニットテスト対象のPOJOとする。
-- **設定で上書き**: 新設定 `gitlab.lsp.binaryPath`(既定値: 空 = 自動DL)。非空ならそのパスを使用しDLしない。設定ページに `FileFieldEditor` を追加。
+- **設定で上書き**: 新設定 `gitlab.languageServer.binaryPath`(既存キーの命名規約に合わせる。既定値: 空 = 自動DL)。非空ならそのパスを使用しDLしない。設定ページに `FileFieldEditor` を追加。
 - **作業ディレクトリ**: ハードコード(`/Users/erran/...`)を廃止し、state location配下 `lsp-workdir/` に変更。
-- **エラー処理**: DL/展開失敗はログ+エラーダイアログで通知し、その起動でのLSP開始を断念(Eclipse本体の動作は継続)。次回起動時に自動再試行。中断・破損対策として一時ファイル名でDLし完了後にリネーム。
+- **エラー処理**: DL/展開失敗はJobのエラーステータス(Progressビュー/Error Log)で通知し、その起動でのLSP開始を断念(Eclipse本体の動作は継続)。次回起動時に自動再試行。中断・破損対策として、展開完了後に `.complete` マーカーを書き込み、マーカーが無いキャッシュは不完全とみなして再取得する(tarballはディスクに保存せずストリーミング展開する)。
 
 `GitLabLanguageServerProvider` は `LanguageServerInstaller` から解決したパスでコマンドを構築する。initialization optionsのハードコードバージョン `"0.1.0-erran"` はバンドルバージョン(`Platform.getBundle(...).getVersion()`)に置き換える。
 
