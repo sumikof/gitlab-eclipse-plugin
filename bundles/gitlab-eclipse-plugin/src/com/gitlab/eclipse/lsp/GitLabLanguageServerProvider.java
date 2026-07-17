@@ -55,7 +55,7 @@ public class GitLabLanguageServerProvider extends ProcessStreamConnectionProvide
 					"https://snowplowprd.trx.gitlab.net")
 				);
 
-		var secretStorage = new SecretStorage("gitlab.com");
+		var secretStorage = SecretStorage.forConfiguredInstance();
 		var personalAccessToken = secretStorage.getSecret("personal_access_token");
 		if (personalAccessToken != null) {
 			params.token(personalAccessToken);

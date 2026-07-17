@@ -136,7 +136,7 @@ public class LanguageServerBrowserView extends ViewPart
 				var inputDialog = new InputDialog(shell, null, "Set GitLab personal access token: ", null, null);
 				inputDialog.open();
 
-				var secretStorage = new SecretStorage("gitlab.com");
+				var secretStorage = SecretStorage.forConfiguredInstance();
 				try {
 					secretStorage.putSecret("personal_access_token", inputDialog.getValue());
 				} catch (StorageException e) {

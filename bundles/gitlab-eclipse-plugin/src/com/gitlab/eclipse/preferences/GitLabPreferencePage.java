@@ -25,7 +25,7 @@ public class GitLabPreferencePage extends FieldEditorPreferencePage implements I
 		addField(new BooleanFieldEditor(PreferenceConstants.IGNORE_CERTIFICATE_ERRORS, "Ignore Certificate Errors", getFieldEditorParent()));
 
 		// Authentication
-		addField(new SecretStringFieldEditor(new SecretStorage("gitlab.com"), "personal_access_token", "Personal Access Token", getFieldEditorParent()));
+		addField(new SecretStringFieldEditor(SecretStorage.forConfiguredInstance(), "personal_access_token", "Personal Access Token", getFieldEditorParent()));
 
 		// Language Server
 		addField(new StringFieldEditor(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL, "Language Server Log Level", getFieldEditorParent()));
