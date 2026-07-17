@@ -30,6 +30,8 @@ public class GitLabPreferencePage extends FieldEditorPreferencePage implements I
 		// Language Server
 		addField(new StringFieldEditor(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL, "Language Server Log Level", getFieldEditorParent()));
 		addField(new BooleanFieldEditor(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, "Stream Code Generations", getFieldEditorParent()));
+		addField(new FileFieldEditor(PreferenceConstants.LANGUAGE_SERVER_BINARY_PATH,
+				"Language Server Binary (blank = auto-download)", true, getFieldEditorParent()));
 
 		addField(new BooleanFieldEditor(PreferenceConstants.TANUKI_ONLY_SHOW_CODE_MININGS, "Tanuki? Why not enable code mining?", getFieldEditorParent()));
 	}

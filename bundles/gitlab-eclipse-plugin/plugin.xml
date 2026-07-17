@@ -187,4 +187,8 @@
 			class="com.gitlab.eclipse.codemining.MyCodeMiningProvider"
 			label="GitLab Duo [Code Mining Provider]"/>
 	</extension>
+
+	<extension point="org.eclipse.ui.startup">
+		<startup class="com.gitlab.eclipse.lsp.install.LanguageServerStartup"/>
+	</extension>
 </plugin>
