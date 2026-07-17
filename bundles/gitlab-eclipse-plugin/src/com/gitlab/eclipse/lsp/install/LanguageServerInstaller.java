@@ -11,6 +11,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.function.LongConsumer;
 import java.util.zip.GZIPInputStream;
 
@@ -106,12 +107,22 @@ public class LanguageServerInstaller {
 		if (isInstalled()) {
 			return binaryPath();
 		}
-		try (HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()) {
-			HttpRequest request = HttpRequest.newBuilder(URI.create(downloadUrl(VERSION))).GET().build();
+		String url = downloadUrl(VERSION);
+		try (HttpClient client = HttpClient.newBuilder()
+				.followRedirects(HttpClient.Redirect.NORMAL)
+				.connectTimeout(Duration.ofSeconds(30))
+				.build()) {
+			HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+					.timeout(Duration.ofMinutes(2))
+					.GET()
+					.build();
 			HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
 			if (response.statusCode() != 200) {
+				try (InputStream body = response.body()) {
+					// Close the response body before throwing
+				}
 				throw new IOException("Language server download failed: HTTP " + response.statusCode()
-						+ " for " + downloadUrl(VERSION));
+						+ " for " + url);
 			}
 			try (InputStream body = countingStream(response.body(), progressBytes)) {
 				extract(body);
