@@ -26,8 +26,5 @@ public class PreferenceInitializer extends AbstractPreferenceInitializer {
 		PREFERENCE_STORE.setDefault(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL, "debug");
 		PREFERENCE_STORE.setDefault(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, true);
 		PREFERENCE_STORE.setDefault(PreferenceConstants.LANGUAGE_SERVER_BINARY_PATH, "");
-
-		// Dev tooling
-		PREFERENCE_STORE.setDefault(PreferenceConstants.TANUKI_ONLY_SHOW_CODE_MININGS, false);
 	}
 }
