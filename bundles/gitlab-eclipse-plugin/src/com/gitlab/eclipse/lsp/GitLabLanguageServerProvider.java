@@ -12,6 +12,7 @@ import java.util.Map;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.CodeCompletion;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.FeatureFlags;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.Telemetry;
+import com.gitlab.eclipse.lsp.install.LanguageServerInstaller;
 import com.gitlab.eclipse.lsp.install.LanguageServerStartup;
 import com.gitlab.eclipse.preferences.PreferenceConstants;
 import com.gitlab.eclipse.preferences.PreferenceInitializer;
@@ -64,28 +65,36 @@ public class GitLabLanguageServerProvider extends ProcessStreamConnectionProvide
 		GitLabLanguageServerProvider.languageServer.getWorkspaceService().didChangeConfiguration(new DidChangeConfigurationParams(params.build()));
 	}
 
+	private final LanguageServerInstaller installer;
+
 	public GitLabLanguageServerProvider() {
 		String configured = PreferenceInitializer.PREFERENCE_STORE
 				.getString(PreferenceConstants.LANGUAGE_SERVER_BINARY_PATH);
-		Path binary = configured.isBlank()
-				? LanguageServerStartup.defaultInstaller().binaryPath()
-				: Path.of(configured);
+		Path binary;
+		if (configured.isBlank()) {
+			this.installer = LanguageServerStartup.defaultInstaller();
+			binary = installer.binaryPath();
+		} else {
+			this.installer = null;
+			binary = Path.of(configured);
+		}
 		setCommands(List.of(binary.toString(), "--stdio"));
 
 		Path workDir = Platform.getStateLocation(FrameworkUtil.getBundle(getClass())).toPath()
 				.resolve("lsp-workdir");
 		try {
 			Files.createDirectories(workDir);
+			setWorkingDirectory(workDir.toString());
 		} catch (IOException e) {
 			// fall back to launching in the default working directory
 		}
-		setWorkingDirectory(workDir.toString());
 	}
 
 	@Override
 	public void start() throws IOException {
 		Path binary = Path.of(getCommands().get(0));
-		if (!Files.isRegularFile(binary)) {
+		boolean ready = installer != null ? installer.isInstalled() : Files.isRegularFile(binary);
+		if (!ready) {
 			throw new IOException("GitLab Language Server binary not found at " + binary
 					+ ". It may still be downloading (see the Progress view); reopen the file once it completes.");
 		}
