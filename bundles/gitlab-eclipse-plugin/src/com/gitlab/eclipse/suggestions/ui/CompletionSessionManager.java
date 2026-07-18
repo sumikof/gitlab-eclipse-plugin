@@ -112,9 +112,24 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 	public void keyReleased(KeyEvent e) {
 		switch (e.keyCode) {
 		case SWT.ARROW_LEFT, SWT.ARROW_RIGHT, SWT.ARROW_UP, SWT.ARROW_DOWN, SWT.HOME, SWT.END, SWT.PAGE_UP,
-				SWT.PAGE_DOWN -> discard();
+				SWT.PAGE_DOWN -> discardIfCaretMoved();
 		default -> { /* typing is handled via textChanged */ }
 		}
+	}
+
+	/**
+	 * Navigation keys dismiss the suggestion, unless the caret still sits at the
+	 * insertion point. That happens right after a Ctrl+Right word-accept: the key
+	 * binding consumes the keyDown, but the keyUp still reaches this listener, and
+	 * without this check it would discard the remainder of the suggestion that
+	 * the word-accept handler deliberately left showing.
+	 */
+	private void discardIfCaretMoved() {
+		var model = SuggestionSessions.model();
+		if (model.isShowing() && viewer.getSelectedRange().x == model.insertionOffset()) {
+			return;
+		}
+		discard();
 	}
 
 	@Override
