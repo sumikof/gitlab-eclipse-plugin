@@ -12,6 +12,7 @@ import java.util.Map;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.CodeCompletion;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.FeatureFlags;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.Telemetry;
+import com.gitlab.eclipse.lsp.GitLabLanguageServerConfigurationParams.TelemetryAction;
 import com.gitlab.eclipse.lsp.install.LanguageServerInstaller;
 import com.gitlab.eclipse.lsp.install.LanguageServerStartup;
 import com.gitlab.eclipse.preferences.PreferenceConstants;
@@ -53,7 +54,9 @@ public class GitLabLanguageServerProvider extends ProcessStreamConnectionProvide
 				.logLevel(preferenceStore.getString(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL))
 				.telemetry(new Telemetry(
 					preferenceStore.getBoolean(PreferenceConstants.TELEMETRY_ENABLED),
-					"https://snowplowprd.trx.gitlab.net")
+					"https://snowplowprd.trx.gitlab.net",
+					List.of(new TelemetryAction(TelemetryParams.ACTION_SHOWN),
+							new TelemetryAction(TelemetryParams.ACTION_ACCEPTED)))
 				);
 
 		var secretStorage = SecretStorage.forConfiguredInstance();
