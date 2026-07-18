@@ -1,99 +1,94 @@
-# 引き継ぎ書: gitlab-eclipse-plugin 機能拡張プロジェクト
+# 引き継ぎ書: gitlab-eclipse-plugin 機能拡張プロジェクト(ステップ2完了時点)
 
-作成日: 2026-07-17
-現在ブランチ: `fix/step1-foundation-repairs`(12コミット、**未プッシュ**)
+作成日: 2026-07-18(ステップ1完了時の旧版を全面更新)
+現在ブランチ: `feat/step2-code-suggestions`(**MR !2 作成済み・ユーザーレビュー中**)
 
 ## 1. プロジェクトゴール
 
-Eclipse向けGitLabプラグイン(本リポジトリ、PoC段階で更新停止中)の機能を、活発に開発されているVSCode版GitLab拡張(参照コピーが `./out/gitlab-vscode-extension`、gitignore済み)並みに拡張する。
+Eclipse向けGitLabプラグイン(本リポジトリ、元はPoC段階)の機能を、活発に開発されているVSCode版GitLab拡張(参照コピーが `./out/gitlab-vscode-extension`、gitignore済み・**変更禁止**)並みに拡張する。
 
 ## 2. 作業方針(ユーザー指定・厳守)
 
-1. **ステップごとにブランチを切る** → 修正 → **MR(PR)作成** → **ユーザーレビュー** → 再修正 → レビュー → **マージ** → 次のステップのブランチ作成、のサイクルで進める。
-2. 実装プロセスはsuperpowersスキルに従う: brainstorming(設計質問→設計承認)→ スペック作成(`docs/superpowers/specs/`)→ 実装計画(`docs/superpowers/plans/`)→ Subagent-Driven Development(タスクごとに実装サブエージェント+レビューサブエージェント、TDD、タスクごとコミット)→ 最終ブランチ全体レビュー。
-3. コミットメッセージ末尾に以下を付与(全コミット済み分は付与済み):
+1. **ステップごとにブランチを切る** → 修正 → **MR作成** → **ユーザーレビュー** → 指摘対応(同ブランチに追加コミット→再レビュー) → **マージ** → 次ステップのブランチ作成、のサイクル。
+2. 実装プロセスはsuperpowersスキルに従う: brainstorming(設計質問→設計承認)→ スペック(`docs/superpowers/specs/`)→ 実装計画(`docs/superpowers/plans/`)→ **Subagent-Driven Development**(タスクごとに実装サブエージェント+レビューサブエージェント、TDD、タスクごとコミット)→ 最終ブランチ全体レビュー(最上位モデルで実施)→ finishing-a-development-branch。
+3. コミットメッセージ末尾に以下を付与(Claude-Session は**現セッションのURL**に置き換えること。Bashツール説明文に記載されている):
    ```
-   Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-   Claude-Session: https://claude.ai/code/session_01Ku6m3MQ7LooNZXtkT7QNPb
+   Co-Authored-By: Claude <モデル名> <noreply@anthropic.com>
+   Claude-Session: https://claude.ai/code/session_<現セッションID>
    ```
-4. git identityはリポジトリローカルに `sumikof187 <sumikof187@gmail.com>` を設定済み。
+4. git identityはリポジトリローカルに `sumikof187 <sumikof187@gmail.com>` 設定済み。
+5. MR作成時は `--remove-source-branch --yes`、説明文には成果・検証結果・既知の制限・後続への申し送りを整形して記載(MR !1/!2 の形式を踏襲)。
 
-## 3. 全体ロードマップ(承認済み推奨順序)
+## 3. 全体ロードマップ
 
 | ステップ | 内容 | 状態 |
 |---|---|---|
-| 1 | 基盤修復(LSPバイナリDL機構、壊れた宣言削除、ホスト導出、Tychoビルド) | **実装完了・MR作成待ち** |
-| 2 | Code Suggestions(インライン補完、LSP経由 `textDocument/inlineCompletion`) | 未着手 |
+| 1 | 基盤修復(LSPバイナリDL機構、Tychoビルド、壊れた宣言削除) | ✅ **マージ済み**(MR !1) |
+| 2 | Code Suggestions(インライン補完、ghost text、ストリーミング) | **MR !2 レビュー中** |
 | 3 | Duo Chat webview双方向メッセージング完成 → Chat v2 / Agentic Chat | 未着手 |
 | 4 | Explain/Fix/Tests/Refactor コマンドハンドラ実装(Chatに接続) | 未着手 |
 | 5 | 認証強化(OAuth、証明書/プロキシ) | 未着手 |
 | 6 | ネイティブ系(Issue/MR/CI)の段階導入 | 未着手 |
 
-根拠資料: `docs/feature-gap-analysis.md`(VSCode拡張との機能差異の全対照表。LSP再利用可能な機能とネイティブ再実装が必要な機能の分類あり)。
+根拠資料: `docs/feature-gap-analysis.md`(VSCode拡張との全機能差異対照表)。
 
-## 4. ステップ1の実績
+## 4. ステップ1の実績(マージ済み・要点のみ)
 
-### 設計・計画ドキュメント
-- スペック: `docs/superpowers/specs/2026-07-17-step1-foundation-repairs-design.md`
-- 実装計画(9タスク): `docs/superpowers/plans/2026-07-17-step1-foundation-repairs.md`
+- MR !1(マージ済み): Tychoヘッドレスビルド化(`bundles/` + `tests/` 標準レイアウト、`mvn -q verify`)、LSPバイナリ自動DL(genericレジストリのtarball約300MB、`.complete`マーカーで完全性管理、`lsp/<version>/` キャッシュ)、壊れた宣言の削除、secret-storageホスト導出、テレメトリbuilderバグ修正。
+- ユーザーレビュー指摘対応: tar読み取りの防御的失敗(GNU long-name/PAX/base-256検知でIOException)を追加。実9.5.0 tarball全325エントリが純ustarであることを確認済み。
+- 詳細は旧版引き継ぎ書(git履歴 `c864ee2` の docs/HANDOVER.md)と `docs/superpowers/specs|plans/2026-07-17-step1-*`。
 
-### コミット一覧(main..HEAD、古い順)
-```
-7c766ea docs: Add feature gap analysis and step-1 foundation-repairs design spec
-32af57d docs: Add step-1 implementation plan, align spec details
-468e28f build: Restructure to standard Tycho layout with headless build
-438cf46 feat: Add test fragment and language-server platform detection
-ce44d40 feat: Add minimal streaming ustar reader for LSP tarball extraction
-4e07f65 feat: Add language-server installer with cached download and extraction
-52a5284 fix: Close response stream on error and add timeouts to LSP download
-abb9e4d feat: Auto-download language server, replace hardcoded developer paths
-328cf58 fix: Remove broken menu declarations, code mining stub, and dead code
-894cbed fix: Derive secret-storage host from configured instance URL
-06e2245 fix: Remove telemetry builder overload that overwrote featureFlags
-4104f5b fix: Guard against launching a partially downloaded language server
-```
+## 5. ステップ2の実績(現MR)
 
-### 主な成果
-- **Tychoヘッドレスビルド**: 標準レイアウト(`bundles/gitlab-eclipse-plugin/` + `tests/gitlab-eclipse-plugin.tests/`)。検証コマンドはリポジトリルートで `mvn -q verify`(Tycho 4.0.13、Eclipse 2025-06 p2、初回はp2取得で数分)。**ユニットテスト18件**(Platform 6 / Tar 4 / Installer 4 / Params 2 / SecretStorage 2)。
-- **LSPバイナリ自動DL**: `com.gitlab.eclipse.lsp.install` パッケージの純JDK POJO群(`LanguageServerPlatform` / `TarArchiveReader` / `LanguageServerInstaller`、バージョン固定 9.5.0)+ Eclipse配線(`LanguageServerInstallJob` / `LanguageServerStartup`(IStartup) / 設定 `gitlab.languageServer.binaryPath`)。DL元はGitLab genericパッケージレジストリのtarball(約300MB、全プラットフォームバイナリ+tree-sitter文法同梱)。キャッシュはバンドルstate location配下 `lsp/<version>/`、`.complete` マーカーで完全性管理。
-- **品質ゲート実績**: 全9タスクでタスク別レビュー実施(修正2回: install()のタイムアウト/ストリームクローズ、最終レビューでダウンロード中の不完全バイナリ起動競合をマーカーベースのstart()ガードで修正)。最終ブランチ全体レビュー承認済み。
-- **E2E実機検証**(このdevcontainer=linux-arm64): 実際に300MBをDL→展開→実行権限→`--version` 実行(exit 0)→キャッシュ再利用(再実行0.24秒、再DLなし)まで確認。
+### ドキュメント
+- スペック: `docs/superpowers/specs/2026-07-18-step2-code-suggestions-design.md`
+- 実装計画(11タスク、確定プロトコル定数・実証済みAPIパターン埋め込み済み): `docs/superpowers/plans/2026-07-18-step2-code-suggestions.md`
+- 手動検証手順書(12項目): `docs/manual-tests/2026-07-18-step2-code-suggestions.md`
 
-### MR作成時に説明へ記載すべき事項
-- 検証結果: `mvn verify` 18/18 PASS + 上記E2E(linux-arm64)。
-- 既知の制限(いずれも後続ステップで対応予定として明記):
-  - DLした9.5.0バイナリが `--version` で「GitLab Language Server v9.4.0」と自己申告する(上流のラベリングの癖、動作は正常)
-  - win-arm64は非対応(LSP公式バイナリが無い。`UnsupportedOperationException` が生でError Logに出る)
-  - ダウンロードJobはProgressビューからキャンセル不可
-  - 設定ページで接続URLとPATを同一セッションで変更すると、PATが旧ホスト側に保存される
-  - Bundle-Versionを `0.1.0.beta` → `0.1.0.qualifier` に変更(Tycho互換のため)
+### 実装前に確定させた重要事実(再調査不要)
+- **LSP4E は `textDocument/inlineCompletion` 完全未対応**(0.18.x/main とも)。LSP4J 0.23.1 に InlineCompletion 型は無い(1.0.0初出、Eclipse 2025-06のLSP4Eと共存不可)→ 独自DTO + `@JsonRequest` 方式で実装済み。
+- **gitlab-lsp v9.5.0 プロトコル確定値**(実ソース検証済み): ストリーミング通知 `streamingCompletionResponse` の `completion` は**累積文字列**(連結不要)/ キャンセルは `cancelStreaming` `{id}` / コマンドID `gitlab.ls.startStreaming`(args=[streamId, trackingId])・`gitlab.ls.codeSuggestionAccepted`(args=[trackingId, 1始まりindex?])/ テレメトリ `$/gitlab/telemetry` category=`code_suggestions` action=`suggestion_shown`|`suggestion_accepted` context={trackingId, optionId?} / 購読は didChangeConfiguration の `telemetry.actions`(**購読したらSHOWNはクライアント送信義務**)/ `$/gitlab/didChangeDocumentInActiveEditor` はuri文字列 / ストリーミング有効化はcapability不要、`featureFlags.streamCodeGenerations` のみ。
+- **ghost text は CodeMining 方式**(Platform 4.34+)。参照実装 microsoft/copilot-for-eclipse(MIT)。既知の癖: LineContentCodeMining の Position は length≥1 必須 / タブ文字は描画されない(先頭タブのみスペース展開)/ 最終行にはLineHeaderブロック表示不可 / `updateCodeMinings()` は必ず `Display.asyncExec` 経由(LSP4Eのロックとデッドロック)/ TAB・ESCは textEditorScope 直バインド+ハンドラ `isEnabled()` ゲート(独自コンテキストは Ctrl+→ のみ)。
 
-### 後続ステップへのフォローアップ(最終レビューで記録)
-1. LSPダウンロードのSHA256ピン(レジストリはSHA256を公開している。`VERSION` 定数の隣にピン追加が安価)
-2. SecretStorageの解決を設定エディタの保存アクション時に行う(URL+PAT同時変更caveatの解消)→ ステップ5(認証)で対応
-3. `LanguageServerInstallJob` のキャンセル対応(`monitor.isCanceled()` → `OperationCanceledException`)
-4. 設定ストアのqualifierが数値バンドルID(`FrameworkUtil.getBundle().getBundleId()`)でインストール順依存 — 既存問題。移行込みで要対応
-5. win-arm64での例外を捕捉してStatusログ1件に整形
-6. InstallJobの初回「0 MB downloaded」表示(化粧)
+### アーキテクチャ
+- `com.gitlab.eclipse.lsp`: プロトコルDTO(record 9種)+ `GitLabLanguageServer`/`GitLabLanguageClient` 拡張 + `SuggestionTelemetry`
+- `com.gitlab.eclipse.suggestions`(**純JDK、Eclipse依存禁止、ユニットテスト対象**): `SuggestionModel`(単語単位受け入れ状態)/ `StreamBuffer`(累積チャンク)/ `RenderPlan`(行分割・タブ展開)/ `StreamingCompletionEvents`(staticディスパッチャ)
+- `com.gitlab.eclipse.suggestions.ui`(SWT/JFace配線、ハンドラ含め同一パッケージでpackage-private共有): `CompletionSessionManager`(デバウンス250ms・`requestSerial`無効化・`CompletableFuture.cancel`・修正スタンプ+キャレットのstale判定・`SuggestionSessions.active() != this` ガード)/ `EditorTracker` / `SuggestionStartup` / `GhostTextCodeMiningProvider`+CodeMining3種 / ハンドラ4種
 
-## 5. 環境メモ
+### 品質ゲート実績
+- 全11タスクでタスク別レビュー(spec compliance + code quality)実施、全承認。
+- 最終ブランチ全体レビュー(opus): Important 1件 → `760f04c` で修正(エディタ切替中のasyncExecコールバックが旧エディタのモデルを汚染+虚偽SHOWNテレメトリ → 両クロージャ先頭に active-manager ガード)。再レビュー承認済み。
+- ユーザーMRレビュー第1ラウンド: Important 1件 → `6ee35cf` で修正(Ctrl+→単語受け入れ直後のkeyUpが`keyReleased`に到達し無条件discardで残候補破棄 → `discardIfCaretMoved()`でキャレット位置認識型に変更)。
+- `mvn -q verify`: **45/45 PASS**(ステップ1の21+新規24)。
 
-- **この環境の制約(引き継ぎの発端)**: SSHクライアント無し・`glab` CLI未インストールのためプッシュ/MR作成が未実施。ユーザーが必要コマンドをインストールして再実行予定。
-  - リモート: `git@gitlab.com:sumikof187/gitlab-eclipse-plugin.git`(SSH)。HTTPSは読み取り可を確認済み。プッシュにはSSH鍵設定またはHTTPS+PAT(`write_repository`)、MR作成には `glab auth login`(`api` スコープ)が必要。
-  - 前セッションでglab 1.108.0のarm64バイナリをscratchpad(/tmp配下、揮発)に展開済みだったが、環境再構築で消える前提。aptなら `apt install glab openssh-client` 相当で可。
-- Java 21 + Maven 3.9.16 は devcontainer feature で導入済み(`.devcontainer/devcontainer.json`、未コミット・未追跡)。
-- `.superpowers/sdd/progress.md` にサブエージェント駆動開発の進捗レジャーあり(gitignore対象、ローカルのみ)。タスクブリーフ/レポート/レビューdiffも同ディレクトリ。
-- `/workspace/out/` はVSCode拡張の参照コピー。gitignore済み。**変更・コミット禁止**。
+### 未完了事項(次セッションが把握すべきこと)
+1. **MR !2 のユーザーレビュー継続中**(`6ee35cf` の再レビュー待ち)。承認→マージ→ステップ3へ。
+2. **実機Eclipse手動検証が未実施**(devcontainerはheadless)。`docs/manual-tests/2026-07-18-step2-code-suggestions.md` の12項目をユーザー実機で確認予定。最重要は **#3 単語受け入れ**(6ee35cfの修正対象)と **#5 TABフォールスルー**(`isEnabled()`再評価に依存、静的検証不能)。問題があれば同ブランチまたはfollow-up MRで修正。
 
-## 6. 再開時の手順(次セッションへの指示)
+### 後続ステップへの申し送り(レビューで軽微と判断・記録済み)
+- ステップ1由来: LSPダウンロードのSHA256ピン / SecretStorage解決を保存アクション時に(→ステップ5)/ InstallJobキャンセル対応 / 設定ストアqualifierが数値バンドルID依存 / win-arm64例外の整形 / 「0 MB」初回表示
+- ステップ2由来: `logOnce()`が全エラー種で初回のみ(仕様は同種毎)/ `lsp`↔`suggestions`の循環パッケージ依存(同一バンドル内なので実害なし)/ `requestNow()`がアクティブストリームを未キャンセル / `SuggestionStartup.windowClosed`空実装(実機QAで確認)/ `EditorTracker`未使用import / `InlineCompletionCommand`のJsonPrimitive分岐が単体テスト未検証
+- **ステップ3への設計メモ**: `StreamingCompletionEvents`のディスパッチャパターンは webview 通知にも再利用可能(同一インスタンスを流用せず同型を新設)。`SuggestionSessions`のプロセス全体シングルトン(モデル/ストリーム/アクティブマネージャ各1)は単一カーソル補完には十分だが、エディタ並行状態が必要になったらマネージャ単位状態へ移行。
 
-1. `git status` と `git log --oneline main..HEAD` でブランチ `fix/step1-foundation-repairs` が本書§4のコミット一覧と一致することを確認。
-2. プッシュ: `git push -u origin fix/step1-foundation-repairs`(認証は§5参照)。
-3. MR作成(glabの例):
-   ```
-   glab mr create --source-branch fix/step1-foundation-repairs --target-branch main \
-     --title "Step 1: 基盤修復 — LSP自動DL・Tychoビルド・壊れた宣言の削除" \
-     --description <本書§4の成果・検証結果・既知の制限を整形して記載>
-   ```
-4. ユーザーレビュー→指摘対応(修正は同ブランチに追加コミット→再レビュー)→ユーザー承認後にマージ。
-5. マージ後、ステップ2「Code Suggestions(インライン補完)」の新ブランチを作成し、brainstormingスキルから同じプロセスを開始する。ステップ2の起点情報: VSCode拡張はLSPの `textDocument/inlineCompletion` +ストリーミング(`streamCodeGenerations`)が主経路(`docs/feature-gap-analysis.md` 参照)。Eclipse側はLSP4Eのインライン補完サポート状況の調査から始めること(LSP4E 0.18系のInlineCompletionProvider対応可否が最初の設計論点)。
+## 6. 環境メモ
+
+- **認証(重要)**: glab は OAuth **deviceフロー**でログイン済み(`glab auth login --hostname gitlab.com --device --git-protocol https`)。設定は `/root/.config/glab-cli/config.yml`。**コンテナ再構築で消える**ため、再ログインが必要なら同コマンドをユーザーに `! ` プレフィックスで実行してもらう(通常のBashツールは非TTYで対話ログイン不可。deviceフローはコード表示→ブラウザ認可なのでトークンがチャットに残らない)。
+- リモートは **HTTPS に切替済み**: `https://gitlab.com/sumikof187/gitlab-eclipse-plugin.git`(push認証はglabのOAuthトークン)。
+- ビルド: リポジトリルートで `mvn -q verify`(Java 21 + Maven 3.9系はdevcontainer featureで導入済み。Tycho 4.0.13 / Eclipse 2025-06 p2、初回はp2取得で数分)。
+- `.devcontainer/` は**未追跡のまま**(コミットするか未決。ユーザーに確認するのが無難)。
+- `.superpowers/sdd/progress.md` にサブエージェント駆動開発の進捗レジャー(gitignore対象・ローカルのみ)。タスクブリーフ/レポート/レビューdiffも同ディレクトリ。**セッション再開時はまずこのレジャーと `git log` を確認**(完了済みタスクの再実行は厳禁)。
+- `/workspace/out/` はVSCode拡張の参照コピー。**変更・コミット禁止**。
+- scratchpad(/tmp配下)は揮発。MR説明文の原稿等はセッションごとに作り直す。
+
+## 7. 再開時の手順(次セッションへの指示)
+
+1. `git status` / `git log --oneline main..HEAD` / `.superpowers/sdd/progress.md` で現在地を確認。`glab auth status` で認証確認(切れていたら§6の手順)。
+2. **MR !2 の状態確認**: `glab mr view 2`。
+   - ユーザーレビュー指摘があれば: 同ブランチに追加コミット(修正はサブエージェント+再レビューの品質ゲートを通す)→ push → MR説明のレビュー対応履歴を更新 → 再レビュー依頼。
+   - 承認されたら: `glab mr merge 2` → `git checkout main && git pull && git branch -d feat/step2-code-suggestions`。
+3. 実機手動検証の結果をユーザーに確認(§5未完了事項2)。不具合があれば修正を優先。
+4. マージ後、**ステップ3「Duo Chat webview双方向メッセージング」**の新ブランチ(例: `feat/step3-duo-chat-webview`)を作成し、**brainstormingスキルから**開始。起点情報:
+   - 現状: `LanguageServerBrowserView`(SWT Browser)はLSPの `$/gitlab/webview-metadata` から取得したURLを開くだけ。`$/gitlab/webview/*` ハンドラ(`GitLabLanguageClient`)は全てno-op、注入JS `LanguageServerBrowserView.js` は0バイト。
+   - VSCode側はLSPがWebviewコンテンツをサーブし、双方向メッセージング(`$/gitlab/webview/notification`・`$/gitlab/webview/request`、旧`$gitlab/`プレフィックス互換あり)で通信(`docs/feature-gap-analysis.md` 参照)。
+   - 最初の設計論点: SWT Browser(Edge/WebKit)とJavaの双方向ブリッジ方式(`BrowserFunction` + `execute/evaluate`)、およびgitlab-lsp側のwebviewプロトコル仕様の調査(ステップ2と同様、実装前にgitlab-lsp実ソースで通知名・ペイロードを確定させること)。
+   - プロセスはステップ2と同一: 調査(並行サブエージェント)→ 設計質問(1問ずつ)→ 2-3案提示 → 設計承認 → スペック → 計画(確定値埋め込み)→ SDD実行 → 最終レビュー → MR。
