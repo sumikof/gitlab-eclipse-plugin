@@ -23,6 +23,9 @@ import org.eclipse.swt.events.KeyEvent;
 import org.eclipse.swt.events.KeyListener;
 import org.eclipse.swt.events.MouseEvent;
 import org.eclipse.swt.events.MouseListener;
+import org.eclipse.ui.PlatformUI;
+import org.eclipse.ui.contexts.IContextActivation;
+import org.eclipse.ui.contexts.IContextService;
 
 import com.gitlab.eclipse.lsp.CancelStreamingParams;
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProvider;
@@ -43,6 +46,7 @@ import com.gitlab.eclipse.suggestions.SuggestionModel;
 public final class CompletionSessionManager implements ITextListener, KeyListener, MouseListener {
 	private static final int DEBOUNCE_MS = 250;
 	private static boolean requestFailureLogged;
+	private static IContextActivation suggestionContext;
 
 	private final ITextViewer viewer;
 	private CompletableFuture<InlineCompletionList> inflight;
@@ -207,6 +211,7 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 	void showSuggestion(String text, int offset, String trackingId, Integer optionIndex) {
 		SuggestionSessions.model().show(new SuggestionModel.Suggestion(text, offset, trackingId, optionIndex));
 		SuggestionTelemetry.shown(trackingId, optionIndex);
+		activateSuggestionContext();
 		refreshMinings();
 	}
 
@@ -219,10 +224,32 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 		if (streamId != null && server != null) {
 			server.cancelStreaming(new CancelStreamingParams(streamId));
 		}
+		deactivateSuggestionContext();
 		if (SuggestionSessions.model().isShowing()) {
 			SuggestionSessions.model().clear();
 			refreshMinings();
 		}
+	}
+
+	private static void activateSuggestionContext() {
+		if (suggestionContext != null) {
+			return;
+		}
+		var service = PlatformUI.getWorkbench().getService(IContextService.class);
+		if (service != null) {
+			suggestionContext = service.activateContext("com.gitlab.eclipse.suggestionVisible");
+		}
+	}
+
+	private static void deactivateSuggestionContext() {
+		if (suggestionContext == null) {
+			return;
+		}
+		var service = PlatformUI.getWorkbench().getService(IContextService.class);
+		if (service != null) {
+			service.deactivateContext(suggestionContext);
+		}
+		suggestionContext = null;
 	}
 
 	void refreshMinings() {

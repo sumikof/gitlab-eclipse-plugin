@@ -93,4 +93,56 @@
 			label="GitLab Duo Code Suggestions">
 		</codeMiningProvider>
 	</extension>
+
+	<extension point="org.eclipse.ui.commands">
+		<category id="com.gitlab.eclipse.commands.category" name="GitLab Duo"/>
+		<command id="com.gitlab.eclipse.commands.acceptSuggestion"
+			categoryId="com.gitlab.eclipse.commands.category" name="Accept Code Suggestion"/>
+		<command id="com.gitlab.eclipse.commands.acceptSuggestionWord"
+			categoryId="com.gitlab.eclipse.commands.category" name="Accept Next Word of Code Suggestion"/>
+		<command id="com.gitlab.eclipse.commands.dismissSuggestion"
+			categoryId="com.gitlab.eclipse.commands.category" name="Dismiss Code Suggestion"/>
+		<command id="com.gitlab.eclipse.commands.triggerSuggestion"
+			categoryId="com.gitlab.eclipse.commands.category" name="Trigger Code Suggestion"/>
+	</extension>
+
+	<extension point="org.eclipse.ui.handlers">
+		<handler commandId="com.gitlab.eclipse.commands.acceptSuggestion"
+			class="com.gitlab.eclipse.suggestions.ui.AcceptSuggestionHandler"/>
+		<handler commandId="com.gitlab.eclipse.commands.acceptSuggestionWord"
+			class="com.gitlab.eclipse.suggestions.ui.AcceptNextWordHandler"/>
+		<handler commandId="com.gitlab.eclipse.commands.dismissSuggestion"
+			class="com.gitlab.eclipse.suggestions.ui.DismissSuggestionHandler"/>
+		<handler commandId="com.gitlab.eclipse.commands.triggerSuggestion"
+			class="com.gitlab.eclipse.suggestions.ui.TriggerSuggestionHandler"/>
+	</extension>
+
+	<extension point="org.eclipse.ui.contexts">
+		<context id="com.gitlab.eclipse.suggestionVisible"
+			name="GitLab Code Suggestion Visible"
+			description="Active while an inline code suggestion is showing"
+			parentId="org.eclipse.ui.textEditorScope"/>
+	</extension>
+
+	<!-- TAB/ESCはtextEditorScopeに直接バインドし、ハンドラのisEnabled()で候補が無いとき
+	     バインドを無効化して通常編集へ素通しする(Copilot for Eclipse実証済みパターン)。
+	     独自コンテキストはM1+ARROW_RIGHT(単語受け入れ)のみに使う。 -->
+	<extension point="org.eclipse.ui.bindings">
+		<key commandId="com.gitlab.eclipse.commands.acceptSuggestion"
+			contextId="org.eclipse.ui.textEditorScope"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			sequence="TAB"/>
+		<key commandId="com.gitlab.eclipse.commands.dismissSuggestion"
+			contextId="org.eclipse.ui.textEditorScope"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			sequence="ESC"/>
+		<key commandId="com.gitlab.eclipse.commands.acceptSuggestionWord"
+			contextId="com.gitlab.eclipse.suggestionVisible"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			sequence="M1+ARROW_RIGHT"/>
+		<key commandId="com.gitlab.eclipse.commands.triggerSuggestion"
+			contextId="org.eclipse.ui.textEditorScope"
+			schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+			sequence="M1+M3+/"/>
+	</extension>
 </plugin>
