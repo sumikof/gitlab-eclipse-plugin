@@ -85,4 +85,12 @@
 		<startup class="com.gitlab.eclipse.lsp.install.LanguageServerStartup"/>
 		<startup class="com.gitlab.eclipse.suggestions.ui.SuggestionStartup"/>
 	</extension>
+
+	<extension point="org.eclipse.ui.workbench.texteditor.codeMiningProviders">
+		<codeMiningProvider
+			class="com.gitlab.eclipse.suggestions.ui.GhostTextCodeMiningProvider"
+			id="com.gitlab.eclipse.suggestions.ghostTextProvider"
+			label="GitLab Duo Code Suggestions">
+		</codeMiningProvider>
+	</extension>
 </plugin>
