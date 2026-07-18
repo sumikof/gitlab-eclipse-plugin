@@ -43,6 +43,11 @@ public final class TarArchiveReader {
 		}
 		long size = parseOctal(header, 124, 12);
 		byte typeflag = header[156];
+		if (typeflag == 'L' || typeflag == 'x') {
+			// GNU long-name / PAX extended headers would silently rename the next
+			// entry if skipped; fail loudly instead of extracting a broken layout.
+			throw new IOException("Unsupported tar entry type '" + (char) typeflag + "' for " + name);
+		}
 		remaining = size;
 		padding = (512 - (size % 512)) % 512;
 		return new Entry(name, size, typeflag == '0' || typeflag == 0);
@@ -93,7 +98,12 @@ public final class TarArchiveReader {
 		return new String(block, offset, end - offset, StandardCharsets.US_ASCII);
 	}
 
-	private static long parseOctal(byte[] block, int offset, int length) {
+	private static long parseOctal(byte[] block, int offset, int length) throws IOException {
+		if ((block[offset] & 0x80) != 0) {
+			// GNU base-256 encoding (entries > 8 GB); parsing it as octal would
+			// desync the stream, so fail loudly.
+			throw new IOException("Unsupported base-256 tar field encoding");
+		}
 		long value = 0;
 		for (int i = offset; i < offset + length; i++) {
 			byte b = block[i];

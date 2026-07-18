@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
@@ -37,6 +38,14 @@ class TarArchiveReaderTest {
 		byte[] cks = String.format("%06o\0 ", sum).getBytes(StandardCharsets.US_ASCII);
 		System.arraycopy(cks, 0, h, 148, 8);
 		return h;
+	}
+
+	/** Recomputes the header checksum after fields have been edited. */
+	private static void rechecksum(byte[] h) {
+		Arrays.fill(h, 148, 156, (byte) ' ');
+		int sum = 0;
+		for (byte b : h) sum += b & 0xff;
+		System.arraycopy(String.format("%06o\0 ", sum).getBytes(StandardCharsets.US_ASCII), 0, h, 148, 8);
 	}
 
 	private static void writeOctal(byte[] h, int offset, int length, long value) {
@@ -114,15 +123,43 @@ class TarArchiveReaderTest {
 	}
 
 	@Test
+	void rejectsGnuLongNameEntries() throws IOException {
+		byte[] longName = "some/very/long/path\0".getBytes(StandardCharsets.US_ASCII);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		out.writeBytes(header("././@LongLink", longName.length, 'L'));
+		out.writeBytes(longName);
+		out.writeBytes(new byte[(512 - (longName.length % 512)) % 512]);
+		out.writeBytes(fileEntry("some/very/long/path", "x".getBytes(StandardCharsets.UTF_8)));
+		var tar = new TarArchiveReader(new ByteArrayInputStream(archive(out.toByteArray())));
+		assertThrows(IOException.class, tar::nextEntry);
+	}
+
+	@Test
+	void rejectsPaxExtendedHeaderEntries() {
+		byte[] pax = "27 path=some/very/long/path\n".getBytes(StandardCharsets.US_ASCII);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		out.writeBytes(header("PaxHeaders.0/file", pax.length, 'x'));
+		out.writeBytes(pax);
+		out.writeBytes(new byte[(512 - (pax.length % 512)) % 512]);
+		var tar = new TarArchiveReader(new ByteArrayInputStream(archive(out.toByteArray())));
+		assertThrows(IOException.class, tar::nextEntry);
+	}
+
+	@Test
+	void rejectsBase256SizeEncoding() {
+		byte[] h = header("big.bin", 0, '0');
+		h[124] = (byte) 0x80; // GNU base-256 size marker
+		rechecksum(h);
+		var tar = new TarArchiveReader(new ByteArrayInputStream(archive(h)));
+		assertThrows(IOException.class, tar::nextEntry);
+	}
+
+	@Test
 	void joinsUstarPrefixField() throws IOException {
 		byte[] h = header("file.txt", 0, '0');
-		// re-checksum after writing the prefix field
 		byte[] prefix = "some/long/dir".getBytes(StandardCharsets.US_ASCII);
 		System.arraycopy(prefix, 0, h, 345, prefix.length);
-		Arrays.fill(h, 148, 156, (byte) ' ');
-		int sum = 0;
-		for (byte b : h) sum += b & 0xff;
-		System.arraycopy(String.format("%06o\0 ", sum).getBytes(StandardCharsets.US_ASCII), 0, h, 148, 8);
+		rechecksum(h);
 
 		var tar = new TarArchiveReader(new ByteArrayInputStream(archive(h)));
 		assertEquals("some/long/dir/file.txt", tar.nextEntry().name());
