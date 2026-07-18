@@ -1,7 +1,7 @@
-# 引き継ぎ書: gitlab-eclipse-plugin 機能拡張プロジェクト(ステップ2完了時点)
+# 引き継ぎ書: gitlab-eclipse-plugin 機能拡張プロジェクト(ステップ2マージ済み)
 
-作成日: 2026-07-18(ステップ1完了時の旧版を全面更新)
-現在ブランチ: `feat/step2-code-suggestions`(**MR !2 作成済み・ユーザーレビュー中**)
+作成日: 2026-07-18(最終更新: MR !2 マージ後)
+現在ブランチ: `main`(= `87d05ea`、ステップ2マージ済み。**次はステップ3のブランチ作成から**)
 
 ## 1. プロジェクトゴール
 
@@ -24,8 +24,8 @@ Eclipse向けGitLabプラグイン(本リポジトリ、元はPoC段階)の機�
 | ステップ | 内容 | 状態 |
 |---|---|---|
 | 1 | 基盤修復(LSPバイナリDL機構、Tychoビルド、壊れた宣言削除) | ✅ **マージ済み**(MR !1) |
-| 2 | Code Suggestions(インライン補完、ghost text、ストリーミング) | **MR !2 レビュー中** |
-| 3 | Duo Chat webview双方向メッセージング完成 → Chat v2 / Agentic Chat | 未着手 |
+| 2 | Code Suggestions(インライン補完、ghost text、ストリーミング) | ✅ **マージ済み**(MR !2) |
+| 3 | Duo Chat webview双方向メッセージング完成 → Chat v2 / Agentic Chat | **次に着手** |
 | 4 | Explain/Fix/Tests/Refactor コマンドハンドラ実装(Chatに接続) | 未着手 |
 | 5 | 認証強化(OAuth、証明書/プロキシ) | 未着手 |
 | 6 | ネイティブ系(Issue/MR/CI)の段階導入 | 未着手 |
@@ -38,7 +38,7 @@ Eclipse向けGitLabプラグイン(本リポジトリ、元はPoC段階)の機�
 - ユーザーレビュー指摘対応: tar読み取りの防御的失敗(GNU long-name/PAX/base-256検知でIOException)を追加。実9.5.0 tarball全325エントリが純ustarであることを確認済み。
 - 詳細は旧版引き継ぎ書(git履歴 `c864ee2` の docs/HANDOVER.md)と `docs/superpowers/specs|plans/2026-07-17-step1-*`。
 
-## 5. ステップ2の実績(現MR)
+## 5. ステップ2の実績(MR !2・マージ済み)
 
 ### ドキュメント
 - スペック: `docs/superpowers/specs/2026-07-18-step2-code-suggestions-design.md`
@@ -62,8 +62,7 @@ Eclipse向けGitLabプラグイン(本リポジトリ、元はPoC段階)の機�
 - `mvn -q verify`: **45/45 PASS**(ステップ1の21+新規24)。
 
 ### 未完了事項(次セッションが把握すべきこと)
-1. **MR !2 のユーザーレビュー継続中**(`6ee35cf` の再レビュー待ち)。承認→マージ→ステップ3へ。
-2. **実機Eclipse手動検証が未実施**(devcontainerはheadless)。`docs/manual-tests/2026-07-18-step2-code-suggestions.md` の12項目をユーザー実機で確認予定。最重要は **#3 単語受け入れ**(6ee35cfの修正対象)と **#5 TABフォールスルー**(`isEnabled()`再評価に依存、静的検証不能)。問題があれば同ブランチまたはfollow-up MRで修正。
+1. **実機Eclipse手動検証が未実施**(devcontainerはheadless)。`docs/manual-tests/2026-07-18-step2-code-suggestions.md` の12項目をユーザー実機で確認予定。最重要は **#3 単語受け入れ**(`6ee35cf` の修正対象)と **#5 TABフォールスルー**(`isEnabled()`再評価に依存、静的検証不能)。不具合が見つかったら **fix ブランチ+MR** で修正し、ステップ3と並行して対応可。
 
 ### 後続ステップへの申し送り(レビューで軽微と判断・記録済み)
 - ステップ1由来: LSPダウンロードのSHA256ピン / SecretStorage解決を保存アクション時に(→ステップ5)/ InstallJobキャンセル対応 / 設定ストアqualifierが数値バンドルID依存 / win-arm64例外の整形 / 「0 MB」初回表示
@@ -80,15 +79,23 @@ Eclipse向けGitLabプラグイン(本リポジトリ、元はPoC段階)の機�
 - `/workspace/out/` はVSCode拡張の参照コピー。**変更・コミット禁止**。
 - scratchpad(/tmp配下)は揮発。MR説明文の原稿等はセッションごとに作り直す。
 
-## 7. 再開時の手順(次セッションへの指示)
+## 7. 再開時の手順(次セッションへの指示): ステップ3の開始
 
-1. `git status` / `git log --oneline main..HEAD` / `.superpowers/sdd/progress.md` で現在地を確認。`glab auth status` で認証確認(切れていたら§6の手順)。
-2. **MR !2 の状態確認**: `glab mr view 2`。
-   - ユーザーレビュー指摘があれば: 同ブランチに追加コミット(修正はサブエージェント+再レビューの品質ゲートを通す)→ push → MR説明のレビュー対応履歴を更新 → 再レビュー依頼。
-   - 承認されたら: `glab mr merge 2` → `git checkout main && git pull && git branch -d feat/step2-code-suggestions`。
-3. 実機手動検証の結果をユーザーに確認(§5未完了事項2)。不具合があれば修正を優先。
-4. マージ後、**ステップ3「Duo Chat webview双方向メッセージング」**の新ブランチ(例: `feat/step3-duo-chat-webview`)を作成し、**brainstormingスキルから**開始。起点情報:
-   - 現状: `LanguageServerBrowserView`(SWT Browser)はLSPの `$/gitlab/webview-metadata` から取得したURLを開くだけ。`$/gitlab/webview/*` ハンドラ(`GitLabLanguageClient`)は全てno-op、注入JS `LanguageServerBrowserView.js` は0バイト。
-   - VSCode側はLSPがWebviewコンテンツをサーブし、双方向メッセージング(`$/gitlab/webview/notification`・`$/gitlab/webview/request`、旧`$gitlab/`プレフィックス互換あり)で通信(`docs/feature-gap-analysis.md` 参照)。
-   - 最初の設計論点: SWT Browser(Edge/WebKit)とJavaの双方向ブリッジ方式(`BrowserFunction` + `execute/evaluate`)、およびgitlab-lsp側のwebviewプロトコル仕様の調査(ステップ2と同様、実装前にgitlab-lsp実ソースで通知名・ペイロードを確定させること)。
-   - プロセスはステップ2と同一: 調査(並行サブエージェント)→ 設計質問(1問ずつ)→ 2-3案提示 → 設計承認 → スペック → 計画(確定値埋め込み)→ SDD実行 → 最終レビュー → MR。
+前提確認(1分):
+1. `git checkout main && git pull` / `.superpowers/sdd/progress.md` で現在地確認(ステップ2までcomplete、mainは `87d05ea` 以降のはず)。
+2. `glab auth status` で認証確認(切れていたら§6の手順でユーザーに再ログインしてもらう)。
+3. ユーザーに実機手動検証(§5未完了事項1)の結果を確認。不具合報告があれば fix ブランチで先に対応。
+
+ステップ3「Duo Chat webview双方向メッセージング」の進め方:
+1. ブランチ作成: `git checkout -b feat/step3-duo-chat-webview && git push -u origin feat/step3-duo-chat-webview`
+2. **brainstormingスキルを起動**し、まず並行サブエージェントで調査(ステップ2で効果実証済みの型):
+   - 調査A(ローカル `out/gitlab-vscode-extension`): VSCode拡張のwebview接続方式 — webview URLの取得と表示、拡張⇔webview⇔LSPのメッセージ中継(`$/gitlab/webview/notification`・`$/gitlab/webview/request` の使われ方、pluginId/webviewId/型)、認証情報の受け渡し。
+   - 調査B(Web、gitlab-lsp v9.5.0実ソース): webviewプロトコルの**確定値** — `$/gitlab/webview-metadata` の応答型、`$/gitlab/webview/created|destroyed|notification|request` の正確なペイロード、webviewサーバのポート/URL構成、Duo Chat v2のwebviewId。※ステップ2同様「実装前にプロトコル定数を実ソースで確定→計画に埋め込み」が品質の要。
+   - 調査C(Web): SWT Browser のJava⇔JS双方向ブリッジ — `BrowserFunction`(JS→Java)+ `Browser.execute/evaluate`(Java→JS)のパターン、Edge(WebView2)/WebKitの差異、`ProgressListener`でのJS注入タイミング。
+3. 設計質問(1問ずつ・選択肢形式)→ 2-3案提示 → 設計承認 → スペック(`docs/superpowers/specs/`)→ 実装計画(`docs/superpowers/plans/`、確定値埋め込み・No Placeholders)→ Subagent-Driven Development(タスクごと実装+レビュー、POJO層はTDD)→ 最終ブランチ全体レビュー(最上位モデル)→ finishing-a-development-branch → MR作成。
+4. 実装の起点(現状コード):
+   - `LanguageServerBrowserView.java`(SWT Browser)は `$/gitlab/webview-metadata` で取得したURLを開くだけ。PATをInputDialogで保存するボタンあり。
+   - `GitLabLanguageClient` の `$/gitlab/webview/*` ハンドラ4つ+旧`$gitlab/`互換2つは**全てno-op** — ここに双方向配線を実装する。
+   - 注入JS `LanguageServerBrowserView.js` は**0バイト**。
+   - ステップ2の `StreamingCompletionEvents`(static購読/publish、リスナー例外隔離)がディスパッチャの参照パターン(同型を新設、流用はしない)。
+5. 設計時の考慮点(§5申し送りより): webviewが必要とする認証・設定はLSP側がサーブする想定だが、トークン露出経路はレビュー観点に含めること。SWT Browser実機依存の動作はステップ2同様「手動検証手順書」を成果物に含める。
