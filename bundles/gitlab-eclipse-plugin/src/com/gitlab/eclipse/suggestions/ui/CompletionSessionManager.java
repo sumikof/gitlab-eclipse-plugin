@@ -34,7 +34,9 @@ import com.gitlab.eclipse.lsp.InlineCompletionContext;
 import com.gitlab.eclipse.lsp.InlineCompletionItem;
 import com.gitlab.eclipse.lsp.InlineCompletionList;
 import com.gitlab.eclipse.lsp.InlineCompletionParams;
+import com.gitlab.eclipse.lsp.StreamingCompletionResponse;
 import com.gitlab.eclipse.lsp.SuggestionTelemetry;
+import com.gitlab.eclipse.suggestions.StreamBuffer;
 import com.gitlab.eclipse.suggestions.SuggestionModel;
 
 /**
@@ -53,8 +55,10 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 	private int requestSerial;
 	private boolean applyingEdit;
 	// set when a streaming response was announced; validated when the stream completes
-	private int streamOffset;
-	private long streamStamp;
+	// volatile: written on the UI thread (onResponse), read from onStreamingNotification
+	// which runs on an arbitrary lsp4j notification-dispatch thread
+	private volatile int streamOffset;
+	private volatile long streamStamp;
 
 	CompletionSessionManager(ITextViewer viewer) {
 		this.viewer = viewer;
@@ -213,6 +217,26 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 		SuggestionTelemetry.shown(trackingId, optionIndex);
 		activateSuggestionContext();
 		refreshMinings();
+	}
+
+	// 任意スレッド(lsp4j通知スレッド)から呼ばれる
+	void onStreamingNotification(StreamingCompletionResponse response) {
+		StreamBuffer.Completed completed = SuggestionSessions.streamBuffer().onNotification(response);
+		if (completed == null || completed.text().isEmpty()) {
+			return;
+		}
+		StyledText widget = viewer.getTextWidget();
+		if (widget == null || widget.isDisposed()) {
+			return;
+		}
+		int offset = streamOffset;
+		long stamp = streamStamp;
+		widget.getDisplay().asyncExec(() -> {
+			if (widget.isDisposed() || isStale(offset, stamp)) {
+				return;
+			}
+			showSuggestion(completed.text(), offset, completed.trackingId(), completed.optionIndex());
+		});
 	}
 
 	/** Clears ghost text and aborts in-flight work (request, stream, pending timer). */

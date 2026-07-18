@@ -7,12 +7,20 @@ import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.IWindowListener;
 import org.eclipse.ui.PlatformUI;
 
+import com.gitlab.eclipse.suggestions.StreamingCompletionEvents;
+
 /** Registers the editor tracker once the workbench UI is up. */
 public class SuggestionStartup implements IStartup {
 
 	@Override
 	public void earlyStartup() {
 		Display.getDefault().asyncExec(() -> {
+			StreamingCompletionEvents.subscribe(response -> {
+				CompletionSessionManager manager = SuggestionSessions.active();
+				if (manager != null) {
+					manager.onStreamingNotification(response);
+				}
+			});
 			IWorkbench workbench = PlatformUI.getWorkbench();
 			EditorTracker tracker = new EditorTracker();
 			for (IWorkbenchWindow window : workbench.getWorkbenchWindows()) {
