@@ -3,21 +3,23 @@ package com.gitlab.eclipse.lsp;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+import org.eclipse.lsp4j.jsonrpc.services.JsonNotification;
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest;
 import org.eclipse.lsp4j.services.LanguageServer;
 
 public interface GitLabLanguageServer extends LanguageServer {
 	@JsonRequest("$/gitlab/webview-metadata")
 	public CompletableFuture<List<WebviewInfo>> webviewMetadata();
-//	public List<WebviewInfo> webviewMetadata();
 
-//	  @JsonNotification("$/gitlab/didChangeDocumentInActiveEditor")
-//	  fun didChangeDocumentInActiveEditor(uri: String)
+	@JsonRequest("textDocument/inlineCompletion")
+	public CompletableFuture<InlineCompletionList> inlineCompletion(InlineCompletionParams params);
 
-//	  @JsonNotification("$/gitlab/telemetry")
-//	  fun telemetry(params: CodeSuggestionsTelemetryParams)
+	@JsonNotification("cancelStreaming")
+	public void cancelStreaming(CancelStreamingParams params);
 
-//	  @JsonRequest("textDocument/inlineCompletion")
-//	  fun inlineCompletion(params: InlineCompletionParams): CompletableFuture<Either<List<CompletionItem>, CompletionList>>
+	@JsonNotification("$/gitlab/telemetry")
+	public void telemetry(TelemetryParams params);
 
+	@JsonNotification("$/gitlab/didChangeDocumentInActiveEditor")
+	public void didChangeDocumentInActiveEditor(String uri);
 }
