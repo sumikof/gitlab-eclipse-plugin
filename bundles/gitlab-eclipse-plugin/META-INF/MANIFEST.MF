@@ -9,7 +9,10 @@ Require-Bundle: org.eclipse.core.runtime,
  org.eclipse.lsp4e;bundle-version="0.18.12",
  org.eclipse.lsp4j.jsonrpc;bundle-version="0.23.1",
  org.eclipse.lsp4j;bundle-version="0.23.1",
- org.eclipse.equinox.security;bundle-version="1.4.400"
+ org.eclipse.equinox.security;bundle-version="1.4.400",
+ org.eclipse.jface.text;bundle-version="3.25.0",
+ org.eclipse.ui.workbench.texteditor;bundle-version="3.17.0",
+ org.eclipse.ui.editors;bundle-version="3.17.0"
 Bundle-RequiredExecutionEnvironment: JavaSE-21
 Import-Package: com.google.gson;version="[2.10.0,3.0.0)",
  jakarta.inject;version="[2.0.0,3.0.0)"

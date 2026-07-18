@@ -83,5 +83,6 @@
 
 	<extension point="org.eclipse.ui.startup">
 		<startup class="com.gitlab.eclipse.lsp.install.LanguageServerStartup"/>
+		<startup class="com.gitlab.eclipse.suggestions.ui.SuggestionStartup"/>
 	</extension>
 </plugin>
