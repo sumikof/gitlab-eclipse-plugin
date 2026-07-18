@@ -191,6 +191,9 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 			return;
 		}
 		widget.getDisplay().asyncExec(() -> {
+			if (SuggestionSessions.active() != this) {
+				return;
+			}
 			if (widget.isDisposed() || isStale(offset, stamp)) {
 				return;
 			}
@@ -232,6 +235,9 @@ public final class CompletionSessionManager implements ITextListener, KeyListene
 		int offset = streamOffset;
 		long stamp = streamStamp;
 		widget.getDisplay().asyncExec(() -> {
+			if (SuggestionSessions.active() != this) {
+				return;
+			}
 			if (widget.isDisposed() || isStale(offset, stamp)) {
 				return;
 			}
