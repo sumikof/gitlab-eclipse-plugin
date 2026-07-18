@@ -1,3 +1,8 @@
+/out/
+target/
+.polyglot.*
+.tycho-consumer-pom.xml
+
 .metadata
 bin/
 tmp/
