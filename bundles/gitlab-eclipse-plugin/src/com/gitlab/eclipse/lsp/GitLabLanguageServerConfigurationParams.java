@@ -91,7 +91,9 @@ public record GitLabLanguageServerConfigurationParams
 
 	public static record HttpAgentOptions(String ca, String cert, String certKey) {}
 
-	public static record Telemetry(boolean enabled, String trackingUrl) {}
+	public static record Telemetry(boolean enabled, String trackingUrl, List<TelemetryAction> actions) {}
+
+	public static record TelemetryAction(String action) {}
 
 	public static GitLabLanguageServerConfigurationParams.Builder builder() {
 		return new Builder();
