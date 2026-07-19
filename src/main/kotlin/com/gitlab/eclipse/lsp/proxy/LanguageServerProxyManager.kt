@@ -4,13 +4,13 @@ import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.internal.net.ProxyData
 import org.eclipse.core.internal.net.ProxyManager
 import org.eclipse.core.net.proxy.IProxyData
+import org.eclipse.core.net.proxy.IProxyService
 import java.net.URLEncoder
 
-class LanguageServerProxyManager {
+class LanguageServerProxyManager(
+  private val proxyManager: IProxyService = ProxyManager.getProxyManager(),
+) {
   private val logger by lazy { logger<LanguageServerProxyManager>() }
-
-  private val proxyManager
-    get() = ProxyManager.getProxyManager()
 
   fun getHttpProxyUrl(): String? {
     return proxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE)?.let { getProxyUrl(it) }
@@ -32,6 +32,20 @@ class LanguageServerProxyManager {
 
   fun getBypassHosts(): String? {
     return proxyManager.nonProxiedHosts?.joinToString(",")
+  }
+
+  /** Structured HTTPS (falling back to HTTP) proxy config for the native REST client. */
+  fun getHttpsProxyConfig(): ProxyConfig? {
+    val data = proxyManager.getProxyData(ProxyData.HTTPS_PROXY_TYPE)?.takeIf { it.host != null && it.port > 0 }
+      ?: proxyManager.getProxyData(ProxyData.HTTP_PROXY_TYPE)?.takeIf { it.host != null && it.port > 0 }
+      ?: return null
+    return ProxyConfig(
+      host = data.host,
+      port = data.port,
+      bypassHosts = proxyManager.nonProxiedHosts?.toList() ?: emptyList(),
+      username = data.userId?.takeIf { data.isRequiresAuthentication },
+      password = data.password?.takeIf { data.isRequiresAuthentication },
+    )
   }
 
   private fun getProxyUrl(data: IProxyData): String? {

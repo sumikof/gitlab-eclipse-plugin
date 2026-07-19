@@ -5,24 +5,14 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
 import org.eclipse.core.internal.net.ProxyData
 import org.eclipse.core.internal.net.ProxyManager
 
 class LanguageServerProxyManagerTest : DescribeSpec({
   val eclipseProxyManager = mockk<ProxyManager>()
-  val lsProxyManager = LanguageServerProxyManager()
+  val lsProxyManager = LanguageServerProxyManager(eclipseProxyManager)
 
   extensions(LoggingKotestExtension)
-
-  beforeSpec { mockkStatic(ProxyManager::class) }
-
-  beforeEach {
-    every { ProxyManager.getProxyManager() } returns eclipseProxyManager
-  }
-
-  afterSpec { unmockkAll() }
 
   describe("getHttpProxyUrl") {
     it("should return null when no HTTP proxy is set") {
