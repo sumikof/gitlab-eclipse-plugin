@@ -81,6 +81,20 @@ class ToggleCodeSuggestionsHandlerTest : DescribeSpec({
       }
       verify(exactly = 0) { session.rejectCodeSuggestion() }
     }
+
+    it("does not dismiss when turning off and no suggestion is displayed") {
+      every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns true
+      every { session.isCodeSuggestionDisplayed() } returns false
+
+      handler.execute(executionEvent)
+
+      verify {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_ENABLED, "false")
+        configurationService.sendConfiguration()
+        refreshCodeSuggestionsToggle()
+      }
+      verify(exactly = 0) { session.rejectCodeSuggestion() }
+    }
   }
 
   describe("updateElement") {
