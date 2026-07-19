@@ -22,9 +22,18 @@ class GitLabHttpClient(private val factory: GitLabHttpClientFactory = service())
   fun rebuildIfNeeded(): HttpClient = synchronized(lock) {
     val snapshot = factory.currentSnapshot()
     if (cachedClient == null || cachedSnapshot != snapshot) {
+      val previous = cachedClient
       cachedClient = factory.create(snapshot)
       cachedSnapshot = snapshot
+      previous?.shutdown()
     }
     cachedClient!!
+  }
+
+  /** Releases the current client; call on plugin shutdown. */
+  fun close(): Unit = synchronized(lock) {
+    cachedClient?.shutdown()
+    cachedClient = null
+    cachedSnapshot = null
   }
 }
