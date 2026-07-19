@@ -22,5 +22,10 @@ class BypassAwareProxySelectorTest : DescribeSpec({
     it("returns NO_PROXY for an exact-bypassed host") {
       selector.select(URI.create("http://localhost:3000/x")) shouldBe listOf(Proxy.NO_PROXY)
     }
+    it("matches a wildcard bypass pattern case-insensitively") {
+      val mixedCaseProxy = ProxyConfig("proxy.internal", 8080, listOf("*.Example.com"), null, null)
+      val mixedCaseSelector = BypassAwareProxySelector(mixedCaseProxy)
+      mixedCaseSelector.select(URI.create("https://foo.example.com/x")) shouldBe listOf(Proxy.NO_PROXY)
+    }
   }
 })

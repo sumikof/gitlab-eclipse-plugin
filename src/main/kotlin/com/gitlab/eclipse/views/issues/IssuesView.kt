@@ -11,7 +11,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.eclipse.jface.viewers.ArrayContentProvider
 import org.eclipse.jface.viewers.ColumnLabelProvider
-import org.eclipse.jface.viewers.DoubleClickEvent
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.jface.viewers.TableViewer
 import org.eclipse.jface.viewers.TableViewerColumn
@@ -55,7 +54,7 @@ class IssuesView : ViewPart() {
     presenter = IssueListPresenter(
       state = refreshState,
       isDisposed = { viewer.control.isDisposed },
-      applyInput = { viewer.input = it },
+      applyInput = { applyIssues(it) },
       showError = { showError(it) },
     )
 
@@ -81,9 +80,17 @@ class IssuesView : ViewPart() {
     }
   }
 
+  private fun applyIssues(issues: List<GitLabIssue>) {
+    if (viewer.control.isDisposed) return
+    viewer.input = issues
+    setContentDescription(if (issues.isEmpty()) "No issues assigned to you." else "")
+  }
+
   private fun showError(error: Throwable) {
     logger.error("Failed to load issues assigned to you.", error)
-    if (!viewer.control.isDisposed) viewer.input = emptyList<GitLabIssue>()
+    if (viewer.control.isDisposed) return
+    viewer.input = emptyList<GitLabIssue>()
+    setContentDescription("Failed to load issues — see the Error Log for details.")
   }
 
   override fun setFocus() {

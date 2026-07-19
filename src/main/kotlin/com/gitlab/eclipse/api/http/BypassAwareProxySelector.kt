@@ -25,7 +25,7 @@ class BypassAwareProxySelector(private val proxy: ProxyConfig) : ProxySelector()
     if (pattern.isBlank()) return false
     if (pattern.startsWith("*.")) {
       val suffix = pattern.substring(1) // ".example.com"
-      return host == pattern.substring(2) || host.endsWith(suffix)
+      return host.equals(pattern.substring(2), ignoreCase = true) || host.endsWith(suffix, ignoreCase = true)
     }
     return host.equals(pattern, ignoreCase = true)
   }

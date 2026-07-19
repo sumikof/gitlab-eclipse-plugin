@@ -44,6 +44,9 @@ class GitLabHttpClientFactory(
     return builder.build()
   }
 
+  // NOTE: this bypasses certificate chain/trust validation only. It does NOT disable
+  // hostname (SNI/endpoint-identification) verification, so a cert with a mismatched
+  // CN/SAN still fails the handshake. Full permissiveness (if ever needed) is deferred to PR2.
   private fun trustAllContext(): SSLContext {
     val trustAll = object : X509TrustManager {
       override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}

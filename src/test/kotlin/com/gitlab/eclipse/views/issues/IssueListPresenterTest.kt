@@ -7,24 +7,10 @@ import io.kotest.matchers.shouldBe
 class IssueListPresenterTest : DescribeSpec({
   val issue = GitLabIssue(1, 1, "A", "https://x/1", "opened", null)
 
-  fun fixtures(disposed: Boolean = false): Triple<IssueListPresenter, MutableList<GitLabIssue>, MutableList<Throwable>> {
-    val applied = mutableListOf<GitLabIssue>()
-    val errors = mutableListOf<Throwable>()
-    val state = ViewRefreshState()
-    val presenter = IssueListPresenter(
-      state = state,
-      isDisposed = { disposed },
-      applyInput = { applied.clear(); applied.addAll(it) },
-      showError = { errors.add(it) },
-    )
-    return Triple(presenter, applied, errors)
-  }
-
   describe("onResult") {
     it("applies the result of the current generation") {
-      val (presenter, applied, _) = fixtures()
+      val applied = mutableListOf<GitLabIssue>()
       val state = ViewRefreshState()
-      // Re-create with a shared state we control:
       val gen = state.begin()
       val local = IssueListPresenter(state, { false }, { applied.clear(); applied.addAll(it) }, {})
       local.onResult(gen, Result.success(listOf(issue)))
