@@ -1,5 +1,6 @@
 package com.gitlab.eclipse
 
+import com.gitlab.eclipse.api.apiModule
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
@@ -40,6 +41,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         pluginModule,
         codeSuggestionsModule,
         telemetryModule,
+        apiModule,
       )
     }
 
