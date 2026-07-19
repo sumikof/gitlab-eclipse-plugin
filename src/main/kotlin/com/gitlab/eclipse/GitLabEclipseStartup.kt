@@ -1,5 +1,7 @@
 package com.gitlab.eclipse
 
+import com.gitlab.eclipse.api.apiModule
+import com.gitlab.eclipse.api.http.GitLabHttpClient
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
@@ -40,6 +42,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         pluginModule,
         codeSuggestionsModule,
         telemetryModule,
+        apiModule,
       )
     }
 
@@ -74,5 +77,6 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     service<GitLabLanguageServerProcessProvider>().stop()
     service<CodeSuggestionsManager>().endAllSessions()
     service<OAuthTokenProvider>().stopTokenRefreshTimer()
+    service<GitLabHttpClient>().close()
   }
 }
