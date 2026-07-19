@@ -14,4 +14,7 @@ object PreferenceConstants {
   const val AUTHENTICATION_TYPE: String = "gitlab.authentication.type"
   const val CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES: String = "gitlab.codeSuggestions.additionalLanguages"
   const val CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES: String = "gitlab.codeSuggestions.disabledSupportedLanguages"
+  const val CLIENT_CERTIFICATE: String = "gitlab.certificate.clientCertificate"
+  const val CLIENT_CERTIFICATE_KEY: String = "gitlab.certificate.clientCertificateKey"
+  const val CODE_SUGGESTIONS_ENABLED: String = "gitlab.codeSuggestions.enabled"
 }

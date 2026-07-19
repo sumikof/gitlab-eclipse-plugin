@@ -15,6 +15,7 @@ data class GitLabLanguageServerConfigurationParams(
   val workspaceFolders: List<WorkspaceFolder>? = null,
 ) {
   data class CodeCompletion(
+    val enabled: Boolean = true,
     val enableSecretRedaction: Boolean = true,
     val disabledSupportedLanguages: List<String> = emptyList(),
     val additionalLanguages: List<String> = emptyList()

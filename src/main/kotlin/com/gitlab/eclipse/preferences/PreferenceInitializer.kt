@@ -15,5 +15,8 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.PAT.name)
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, "")
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, "")
+    store.setDefault(PreferenceConstants.CLIENT_CERTIFICATE, "")
+    store.setDefault(PreferenceConstants.CLIENT_CERTIFICATE_KEY, "")
+    store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_ENABLED, true)
   }
 }
