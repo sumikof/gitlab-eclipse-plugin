@@ -57,6 +57,12 @@
                 name="Toggle Code Suggestions"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowIssues"
+                name="Show GitLab Issues Assigned To Me"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -158,6 +164,14 @@
               category="gitlab-eclipse-plugin"
               class="com.gitlab.eclipse.views.LanguageServerBrowserView"
               name="GitLab Duo"
+              icon="icons/notification.png"
+              inject="true"
+        />
+
+        <view id="com.gitlab.eclipse.views.IssuesView"
+              category="gitlab-eclipse-plugin"
+              class="com.gitlab.eclipse.views.issues.IssuesView"
+              name="GitLab Issues"
               icon="icons/notification.png"
               inject="true"
         />
@@ -269,6 +283,11 @@
                 commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
                 class="com.gitlab.eclipse.codesuggestions.handlers.ToggleCodeSuggestionsHandler">
         </handler>
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowIssues"
+                class="com.gitlab.eclipse.handlers.ShowIssuesHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -431,6 +450,12 @@
                     id="gitlab-eclipse-plugin.menus.showDocumentation"
                     label="Show Documentation">
             </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowIssues"
+                    label="Issues Assigned To Me"
+                    style="push"
+            />
         </menuContribution>
     </extension>
 
