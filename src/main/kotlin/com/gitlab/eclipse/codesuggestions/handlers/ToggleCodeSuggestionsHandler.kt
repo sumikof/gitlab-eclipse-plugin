@@ -1,11 +1,10 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
-import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
+import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
 import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.PreferenceConstants
-import com.gitlab.eclipse.utils.PlatformUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.ui.commands.IElementUpdater
@@ -21,12 +20,7 @@ class ToggleCodeSuggestionsHandler : AbstractHandler(), IElementUpdater {
     service<GitLabLanguageServerConfigurationService>().sendConfiguration()
 
     if (!newValue) {
-      service<PlatformUtils>().getActiveTextEditor()?.let { editor ->
-        val session = service<CodeSuggestionsManager>().getOrCreateSession(editor)
-        if (session.isCodeSuggestionDisplayed()) {
-          session.rejectCodeSuggestion()
-        }
-      }
+      dismissActiveCodeSuggestion()
     }
 
     refreshCodeSuggestionsToggle()

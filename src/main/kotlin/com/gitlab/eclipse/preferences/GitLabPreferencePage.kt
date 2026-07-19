@@ -3,7 +3,9 @@ package com.gitlab.eclipse.preferences
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
+import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
 import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
+import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
@@ -260,6 +262,11 @@ class GitLabPreferencePage(
     authenticationStateService.resetAuthenticatedState()
 
     refreshCodeSuggestionsLanguageToggle()
+
+    refreshCodeSuggestionsToggle()
+    if (!preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)) {
+      dismissActiveCodeSuggestion()
+    }
 
     return true // super.performOk() always returns true
   }

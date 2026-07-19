@@ -6,6 +6,7 @@ import com.gitlab.eclipse.codesuggestions.listeners.*
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.codesuggestions.tooltip.CodeSuggestionsTooltip
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
 import com.gitlab.eclipse.utils.CursoredSet
@@ -21,6 +22,7 @@ import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.IDocumentListener
 import org.eclipse.swt.custom.StyledText
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import kotlin.time.Duration.Companion.milliseconds
 
 @Suppress("MagicNumber", "EmptyFunctionBlock", "TooManyFunctions", "LoopWithTooManyJumpStatements")
@@ -129,6 +131,11 @@ class CodeSuggestionsSession(
         if (suggestion != null) {
           codeSuggestions.add(suggestion)
         } else {
+          annotationManager.hide()
+          return@launch
+        }
+
+        if (!isGloballyEnabled()) {
           annotationManager.hide()
           return@launch
         }
@@ -471,7 +478,11 @@ class CodeSuggestionsSession(
     }
   }
 
-  private fun isEnabled() = service<CodeSuggestionsStateService>().isEnabled && !isCursorAfterBracketPair()
+  private fun isGloballyEnabled() =
+    service<CodeSuggestionsStateService>().isEnabled &&
+      service<ScopedPreferenceStore>().getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)
+
+  private fun isEnabled() = isGloballyEnabled() && !isCursorAfterBracketPair()
 
   private fun isCursorAfterBracketPair(): Boolean {
     try {
