@@ -136,4 +136,20 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       }
     }
   }
+
+  describe("copyMessage") {
+    it("should copy the whole message to the clipboard") {
+      val message = "The full assistant message"
+      val notification = CopyMessageNotification(message)
+
+      controller.copyMessage(notification)
+
+      verify {
+        anyConstructed<Clipboard>().setContents(
+          arrayOf(message),
+          any()
+        )
+      }
+    }
+  }
 })

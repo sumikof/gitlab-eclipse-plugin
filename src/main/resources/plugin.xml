@@ -51,6 +51,12 @@
                 name="Open Duo Chat Window"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
+                name="Toggle Code Suggestions"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -258,6 +264,11 @@
                 commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
                 class="com.gitlab.eclipse.codesuggestions.handlers.ToggleCodeSuggestionForLanguageHandler"
         />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
+                class="com.gitlab.eclipse.codesuggestions.handlers.ToggleCodeSuggestionsHandler">
+        </handler>
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -391,6 +402,12 @@
                     commandId="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
                     label="Code Suggestions: Disabled">
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
+                    id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
+                    label="Disable Code Suggestions">
             </command>
 
             <separator name="StatusActions" visible="true"/>

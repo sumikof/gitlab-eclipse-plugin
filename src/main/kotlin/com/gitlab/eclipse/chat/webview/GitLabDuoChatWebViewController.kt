@@ -69,4 +69,13 @@ class GitLabDuoChatWebViewController(
       clipboard.dispose()
     }
   }
+
+  @PluginNotification("copyMessage")
+  fun copyMessage(notification: CopyMessageNotification) {
+    currentDisplay.syncExec {
+      val clipboard = Clipboard(currentDisplay)
+      clipboard.setContents(arrayOf(notification.message), arrayOf(TextTransfer.getInstance()))
+      clipboard.dispose()
+    }
+  }
 }

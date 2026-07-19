@@ -30,6 +30,7 @@ class GitLabLanguageServerConfigurationService(
     val params = GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
+        enabled = preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED),
         enableSecretRedaction = true,
         additionalLanguages = service<CodeSuggestionsLanguageService>().getAdditionalLanguages(),
         disabledSupportedLanguages = service<CodeSuggestionsLanguageService>().getDisabledLanguages(),
@@ -46,7 +47,9 @@ class GitLabLanguageServerConfigurationService(
       ),
       token = service<GitLabTokenProviderManager>().getToken(),
       httpAgentOptions = HttpAgentOptions(
-        ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() }
+        ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() },
+        cert = preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE).takeIf { it.isNotBlank() },
+        certKey = preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE_KEY).takeIf { it.isNotBlank() },
       ),
       workspaceFolders = workspaceFolders
     )

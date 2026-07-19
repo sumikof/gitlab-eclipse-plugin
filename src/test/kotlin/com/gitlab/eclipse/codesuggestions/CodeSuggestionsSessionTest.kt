@@ -5,6 +5,7 @@ import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnot
 import com.gitlab.eclipse.codesuggestions.listeners.*
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.uri
@@ -24,6 +25,7 @@ import org.eclipse.swt.SwtCallable
 import org.eclipse.swt.custom.StyledText
 import org.eclipse.text.undo.DocumentUndoManager
 import org.eclipse.text.undo.DocumentUndoManagerRegistry
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -38,6 +40,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
 
   val codeSuggestionsProvider = mockk<CodeSuggestionsProvider>()
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>()
+  val preferenceStore = mockk<ScopedPreferenceStore>()
   val codeSuggestionCommandContext = mockk<CodeSuggestionsCommandContext>(relaxUnitFun = true)
   val codeSuggestion = CodeSuggestion(streamId = null, "foo", 123, "sample suggestion")
 
@@ -63,6 +66,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
       modules(
         module {
           single { codeSuggestionsStateService }
+          single { preferenceStore }
         }
       )
     }
@@ -73,6 +77,7 @@ class CodeSuggestionsSessionTest : DescribeSpec({
     every { currentDisplay.syncCall<Int, Exception>(any()) } answers { firstArg<SwtCallable<Int, Exception>>().call() }
 
     every { codeSuggestionsStateService.isEnabled } returns true
+    every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns true
 
     every { textWidget.caretOffset } returns 10
 
@@ -224,6 +229,27 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         session.requestCodeSuggestion()
 
         coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
+      }
+
+      it("should not request code suggestions when the global preference is disabled") {
+        every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns false
+
+        session.requestCodeSuggestion()
+
+        coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
+      }
+
+      it("should not display a pending suggestion if the global preference is disabled while the request is in flight") {
+        every { textWidget.caretOffset } returns 10
+
+        session.requestCodeSuggestion()
+        // Simulate the user disabling Code Suggestions globally while the debounced request is pending.
+        every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns false
+
+        coroutineScope.advanceUntilIdle()
+
+        verify(exactly = 0) { renderer.display(any(), any()) }
+        verify { annotationManager.hide() }
       }
 
       it("should not request code suggestions when cursor is after bracket pairs") {

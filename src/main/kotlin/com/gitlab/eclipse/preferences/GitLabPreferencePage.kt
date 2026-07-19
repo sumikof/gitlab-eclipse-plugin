@@ -3,7 +3,9 @@ package com.gitlab.eclipse.preferences
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
+import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
 import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
+import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
@@ -145,6 +147,32 @@ class GitLabPreferencePage(
     )
 
     addField(
+      FileFieldEditor(
+        PreferenceConstants.CLIENT_CERTIFICATE,
+        "Client certificate",
+        true,
+        StringFieldEditor.VALIDATE_ON_KEY_STROKE,
+        fieldEditorParent
+      ).apply {
+        setFileExtensions(arrayOf("*.pem", "*.crt"))
+        errorMessage = "Please select a .pem or .crt file."
+      }
+    )
+
+    addField(
+      FileFieldEditor(
+        PreferenceConstants.CLIENT_CERTIFICATE_KEY,
+        "Client certificate key",
+        true,
+        StringFieldEditor.VALIDATE_ON_KEY_STROKE,
+        fieldEditorParent
+      ).apply {
+        setFileExtensions(arrayOf("*.key", "*.pem"))
+        errorMessage = "Please select a .key or .pem file."
+      }
+    )
+
+    addField(
       BooleanFieldEditor(
         PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS,
         "Stream Code Generations",
@@ -161,6 +189,15 @@ class GitLabPreferencePage(
     )
 
     addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.CODE_SUGGESTIONS_ENABLED,
+        "Enable Code Suggestions",
+        fieldEditorParent
+      )
+    )
+
     addLabel("Code Suggestions Enabled Languages")
 
     addField(
@@ -225,6 +262,11 @@ class GitLabPreferencePage(
     authenticationStateService.resetAuthenticatedState()
 
     refreshCodeSuggestionsLanguageToggle()
+
+    refreshCodeSuggestionsToggle()
+    if (!preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)) {
+      dismissActiveCodeSuggestion()
+    }
 
     return true // super.performOk() always returns true
   }
