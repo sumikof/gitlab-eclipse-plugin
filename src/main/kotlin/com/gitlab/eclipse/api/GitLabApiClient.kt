@@ -38,8 +38,8 @@ class GitLabApiClient(
 
       val next = response.headers().firstValue("x-next-page").orElse("").trim()
       if (next.isEmpty()) return all
-      val nextPage = next.toIntOrNull() ?: return all
-      if (nextPage <= page || nextPage > MAX_PAGES) {
+      val nextPage = next.toIntOrNull()
+      if (nextPage == null || nextPage <= page || nextPage > MAX_PAGES) {
         logger.warn("Pagination stopped at page $page (next='$next', cap=$MAX_PAGES); results may be truncated.")
         return all
       }

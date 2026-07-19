@@ -7,10 +7,15 @@ import com.gitlab.eclipse.preferences.PreferenceConstants
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.osgi.framework.Bundle
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
@@ -37,6 +42,7 @@ class GitLabApiClientTest : DescribeSpec({
   }
 
   beforeEach {
+    clearMocks(http)
     every { tokens.getToken() } returns "tok-123"
     every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com/"
   }
@@ -68,6 +74,36 @@ class GitLabApiClientTest : DescribeSpec({
         response("boom", status = 500),
       )
       shouldThrow<GitLabApiException> { client.fetchListFromApi(req()) }
+    }
+
+    it("stops without looping when x-next-page is non-numeric, and warns") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val localClient = GitLabApiClient(http, tokens, prefs)
+      every { http.send(any()) } returns response("""[{"id":1}]""", nextPage = "next")
+
+      val result = localClient.fetchListFromApi(req())
+
+      result shouldBe listOf(Item(1))
+      verify(exactly = 1) { http.send(any()) }
+      verify(exactly = 1) { log.warn(match { it.contains("truncated") }) }
+    }
+
+    it("stops at MAX_PAGES (20) when x-next-page keeps advancing, and warns") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val localClient = GitLabApiClient(http, tokens, prefs)
+      var call = 0
+      every { http.send(any()) } answers {
+        call++
+        response("""[{"id":$call}]""", nextPage = (call + 1).toString())
+      }
+
+      val result = localClient.fetchListFromApi(req())
+
+      result shouldBe (1..20).map { Item(it.toLong()) }
+      verify(exactly = 20) { http.send(any()) }
+      verify(exactly = 1) { log.warn(match { it.contains("truncated") }) }
     }
   }
 })
