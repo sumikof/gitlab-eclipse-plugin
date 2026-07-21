@@ -52,6 +52,11 @@ class TlsMaterialLoaderTest : DescribeSpec({
     it("rejects a missing CA file") {
       shouldThrow<GitLabConfigurationException> { loader.loadTrustManagers("/no/such/ca.pem") }
     }
+    it("reports a CA-specific message for a malformed CA file") {
+      val bad = java.io.File.createTempFile("bad-ca", ".pem").apply { writeText("not a certificate"); deleteOnExit() }
+      val e = shouldThrow<GitLabConfigurationException> { loader.loadTrustManagers(bad.absolutePath) }
+      e.message shouldBe TlsMaterialLoader.INVALID_CA_MSG
+    }
   }
 
   describe("loadKeyManagers") {

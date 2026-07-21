@@ -41,7 +41,7 @@ class TlsMaterialLoader {
   }
 
   fun loadTrustManagers(caCertPath: String): Array<TrustManager> {
-    val certs = parseCertificates(readFile(caCertPath))
+    val certs = parseCertificates(readFile(caCertPath), INVALID_CA_MSG)
     if (certs.isEmpty()) throw GitLabConfigurationException(INVALID_CA_MSG)
     val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
       load(null, null)
@@ -52,7 +52,7 @@ class TlsMaterialLoader {
   }
 
   fun loadKeyManagers(certPath: String, keyPath: String): Array<KeyManager> {
-    val chain = parseCertificates(readFile(certPath))
+    val chain = parseCertificates(readFile(certPath), INVALID_CERT_MSG)
     if (chain.isEmpty()) throw GitLabConfigurationException(INVALID_CERT_MSG)
     val key = parsePrivateKey(String(readFile(keyPath)))
     val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
@@ -63,18 +63,18 @@ class TlsMaterialLoader {
       .apply { init(ks, CharArray(0)) }.keyManagers
   }
 
-  private fun parseCertificates(bytes: ByteArray): List<X509Certificate> = try {
+  private fun parseCertificates(bytes: ByteArray, invalidMessage: String): List<X509Certificate> = try {
     CertificateFactory.getInstance("X.509")
       .generateCertificates(ByteArrayInputStream(bytes))
       .filterIsInstance<X509Certificate>()
   } catch (e: Exception) {
-    throw GitLabConfigurationException(INVALID_CERT_MSG)
+    throw GitLabConfigurationException(invalidMessage)
   }
 
   private fun readFile(path: String): ByteArray = try {
     java.io.File(path).readBytes()
   } catch (e: Exception) {
-    throw GitLabConfigurationException("Could not read a configured certificate file. Check the path in GitLab preferences.")
+    throw GitLabConfigurationException(UNREADABLE_FILE_MSG)
   }
 
   private fun keyFromPkcs8(der: ByteArray): PrivateKey {
@@ -140,5 +140,7 @@ class TlsMaterialLoader {
         "(PKCS#8 'BEGIN PRIVATE KEY' or RSA PKCS#1 'BEGIN RSA PRIVATE KEY')."
     const val INVALID_CA_MSG = "No certificates found in the configured CA certificate file."
     const val INVALID_CERT_MSG = "Could not read the client certificate. Provide a PEM X.509 certificate."
+    const val UNREADABLE_FILE_MSG =
+      "Could not read a configured certificate or key file. Check the paths in GitLab preferences."
   }
 }
