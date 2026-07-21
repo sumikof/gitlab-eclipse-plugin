@@ -32,9 +32,7 @@ class TlsMaterialLoader {
     }
     return when {
       text.contains("BEGIN PRIVATE KEY") -> keyFromPkcs8(pemBody(text, "PRIVATE KEY"))
-      text.contains("BEGIN RSA PRIVATE KEY") ->
-        KeyFactory.getInstance("RSA")
-          .generatePrivate(PKCS8EncodedKeySpec(wrapPkcs1AsPkcs8(pemBody(text, "RSA PRIVATE KEY"))))
+      text.contains("BEGIN RSA PRIVATE KEY") -> keyFromPkcs8(wrapPkcs1AsPkcs8(pemBody(text, "RSA PRIVATE KEY")))
       text.contains("BEGIN EC PRIVATE KEY") -> throw GitLabConfigurationException(UNSUPPORTED_KEY_MSG)
       else -> throw GitLabConfigurationException(INVALID_KEY_MSG)
     }

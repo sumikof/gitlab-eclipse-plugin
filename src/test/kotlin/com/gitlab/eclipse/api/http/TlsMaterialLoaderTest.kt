@@ -42,6 +42,11 @@ class TlsMaterialLoaderTest : DescribeSpec({
     it("rejects garbage") {
       shouldThrow<GitLabConfigurationException> { loader.parsePrivateKey("not a pem") }
     }
+    it("normalizes a malformed PKCS#1 key to a configuration error") {
+      val garbage = java.util.Base64.getEncoder().encodeToString("not valid der".toByteArray())
+      val pem = "-----BEGIN RSA PRIVATE KEY-----\n$garbage\n-----END RSA PRIVATE KEY-----"
+      shouldThrow<GitLabConfigurationException> { loader.parsePrivateKey(pem) }
+    }
   }
 
   describe("loadTrustManagers") {
