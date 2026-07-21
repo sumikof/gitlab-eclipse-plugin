@@ -2,6 +2,7 @@ package com.gitlab.eclipse
 
 import com.gitlab.eclipse.api.apiModule
 import com.gitlab.eclipse.api.http.GitLabHttpClient
+import com.gitlab.eclipse.api.http.relaxTunnelBasicAuthScheme
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
@@ -32,6 +33,11 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // This ensures logs are written to a consistent location regardless of working directory
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
+
+    // Best-effort: allow Basic proxy auth over HTTPS CONNECT tunnels for the native REST
+    // client. Read-once in java.net.http; reliable activation needs the eclipse.ini VM arg
+    // -Djdk.http.auth.tunneling.disabledSchemes=  (see TunnelAuthSchemes.kt).
+    relaxTunnelBasicAuthScheme()
 
     startKoin {
       modules(

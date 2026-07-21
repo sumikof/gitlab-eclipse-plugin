@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.api.http
 
+import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -8,19 +9,21 @@ import java.net.http.HttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.time.Duration
+import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 /**
- * Single egress seam: every native REST client obtains its [HttpClient] here so that
- * TLS and proxy configuration are centralized. PR1 supports ignore-cert and a
- * non-authenticated proxy. PR2 adds mTLS cert/key loading and proxy auth into the
- * SAME factory.
+ * Single egress seam: every native REST client obtains its [HttpClient] here so TLS
+ * and proxy configuration are centralized. Composes an SSLContext from three axes —
+ * client KeyManagers (mTLS), TrustManagers (custom CA / trust-all / default), and
+ * hostname verification (kept ON) — and attaches proxy auth when credentials are set.
  */
 class GitLabHttpClientFactory(
   private val preferenceStore: ScopedPreferenceStore = service(),
   private val proxyManager: LanguageServerProxyManager = service(),
+  private val tlsMaterialLoader: TlsMaterialLoader = service(),
 ) {
   fun currentSnapshot(): EgressConfigSnapshot = EgressConfigSnapshot(
     ignoreCertificateErrors = preferenceStore.getBoolean(PreferenceConstants.IGNORE_CERTIFICATE_ERRORS),
@@ -33,29 +36,50 @@ class GitLabHttpClientFactory(
   fun create(snapshot: EgressConfigSnapshot): HttpClient {
     val builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
 
-    // PR1: ignore-cert only. PR2 will build an mTLS/CA SSLContext from the cert paths here.
-    if (snapshot.ignoreCertificateErrors) {
-      builder.sslContext(trustAllContext())
-    }
+    buildSslContext(snapshot)?.let { builder.sslContext(it) }
 
-    // PR1: non-authenticated proxy. PR2 will add builder.authenticator(...) when proxy has creds.
-    snapshot.proxy?.let { builder.proxy(BypassAwareProxySelector(it)) }
+    snapshot.proxy?.let { proxy ->
+      builder.proxy(BypassAwareProxySelector(proxy))
+      if (proxy.username != null && proxy.password != null) {
+        builder.authenticator(GitLabProxyAuthenticator(proxy))
+      }
+    }
 
     return builder.build()
   }
 
-  // NOTE: this bypasses certificate chain/trust validation only. It does NOT disable
-  // hostname (SNI/endpoint-identification) verification, so a cert with a mismatched
-  // CN/SAN still fails the handshake. Full permissiveness (if ever needed) is deferred to PR2.
-  private fun trustAllContext(): SSLContext {
-    val trustAll = object : X509TrustManager {
-      override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-      override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-      override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+  /**
+   * Composes an SSLContext from the three egress axes, or null when everything is
+   * default (so the client keeps the JDK default TLS). ignore-cert supersedes a
+   * custom CA. Hostname verification is never disabled here (chain-only trust-all).
+   */
+  internal fun buildSslContext(snapshot: EgressConfigSnapshot): SSLContext? {
+    val keyManagers: Array<KeyManager>? = when {
+      snapshot.clientCertificatePath != null && snapshot.clientCertificateKeyPath != null ->
+        tlsMaterialLoader.loadKeyManagers(snapshot.clientCertificatePath, snapshot.clientCertificateKeyPath)
+      snapshot.clientCertificatePath != null || snapshot.clientCertificateKeyPath != null ->
+        throw GitLabConfigurationException(
+          "Both the client certificate and its key must be set (or neither).",
+        )
+      else -> null
     }
-    return SSLContext.getInstance("TLS").apply {
-      init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+
+    val trustManagers: Array<TrustManager>? = when {
+      snapshot.ignoreCertificateErrors -> arrayOf(trustAllManager())            // supersedes CA
+      snapshot.caCertificatePath != null -> tlsMaterialLoader.loadTrustManagers(snapshot.caCertificatePath)
+      else -> null
     }
+
+    if (keyManagers == null && trustManagers == null) return null
+    return SSLContext.getInstance("TLS").apply { init(keyManagers, trustManagers, SecureRandom()) }
+  }
+
+  // Trust-all bypasses certificate CHAIN validation only. It does NOT disable hostname
+  // (SNI/endpoint-identification) verification, so a mismatched CN/SAN still fails.
+  private fun trustAllManager(): X509TrustManager = object : X509TrustManager {
+    override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+    override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
   }
 
   private fun String.blankToNull(): String? = trim().takeIf { it.isNotEmpty() }
