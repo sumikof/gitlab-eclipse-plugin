@@ -2,6 +2,7 @@
 
 package com.gitlab.eclipse.views.issues
 
+import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.inject.lazyService
@@ -90,7 +91,9 @@ class IssuesView : ViewPart() {
     logger.error("Failed to load issues assigned to you.", error)
     if (viewer.control.isDisposed) return
     viewer.input = emptyList<GitLabIssue>()
-    setContentDescription("Failed to load issues — see the Error Log for details.")
+    setContentDescription(
+      configErrorMessage(error) ?: "Failed to load issues — see the Error Log for details.",
+    )
   }
 
   override fun setFocus() {
@@ -102,3 +105,7 @@ class IssuesView : ViewPart() {
     super.dispose()
   }
 }
+
+/** The user-safe message to display for a config error, or null to use the generic text. */
+internal fun configErrorMessage(error: Throwable): String? =
+  (error as? GitLabConfigurationException)?.message
