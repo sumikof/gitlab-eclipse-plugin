@@ -72,6 +72,10 @@ class GitLabHttpClientFactoryTest : DescribeSpec({
         EgressConfigSnapshot(false, null, tls("client_rsa.cert.pem"), tls("rsa_pkcs1.key.pem"), null),
       ).shouldNotBeNull()
     }
+    it("ignore-cert supersedes a custom CA (the CA path is not consulted when ignore-cert is on)") {
+      // A non-existent CA path would throw if the CA branch ran; ignore-cert must supersede it.
+      factory.buildSslContext(EgressConfigSnapshot(true, "/no/such/ca.pem", null, null, null)).shouldNotBeNull()
+    }
     it("throws a config error when only one of cert/key is set") {
       shouldThrow<GitLabConfigurationException> {
         factory.buildSslContext(EgressConfigSnapshot(false, null, tls("client_rsa.cert.pem"), null, null))
