@@ -3,12 +3,17 @@ package com.gitlab.eclipse.api.http
 import com.gitlab.eclipse.api.GitLabConfigurationException
 import java.io.ByteArrayInputStream
 import java.security.KeyFactory
+import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.InvalidKeySpecException
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Base64
+import javax.net.ssl.KeyManager
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
 
 /**
  * Parses PEM cert/CA/key files into JCA objects for the native egress path.
@@ -33,6 +38,43 @@ class TlsMaterialLoader {
       text.contains("BEGIN EC PRIVATE KEY") -> throw GitLabConfigurationException(UNSUPPORTED_KEY_MSG)
       else -> throw GitLabConfigurationException(INVALID_KEY_MSG)
     }
+  }
+
+  fun loadTrustManagers(caCertPath: String): Array<TrustManager> {
+    val certs = parseCertificates(readFile(caCertPath))
+    if (certs.isEmpty()) throw GitLabConfigurationException(INVALID_CA_MSG)
+    val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+      load(null, null)
+      certs.forEachIndexed { i, c -> setCertificateEntry("ca-$i", c) }
+    }
+    return TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+      .apply { init(ks) }.trustManagers
+  }
+
+  fun loadKeyManagers(certPath: String, keyPath: String): Array<KeyManager> {
+    val chain = parseCertificates(readFile(certPath))
+    if (chain.isEmpty()) throw GitLabConfigurationException(INVALID_CERT_MSG)
+    val key = parsePrivateKey(String(readFile(keyPath)))
+    val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+      load(null, null)
+      setKeyEntry("client", key, CharArray(0), chain.toTypedArray())
+    }
+    return KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+      .apply { init(ks, CharArray(0)) }.keyManagers
+  }
+
+  private fun parseCertificates(bytes: ByteArray): List<X509Certificate> = try {
+    CertificateFactory.getInstance("X.509")
+      .generateCertificates(ByteArrayInputStream(bytes))
+      .filterIsInstance<X509Certificate>()
+  } catch (e: Exception) {
+    throw GitLabConfigurationException(INVALID_CERT_MSG)
+  }
+
+  private fun readFile(path: String): ByteArray = try {
+    java.io.File(path).readBytes()
+  } catch (e: Exception) {
+    throw GitLabConfigurationException("Could not read a configured certificate file. Check the path in GitLab preferences.")
   }
 
   private fun keyFromPkcs8(der: ByteArray): PrivateKey {
@@ -96,5 +138,7 @@ class TlsMaterialLoader {
     const val INVALID_KEY_MSG =
       "Could not read the client certificate key. Provide an unencrypted PEM key " +
         "(PKCS#8 'BEGIN PRIVATE KEY' or RSA PKCS#1 'BEGIN RSA PRIVATE KEY')."
+    const val INVALID_CA_MSG = "No certificates found in the configured CA certificate file."
+    const val INVALID_CERT_MSG = "Could not read the client certificate. Provide a PEM X.509 certificate."
   }
 }

@@ -10,6 +10,9 @@ import java.security.interfaces.RSAPrivateKey
 private fun fixture(name: String): String =
   TlsMaterialLoaderTest::class.java.getResource("/tls/$name")!!.readText()
 
+private fun fixturePath(name: String): String =
+  java.nio.file.Path.of(TlsMaterialLoaderTest::class.java.getResource("/tls/$name")!!.toURI()).toString()
+
 class TlsMaterialLoaderTest : DescribeSpec({
   val loader = TlsMaterialLoader()
 
@@ -38,6 +41,32 @@ class TlsMaterialLoaderTest : DescribeSpec({
     }
     it("rejects garbage") {
       shouldThrow<GitLabConfigurationException> { loader.parsePrivateKey("not a pem") }
+    }
+  }
+
+  describe("loadTrustManagers") {
+    it("builds trust managers from a CA PEM") {
+      val tms = loader.loadTrustManagers(fixturePath("ca.cert.pem"))
+      tms.isNotEmpty() shouldBe true
+    }
+    it("rejects a missing CA file") {
+      shouldThrow<GitLabConfigurationException> { loader.loadTrustManagers("/no/such/ca.pem") }
+    }
+  }
+
+  describe("loadKeyManagers") {
+    it("builds key managers from a client cert + RSA PKCS#1 key") {
+      val kms = loader.loadKeyManagers(fixturePath("client_rsa.cert.pem"), fixturePath("rsa_pkcs1.key.pem"))
+      kms.isNotEmpty() shouldBe true
+    }
+    it("builds key managers from a client cert + RSA PKCS#8 key") {
+      val kms = loader.loadKeyManagers(fixturePath("client_rsa.cert.pem"), fixturePath("rsa_pkcs8.key.pem"))
+      kms.isNotEmpty() shouldBe true
+    }
+    it("rejects a missing key file") {
+      shouldThrow<GitLabConfigurationException> {
+        loader.loadKeyManagers(fixturePath("client_rsa.cert.pem"), "/no/such/key.pem")
+      }
     }
   }
 })
