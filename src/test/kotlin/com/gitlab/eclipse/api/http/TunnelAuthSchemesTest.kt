@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.api.http
 
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 
 private const val KEY = "jdk.http.auth.tunneling.disabledSchemes"
@@ -13,10 +14,10 @@ class TunnelAuthSchemesTest : DescribeSpec({
     if (saved == " ") System.clearProperty(KEY) else System.setProperty(KEY, saved)
   }
 
-  it("clears the property when unset (JDK default disables Basic)") {
+  it("leaves an unset property untouched (never wipes net.properties/admin policy)") {
     System.clearProperty(KEY)
     relaxTunnelBasicAuthScheme()
-    System.getProperty(KEY) shouldBe ""
+    System.getProperty(KEY).shouldBeNull()
   }
   it("removes only Basic, preserving other schemes and honoring admin policy") {
     System.setProperty(KEY, "Basic, NTLM")

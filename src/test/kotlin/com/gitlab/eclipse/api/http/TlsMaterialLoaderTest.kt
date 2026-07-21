@@ -47,6 +47,10 @@ class TlsMaterialLoaderTest : DescribeSpec({
       val pem = "-----BEGIN RSA PRIVATE KEY-----\n$garbage\n-----END RSA PRIVATE KEY-----"
       shouldThrow<GitLabConfigurationException> { loader.parsePrivateKey(pem) }
     }
+    it("normalizes a PKCS#1 PEM with reversed BEGIN/END markers to a configuration error") {
+      val pem = "-----END RSA PRIVATE KEY-----\nAAAA\n-----BEGIN RSA PRIVATE KEY-----"
+      shouldThrow<GitLabConfigurationException> { loader.parsePrivateKey(pem) }
+    }
   }
 
   describe("loadTrustManagers") {

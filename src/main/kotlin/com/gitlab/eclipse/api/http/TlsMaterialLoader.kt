@@ -94,7 +94,7 @@ class TlsMaterialLoader {
     val end = "-----END $label-----"
     val start = pem.indexOf(begin)
     val stop = pem.indexOf(end)
-    if (start < 0 || stop < 0) throw GitLabConfigurationException(INVALID_KEY_MSG)
+    if (start < 0 || stop < start + begin.length) throw GitLabConfigurationException(INVALID_KEY_MSG)
     val body = pem.substring(start + begin.length, stop).replace("\\s".toRegex(), "")
     return try {
       Base64.getDecoder().decode(body)
