@@ -23,6 +23,10 @@ import javax.net.ssl.TrustManagerFactory
  */
 class TlsMaterialLoader {
 
+  // Flat input validation: each branch rejects one unsupported/invalid PEM shape with its
+  // own user-facing message. Collapsing the throws behind a shared exit or nesting the
+  // `when` would hide which input was rejected and why, so the count is kept as is.
+  @Suppress("ThrowsCount")
   internal fun parsePrivateKey(pem: String): PrivateKey {
     val text = pem.replace("\r\n", "\n")
     // Order matters: detect encryption BEFORE the PKCS#1 branch, because a legacy
@@ -65,13 +69,18 @@ class TlsMaterialLoader {
     CertificateFactory.getInstance("X.509")
       .generateCertificates(ByteArrayInputStream(bytes))
       .filterIsInstance<X509Certificate>()
-  } catch (e: Exception) {
+  } catch (@Suppress("SwallowedException") e: Exception) {
+    // The cause is dropped on purpose: X.509 parse failures quote certificate bytes and
+    // file paths, which this class contractually never surfaces (see the class KDoc).
+    // GitLabConfigurationException takes no `cause` for exactly that reason.
     throw GitLabConfigurationException(invalidMessage)
   }
 
   private fun readFile(path: String): ByteArray = try {
     java.io.File(path).readBytes()
-  } catch (e: Exception) {
+  } catch (@Suppress("SwallowedException") e: Exception) {
+    // The cause is dropped on purpose: an IOException names the file it failed to read,
+    // and the resulting message is shown in the UI, which must stay path-free.
     throw GitLabConfigurationException(UNREADABLE_FILE_MSG)
   }
 
@@ -79,10 +88,13 @@ class TlsMaterialLoader {
     val spec = PKCS8EncodedKeySpec(der)
     return try {
       KeyFactory.getInstance("RSA").generatePrivate(spec)
-    } catch (rsa: InvalidKeySpecException) {
+    } catch (@Suppress("SwallowedException") rsa: InvalidKeySpecException) {
+      // Not an error yet: "not an RSA key" is the normal signal to retry the same DER as EC.
       try {
         KeyFactory.getInstance("EC").generatePrivate(spec)
-      } catch (ec: InvalidKeySpecException) {
+      } catch (@Suppress("SwallowedException") ec: InvalidKeySpecException) {
+        // Both causes are dropped on purpose: InvalidKeySpecException messages can embed
+        // fragments of the decoded key material, which must never reach the UI or a log.
         throw GitLabConfigurationException(INVALID_KEY_MSG)
       }
     }
@@ -98,7 +110,9 @@ class TlsMaterialLoader {
     val body = pem.substring(start + begin.length, stop).replace("\\s".toRegex(), "")
     return try {
       Base64.getDecoder().decode(body)
-    } catch (e: IllegalArgumentException) {
+    } catch (@Suppress("SwallowedException") e: IllegalArgumentException) {
+      // The cause is dropped on purpose: the Base64 decoder reports the offending
+      // character and its offset, i.e. a fragment of the private key body.
       throw GitLabConfigurationException(INVALID_KEY_MSG)
     }
   }
@@ -108,13 +122,8 @@ class TlsMaterialLoader {
    *   SEQUENCE { INTEGER 0, SEQUENCE { OID rsaEncryption, NULL }, OCTET STRING { pkcs1 } }
    */
   private fun wrapPkcs1AsPkcs8(pkcs1: ByteArray): ByteArray {
-    val version = byteArrayOf(0x02, 0x01, 0x00)                                   // INTEGER 0
-    val algId = byteArrayOf(                                                      // SEQUENCE { rsaEncryption, NULL }
-      0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86.toByte(), 0x48, 0x86.toByte(),
-      0xF7.toByte(), 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00,
-    )
-    val octet = tlv(0x04, pkcs1)                                                  // OCTET STRING { pkcs1 }
-    return tlv(0x30, version + algId + octet)                                     // outer SEQUENCE
+    val octetString = tlv(DER_TAG_OCTET_STRING, pkcs1)
+    return tlv(DER_TAG_SEQUENCE, PKCS8_VERSION_0 + RSA_ENCRYPTION_ALGORITHM_ID + octetString)
   }
 
   /** DER tag-length-value with definite length encoding. */
@@ -122,14 +131,44 @@ class TlsMaterialLoader {
     byteArrayOf(tag.toByte()) + derLength(content.size) + content
 
   private fun derLength(len: Int): ByteArray {
-    if (len < 0x80) return byteArrayOf(len.toByte())
+    if (len < DER_LENGTH_SHORT_FORM_LIMIT) return byteArrayOf(len.toByte())
     val bytes = ArrayList<Byte>()
     var n = len
-    while (n > 0) { bytes.add(0, (n and 0xFF).toByte()); n = n ushr 8 }
-    return byteArrayOf((0x80 or bytes.size).toByte()) + bytes.toByteArray()
+    while (n > 0) {
+      bytes.add(0, (n and BYTE_MASK).toByte())
+      n = n ushr BITS_PER_BYTE
+    }
+    return byteArrayOf((DER_LENGTH_LONG_FORM_MARKER or bytes.size).toByte()) + bytes.toByteArray()
   }
 
   companion object {
+    /** DER universal tag for SEQUENCE (constructed). */
+    private const val DER_TAG_SEQUENCE = 0x30
+
+    /** DER universal tag for OCTET STRING. */
+    private const val DER_TAG_OCTET_STRING = 0x04
+
+    /** Lengths 0..0x7F use the DER short form (a single length byte). */
+    private const val DER_LENGTH_SHORT_FORM_LIMIT = 0x80
+
+    /** DER long form: first byte is 0x80 or'd with the count of following length bytes. */
+    private const val DER_LENGTH_LONG_FORM_MARKER = 0x80
+
+    private const val BYTE_MASK = 0xFF
+    private const val BITS_PER_BYTE = 8
+
+    /** PKCS#8 PrivateKeyInfo `version` field, encoded as `INTEGER 0`. */
+    private val PKCS8_VERSION_0 = byteArrayOf(0x02, 0x01, 0x00)
+
+    /**
+     * PKCS#8 `privateKeyAlgorithm`, encoded as
+     * `SEQUENCE { OID 1.2.840.113549.1.1.1 (rsaEncryption), NULL }`.
+     */
+    private val RSA_ENCRYPTION_ALGORITHM_ID = byteArrayOf(
+      0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86.toByte(), 0x48, 0x86.toByte(),
+      0xF7.toByte(), 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00,
+    )
+
     const val UNSUPPORTED_KEY_MSG =
       "Unsupported client certificate key format (encrypted or EC SEC1). Convert to an " +
         "unencrypted PKCS#8 key: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key.pk8.pem"

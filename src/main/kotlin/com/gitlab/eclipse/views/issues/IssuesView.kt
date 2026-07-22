@@ -29,6 +29,7 @@ class IssuesView : ViewPart() {
   private lateinit var viewer: TableViewer
   private val refreshState = ViewRefreshState()
   private lateinit var presenter: IssueListPresenter
+
   @Volatile private var fetchJob: Job? = null
 
   override fun createPartControl(parent: Composite) {

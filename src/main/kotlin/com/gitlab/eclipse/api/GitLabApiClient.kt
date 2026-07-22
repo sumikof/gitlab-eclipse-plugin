@@ -60,7 +60,7 @@ class GitLabApiClient(
       .build()
 
     val response = httpClient.send(httpRequest)
-    if (response.statusCode() !in 200..299) {
+    if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
       throw GitLabApiException(response.statusCode(), response.body())
     }
     return response
@@ -83,5 +83,9 @@ class GitLabApiClient(
     private const val PER_PAGE = 100
     private const val MAX_PAGES = 20
     private const val REQUEST_TIMEOUT_SECONDS = 30L
+
+    /** Inclusive bounds of the HTTP 2xx (successful) status class. */
+    private const val SUCCESS_STATUS_MIN = 200
+    private const val SUCCESS_STATUS_MAX = 299
   }
 }

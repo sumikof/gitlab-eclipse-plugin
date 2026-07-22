@@ -65,7 +65,8 @@ class GitLabHttpClientFactory(
     }
 
     val trustManagers: Array<TrustManager>? = when {
-      snapshot.ignoreCertificateErrors -> arrayOf(trustAllManager())            // supersedes CA
+      // ignore-cert supersedes a configured CA.
+      snapshot.ignoreCertificateErrors -> arrayOf(trustAllManager())
       snapshot.caCertificatePath != null -> tlsMaterialLoader.loadTrustManagers(snapshot.caCertificatePath)
       else -> null
     }
@@ -77,8 +78,16 @@ class GitLabHttpClientFactory(
   // Trust-all bypasses certificate CHAIN validation only. It does NOT disable hostname
   // (SNI/endpoint-identification) verification, so a mismatched CN/SAN still fails.
   private fun trustAllManager(): X509TrustManager = object : X509TrustManager {
+    // Empty by design: accepting every chain IS the contract of a trust-all manager.
+    // An X509TrustManager rejects by throwing, so returning normally from an empty body
+    // is the only way to express "do not validate". Any statement added here would
+    // re-introduce the validation the user explicitly opted out of.
+    @Suppress("EmptyFunctionBlock")
     override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+
+    @Suppress("EmptyFunctionBlock")
     override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
   }
 
