@@ -4,6 +4,7 @@
 - ベースブランチ: `develop`(@ `07d0c1a`)
 - 作成日: 2026-07-22
 - ステータス: レビュー用ドラフト(実装未着手)
+- 改訂: 2026-07-22 rev.2 — Codex レビュー(PR #15)の P1 指摘 4 件に対応。反映内容は §28。
 
 ## 1. 背景と目的
 
@@ -51,7 +52,7 @@
 - **R1**: LS からの `$/gitlab/ai-context/editor-selection` リクエストに対し、アクティブなテキストエディタの選択範囲(ファイル名・選択テキスト)を返す。エディタ未オープン・選択なし・取得失敗時は `null` を返し、例外を LS に伝播させない。
 - **R2**: LS へ送信する `workspaceFolders` が、`/include` のファイル検索起点として妥当であることを確認する(現状 Eclipse の全オープンプロジェクトの `locationURI` を送信している。§9)。
 - **R3**: 「チャットを閉じる」コマンドは Duo Chat ビューを非表示にする。webview へのメッセージ送信は行わない。
-- **R4**: 「新規会話」コマンドは Duo Chat ビューを表示し、webview へ `newPrompt` 通知(`prompt = "newConversation"`、現在ファイルコンテキスト付き)を送る。
+- **R4**: 「新規会話」コマンドは Duo Chat ビューを表示し、webview へ `newPrompt` 通知(`prompt = "newConversation"`)を送る。`fileContext` は**選択範囲がある場合のみ**付与し、それ以外は `null` とする(詳細な場合分けは §9.2.1、根拠は §27.4)。
 - **R5**: 「チャットにフォーカス」コマンドは Duo Chat ビューを表示し、webview へ `newPrompt` 通知(`prompt = "focusChat"`、`fileContext` なし)を送る。
 - **R6**: 設定 `gitlab.duoChat.enabled`(既定 `true`)を追加し、LS へ `settings.duoChat.enabled` として送信する。
 - **R7**: 設定 `gitlab.duo.enabledWithoutGitlabProject`(既定 `false`)を追加し、LS へ `settings.duo.enabledWithoutGitlabProject` として送信する。
@@ -59,7 +60,7 @@
 
 ### 非機能要件
 
-- **R9**: 逆リクエストの応答は、LS 側のタイムアウト内に返す。巨大ファイルであっても不要なデータ(ファイル全文)を送信しない。
+- **R9**: 逆リクエストの応答は、**クライアント側で定めた期限内に必ず返る**(UI スレッドの状態に関わらずハングしない。§14)。また、選択範囲の提供にあたり**用途上不要なデータ(ファイル全文)を送信しない**。なお選択テキスト自体はサイズ上限を設けない(判断根拠は §14.2)。
 - **R10**: 既存の Code Suggestions / Duo Chat 機能に回帰を起こさない。
 - **R11**: POJO 層(データクラス、コンテキスト変換)は単体テストを持つ。
 
@@ -148,7 +149,7 @@ LS ──"$/gitlab/ai-context/editor-selection"(パラメータなし)──▶ 
                                                                        │ (非UIスレッド)
                                                                        ▼
                                                       EditorSelectionContextProvider.provide()
-                                                                       │ currentDisplay.syncCall { }
+                                                                       │ asyncExec + 期限付き待機(§14.1)
                                                                        ▼ (UIスレッド)
                                               PlatformUtils.getActiveTextEditor()
                                                 → IFile 取得 → ITextSelection 取得
@@ -161,15 +162,32 @@ LS ──"$/gitlab/ai-context/editor-selection"(パラメータなし)──▶ 
 LS ◀────────────── CompletableFuture<EditorSelectionContext?> ──────────────────────┘
 ```
 
-LS 側の消費フィールドは `selectedText` と `fileName` のみであることをバンドル実装で確認済み(§20)。したがって応答 DTO はこの 2 フィールドのみとし、**ファイル全文(`contentAboveCursor` / `contentBelowCursor`)は送らない**(R9)。
+LS 側の消費フィールドは `selectedText` と `fileName` のみであることをバンドル実装で確認済み(§27.1)。したがって応答 DTO はこの 2 フィールドのみとし、**ファイル全文(`contentAboveCursor` / `contentBelowCursor`)は送らない**(R9)。
 
 既存 `FileContext`(`lsp/NewPromptRequest.kt`)を再利用しない理由: 同型は `newPrompt` 用でファイル全文を含み、選択範囲提供の用途では不要なデータを毎回転送することになるため。`fileName` は既存 `CurrentFileContextProvider` と同じくワークスペース相対パス(`IFile.relativePath`)を用いる。LS はこれを `relativePath` / `secondaryText` として表示に使う。
+
+UI スレッドの待機は**クライアント側の期限で必ず打ち切る**(§14.1)。上図の `syncCall` は概念上の同期取得であり、実装は `asyncExec` + `CompletableFuture` + 期限付き完了とする。
 
 ### 9.2 F2/F3/F4: コマンド
 
 - **閉じる**: `page.hideView(view)`。VSCode 版は `workbench.action.closeSidebar` を実行するのみで webview へのメッセージ送信はないため、これに揃える。
-- **新規会話**: `openDuoChatWindow()` 相当(ビュー表示)→ `notify("newPrompt", NewPromptRequest(prompt = "newConversation", fileContext = <現在のファイルコンテキスト or null>))`。
+- **新規会話**: `openDuoChatWindow()` 相当(ビュー表示)→ `notify("newPrompt", NewPromptRequest(prompt = "newConversation", fileContext = <§9.2.1 で確定>))`。
 - **フォーカス**: `openDuoChatWindow()`(既存実装がまさに `newPrompt`/`focusChat` を送っているため、単独コマンドから呼ぶだけ)。
+
+### 9.2.1 「新規会話」の `fileContext` 仕様(確定)
+
+VSCode 拡張の `getActiveFileContext()` は `editor.selection.isEmpty` なら `null` を返し、さらに `getFileContext()` が `if (!selectedText || !fileName) return undefined` で弾く。すなわち **VSCode 版は「選択がなければ `fileContext` を送らない」**(§27.4 で実ソース確認)。これに合わせて以下を確定仕様とする。
+
+| 状態 | 送信する `fileContext` | 備考 |
+|---|---|---|
+| アクティブなテキストエディタなし | `null` | コマンド自体は実行可(ビュー表示 + `newConversation` 送信は行う) |
+| エディタあり・選択テキストが**空** | `null` | **ファイル全文を送らない**(重要。下記の落とし穴を参照) |
+| エディタあり・選択テキストが非空 | `FileContext(fileName, selectedText, contentAboveCursor, contentBelowCursor)` | 既存 `explainCode` 等と同一形式 |
+| エディタあり・`IFile` に adapt 不可(外部ファイル等) | `null` | 既存 `CurrentFileContextProvider` の判断に準拠 |
+
+**実装上の落とし穴(必ず回避すること)**: 既存 `CurrentFileContextProvider.provide()` は**選択が空でも `FileContext` を返す**。その場合 `selectedText = ""` となる一方、`contentAboveCursor` にカーソル位置までの全文、`contentBelowCursor` に以降の全文が入り、**結果としてファイル全文が送信される**。既存の `ChatCommandHandler` は `isEnabled()` が選択非空を要求するためこの経路に到達しないが、「新規会話」コマンドが無条件に `provide()` を呼ぶと到達する。したがって**新規会話コマンドは `provide()` の戻り値の `selectedText` が空なら `fileContext = null` に落とすこと**。
+
+「新規会話」コマンドは選択の有無に関わらず**実行可能**とする(`isEnabled()` で選択を要求しない)。会話のリセットは選択と無関係な操作であるため。
 
 ### 9.3 F5/F6: 設定
 
@@ -282,7 +300,31 @@ AI コンテキストの選択項目(`AIContextItem` のリスト)は **LS プ�
 
 ## 14. タイムアウトとリトライ
 
-- `editor-selection` ハンドラには**明示的なタイムアウトを設けない**。処理内容は UI スレッドでの選択範囲取得のみで、I/O を伴わないため。既存 `getGitDiff` も同様にタイムアウト指定がない(`streamingCompletionResponse` のみ 10 秒の `orTimeout`)。ただし UI スレッドがブロックされている場合に `syncCall` が待たされるリスクは残る(§21 リスク)。
+### 14.1 `editor-selection` のクライアント側期限(必須)
+
+**`Display.syncCall` / `syncExec` による無期限待機は採用しない。** UI スレッドがモーダルダイアログ表示中・長時間処理中・workbench 終了処理中の場合、待機が無期限になり、LS 側でリクエストが失効した後もハンドラスレッドが滞留する。
+
+仕様:
+
+- クライアント側の期限を **2 秒**とする。期限内に UI スレッドから結果を得られなければ **`null` を返す**(LS 側は `null` を「選択なし」として正常処理する。§27.1 で確認済み)。
+- 実装は `currentDisplay.asyncExec { ... }` で UI スレッドに投入し、結果を `CompletableFuture` に載せて `orTimeout(2, TimeUnit.SECONDS)` で打ち切る(`streamingCompletionResponse` が既に `orTimeout` を使っている前例に倣う)。**`syncExec` / `syncCall` は使わない。**
+- **late UI task の扱い**: 期限超過後に UI タスクが実行されて完了しても、対象の `CompletableFuture` は既に完了済みであるため結果は破棄される(`complete()` が `false` を返すだけ)。古い選択範囲が後から応答に混入することはなく、明示的な世代管理は不要。
+- 期限超過は `logger.warn` に記録する(選択テキストの内容は出力しない。§18)。
+
+2 秒の根拠: 処理内容は選択範囲の取得のみで I/O を伴わないため、正常時はミリ秒オーダーで完了する。2 秒を要する状況は UI スレッドが実質ブロックされている状況であり、待ち続けても結果は改善しない。LS 側の既定タイムアウトより十分短い想定だが、LS の実値は本設計では制御しないため、実機検証で応答が期限内に返っていることを確認する(§25 U6)。
+
+### 14.2 選択テキストのサイズ上限を設けない判断
+
+**上限・切り詰めは実装しない。** 根拠:
+
+- **VSCode 版に上限が存在しない。** `getSelectedText()` は `document.getText(selectionRange)` をそのまま返し、`getActiveFileContext()` にもサイズ検査はない(§27.4 で実ソース確認)。上限を設けると「機能等価」から外れ、Eclipse 版でのみ添付が黙って欠落する。
+- **既存経路と一貫しない。** 既存の `explainCode` / `fixCode` / `generateTests` / `refactorCode` は `FileContext` として**選択テキストに加えてファイル全文**を無制限に送っている。`editor-selection` にだけ上限を課すのは一貫性を欠く。
+- R9 の意図は「用途上不要なデータ(ファイル全文)を送らない」ことであり、**ユーザーが明示的に選択したテキストは必要なデータ**である。両者は矛盾しない。
+
+ただしペイロード肥大が現実の問題になりうることは認識しており、**リスク K7 として記録**する。上限が必要と判明した場合は、`editor-selection` 単独ではなく `FileContext` を含む全チャット送信経路に対して一貫した方針を定める(Phase 1 のスコープ外)。
+
+### 14.3 リトライ
+
 - リトライは行わない。`/include` はユーザー操作起点であり、失敗時はユーザーが再実行できる。
 - LS 側のリクエストタイムアウト値は本設計では制御しない(LS 内部の既定に従う)。
 
@@ -294,16 +336,22 @@ AI コンテキストの選択項目(`AIContextItem` のリスト)は **LS プ�
 
 ## 16. 並行処理
 
-- **UI スレッド制約**: `PluginMessageService.dispatch` および lsp4j のリクエストハンドラは**非 UI スレッド**で動作する。`PlatformUI` / `ITextEditor` / `ITextSelection` へのアクセスは UI スレッド必須のため、`EditorSelectionContextProvider` 内で `currentDisplay.syncCall { }` によりホップする(既存 `CodeFormatter` と同じパターン)。
-- **競合**: `editor-selection` の処理中にユーザーがエディタを切り替えた場合、応答は「リクエスト処理時点のアクティブエディタ」のものとなる。LS 側はこの応答を 1 回限りのスナップショットとして扱うため、不整合は生じない(古い選択範囲が添付され得るが、これは VSCode 版も同じ)。
+- **UI スレッド制約**: `PluginMessageService.dispatch` および lsp4j のリクエストハンドラは**非 UI スレッド**で動作する。`PlatformUI` / `ITextEditor` / `ITextSelection` へのアクセスは UI スレッド必須のため、`EditorSelectionContextProvider` 内で UI スレッドへホップする。ホップは **`asyncExec` + 期限付き `CompletableFuture`** で行い、`syncExec` / `syncCall` による無期限待機は使わない(理由と仕様は §14.1)。既存 `CodeFormatter` は `syncCall` を使っているが、あれは UI 起点(ユーザー操作コンテキスト)であるのに対し、本ハンドラは **LS 起点で UI スレッドの状態を前提にできない**ため、同じパターンを踏襲しない。
+- **競合**: `editor-selection` の処理中にユーザーがエディタを切り替えた場合、応答は「UI タスク実行時点のアクティブエディタ」のものとなる。LS 側はこの応答を 1 回限りのスナップショットとして扱うため、不整合は生じない(古い選択範囲が添付され得るが、これは VSCode 版も同じ)。期限超過後に遅れて実行された UI タスクの結果は破棄される(§14.1)。
 - **webview 送信キューの制約(既知の地雷)**: `GitLabDuoChatWebViewClient.notify()` は webview 非フォーカス時にメッセージを**キューへ退避**し、フォーカス取得時にフラッシュする。このため「閉じる」コマンドで webview へメッセージを送る設計にすると、閉じた後に送信されたメッセージが滞留する。本設計では**閉じる操作で webview へ送信しない**ことでこれを回避する(§9.2)。
-- 設定送信は既存の coroutine 経路をそのまま使う。複数回の `sendConfiguration()` が並行しても全量送信のため最終状態は収束する(送信順序が入れ替わる理論上の可能性はあるが、既存動作からの変更点ではない)。
+- **設定送信の順序**: 既存の `sendConfiguration()` は `coroutineScope.launch { }` で送信しており、**複数回呼び出しの順序は保証されない**。全量送信のため部分適用による不整合は起きないが、古いスナップショットが後着すると LS 側の状態が preference store と食い違いうる。
+
+  これは**既存の全設定送信経路が持つ構造的な問題**であり、Phase 1 の変更が持ち込むものではない。かつ Phase 1 で追加する 2 キーは **`GitLabPreferencePage.performOk()` 経由でのみ送信される**(モーダルダイアログの OK であり、ユーザー操作として直列化される)ため、本フェーズの機能が問題に到達することは実質ない。現実に到達しうるのは既存の Code Suggestions トグルコマンドの連打などである。
+
+  修正は Code Suggestions / OAuth / LS 初期化を含む全経路に影響し、headless 環境では回帰検証ができないため、**Phase 1 のスコープ外とし #16 に切り出した**。本フェーズでは既存挙動を変更しない。
 
 ## 17. 認証と認可
 
 - 本フェーズで認証機構の変更は行わない。既存の PAT / OAuth トークンが `sendConfiguration()` 経由で LS に渡される仕組みをそのまま使う。
 - `/include` で参照できるコンテキスト(Issue、MR 等)の可視性は **GitLab インスタンス側で認可**される。Eclipse 側で追加のアクセス制御は行わない。
-- `editor-selection` はローカルのエディタ内容を LS へ渡す。LS はこれをチャット送信時に GitLab AI API へ送る。**ユーザーが明示的に `/include` で選択した場合のみ**送信される(LS のプロバイダ経由)点が重要で、無選択時に自動送信されることはない。
+- `editor-selection` はローカルのエディタ内容(**選択範囲のテキストのみ**)を LS へ渡す。LS はこれをチャット送信時に GitLab AI API へ送る。選択がない場合は `null` を返すため、**ユーザーがテキストを選択していない状態でコード内容が送信されることはない**(§9.2.1)。
+- 同様に「新規会話」コマンドも、選択がない場合は `fileContext` を送らない。既存 `CurrentFileContextProvider` を無条件に使うとファイル全文が送信される経路が存在するため、これを塞ぐことを明示的な要件としている(§9.2.1 の落とし穴、受け入れ条件 1-b)。
+- なお、既存の `explainCode` / `fixCode` / `generateTests` / `refactorCode` は選択範囲に加えてファイル全文(`contentAboveCursor` / `contentBelowCursor`)を送る。これは既存の挙動であり VSCode 版と同一。本フェーズでは変更しない。
 - 秘匿情報のマスキングは本フェーズの対象外(Code Suggestions の `enableSecretRedaction` は別経路)。設計書・ログに認証情報を記載しない。
 
 ## 18. ログ・監視・監査
@@ -351,6 +399,9 @@ AI コンテキストの選択項目(`AIContextItem` のリスト)は **LS プ�
 - `EditorSelectionContext` の Gson シリアライズが `fileName` / `selectedText` を出力すること。
 - `GitLabLanguageServerConfigurationParams` に `duoChat` / `duo` を設定した際の JSON キーパスが `duoChat.enabled` / `duo.enabledWithoutGitlabProject` になること。
 - `EditorSelectionContextProvider` のロジック(エディタなし → `null`、`IFile` に adapt 不可 → `null`、選択空 → `null`、正常時 → 期待値)。UI 依存部はモック可能な形に切り出す。
+- **UI スレッドが期限内に応答しない場合に `null` を返すこと**(UI タスクを意図的に遅延させ、期限超過を再現する)。
+- **期限超過後に遅れて完了した UI タスクの結果が応答に反映されないこと**(late task の破棄)。
+- **「新規会話」の `fileContext` 決定ロジック**の 4 ケース(§9.2.1 の表)。特に**選択空のときに `fileContext = null` となり、ファイル全文が含まれないこと**を明示的に検証する。
 - `sendConfiguration()` が新規 preference キーを読み出して設定に反映すること。
 
 ### 手動検証(実機・ユーザー環境)
@@ -374,6 +425,8 @@ headless の devcontainer では SWT/Browser/LS 実接続を伴う検証がで�
 ## 24. 受け入れ条件
 
 1. LS からの `$/gitlab/ai-context/editor-selection` に対し、選択範囲がある場合は `fileName` と `selectedText` を含む応答を返し、ない場合は `null` を返す(単体テストで検証)。
+1-a. UI スレッドが 2 秒以内に応答しない場合、ハングせず `null` を返す。遅延して完了した UI タスクの結果は破棄される(単体テストで検証)。
+1-b. 「新規会話」実行時、**選択が空またはエディタなしの場合に `fileContext` が `null`** であり、ファイル全文が送信されない(単体テストで検証)。
 2. 実機で `/include` を実行するとカテゴリ一覧が表示され、「Editor Selection」を含む項目を添付でき、添付内容が回答に反映される(手動検証)。
 3. 「閉じる」「新規会話」「フォーカス」の 3 コマンドがコマンドパレットおよびメニューから実行でき、期待どおり動作する(手動検証)。
 4. 設定画面に 2 つのトグルが表示され、OK 押下で LS へ `settings.duoChat.enabled` / `settings.duo.enabledWithoutGitlabProject` が送信される(単体テスト + 手動検証)。
@@ -389,18 +442,21 @@ headless の devcontainer では SWT/Browser/LS 実接続を伴う検証がで�
 - **U2**: `/include` のカテゴリが検証環境の GitLab インスタンスで有効になっているか。無効の場合、F1 の実機検証ができない。事前にユーザー環境で `/include` 実行時のカテゴリ表示を確認する必要がある。
 - **U3**: `gitlab.duo.enabledWithoutGitlabProject` の既定値。VSCode 拡張の `package.json` の該当既定値を実装時に再確認して合わせる(本設計では `false` を仮置き)。
 - **U4**: `workspaceFolders` として送信している `IProject.locationURI.toASCIIString()` が、LS のファイル検索(ripgrep)で期待どおり解決されるか。Windows のドライブレター付きパスや、リンクされたリソースを含む場合の挙動は未確認。実機検証で確認し、問題があれば別途対応する。
-- **U5**: 「新規会話」コマンドで `fileContext` を付けるべきか。VSCode 拡張は `sendNewPromptWithFileContext('newConversation')` として付けているが、選択がない状態での挙動(既存 `ChatCommandHandler` は選択なしだと `return` する)を実装時に決める。本設計では「選択があれば付け、なければ `fileContext = null` で送る」方針とする。
+- ~~**U5**: 「新規会話」コマンドで `fileContext` を付けるべきか。~~ **解決済み**(Codex レビュー指摘 P1-1)。VSCode 実装を確認した結果「選択がなければ送らない」が正であることが確定したため、§9.2.1 に確定仕様として記載した。
+- **U6**: LS 側の `editor-selection` リクエストタイムアウト値。クライアント期限(2 秒)が LS 側の期限より十分短いことを実機のログで確認する。LS 側の方が短い場合はクライアント期限を再調整する。
 
 ## 26. 想定されるリスク
 
 | # | リスク | 影響度 | 対応 |
 |---|---|---|---|
 | K1 | `/include` のカテゴリがインスタンス側で無効で、実機検証が完了できない | 高 | 着手前にユーザー環境で `/include` の表示を確認(U2)。無効の場合は F1 の受け入れ条件を「逆リクエストへ正しく応答すること」までに限定し、E2E はインスタンス有効化後に持ち越す |
-| K2 | `currentDisplay.syncCall` が UI スレッドのブロックにより待たされ、LS 側がタイムアウトする | 中 | 処理内容を最小限(選択範囲の取得のみ)に保つ。実機検証で応答遅延がないか確認 |
+| K2 | UI スレッドのブロック(モーダルダイアログ等)により逆リクエストの応答が遅延・ハングする | 中 | **設計で解消**: `syncExec` を使わず `asyncExec` + 2 秒期限で必ず打ち切り `null` を返す(§14.1)。処理内容も選択範囲の取得のみに保つ |
 | K3 | LS 8.80.0 と 9.3.0 の webview 実装差により、VSCode 版と挙動が異なる | 中 | パリティ判定は「機能等価」で行う(#7 の凡例に準拠)。差異が実用上の問題になる場合のみ LS バージョンアップを別 PR で検討 |
 | K4 | lsp4j のパラメータなしリクエスト非対応(U1) | 中 | 代替案(1 引数メソッド)を用意済み。実装初手で確認するため手戻りは小さい |
 | K5 | 新規コマンドのキーバインド未割り当てにより発見性が低い | 低 | メニューおよびコマンドパレットから到達可能にする。キーバインドはユーザーが Eclipse の設定で割り当て可能(明示的な `<command>` 宣言により可能になる) |
 | K6 | 設定キーのネスト構造が LS の期待と異なり、設定が無視される | 中 | VSCode 拡張の送信キーパスと LS バンドル双方で確認済み。実機で LS ログ(debug)により受信内容を確認する |
+| K7 | 巨大な選択範囲により JSON-RPC / LS / AI API のペイロードが肥大する | 低〜中 | 上限は設けない(§14.2 の判断)。VSCode 版・既存チャット経路と同条件であり本フェーズ固有の新規リスクではない。実機で問題が観測された場合は、`FileContext` を含む全チャット送信経路に対する一貫した方針として別途対応する |
+| K8 | 設定通知の順序入れ替わりにより LS の状態が preference store と食い違う | 低 | 既存の構造的問題であり #16 に切り出し済み。Phase 1 の 2 キーは `performOk()` 経由のみのため実質到達しない(§16) |
 
 ## 27. 検証記録(本設計の根拠)
 
@@ -426,7 +482,18 @@ headless の devcontainer では SWT/Browser/LS 実接続を伴う検証がで�
 - 設定は `settings.duoChat.enabled` / `settings.duo.enabledWithoutGitlabProject` として `didChangeConfiguration` で送信される。
 - AI コンテキストを有効化する専用の client capability / feature flag は送っていない。
 
-### 27.3 Eclipse プラグイン(develop @ 07d0c1a)側の現状
+### 27.3 VSCode 版のファイルコンテキスト取得(Codex レビュー P1-1 / P1-2 の判断根拠)
+
+`src/common/chat/gitlab_chat_file_context.ts` および `src/common/chat/utils/editor_text_utils.ts` を確認。
+
+- `getActiveSelectionRange()` は `editor.selection.isEmpty` の場合 `null` を返す。
+- `getFileContext()` は `if (!selectedText || !fileName) return undefined` で弾く。
+- したがって `getActiveFileContext()` は**選択が空なら `undefined`** を返し、これが `newPrompt` の `fileContext` と `editor-selection` 逆リクエストの応答の**両方**に使われる(`language_client_wrapper.ts:219` で `onRequest(EDITOR_SELECTION, getActiveFileContext)`)。
+- `getSelectedText()` は `document.getText(selectionRange)` をそのまま返し、**サイズ上限・切り詰めの実装は存在しない**。
+
+→ P1-1(新規会話の `fileContext` 条件)は「選択が空なら送らない」が VSCode 準拠として確定(§9.2.1)。P1-2(サイズ上限)は VSCode 版に存在しないため導入しない(§14.2)。
+
+### 27.4 Eclipse プラグイン(develop @ 07d0c1a)側の現状
 
 - `GitLabLanguageServerClient.kt:43` に `$/gitlab/ai-context/git-diff` のみ実装。他の ai-context メソッドは未実装。
 - `GitLabLanguageServerConfigurationParams` の既存フィールドと Gson の命名(`@SerializedName` 不使用)を確認。
@@ -434,3 +501,14 @@ headless の devcontainer では SWT/Browser/LS 実接続を伴う検証がで�
 - `openDuoChatWindow()` が既に `notify("newPrompt", NewPromptRequest(prompt = "focusChat"))` を送っている。
 - `GitLabDuoChatWebViewClient` の非フォーカス時キューイング挙動を確認(§16 の設計判断根拠)。
 - `plugin.xml` のコマンド/ハンドラ/バインディング/メニューの登録パターン、および `ExplainCode` 等が `<command>` 未宣言である事実を確認。
+
+## 28. 改訂履歴
+
+### rev.2(2026-07-22)— Codex レビュー(PR #15)P1 指摘への対応
+
+| 指摘 | 判断 | 反映先 |
+|---|---|---|
+| **P1-1** 新規会話の `fileContext` 条件が §5 R4 と §25 U5 で矛盾 | **受け入れ・修正**。VSCode 実ソースを確認し「選択が空なら送らない」が正であることを確定 | §5 R4 / **§9.2.1(新設・確定仕様と実装上の落とし穴)** / §17 / §23 / 受け入れ条件 1-b / §25 U5 解決 / §27.3 |
+| **P1-2** 選択テキストのサイズ上限と超過時の挙動が未定義 | **一部受け入れ・上限導入は見送り**。VSCode 版に上限が存在せず、既存チャット経路も無制限であるため、上限導入は機能等価性と一貫性を損なう。判断根拠を明文化しリスクとして記録 | **§14.2(新設・判断と根拠)** / §5 R9 / §26 K7 |
+| **P1-3** UI スレッド待機を LS タイムアウトより前に打ち切るべき | **受け入れ・修正**。`syncExec`/`syncCall` による無期限待機を廃し、`asyncExec` + 2 秒期限 + late task 破棄に変更 | **§14.1(新設・期限仕様)** / §9.1 / §16 / §23 / 受け入れ条件 1-a / §25 U6 / §26 K2 |
+| **P1-4** 設定通知の順序保証 | **受け入れ・ただし Phase 1 スコープ外**。既存の全設定送信経路が持つ構造的問題であり Phase 1 が持ち込む欠陥ではない。Phase 1 の 2 キーは `performOk()` 経由のみで実質到達しない。修正は Code Suggestions / OAuth を含む全経路に影響し headless で回帰検証不可のため **#16 に切り出し** | §16 / §26 K8 / issue #16 |
