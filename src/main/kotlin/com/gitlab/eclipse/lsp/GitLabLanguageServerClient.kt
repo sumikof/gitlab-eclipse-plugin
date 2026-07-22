@@ -2,11 +2,13 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.messages.StreamingCompletionResponse
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
@@ -54,6 +56,10 @@ class GitLabLanguageServerClient(
       null
     }
   }
+
+  @JsonRequest("$/gitlab/ai-context/editor-selection")
+  fun getEditorSelection(): CompletableFuture<EditorSelectionContext?> =
+    service<EditorSelectionContextProvider>().provide()
 
   @JsonNotification("$/gitlab/featureStateChange")
   fun gitlabFeatureStateChange(

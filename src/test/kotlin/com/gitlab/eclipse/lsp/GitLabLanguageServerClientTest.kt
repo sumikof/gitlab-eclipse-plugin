@@ -1,10 +1,12 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.google.gson.JsonObject
@@ -15,9 +17,11 @@ import org.eclipse.lsp4j.Registration
 import org.eclipse.lsp4j.RegistrationParams
 import org.eclipse.lsp4j.Unregistration
 import org.eclipse.lsp4j.UnregistrationParams
+import org.eclipse.lsp4j.jsonrpc.services.GenericEndpoint
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
+import java.util.concurrent.CompletableFuture
 
 class GitLabLanguageServerClientTest : DescribeSpec({
   val didChangeWatchedFilesCapability = mockk<DidChangeWatchedFileCapability>(relaxUnitFun = true)
@@ -26,6 +30,8 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
+
+  val editorSelectionContextProvider = mockk<EditorSelectionContextProvider>()
 
   val pluginMessageService = mockk<PluginMessageService>()
 
@@ -41,6 +47,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
           single<CodeSuggestionsStateService> { codeSuggestionsStateService }
           single<DidChangeWatchedFileCapability> { didChangeWatchedFilesCapability }
           single<GitDiffService> { gitDiffService }
+          single<EditorSelectionContextProvider> { editorSelectionContextProvider }
         }
       )
     }
@@ -135,6 +142,33 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       verify { gitDiffService.getDiff("test/repo") }
       result shouldBe null
+    }
+  }
+
+  describe("editor selection") {
+    it("returns the selection supplied by the provider") {
+      every { editorSelectionContextProvider.provide() } returns
+        CompletableFuture.completedFuture(EditorSelectionContext("a/main.kt", "def"))
+
+      client.getEditorSelection().get() shouldBe EditorSelectionContext("a/main.kt", "def")
+    }
+
+    it("returns null when there is no selection") {
+      every { editorSelectionContextProvider.provide() } returns CompletableFuture.completedFuture(null)
+
+      client.getEditorSelection().get() shouldBe null
+    }
+
+    // The language server sends this request with no params at all, so lsp4j must be able
+    // to dispatch it to a zero-argument method. This asserts that contract directly.
+    it("dispatches through lsp4j when the request carries no params") {
+      every { editorSelectionContextProvider.provide() } returns
+        CompletableFuture.completedFuture(EditorSelectionContext("a/main.kt", "def"))
+
+      val endpoint = GenericEndpoint(client)
+
+      endpoint.request("\$/gitlab/ai-context/editor-selection", null).get() shouldBe
+        EditorSelectionContext("a/main.kt", "def")
     }
   }
 })
