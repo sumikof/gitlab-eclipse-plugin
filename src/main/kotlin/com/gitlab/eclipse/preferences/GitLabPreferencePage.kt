@@ -192,6 +192,22 @@ class GitLabPreferencePage(
 
     addField(
       BooleanFieldEditor(
+        PreferenceConstants.DUO_CHAT_ENABLED,
+        "Enable Duo Chat",
+        fieldEditorParent
+      )
+    )
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT,
+        "Enable Duo features when no GitLab project is detected",
+        fieldEditorParent
+      )
+    )
+
+    addField(
+      BooleanFieldEditor(
         PreferenceConstants.CODE_SUGGESTIONS_ENABLED,
         "Enable Code Suggestions",
         fieldEditorParent
