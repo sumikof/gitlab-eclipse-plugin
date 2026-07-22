@@ -44,10 +44,12 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
     // it must be mocked or every test throws in a plain-JVM run.
     mockkStatic("com.gitlab.eclipse.lsp.utils.ProjectsWorkspaceFolderKt")
     startKoin {
-      modules(module {
-        single { languageService }
-        single { tokenManager }
-      })
+      modules(
+        module {
+          single { languageService }
+          single { tokenManager }
+        },
+      )
     }
   }
 
@@ -63,7 +65,10 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
   }
 
   afterEach { clearAllMocks() }
-  afterSpec { stopKoin(); unmockkAll() }
+  afterSpec {
+    stopKoin()
+    unmockkAll()
+  }
 
   fun capturedParams(): GitLabLanguageServerConfigurationParams {
     val captured = slot<DidChangeConfigurationParams>()
