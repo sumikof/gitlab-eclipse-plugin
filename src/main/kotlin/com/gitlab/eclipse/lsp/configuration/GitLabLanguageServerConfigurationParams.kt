@@ -13,6 +13,8 @@ data class GitLabLanguageServerConfigurationParams(
   val ignoreCertificateErrors: Boolean = false,
   val httpAgentOptions: HttpAgentOptions? = null,
   val workspaceFolders: List<WorkspaceFolder>? = null,
+  val duoChat: DuoChat? = null,
+  val duo: Duo? = null,
 ) {
   data class CodeCompletion(
     val enabled: Boolean = true,
@@ -22,6 +24,11 @@ data class GitLabLanguageServerConfigurationParams(
   )
 
   data class FeatureFlags(val remoteSecurityScans: Boolean, val streamCodeGenerations: Boolean)
+
+  data class DuoChat(val enabled: Boolean)
+
+  // Spelling matters: the language server reads `enabledWithoutGitlabProject` (lowercase "l").
+  data class Duo(val enabledWithoutGitlabProject: Boolean)
 
   data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null)
 

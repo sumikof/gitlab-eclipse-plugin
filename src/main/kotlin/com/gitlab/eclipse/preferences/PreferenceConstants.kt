@@ -17,4 +17,6 @@ object PreferenceConstants {
   const val CLIENT_CERTIFICATE: String = "gitlab.certificate.clientCertificate"
   const val CLIENT_CERTIFICATE_KEY: String = "gitlab.certificate.clientCertificateKey"
   const val CODE_SUGGESTIONS_ENABLED: String = "gitlab.codeSuggestions.enabled"
+  const val DUO_CHAT_ENABLED: String = "gitlab.duoChat.enabled"
+  const val DUO_ENABLED_WITHOUT_GITLAB_PROJECT: String = "gitlab.duo.enabledWithoutGitlabProject"
 }

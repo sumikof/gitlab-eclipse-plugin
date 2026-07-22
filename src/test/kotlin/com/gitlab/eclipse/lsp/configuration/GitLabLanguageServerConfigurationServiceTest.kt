@@ -119,4 +119,32 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       capturedParams().codeCompletion!!.enabled shouldBe false
     }
   }
+
+  describe("duo settings") {
+    it("forwards the duo chat toggle") {
+      every { preferenceStore.getBoolean(PreferenceConstants.DUO_CHAT_ENABLED) } returns true
+
+      service.sendConfiguration()
+
+      capturedParams().duoChat!!.enabled shouldBe true
+    }
+
+    it("forwards the enabled-without-project toggle") {
+      every { preferenceStore.getBoolean(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT) } returns true
+
+      service.sendConfiguration()
+
+      capturedParams().duo!!.enabledWithoutGitlabProject shouldBe true
+    }
+
+    it("forwards the toggles when they are switched off") {
+      every { preferenceStore.getBoolean(PreferenceConstants.DUO_CHAT_ENABLED) } returns false
+      every { preferenceStore.getBoolean(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT) } returns false
+
+      service.sendConfiguration()
+
+      capturedParams().duoChat!!.enabled shouldBe false
+      capturedParams().duo!!.enabledWithoutGitlabProject shouldBe false
+    }
+  }
 })
