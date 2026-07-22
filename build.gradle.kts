@@ -326,8 +326,15 @@ tasks.register("lspDownloadGenericPackageJson") {
   outputs.dir(outputDir)
 
   doLast {
+    // Ask for the pinned version by name rather than listing every generic package: the
+    // listing is paginated at 20 entries and this task reads only the first page, so a
+    // pinned version silently dropped out of reach as newer releases were published.
     val url =
-      "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages?package_type=generic&sort=desc"
+      "https://gitlab.com/api/v4/projects/gitlab-org%2Feditor-extensions%2Fgitlab-lsp/packages" +
+        "?package_type=generic" +
+        "&package_name=gitlab-language-server" +
+        "&package_version=${extractGitLabLspVersion()}" +
+        "&sort=desc"
 
     URI(url).toURL().openStream().use { input ->
       outputFile.asFile.outputStream().use { output ->
