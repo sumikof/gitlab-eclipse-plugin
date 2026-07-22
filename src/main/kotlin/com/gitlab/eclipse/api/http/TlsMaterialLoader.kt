@@ -70,9 +70,9 @@ class TlsMaterialLoader {
       .generateCertificates(ByteArrayInputStream(bytes))
       .filterIsInstance<X509Certificate>()
   } catch (@Suppress("SwallowedException") e: Exception) {
-    // The cause is dropped on purpose: X.509 parse failures quote certificate bytes and
-    // file paths, which this class contractually never surfaces (see the class KDoc).
-    // GitLabConfigurationException takes no `cause` for exactly that reason.
+    // The cause is dropped on purpose: X.509 parse failures quote fragments of the
+    // certificate bytes they choked on, which this class contractually never surfaces
+    // (see the class KDoc). GitLabConfigurationException takes no `cause` for that reason.
     throw GitLabConfigurationException(invalidMessage)
   }
 

@@ -85,6 +85,7 @@ class GitLabHttpClientFactory(
     @Suppress("EmptyFunctionBlock")
     override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
 
+    // Empty for the same reason as checkClientTrusted above.
     @Suppress("EmptyFunctionBlock")
     override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
 
