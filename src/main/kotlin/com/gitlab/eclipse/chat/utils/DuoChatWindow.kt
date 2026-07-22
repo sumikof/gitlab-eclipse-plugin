@@ -15,6 +15,15 @@ fun openDuoChatWindow() {
   service<GitLabDuoChatWebViewClient>().notify("newPrompt", NewPromptRequest(prompt = "focusChat"))
 }
 
+fun closeDuoChatWindow() {
+  val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage ?: return
+  val view = page.findView(VIEW_ID) ?: return
+
+  // Deliberately no webview notification: GitLabDuoChatWebViewClient queues messages while
+  // the webview is unfocused, so anything sent here would be stranded.
+  page.hideView(view)
+}
+
 fun refreshDuoChatWindow() {
   val workbench = PlatformUI.getWorkbench()
 

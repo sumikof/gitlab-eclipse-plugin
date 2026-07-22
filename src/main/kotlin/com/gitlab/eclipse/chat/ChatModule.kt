@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
+import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewController
@@ -19,6 +20,7 @@ val chatModule = module {
   }
 
   single<CurrentFileContextProvider> { CurrentFileContextProvider() }
+  single<EditorSelectionContextProvider> { EditorSelectionContextProvider() }
   single<InsertCodeSnippetService> { InsertCodeSnippetService(get(), get()) }
 
   single<GitLabDuoChatWebViewClient> { GitLabDuoChatWebViewClient(get()) }

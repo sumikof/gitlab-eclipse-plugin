@@ -17,6 +17,8 @@ class PreferenceInitializerTest : DescribeSpec({
       verify { store.setDefault(PreferenceConstants.TELEMETRY_ENABLED, true) }
       verify { store.setDefault(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL, "info") }
       verify { store.setDefault(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, true) }
+      verify { store.setDefault(PreferenceConstants.DUO_CHAT_ENABLED, true) }
+      verify { store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true) }
     }
   }
 })

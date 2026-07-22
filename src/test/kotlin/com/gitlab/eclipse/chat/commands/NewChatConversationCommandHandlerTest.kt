@@ -1,0 +1,125 @@
+package com.gitlab.eclipse.chat.commands
+
+import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
+import com.gitlab.eclipse.chat.utils.openDuoChatWindow
+import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
+import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.utils.PlatformUtils
+import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
+import io.mockk.clearAllMocks
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
+import io.mockk.verify
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import org.eclipse.core.commands.ExecutionEvent
+import org.eclipse.ui.editors.text.TextEditor
+
+class NewChatConversationCommandHandlerTest : DescribeSpec({
+  val event = mockk<ExecutionEvent>()
+  val textEditor = mockk<TextEditor>()
+  val platformUtils = mockk<PlatformUtils>()
+  val currentFileContextProvider = mockk<CurrentFileContextProvider>()
+  val gitLabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>(relaxUnitFun = true)
+
+  val handler = NewChatConversationCommandHandler(
+    coroutineScope = CoroutineScope(Dispatchers.Unconfined),
+    gitLabDuoChatWebViewClient = gitLabDuoChatWebViewClient,
+    platformUtils = platformUtils,
+    currentFileContextProvider = currentFileContextProvider
+  )
+
+  beforeSpec { mockkStatic("com.gitlab.eclipse.chat.utils.DuoChatWindowKt") }
+
+  beforeEach {
+    every { openDuoChatWindow() } returns Unit
+    every { platformUtils.getActiveTextEditor() } returns textEditor
+  }
+
+  afterEach { clearAllMocks() }
+  afterSpec { unmockkAll() }
+
+  describe("execute") {
+    it("sends the selected text as file context") {
+      val fileContext = FileContext(
+        fileName = "a/main.kt",
+        selectedText = "def",
+        contentAboveCursor = "abc\n",
+        contentBelowCursor = "\nijk"
+      )
+      every { currentFileContextProvider.provide(textEditor) } returns fileContext
+
+      handler.execute(event)
+
+      verify(exactly = 1) {
+        gitLabDuoChatWebViewClient.notify(
+          type = "newPrompt",
+          payload = NewPromptRequest(prompt = "newConversation", fileContext = fileContext)
+        )
+      }
+    }
+
+    // Guards against leaking the whole file: CurrentFileContextProvider still returns a
+    // FileContext when nothing is selected, and that context carries the entire document
+    // in contentAboveCursor/contentBelowCursor.
+    it("sends no file context when nothing is selected") {
+      every { currentFileContextProvider.provide(textEditor) } returns FileContext(
+        fileName = "a/main.kt",
+        selectedText = "",
+        contentAboveCursor = "abc\ndef\nijk",
+        contentBelowCursor = ""
+      )
+
+      handler.execute(event)
+
+      verify(exactly = 1) {
+        gitLabDuoChatWebViewClient.notify(
+          type = "newPrompt",
+          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        )
+      }
+    }
+
+    it("sends no file context when no editor is active") {
+      every { platformUtils.getActiveTextEditor() } returns null
+
+      handler.execute(event)
+
+      verify(exactly = 1) {
+        gitLabDuoChatWebViewClient.notify(
+          type = "newPrompt",
+          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        )
+      }
+    }
+
+    it("sends no file context when the editor input does not adapt to a file") {
+      every { currentFileContextProvider.provide(textEditor) } returns null
+
+      handler.execute(event)
+
+      verify(exactly = 1) {
+        gitLabDuoChatWebViewClient.notify(
+          type = "newPrompt",
+          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        )
+      }
+    }
+
+    it("opens the chat window") {
+      every { currentFileContextProvider.provide(textEditor) } returns null
+
+      handler.execute(event)
+
+      verify(exactly = 1) { openDuoChatWindow() }
+    }
+
+    it("is enabled even without a selection") {
+      handler.isEnabled shouldBe true
+    }
+  }
+})

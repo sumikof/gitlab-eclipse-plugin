@@ -18,5 +18,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.CLIENT_CERTIFICATE, "")
     store.setDefault(PreferenceConstants.CLIENT_CERTIFICATE_KEY, "")
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_ENABLED, true)
+    store.setDefault(PreferenceConstants.DUO_CHAT_ENABLED, true)
+    store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true)
   }
 }

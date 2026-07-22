@@ -51,7 +51,11 @@ class GitLabLanguageServerConfigurationService(
         cert = preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE).takeIf { it.isNotBlank() },
         certKey = preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE_KEY).takeIf { it.isNotBlank() },
       ),
-      workspaceFolders = workspaceFolders
+      workspaceFolders = workspaceFolders,
+      duoChat = DuoChat(enabled = preferenceStore.getBoolean(PreferenceConstants.DUO_CHAT_ENABLED)),
+      duo = Duo(
+        enabledWithoutGitlabProject = preferenceStore.getBoolean(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT)
+      )
     )
 
     logger.info("Sending configuration change notification to Language Server.")
