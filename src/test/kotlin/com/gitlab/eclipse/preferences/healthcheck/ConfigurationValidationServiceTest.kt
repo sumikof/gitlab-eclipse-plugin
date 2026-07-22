@@ -60,7 +60,9 @@ class ConfigurationValidationServiceTest : DescribeSpec({
       every { preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE_KEY) } returns "/tmp/client.key"
 
       runTest {
-        service.validateConfiguration(ConfigurationValidationRequest(baseUrl = "https://gitlab.example.com", token = "token"))
+        service.validateConfiguration(
+          ConfigurationValidationRequest(baseUrl = "https://gitlab.example.com", token = "token"),
+        )
       }
 
       val opts = capturedParams().httpAgentOptions!!
@@ -74,7 +76,9 @@ class ConfigurationValidationServiceTest : DescribeSpec({
       every { preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE_KEY) } returns "   "
 
       runTest {
-        service.validateConfiguration(ConfigurationValidationRequest(baseUrl = "https://gitlab.example.com", token = "token"))
+        service.validateConfiguration(
+          ConfigurationValidationRequest(baseUrl = "https://gitlab.example.com", token = "token"),
+        )
       }
 
       val opts = capturedParams().httpAgentOptions!!

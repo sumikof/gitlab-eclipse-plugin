@@ -21,7 +21,8 @@ class GitLabHttpClientTest : DescribeSpec({
       every { factory.create(snapA) } returns reused
       val client = GitLabHttpClient(factory)
 
-      client.rebuildIfNeeded(); client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
 
       verify(exactly = 1) { factory.create(snapA) }
       verify(exactly = 0) { reused.shutdown() }
@@ -31,7 +32,8 @@ class GitLabHttpClientTest : DescribeSpec({
       every { factory.create(any()) } returns mockk<HttpClient>(relaxed = true)
       val client = GitLabHttpClient(factory)
 
-      client.rebuildIfNeeded(); client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
 
       verify(exactly = 1) { factory.create(snapA) }
       verify(exactly = 1) { factory.create(snapB) }
@@ -44,7 +46,8 @@ class GitLabHttpClientTest : DescribeSpec({
       every { factory.create(snapB) } returns newClient
       val client = GitLabHttpClient(factory)
 
-      client.rebuildIfNeeded(); client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
+      client.rebuildIfNeeded()
 
       verify(exactly = 1) { oldClient.shutdown() }
       verify(exactly = 0) { newClient.shutdown() }

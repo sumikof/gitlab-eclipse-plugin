@@ -30,10 +30,12 @@ class ToggleCodeSuggestionsHandlerTest : DescribeSpec({
     mockkStatic("com.gitlab.eclipse.codesuggestions.CodeSuggestionsToggleStatusKt")
     mockkStatic("com.gitlab.eclipse.codesuggestions.CodeSuggestionsDismissKt")
     startKoin {
-      modules(module {
-        single { preferenceStore }
-        single { configurationService }
-      })
+      modules(
+        module {
+          single { preferenceStore }
+          single { configurationService }
+        },
+      )
     }
   }
 
@@ -43,7 +45,10 @@ class ToggleCodeSuggestionsHandlerTest : DescribeSpec({
   }
 
   afterEach { clearAllMocks() }
-  afterSpec { stopKoin(); unmockkAll() }
+  afterSpec {
+    stopKoin()
+    unmockkAll()
+  }
 
   describe("execute") {
     it("turns off when currently enabled, sends config, dismisses active suggestion") {

@@ -239,7 +239,9 @@ class CodeSuggestionsSessionTest : DescribeSpec({
         coVerify(exactly = 0) { codeSuggestionsProvider.provideAutomaticSuggestion(any(), any(), any()) }
       }
 
-      it("should not display a pending suggestion if the global preference is disabled while the request is in flight") {
+      it(
+        "should not display a pending suggestion if the global preference is disabled while the request is in flight",
+      ) {
         every { textWidget.caretOffset } returns 10
 
         session.requestCodeSuggestion()

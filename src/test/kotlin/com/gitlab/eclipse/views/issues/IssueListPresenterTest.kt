@@ -12,7 +12,15 @@ class IssueListPresenterTest : DescribeSpec({
       val applied = mutableListOf<GitLabIssue>()
       val state = ViewRefreshState()
       val gen = state.begin()
-      val local = IssueListPresenter(state, { false }, { applied.clear(); applied.addAll(it) }, {})
+      val local = IssueListPresenter(
+        state,
+        { false },
+        {
+          applied.clear()
+          applied.addAll(it)
+        },
+        {},
+      )
       local.onResult(gen, Result.success(listOf(issue)))
       applied shouldBe listOf(issue)
     }
@@ -20,7 +28,15 @@ class IssueListPresenterTest : DescribeSpec({
     it("ignores an out-of-order (stale) result") {
       val applied = mutableListOf<GitLabIssue>()
       val state = ViewRefreshState()
-      val presenter = IssueListPresenter(state, { false }, { applied.clear(); applied.addAll(it) }, {})
+      val presenter = IssueListPresenter(
+        state,
+        { false },
+        {
+          applied.clear()
+          applied.addAll(it)
+        },
+        {},
+      )
       val genOld = state.begin()
       state.begin() // a newer refresh started
       presenter.onResult(genOld, Result.success(listOf(issue)))

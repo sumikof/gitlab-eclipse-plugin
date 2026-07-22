@@ -20,15 +20,20 @@ class CodeSuggestionsDismissTest : DescribeSpec({
 
   beforeSpec {
     startKoin {
-      modules(module {
-        single { platformUtils }
-        single { codeSuggestionsManager }
-      })
+      modules(
+        module {
+          single { platformUtils }
+          single { codeSuggestionsManager }
+        },
+      )
     }
   }
 
   afterEach { clearAllMocks() }
-  afterSpec { stopKoin(); unmockkAll() }
+  afterSpec {
+    stopKoin()
+    unmockkAll()
+  }
 
   describe("dismissActiveCodeSuggestion") {
     it("cancels the code suggestion for the active editor's session") {

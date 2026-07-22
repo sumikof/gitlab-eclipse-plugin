@@ -9,7 +9,10 @@ import java.net.InetAddress
 import java.net.URL
 
 private fun ask(
-  auth: GitLabProxyAuthenticator, host: String, port: Int, type: Authenticator.RequestorType,
+  auth: GitLabProxyAuthenticator,
+  host: String,
+  port: Int,
+  type: Authenticator.RequestorType,
 ) = Authenticator.requestPasswordAuthentication(
   auth, host, null as InetAddress?, port, "http", "prompt", "Basic", null as URL?, type,
 )
