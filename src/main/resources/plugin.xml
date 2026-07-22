@@ -53,6 +53,18 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.CloseDuoChat"
+                name="Close Duo Chat Window"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.FocusDuoChat"
+                name="Focus Duo Chat Window"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
                 name="Toggle Code Suggestions"
                 categoryId="gitlab-eclipse-plugin">
@@ -230,6 +242,16 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.CloseDuoChat"
+                class="com.gitlab.eclipse.chat.commands.CloseDuoChatCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.FocusDuoChat"
+                class="com.gitlab.eclipse.chat.commands.OpenDuoChatCommandHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                 class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
         />
@@ -389,6 +411,16 @@
                         commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                         label="Refactor Code"
                         tooltip="Refactor the selected snippet"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.FocusDuoChat"
+                        label="Focus Duo Chat"
+                        tooltip="Bring the Duo Chat window to the front"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.CloseDuoChat"
+                        label="Close Duo Chat"
+                        tooltip="Close the Duo Chat window"/>
 
                 <visibleWhen checkEnabled="false">
                     <with variable="duo_chat_enabled">
