@@ -7,6 +7,12 @@
 
 > 本書は Codex 設計レビュー専用。実装 PR およびマージ先ブランチには含めない。
 
+> **Codex レビュー反映(2026-07-23、PR #21)**: P1 指摘 4 件をすべて反映済み。
+> - P1-a: `openInGitLab`/`copyLinkToClipboard` の起動契約を §9 決定表で確定(コミット対象は Phase 3 送り)。
+> - P1-b: LS 再起動を provider のアトミック `restart()` に(§8:単一ロック + プロセス同一性ガード + executor 再生成)。既存コードの共有 `process` 破壊競合を確証し反映。
+> - P1-c: 生成 URL のパスセグメントを RFC 3986 で percent-encode(§8 規則 / §9 フロー A)。
+> - P1-d: 高度な検索をリポジトリ非依存に分岐(§9 フロー B'、instance スコープは `gitlab.url` のみ)。
+
 ---
 
 ## 1. 背景と目的
@@ -26,7 +32,7 @@ Phase 2 対象 9 項目のうち、本設計は以下 8 項目を対象とする
 | 1 | `gl.mcp.openUserConfig` / `gl.mcp.openWorkspaceConfig` | D8 | ローカル `mcp.json` 冪等生成 → エディタで開く |
 | 2 | `gl.restartLanguageServer` | D10 | 既存プロセスプロバイダの `stop()` → `start(bundle)` |
 | 3 | `gl.openActiveFile` / `gl.copyLinkToActiveFile` | D16 | JGit + URL 解決 → ブラウザ / クリップボード |
-| 4 | `gl.openInGitLab`(プロジェクト/コミット/ファイル)/ `gl.copyLinkToClipboard` | D16 | 同上 |
+| 4 | `gl.openInGitLab`(プロジェクト/ファイル)/ `gl.copyLinkToClipboard` | D16 | 同上(コミット対象は Phase 3 送り。§9 決定表) |
 | 5 | `gl.openCreateNewIssue` | D11 | `${webUrl}/-/issues/new` をブラウザ |
 | 6 | `gl.issueSearch` / `gl.mergeRequestSearch` / `gl.advancedSearch` | D11/D16 | 入力ダイアログ → URL → ブラウザ |
 
@@ -119,6 +125,7 @@ com.gitlab.eclipse
 - `webUrl = ${gitlab.url(末尾スラッシュ除去)}/${namespaceWithPath}` を構築(A 案・API 不使用)。
 - blob URL 用にファイルの最新コミット SHA(`git log -1 -- <path>` 相当)とリポジトリ root 相対パスを取得。
 - 選択範囲(開始/終了行、UI 層から受領)→ アンカー生成。
+- **URL エンコード規則(Codex P1-c 反映)**: 生成 URL のパス部は RFC 3986 に従い**セグメント単位で percent-encode** する。対象は `namespaceWithPath` の各セグメントとリポジトリ相対パスの各セグメント、コミット SHA。**階層区切りの `/` は保持**(エンコードしない)。空白・`#`・`?`・`%`・非 ASCII・既存 percent escape を含むファイル名でもリンクが壊れないことを保証する。VSCode `openers.ts` はファイルパスを生連結しており特殊文字で壊れる既知の実バグがあるため、本設計では VSCode より堅牢化する(通常のファイル名では生成 URL は VSCode と一致)。行アンカー `#L..` はフラグメントとしてエンコード対象外。
 
 ### SearchQueryBuilder(純関数)
 - VSCode `search_input.ts` の `parseQuery` を移植。トークン(`labels`/`label`/`title`/`milestone`/`author`(`me`→`created-by-me`)/`assignee`(`me`→`assigned-to-me`、issues は `assignee_username[]`、MR は `assignee_username`))と基本テキスト検索を URL クエリへ変換。
@@ -131,7 +138,20 @@ com.gitlab.eclipse
 
 ### 各ハンドラ
 - `AbstractHandler` を継承する薄い配線。UI 層(選択・アクティブエディタ取得、ブラウザ/クリップボード起動、入力/選択ダイアログ)とロジック層(resolver/builder/service)を仲介。JGit などの I/O はバックグラウンド `Job` に載せる。
-- `RestartLanguageServerHandler`: `service<GitLabLanguageServerProcessProvider>()` の `stop()` → `start(bundle)`。bundle は `FrameworkUtil.getBundle(...)` 等で取得。
+- `RestartLanguageServerHandler`: provider の**アトミックな `restart()`**(下記)を呼ぶだけの薄い配線。bundle は `FrameworkUtil.getBundle(...)` 等で取得。
+
+### GitLabLanguageServerProcessProvider の変更(Codex P1-b 反映・重要)
+既存 provider は restart を安全に行えない。実コードで確認した欠陥:
+- `process` は共有可変フィールドで、`onExit` コールバック(`GitLabLanguageServerProcessProvider.kt:68-71`)が**終了プロセスの同一性を確認せず無条件に `process = null`** する。`stop()` → `start()` 後に旧プロセスの終了通知が届くと、**新プロセスのフィールドを null 化**し、以後の停止・再起動・復旧が不整合になる(単一 restart でも発生)。
+- `pullStdErrLogsExecutor` は `stop()` で `shutdownNow()` されるが `start()` で再生成されないため、restart 後に `pullStdErrLogs()` が `RejectedExecutionException` になる。
+
+対応(provider をライフサイクル状態機械にする):
+1. **単一ロック/直列化**: `start`/`stop`/`restart` を同一ロックで直列実行し、多重再起動を排除。
+2. **プロセス同一性ガード**: `onExit` は「終了したプロセスが現行フィールドと同一のときだけ」状態(`process`/`processListener`)を更新する(世代トークンまたは Process 参照比較)。
+3. **executor ライフサイクル修正**: `pullStdErrLogsExecutor` を `start()` 時に生成/再生成する(または stop で shutdown しない設計に変更)。
+4. **`restart()` を追加**: `stop()` → `start(bundle)` を上記ロック下でアトミックに実行。
+5. **開始失敗時の到達状態**: `start()` が失敗(`process == null`)した場合の状態(停止扱い)・再試行可否・ユーザー通知を定義し受け入れ条件に含める(§19)。
+既存の起動/終了経路(`GitLabEclipseStartup`)の呼び出し契約は不変(内部の同一性ガード追加のみ)。
 
 ## 9. 処理フロー
 
@@ -141,18 +161,39 @@ com.gitlab.eclipse
 3. [BG] host/protocol を `gitlab.url` と照合(不一致は §11 エラー)→ `webUrl` 構築。
 4. [BG] 当該ファイルの最新コミット SHA(空なら「未コミット」エラー)+ root 相対パス。
 5. 選択範囲 → アンカー `#L{start+1}` または `#L{start+1}-{end+1}`。
-6. `${webUrl}/-/blob/${sha}/${relpath}${anchor}` を構築。
+6. パス各セグメントを percent-encode(§8 エンコード規則)して `${webUrl}/-/blob/${encode(sha)}/${encodePathSegments(relpath)}${anchor}` を構築。
 7. [UI] `BrowserLauncher` で開く / `ClipboardWriter` でコピー。
 
-### フロー B: プロジェクト系 URL(FR-2/3/4)
+### フロー B: プロジェクト系 URL(FR-2/3)
 - リポジトリ → `webUrl` はフロー A の 2–3 と同一。テンプレ:
   - 新規 Issue: `${webUrl}/-/issues/new`
   - Issue 検索: `${webUrl}/-/issues?${query}`(入力ダイアログ → SearchQueryBuilder)
   - MR 検索: `${webUrl}/-/merge_requests?${query}`
-  - 高度な検索: `${gitlab.url}/search?...`(スコープ/レベル選択ダイアログ付き、インスタンス横断)
-  - openInGitLab(プロジェクト): `${webUrl}` / (コミット): `${webUrl}/-/commit/${sha}`
+
+### フロー B': 高度な検索(FR-4・リポジトリ非依存、Codex P1-d 反映)
+高度な検索はインスタンス横断で **`${gitlab.url}/search` のみを使い、プロジェクト URL 解決を必要としない**。したがってリポジトリ選択フロー(§下記)に一切依存しない。
+1. `gitlab.url` 設定を確認(未設定なら §11 エラーで即終了、リポジトリは参照しない)。
+2. 検索文字列を入力ダイアログで受領(空なら何もしない)。
+3. スコープ/レベル選択(project / instance)。GitLab.com か self-managed かでスコープ表を切替。
+4. **instance スコープ**: `project_id` なしで `${gitlab.url}/search?search=..&scope=..` を構築。**project スコープを選んだ場合のみ**プロジェクト解決(§下記リポジトリ選択)を行い `project_id` を付与。
+5. [UI] `BrowserLauncher` で開く。
+- ワークスペース未オープン・Git リポジトリ無し・複数リポジトリでも、instance スコープなら成功する。project スコープ選択時のみリポジトリ選択・不一致エラーが起こりうる。
+
+### openInGitLab / copyLinkToClipboard 起動契約(決定表、Codex P1-a 反映)
+VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だが Phase 2 にツリーは無い。台帳 D16「ファイル/コミット/プロジェクト」を Phase 2 では以下に**確定**する。各コマンドは起動口・入力・対象なし時挙動・生成 URL を固定:
+
+| コマンド | 起動口 | 対象・入力 | 生成 URL | 対象取得不可時 |
+|---|---|---|---|---|
+| `gl.openActiveFile` | エディタ右クリック / コマンド | アクティブファイル + 選択行 | `${webUrl}/-/blob/${sha}/${relpath}#L..` | §11 の各警告 |
+| `gl.copyLinkToActiveFile` | 同上 | 同上 | 同上(クリップボードへ) | 同上 |
+| `gl.openInGitLab`(プロジェクト) | コマンド / プロジェクト右クリック | アクティブファイルの包含リポジトリ、無ければリポジトリ選択 | `${webUrl}` | remote/設定エラー |
+| `gl.copyLinkToClipboard`(プロジェクト) | 同上 | 同上 | `${webUrl}`(クリップボードへ) | 同上 |
+
+- **「コミット」対象は Phase 2 では見送り。** VSCode ではコミット履歴/ツリー項目起点(`openCommitInGitLab` は `SourceControlHistoryItemDetailsProvider` 経由)であり、Phase 2 にその起動口が無い。コミットを開く機能はツリー/履歴連携が整う Phase 3 以降で実装する(§3・台帳に明記)。
+- Phase 2 の `openInGitLab`/`copyLinkToClipboard` の対象は「ファイル(= openActiveFile と同義の blob)」「プロジェクト」に限定する。
 
 ### リポジトリ選択(multi-repo / multi-remote)
+- 適用対象: フロー A/B と、フロー B' の **project スコープ選択時のみ**。
 - アクティブファイルがある → そのファイルの包含リポジトリ(一意)。
 - アクティブファイルが無い(プロジェクト系のみ)→ ワークスペース内 GitLab リポジトリを列挙:単一なら自動、複数なら SWT 選択ダイアログ。
 - remote は `origin` 優先、無ければ `gitlab.url` host 一致の最初の remote。
@@ -162,7 +203,7 @@ com.gitlab.eclipse
 - UI スレッド: エディタ/選択取得、ブラウザ起動、クリップボード書込、各種ダイアログ。
 - バックグラウンド(`Job`): JGit(リポジトリ検出・log)。Phase 2 は API を呼ばないため重い I/O は JGit のみ。
 - `syncExec` は使わない。選択情報は先に UI で取得しバックグラウンドへ値渡し(Phase 1 の `asyncExec` パターン踏襲)。
-- restart は `stop()`→`start()` を順次実行。連続再起動の多重実行防止(§13)。
+- restart は provider 内の**アトミックな `restart()`**(§8:単一ロック + プロセス同一性ガード + executor 再生成)で実行。`onExit` は現行プロセスと同一のときだけ状態更新するため、旧プロセスの遅延終了通知が新プロセス状態を破壊しない。
 
 ## 11. エラー処理(VSCode 準拠メッセージ)
 
@@ -175,7 +216,9 @@ com.gitlab.eclipse
 | 検索入力が空 | 何もしない(VSCode 準拠) |
 | MCP: HOME 未設定 / ワークスペース未オープン | 警告(それぞれの原因を明示) |
 | MCP: 設定パスが既存ディレクトリ | エラー(削除/改名を促す) |
-| LS 再起動失敗(start 例外) | エラーログ + ユーザー通知 |
+| LS 再起動失敗(start 例外、`process == null`) | 停止状態に確定 + エラーログ + ユーザー通知(再試行可能である旨)。部分起動状態を残さない |
+| 高度な検索で `gitlab.url` 未設定 | 警告 + 設定を促す(リポジトリは参照しない) |
+| ファイル名/パスに特殊文字 | percent-encode で正しい URL を生成(§8 規則) |
 
 ## 12. 認証と認可
 
@@ -185,7 +228,7 @@ com.gitlab.eclipse
 ## 13. 冪等性・多重実行
 
 - MCP 設定生成は冪等(既存ファイルは上書きしない。排他作成 + EEXIST 時は既存を尊重)。
-- LS 再起動の多重押下: 再起動処理中フラグ等で多重 `stop()/start()` を防ぐ(実装計画で詳細化)。
+- LS 再起動は provider 内の単一ロックで直列化し、多重 `restart()`/`start()`/`stop()` を排除(§8・§10)。`onExit` のプロセス同一性ガードにより、旧プロセスの遅延終了通知は現行状態を変更しない。
 - URL 生成・ブラウザ起動は副作用が外部ブラウザのタブ生成のみで、多重実行は無害。
 
 ## 14. タイムアウトとリトライ
@@ -216,8 +259,11 @@ com.gitlab.eclipse
 | `GitLabRemoteParser` | TDD。VSCode テストケース移植(SSH カスタムポート/絶対パス/scheme+port/HTTPS/カスタムルート/host 照合) |
 | `SearchQueryBuilder` | TDD。トークン(labels/author:me/assignee:me/milestone/title/基本テキスト)→ クエリ |
 | `McpConfigService` | TDD。一時ディレクトリでパス解決・冪等生成・既存ディレクトリ衝突検出 |
-| `GitLabProjectUrlResolver`(JGit 部) | 一時リポジトリで remote 設定 + コミット → blob URL 検証(JGit は headless 可) |
+| `GitLabProjectUrlResolver`(JGit 部) | 一時リポジトリで remote 設定 + コミット → blob URL 検証(JGit は headless 可)。**特殊文字(空白/`#`/`?`/`%`/非 ASCII/既存 escape)を含むファイル名の percent-encode ケースを含める**(Codex P1-c) |
+| URL エンコード(パスセグメント) | TDD。予約文字・Unicode・二重エンコード回避・`/` 保持の純関数テスト |
+| 高度な検索の分岐 | instance スコープはリポジトリ非依存で URL 生成、project スコープのみ解決を要する分岐をテスト(Codex P1-d) |
 | resolver(選択/エディタ部)・各ハンドラ配線・ブラウザ・クリップボード・restart | 手動検証(PR 説明文に手順、実機 `equoIde`) |
+| LS `restart()` アトミック性 | provider の状態機械ロジック(プロセス同一性ガード・executor 再生成・開始失敗時の停止確定)を、実プロセスに依存しない範囲でユニットテスト。実接続の復帰確認は手動(Codex P1-b) |
 
 検証ゲート(Phase 1 と同一): 対象テスト PASS + 全体失敗数 36 維持 + 変更ファイル detekt 0 件。
 
@@ -227,18 +273,19 @@ com.gitlab.eclipse
 - `.../src/desktop/commands/open_in_gitlab.ts`(openInGitLab / copyLink)
 - `.../src/desktop/search_input.ts`(検索クエリ・スコープ)
 - `.../src/desktop/mcp/utils/mcp_config.ts` / `mcp_workspace_config.ts`(MCP パス・テンプレ)
-- Eclipse 側: `lsp/GitLabLanguageServerProcessProvider.kt`(start/stop)、`lsp/git/GitDiffService.kt`(JGit パターン)、`views/issues/IssuesView.kt`(ブラウザ起動パターン)、`api/GitLabApiClient.kt`(URL/設定パターン)
+- Eclipse 側: `lsp/GitLabLanguageServerProcessProvider.kt`(start/stop、L52 共有 `process`・L68-71 `onExit` の無条件 null 化・L116 executor shutdown を確認)、`lsp/git/GitDiffService.kt`(JGit パターン)、`views/issues/IssuesView.kt`(ブラウザ起動パターン)、`api/GitLabApiClient.kt`(URL/設定パターン)
 
 ## 19. 受け入れ条件
 
 - 手動検証(実機):
-  - openActiveFile が選択行アンカー付きの正しい blob URL をブラウザで開く。copyLinkToActiveFile がクリップボードに同 URL を入れる。
-  - openInGitLab(プロジェクト/コミット/ファイル)・copyLinkToClipboard が正しく動く。
-  - 新規 Issue・Issue 検索・MR 検索・高度な検索の各ブラウザ遷移が VSCode と一致。
+  - openActiveFile が選択行アンカー付きの正しい blob URL をブラウザで開く。copyLinkToActiveFile がクリップボードに同 URL を入れる。特殊文字を含むファイル名でもリンクが壊れない。
+  - openInGitLab(**プロジェクト/ファイル**。コミットは Phase 3 送り)・copyLinkToClipboard が正しく動く。
+  - 新規 Issue・Issue 検索・MR 検索の各ブラウザ遷移が VSCode と一致。
+  - **高度な検索**: リポジトリ未オープン/複数リポジトリでも instance スコープで成功する。project スコープ選択時のみプロジェクト解決が働く。
   - MCP user/workspace 設定がファイル生成 + エディタで開く。2 回目は上書きしない。
-  - LS 再起動後にチャット/コード提案が復帰する。
+  - **LS 再起動**: 単発再起動でチャット/コード提案が復帰する。連続再起動しても状態が壊れない。開始失敗時は停止状態に確定し再試行できる。
 - 自動テスト: §18 の TDD 対象が PASS、全体失敗 36 維持、detekt 0 件。
-- パリティ台帳 #7 の該当行(D8/D10/D11/D16)を更新。
+- パリティ台帳 #7 の該当行(D8/D10/D11/D16)を更新(`gl.openInGitLab` のコミット対象と `gl.status.issue` は Phase 3 送りである旨を注記)。
 
 ## 20. 実装分割の見通し
 
@@ -255,9 +302,9 @@ Phase 2 は独立 3 クラスタ。実装は 3 PR に分割予定(最終確定�
 ## 21. 未決事項
 
 - **U-1**: リポジトリ選択で複数 GitLab リポジトリがある場合の選択 UI(SWT リストダイアログ)の具体仕様。VSCode の `run_with_valid_project` 相当を Eclipse でどこまで踏襲するか。実装計画で確定。
-- **U-2**: `openInGitLab` の起動口(コンテキストメニュー/コマンドパレット)と、対象(プロジェクト/コミット/ファイル)の切り分け方。VSCode ではツリー項目起点だが、Eclipse では Phase 2 時点でツリーが無い(Phase 3)。Phase 2 ではアクティブファイル/エディタ起点に限定するか要確定。
-- **U-3**: `restartLanguageServer` のハンドラから bundle を取得する具体手段(`FrameworkUtil` / Activator 経由)と多重実行防止の実装。
-- **U-4**: 高度な検索のスコープ表(GitLab.com vs self-managed)の維持責務を定数としてどこに置くか。
+- **U-2(確定・Codex P1-a)**: `openInGitLab`/`copyLinkToClipboard` の起動契約は §9 決定表で確定(対象=ファイル/プロジェクト、起動口=エディタ右クリック/コマンド、コミット対象は Phase 3 送り)。
+- **U-3(確定・Codex P1-b)**: LS 再起動は provider のアトミック `restart()`(§8:単一ロック + プロセス同一性ガード + executor 再生成 + 開始失敗時の停止確定)で実装。bundle 取得は `FrameworkUtil.getBundle` を用いる。残る詳細(世代トークン vs 参照比較)は実装時に選択。
+- **U-4**: 高度な検索のスコープ表(GitLab.com vs self-managed)の維持責務を定数としてどこに置くか(`navigation` 内の定数オブジェクト想定)。実装計画で確定。
 
 ## 22. 想定されるリスク
 
