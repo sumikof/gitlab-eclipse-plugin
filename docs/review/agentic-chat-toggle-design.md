@@ -24,6 +24,8 @@
 - r4: Codex レビュー round 3 P1×2 を反映。
   - P1-H(§9.1a): LS ready の**具体的な refresh フック**を確定(`GitLabLanguageServerProcessProvider.start()` の初期化成功分岐)。feature-state 通知に依存しない回復経路を明記し U3 を解消。
   - P1-I(§17.1): `ChatStatusHandler` の**データ取得先を集約サービスへ置換**(isEnabled・文言・アイコン)。Agentic-only の handler テストを追加。
+- r5: Codex レビュー round 4 P1×1 を反映。
+  - P1-J(§10.3): **classic(`chat`)feature-state も集約サービスへ配送**することを明記。`agentic_chat` だけ配線すると classic-only で `anyChatEnabled` が false のままとなり、起動導線/status が回帰する問題を解消。`chat` を既存 `DuoChatStateService` と `ChatAvailabilityService` の**双方へ配送**する。
 
 ---
 
@@ -184,9 +186,12 @@ object ChatSelectionResolver {
 - 併せて classic 側にも `openUrl`(= `openLink` エイリアス)を追加し両者の欠落を解消。
 - payload 検証は既存 `PluginMessageHandler` の型パースに準拠(パース不能は既存どおり warn で skip)。
 
-### 10.3 agentic feature-state 配線と再評価責務(P1-F)
-- `GitLabLanguageServerClient.gitlabFeatureStateChange` の `when(featureId)` に `"agentic_chat" -> ...` を追加し、`ChatAvailabilityService` に届ける。
-- `ChatAvailabilityService` は agentic 状態遷移時に、classic の `DuoChatStateService.update()` と**対称に**: (a) 集約 `anyChatEnabled` を再計算し source 変数 `duo_chat_available` の変更を発火、(b) `refreshDuoChatWindow()`(=`view.refresh()`)を起動、(c) status(`chatStatus`)を再描画する。
+### 10.3 feature-state 配線と再評価責務(P1-F / P1-J)
+- `GitLabLanguageServerClient.gitlabFeatureStateChange` の `when(featureId)`(現行 `GitLabLanguageServerClient.kt:69-74`)を次のように変更する:
+  - `"chat"` → **既存 `DuoChatStateService.update()`(classic 用・後方互換)と `ChatAvailabilityService`(集約)の双方へ配送**(P1-J)。
+  - `"agentic_chat"` → `ChatAvailabilityService` へ配送(新規)。
+- **P1-J の要点**: `agentic_chat` だけを集約へ配線すると、classic-only 環境(または両有効だが agentic 通知未着)で集約が classic 状態を受け取れず `anyChatEnabled` が false のままになり、§17.1 が Open/Focus/status を `duo_chat_available` でゲートするため **classic 既存ユーザーの起動導線/status が無効化される回帰**になる。よって classic 状態も必ず集約へ届ける。集約は `DuoChatStateService` の内部状態に依存せず、自身が受け取った classic/agentic の両コピーから `anyChatEnabled` を算出する(結合・順序依存を避ける)。
+- `ChatAvailabilityService` は classic/agentic いずれの状態遷移時にも、`DuoChatStateService.update()` と**対称に**: (a) 集約 `anyChatEnabled` を再計算し source 変数 `duo_chat_available` の変更を発火、(b) `refreshDuoChatWindow()`(=`view.refresh()`)を起動、(c) status(`chatStatus`)を再描画する。
 - **状態を保持するだけでは不十分**(P1-F)。保持 + 上記 refresh 起動までを一体で実装し、遅延有効化に追随する。
 
 ## 11. データモデル
@@ -260,7 +265,7 @@ object ChatSelectionResolver {
 - `ChatWebviewCatalog.extract`: 空/null 要素/既知 2 種抽出/広告順保持/uri 欠落除外/未知 id 無視/重複除外。
 - `ChatSelectionResolver.resolve`: 保存値有効ヒット / 保存値無効→有効先頭 / classic 無効・agentic 有効→agentic / 両有効保存値なし→classic / 有効ゼロ→候補先頭 / 候補空→null。
 - 世代番号 latest-wins の単体テスト(古い世代の反映が破棄される)。
-- 集約可用性(`ChatAvailabilityService`): classic のみ有効 / agentic のみ有効 / 両方 / 両方無効 で `anyChatEnabled`(=`duo_chat_available`)が正しいこと。agentic 遷移で refresh 起動が呼ばれること(協調オブジェクトのモックで検証)。
+- 集約可用性(`ChatAvailabilityService`): classic のみ有効 / agentic のみ有効 / 両方 / 両方無効 で `anyChatEnabled`(=`duo_chat_available`)が正しいこと。**classic のみ受信でも true**(P1-J 回帰防止)。classic/agentic いずれの遷移でも refresh 起動が呼ばれること(協調オブジェクトのモックで検証)。
 - `ChatStatusHandler`(集約依存後): Agentic-only で `isEnabled()==true`・Enabled 文言/アイコン、全無効で Disabled 文言、classic 無効・agentic 有効で Enabled。
 - Preference 既定・保存/復元。
 - SWT(`StackLayout`/`Browser`/toolbar/実メッセージ往復)は headless 不可 → 手動検証手順を PR に記載。
@@ -278,6 +283,7 @@ object ChatSelectionResolver {
 - AC11(P1-F): ビューを開いた後に Agentic が有効化された場合、開いているビューが自動 `refresh()` され Agentic を表示する(手動 + 集約状態遷移の単体テスト)。
 - AC12(P1-G/P1-H): LS 未生成の起動直後にビューを開いても **loading が永続せず** 準備中を表示し、**LS ready フック(§9.1a、feature-state 通知の有無に関わらず)** で回復して chat を表示する(手動: ワークベンチ起動直後にビューを開き、LS 起動完了後に自動表示されることを確認)。
 - AC13(P1-I): Agentic のみ有効(classic 無効)で、**status ウィジェットが Enabled 表示**になりクリックでビューを開ける(手動 + `ChatStatusHandler` の Agentic-only 単体テスト)。
+- AC14(P1-J・回帰防止): **classic のみ有効**(agentic 通知が来ない/未対応環境)で、`duo_chat_available` が true になり Open/Focus/status が従来どおり有効(手動 + 集約サービスの classic-only 単体テスト)。
 - AC9: `./gradlew build` で detekt green、テストは既定 SWT 環境失敗(36 件)を超える新規失敗なし。
 
 ## 20. 想定されるリスク
