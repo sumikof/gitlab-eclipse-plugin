@@ -11,7 +11,12 @@
 > - P1-a: `openInGitLab`/`copyLinkToClipboard` の起動契約を §9 決定表で確定(コミット対象は Phase 3 送り)。
 > - P1-b: LS 再起動を provider のアトミック `restart()` に(§8:単一ロック + プロセス同一性ガード + executor 再生成)。既存コードの共有 `process` 破壊競合を確証し反映。
 > - P1-c: 生成 URL のパスセグメントを RFC 3986 で percent-encode(§8 規則 / §9 フロー A)。
-> - P1-d: 高度な検索をリポジトリ非依存に分岐(§9 フロー B'、instance スコープは `gitlab.url` のみ)。
+> - P1-d: 高度な検索をスコープで分岐(§9 フロー B')。
+>
+> **Codex 再レビュー反映(2026-07-23、コミット `7003633` に対する 2 巡目)**: 追加 P1×2 + P2×1 を反映。
+> - P1-new-1: `openInGitLab`/`copyLinkToClipboard` はプロジェクト対象のみに確定し、ファイル対象は専用コマンドへ委譲(§9 決定表)。重複挙動を排除。
+> - P1-new-2: 高度な検索の project スコープを数値 `project_id` 非依存に変更。プロジェクト検索 URL `${webUrl}/-/search`(API 不要、A 案と整合)を用いる(§9 フロー B')。
+> - P2-new: §16 を restart 状態機械変更あり(provider 内部実装変更・互換性確認範囲 2 経路)に更新。
 
 ---
 
@@ -170,14 +175,16 @@ com.gitlab.eclipse
   - Issue 検索: `${webUrl}/-/issues?${query}`(入力ダイアログ → SearchQueryBuilder)
   - MR 検索: `${webUrl}/-/merge_requests?${query}`
 
-### フロー B': 高度な検索(FR-4・リポジトリ非依存、Codex P1-d 反映)
-高度な検索はインスタンス横断で **`${gitlab.url}/search` のみを使い、プロジェクト URL 解決を必要としない**。したがってリポジトリ選択フロー(§下記)に一切依存しない。
-1. `gitlab.url` 設定を確認(未設定なら §11 エラーで即終了、リポジトリは参照しない)。
+### フロー B': 高度な検索(FR-4、Codex P1-d/P1-new-2 反映)
+高度な検索は **数値 `project_id` を用いない**(Phase 2 は API を呼ばず、remote から数値 ID を導出できないため)。スコープにより URL の起点だけを切り替え、いずれも `namespaceWithPath`/`webUrl` のみで構築する。
+1. `gitlab.url` 設定を確認(未設定なら §11 エラーで即終了)。
 2. 検索文字列を入力ダイアログで受領(空なら何もしない)。
 3. スコープ/レベル選択(project / instance)。GitLab.com か self-managed かでスコープ表を切替。
-4. **instance スコープ**: `project_id` なしで `${gitlab.url}/search?search=..&scope=..` を構築。**project スコープを選んだ場合のみ**プロジェクト解決(§下記リポジトリ選択)を行い `project_id` を付与。
+4. URL 構築:
+   - **instance スコープ**(リポジトリ非依存): `${gitlab.url}/search?search=..&scope=..`。リポジトリ選択フローに一切依存しない。
+   - **project スコープ**: リポジトリ解決(§下記)で `webUrl` を得て、**プロジェクトスコープ検索 URL** `${webUrl}/-/search?search=..&scope=..` を構築(`project_id` 不要)。VSCode は instance の `/search?project_id=` を使うが、プロジェクトの `/-/search` は等価の結果を返し、かつ API 不要で A 案と整合する。
 5. [UI] `BrowserLauncher` で開く。
-- ワークスペース未オープン・Git リポジトリ無し・複数リポジトリでも、instance スコープなら成功する。project スコープ選択時のみリポジトリ選択・不一致エラーが起こりうる。
+- ワークスペース未オープン・Git リポジトリ無し・複数リポジトリでも、instance スコープなら成功する。project スコープ選択時のみリポジトリ選択・不一致エラー(§11)が起こりうる。
 
 ### openInGitLab / copyLinkToClipboard 起動契約(決定表、Codex P1-a 反映)
 VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だが Phase 2 にツリーは無い。台帳 D16「ファイル/コミット/プロジェクト」を Phase 2 では以下に**確定**する。各コマンドは起動口・入力・対象なし時挙動・生成 URL を固定:
@@ -186,11 +193,11 @@ VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だ�
 |---|---|---|---|---|
 | `gl.openActiveFile` | エディタ右クリック / コマンド | アクティブファイル + 選択行 | `${webUrl}/-/blob/${sha}/${relpath}#L..` | §11 の各警告 |
 | `gl.copyLinkToActiveFile` | 同上 | 同上 | 同上(クリップボードへ) | 同上 |
-| `gl.openInGitLab`(プロジェクト) | コマンド / プロジェクト右クリック | アクティブファイルの包含リポジトリ、無ければリポジトリ選択 | `${webUrl}` | remote/設定エラー |
-| `gl.copyLinkToClipboard`(プロジェクト) | 同上 | 同上 | `${webUrl}`(クリップボードへ) | 同上 |
+| `gl.openInGitLab` | コマンド / プロジェクト右クリック | アクティブファイルの包含リポジトリ、無ければリポジトリ選択 | `${webUrl}`(プロジェクトページ) | remote/設定エラー |
+| `gl.copyLinkToClipboard` | 同上 | 同上 | `${webUrl}`(クリップボードへ) | 同上 |
 
-- **「コミット」対象は Phase 2 では見送り。** VSCode ではコミット履歴/ツリー項目起点(`openCommitInGitLab` は `SourceControlHistoryItemDetailsProvider` 経由)であり、Phase 2 にその起動口が無い。コミットを開く機能はツリー/履歴連携が整う Phase 3 以降で実装する(§3・台帳に明記)。
-- Phase 2 の `openInGitLab`/`copyLinkToClipboard` の対象は「ファイル(= openActiveFile と同義の blob)」「プロジェクト」に限定する。
+- **対象の割り当て(Codex P1-new-1 反映)**: ファイル(blob)対象は専用コマンド `gl.openActiveFile`/`gl.copyLinkToActiveFile` が担う。`gl.openInGitLab`/`gl.copyLinkToClipboard` は **Phase 2 ではプロジェクト対象のみ**とし、ファイル起点の振り分けは持たせない(重複挙動を排除)。将来 Issue/MR/Pipeline/コミット等の対象が増える際に、これらのコマンドへ対象を追加する(Phase 3 以降)。
+- **「コミット」対象は Phase 2 では見送り。** VSCode ではコミット履歴/ツリー項目起点(`openCommitInGitLab` は `SourceControlHistoryItemDetailsProvider` 経由)であり、Phase 2 にその起動口が無い。ツリー/履歴連携が整う Phase 3 以降で実装する(§3・台帳に明記)。
 
 ### リポジトリ選択(multi-repo / multi-remote)
 - 適用対象: フロー A/B と、フロー B' の **project スコープ選択時のみ**。
@@ -217,7 +224,8 @@ VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だ�
 | MCP: HOME 未設定 / ワークスペース未オープン | 警告(それぞれの原因を明示) |
 | MCP: 設定パスが既存ディレクトリ | エラー(削除/改名を促す) |
 | LS 再起動失敗(start 例外、`process == null`) | 停止状態に確定 + エラーログ + ユーザー通知(再試行可能である旨)。部分起動状態を残さない |
-| 高度な検索で `gitlab.url` 未設定 | 警告 + 設定を促す(リポジトリは参照しない) |
+| 高度な検索(instance)で `gitlab.url` 未設定 | 警告 + 設定を促す(リポジトリは参照しない) |
+| 高度な検索(project)でリポジトリ未解決/不一致 | 警告(project スコープはリポジトリ解決が必要な旨。instance スコープを促す) |
 | ファイル名/パスに特殊文字 | percent-encode で正しい URL を生成(§8 規則) |
 
 ## 12. 認証と認可
@@ -244,7 +252,9 @@ VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だ�
 ## 16. 既存機能への影響
 
 - 既存 `IssuesView`(自分宛て Issue 一覧)は変更しない。`openInBrowser` の実装パターンを `BrowserLauncher` として一般化する際、既存呼び出しは現状維持(リファクタは最小・任意)。
-- `GitLabLanguageServerProcessProvider` に振る舞い変更なし(既存 `stop()`/`start()` を新ハンドラから呼ぶのみ)。
+- **`GitLabLanguageServerProcessProvider` を変更する(Codex P1-b/P2-new 反映)。** §8 のとおり内部状態機械化を行う:(1) `start`/`stop`/`restart` の単一ロックによる直列化、(2) `onExit` にプロセス同一性ガードを追加(現行プロセスと同一のときだけ `process`/`processListener` を更新)、(3) `pullStdErrLogsExecutor` を `start()` 時に生成/再生成、(4) アトミックな `restart()` の追加。
+  - **既存経路への影響と互換性確認範囲**: 起動(`GitLabEclipseStartup` L55 `start`)・終了(L83 `stop`)の**呼び出し契約(シグネチャ・呼び出しタイミング)は不変**。変更は provider 内部実装に閉じる。回帰確認の対象は「通常起動 → 動作 → シャットダウン」と「起動 → restart → 動作 → シャットダウン」の 2 経路(§19 受け入れ条件)。onExit の同一性ガード追加により、従来の単発起動/終了の挙動は変わらないことを確認する。
+- 既存 `IssuesView`(自分宛て Issue 一覧)は変更しない。`openInBrowser` の実装パターンを `BrowserLauncher` として一般化する際、既存呼び出しは現状維持(リファクタは最小・任意)。
 - plugin.xml へコマンド/ハンドラ/メニュー項目を追加(既存項目は不変)。
 
 ## 17. 障害時の復旧・ロールバック
