@@ -81,6 +81,18 @@
                 name="Show GitLab Issues Assigned To Me"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
+                name="Open MCP User Configuration"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
+                name="Open MCP Workspace Configuration"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -321,6 +333,16 @@
                 commandId="gitlab-eclipse-plugin.commands.ShowIssues"
                 class="com.gitlab.eclipse.handlers.ShowIssuesHandler"
         />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
+                class="com.gitlab.eclipse.handlers.OpenMcpUserConfigHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
+                class="com.gitlab.eclipse.handlers.OpenMcpWorkspaceConfigHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -504,6 +526,16 @@
                     label="Issues Assigned To Me"
                     style="push"
             />
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
+                    label="Open MCP User Configuration"
+                    tooltip="Create/open the user-level GitLab Duo MCP config"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
+                    label="Open MCP Workspace Configuration"
+                    tooltip="Create/open the workspace-level GitLab Duo MCP config"/>
         </menuContribution>
     </extension>
 
