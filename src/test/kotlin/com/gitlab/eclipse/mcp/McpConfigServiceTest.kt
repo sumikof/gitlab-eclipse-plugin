@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mcp
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import java.nio.file.Path
@@ -21,6 +22,40 @@ class McpConfigServiceTest : DescribeSpec({
   describe("template") {
     it("is valid JSON with comments containing an mcpServers object") {
       McpConfigService.DEFAULT_CONFIG_TEMPLATE.contains("\"mcpServers\"") shouldBe true
+    }
+  }
+
+  describe("ensureConfigFile") {
+    it("creates the file with the template when it does not exist") {
+      val tmp = kotlin.io.path.createTempDirectory("mcp-test")
+      val service = McpConfigService()
+      val target = tmp.resolve(".gitlab/duo/mcp.json")
+
+      service.ensureConfigFile(target)
+
+      java.nio.file.Files.exists(target) shouldBe true
+      java.nio.file.Files.readString(target) shouldBe McpConfigService.DEFAULT_CONFIG_TEMPLATE
+    }
+
+    it("does not overwrite an existing file") {
+      val tmp = kotlin.io.path.createTempDirectory("mcp-test")
+      val service = McpConfigService()
+      val target = tmp.resolve(".gitlab/duo/mcp.json")
+      java.nio.file.Files.createDirectories(target.parent)
+      java.nio.file.Files.writeString(target, "custom-content")
+
+      service.ensureConfigFile(target)
+
+      java.nio.file.Files.readString(target) shouldBe "custom-content"
+    }
+
+    it("throws when the target path is an existing directory") {
+      val tmp = kotlin.io.path.createTempDirectory("mcp-test")
+      val service = McpConfigService()
+      val target = tmp.resolve(".gitlab/duo/mcp.json")
+      java.nio.file.Files.createDirectories(target)
+
+      shouldThrow<IllegalStateException> { service.ensureConfigFile(target) }
     }
   }
 })

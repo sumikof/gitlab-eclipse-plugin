@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.mcp
 
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 
 /**
  * Resolves and idempotently provisions the GitLab Duo MCP config files.
@@ -14,6 +16,23 @@ class McpConfigService(
 
   fun getWorkspaceConfigPath(workspaceRoot: Path): Path =
     workspaceRoot.resolve(CONFIG_RELATIVE_PATH)
+
+  /**
+   * Creates [path] with [DEFAULT_CONFIG_TEMPLATE] if it does not exist yet.
+   * Existing files are left untouched (idempotent). If [path] already exists
+   * as a directory, this throws so the caller can surface a clear error.
+   */
+  fun ensureConfigFile(path: Path) {
+    if (Files.isDirectory(path)) {
+      error("MCP config path exists but is a directory: $path. Please remove or rename it.")
+    }
+    Files.createDirectories(path.parent)
+    try {
+      Files.writeString(path, DEFAULT_CONFIG_TEMPLATE, StandardOpenOption.CREATE_NEW)
+    } catch (_: java.nio.file.FileAlreadyExistsException) {
+      // Idempotent: keep the user's existing config.
+    }
+  }
 
   companion object {
     private const val CONFIG_RELATIVE_PATH = ".gitlab/duo/mcp.json"
