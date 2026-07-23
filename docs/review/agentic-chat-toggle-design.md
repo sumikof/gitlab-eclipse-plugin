@@ -21,6 +21,9 @@
   - P1-E(§17.1 新設): 起動導線(Open/Focus/status)を **集約可用性**でゲート。`duo_chat_enabled`(classic のみ)では Duo Core でビューを開けない問題を解消。
   - P1-F(§10.3/§13): agentic を含む feature-state 遷移で **`refresh()` を起動**する購読責務を確定(遅延有効化に追随)。
   - P1-G(§9.1): **LS 未生成(`languageServer==null`)時に loading を必ず終端**し、LS ready 後の再評価で回復する規則を明記。
+- r4: Codex レビュー round 3 P1×2 を反映。
+  - P1-H(§9.1a): LS ready の**具体的な refresh フック**を確定(`GitLabLanguageServerProcessProvider.start()` の初期化成功分岐)。feature-state 通知に依存しない回復経路を明記し U3 を解消。
+  - P1-I(§17.1): `ChatStatusHandler` の**データ取得先を集約サービスへ置換**(isEnabled・文言・アイコン)。Agentic-only の handler テストを追加。
 
 ---
 
@@ -93,6 +96,8 @@
 - feature-state 通知 `$/gitlab/featureStateChange` は featureId ごとに届く(`GitLabLanguageServerClient.kt:64-77`)。現状 `chat` のみ `DuoChatStateService` に配線。`agentic_chat` は未配線(else で無視)。
 - **起動導線のゲート(実 `plugin.xml` で確認)**: `OpenDuoChat` の各 `visibleWhen` は source 変数 `duo_chat_enabled` にゲート(`src/main/resources/plugin.xml:353-425`)。同変数は `DuoChatStateService`(sourceProvider、`:165-167`)が供給し、その値 `isEnabled` は **classic `chat` のみ・未受信時 false**。`NewChatConversation` も同変数ゲート(`:464`)。→ Duo Core(classic 無効・agentic 有効)では Open Duo Chat が非表示になり**ビューを開けない**。
 - **refresh 連鎖(実コードで確認)**: `DuoChatStateService.update()` は状態遷移時のみ `refreshDuoChatWindow()` を呼び(`DuoChatStateService.kt:27`)、それが `LanguageServerBrowserView.refresh()` を起動する(`chat/utils/DuoChatWindow.kt:35`)。agentic は未配線。
+- **LS ready の具体点(実コードで確認)**: `GitLabLanguageServerProcessProvider.start()` は LS プロセス起動後 `languageServerWrapper.registerLanguageServer(...)` し、`initialize().handleAsync { result, err -> ... }` の成功分岐で `initialized()` → `sendConfiguration()` 等を実行する(`GitLabLanguageServerProcessProvider.kt` 初期化ブロック)。ここが「LS ready」を示す唯一の確定点で、ビュー再評価のフック候補。現状ここからビュー refresh は呼ばれていない。
+- **status ハンドラの取得先(実コードで確認)**: `ChatStatusHandler` は `isEnabled()`・表示文言・アイコンを `DuoChatStateService`(classic)から取得(`chat/commands/ChatStatusHandler.kt`)。
 - webview 取得は既存 `GitLabLanguageServerWrapper.languageServer?.webviewMetadata()`。ただし **`languageServer: GitLabLanguageServer?` は nullable**(`GitLabLanguageServerWrapper.kt:8`)、`webviewMetadata()` の戻り値も nullable。LS 未生成時は Future 自体が得られない。戻り値要素は `id`/`title`/`uris`。
 - 実機依存(SWT `Browser`/`StackLayout`/view toolbar)は headless 検証不可。手動検証手順を実装 PR に記載。
 - VSCode 参照コピー(`out/gitlab-vscode-extension`)は読み取り専用。
@@ -144,7 +149,7 @@ LanguageServerBrowserView (ViewPart)  … 単一ビュー
 `refresh()` は次のいずれでも起動する:
 - classic(`chat`)または agentic(`agentic_chat`)の feature-state 遷移(`ChatAvailabilityService` の購読 → `refreshDuoChatWindow()`)。これにより **初期通知後に Agentic が有効化されるケース**でも、開いているビューが loading/disabled/古い候補から更新される。
 - ツールバーの Refresh 手動操作。
-- LS 未生成状態(9.1-2)は、LS ready 後に最初に届く feature-state 通知が上記経路で `refresh()` を起動して回復する。LS ready を示す feature-state が来ない環境では手動 Refresh を最終手段とする(§18 U3 で経路を棚卸し)。
+- **LS ready フック(P1-H、feature-state 非依存)**: `GitLabLanguageServerProcessProvider.start()` の初期化成功分岐(`initialize().handleAsync { result, err -> ... }` の `err==null` 経路、`languageServerWrapper.registerLanguageServer(...)` + `sendConfiguration()` 直後)に、UI スレッドへ `asyncExec` で `refreshDuoChatWindow()` を追加する。これにより **LS 未生成中にビューを開いた場合でも、LS が ready になった時点で feature-state 通知の有無に関わらず** ビューが再評価される(9.1-2 の「準備中」ページの確実な回復)。stop→start(将来の LS 再起動 PR-3)でも同経路で回復する。
 
 ### 9.2 初期選択(`ChatSelectionResolver`)
 - 保存値が候補にあり **有効** → それ。
@@ -229,6 +234,10 @@ object ChatSelectionResolver {
 現行 `plugin.xml` は `OpenDuoChat`(および `NewChatConversation`・status)を source 変数 `duo_chat_enabled`(classic のみ)でゲートしており、Duo Core では Agentic 有効でも Open Duo Chat が非表示=ビューを開けない。これを次のように再設計する:
 - **集約変数 `duo_chat_available`** を新設(`ChatAvailabilityService` が source provider として供給。値 = classic OR agentic のいずれかが有効)。
 - **Open Duo Chat / Focus / status(`chatStatus`)** の `visibleWhen`/enable 条件を `duo_chat_available` に切り替える(いずれかの chat が使えるならビューへ到達できる)。
+- **`ChatStatusHandler` のデータ取得先を集約サービスへ置換(P1-I)**: 現行 `ChatStatusHandler` は `isEnabled()`・表示文言・アイコンをすべて `DuoChatStateService`(classic の `isEnabled`/`getFirstEngagedCheck`)から取得している(`chat/commands/ChatStatusHandler.kt`)。これを `ChatAvailabilityService` に依存替えする:
+  - `isEnabled()` = 集約 `anyChatEnabled`(Agentic-only でも enabled)。
+  - `updateElement` の文言/アイコン規則: いずれかの chat が有効なら Enabled 表示。全無効時のみ Disabled 文言(理由は「表示中/選択対象 webview の disabledReason」を用いる。classic のみ無効で agentic 有効なら Enabled)。
+  - Agentic-only 状態での handler テスト(enabled=true、Enabled 文言/アイコン)を追加。
 - **classic 専用コマンド**(`NewChatConversation` 等)は従来どおり `duo_chat_enabled`(classic)にゲートし、Agentic だけ有効な状況では個別に無効化する。
 - 既存 `duo_chat_enabled` の意味・供給元(`DuoChatStateService`)は変えない(後方互換)。追加 source 変数のみで実現する。
 
@@ -240,7 +249,6 @@ object ChatSelectionResolver {
 - ハードコード `duo-chat-v2`(View 内)は動的化。`GitLabDuoChatWebViewController`/`Client` の classic 用途は維持。
 
 ## 18. 未決事項(推測で確定しない)
-- U3: LS ready を示す最初の feature-state 通知が全環境で確実に届き `refresh()` を起動するか(9.1a)。既存 `refresh()`/`refreshDuoChatWindow()` 経路と LS 起動シーケンス(`GitLabLanguageServerProcessProvider` / `sendConfiguration`)を計画時に棚卸しし、届かない場合の手動 Refresh 以外の回復手段(LS ready 購読)要否を確定。
 - U4: 両方有効・保存値なしの既定を classic とするか agentic とするか。現設計は classic。運用判断で変更可。
 - U5: view toolbar 切替 UI 形態(ラジオ式ドロップダウン vs 2 トグル)。Eclipse 慣行で確定。
 - U6: agentic の `getCurrentFileContext` 応答が classic と同一 payload 型でよいか(LS agentic 契約の request 応答形を計画時に v9 で最終確認)。
@@ -253,6 +261,7 @@ object ChatSelectionResolver {
 - `ChatSelectionResolver.resolve`: 保存値有効ヒット / 保存値無効→有効先頭 / classic 無効・agentic 有効→agentic / 両有効保存値なし→classic / 有効ゼロ→候補先頭 / 候補空→null。
 - 世代番号 latest-wins の単体テスト(古い世代の反映が破棄される)。
 - 集約可用性(`ChatAvailabilityService`): classic のみ有効 / agentic のみ有効 / 両方 / 両方無効 で `anyChatEnabled`(=`duo_chat_available`)が正しいこと。agentic 遷移で refresh 起動が呼ばれること(協調オブジェクトのモックで検証)。
+- `ChatStatusHandler`(集約依存後): Agentic-only で `isEnabled()==true`・Enabled 文言/アイコン、全無効で Disabled 文言、classic 無効・agentic 有効で Enabled。
 - Preference 既定・保存/復元。
 - SWT(`StackLayout`/`Browser`/toolbar/実メッセージ往復)は headless 不可 → 手動検証手順を PR に記載。
 
@@ -267,7 +276,8 @@ object ChatSelectionResolver {
 - AC8: LS 無応答時に metadata 取得が UI をブロックしない(手動: LS 停止状態でビューを開いても Eclipse が固まらない)。
 - AC10(P1-E): Agentic のみ有効(classic 無効)でも **Open Duo Chat がツールバー/メニューに表示され、ビューを開ける**。classic 専用の New Conversation は無効のまま(手動)。
 - AC11(P1-F): ビューを開いた後に Agentic が有効化された場合、開いているビューが自動 `refresh()` され Agentic を表示する(手動 + 集約状態遷移の単体テスト)。
-- AC12(P1-G): LS 未生成の起動直後にビューを開いても **loading が永続せず** empty/準備中を表示し、LS ready 後の feature-state 到達で回復する(手動: ワークベンチ起動直後にビューを開く)。
+- AC12(P1-G/P1-H): LS 未生成の起動直後にビューを開いても **loading が永続せず** 準備中を表示し、**LS ready フック(§9.1a、feature-state 通知の有無に関わらず)** で回復して chat を表示する(手動: ワークベンチ起動直後にビューを開き、LS 起動完了後に自動表示されることを確認)。
+- AC13(P1-I): Agentic のみ有効(classic 無効)で、**status ウィジェットが Enabled 表示**になりクリックでビューを開ける(手動 + `ChatStatusHandler` の Agentic-only 単体テスト)。
 - AC9: `./gradlew build` で detekt green、テストは既定 SWT 環境失敗(36 件)を超える新規失敗なし。
 
 ## 20. 想定されるリスク
