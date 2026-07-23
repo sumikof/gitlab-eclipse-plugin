@@ -17,6 +17,9 @@
 > - P1-new-1: `openInGitLab`/`copyLinkToClipboard` はプロジェクト対象のみに確定し、ファイル対象は専用コマンドへ委譲(§9 決定表)。重複挙動を排除。
 > - P1-new-2: 高度な検索の project スコープを数値 `project_id` 非依存に変更。プロジェクト検索 URL `${webUrl}/-/search`(API 不要、A 案と整合)を用いる(§9 フロー B')。
 > - P2-new: §16 を restart 状態機械変更あり(provider 内部実装変更・互換性確認範囲 2 経路)に更新。
+>
+> **Codex 再レビュー反映(2026-07-23、コミット `24c685c` に対する 3 巡目)**: P1×1 を反映。
+> - P1-3rd: §2 対象範囲表・§19 受け入れ条件・§21 U-2 に残っていた `openInGitLab` の「ファイル」対象記述を、§9 決定表(プロジェクト専用)に揃えた。ファイルは専用コマンドで検証する旨を明記。
 
 ---
 
@@ -37,7 +40,7 @@ Phase 2 対象 9 項目のうち、本設計は以下 8 項目を対象とする
 | 1 | `gl.mcp.openUserConfig` / `gl.mcp.openWorkspaceConfig` | D8 | ローカル `mcp.json` 冪等生成 → エディタで開く |
 | 2 | `gl.restartLanguageServer` | D10 | 既存プロセスプロバイダの `stop()` → `start(bundle)` |
 | 3 | `gl.openActiveFile` / `gl.copyLinkToActiveFile` | D16 | JGit + URL 解決 → ブラウザ / クリップボード |
-| 4 | `gl.openInGitLab`(プロジェクト/ファイル)/ `gl.copyLinkToClipboard` | D16 | 同上(コミット対象は Phase 3 送り。§9 決定表) |
+| 4 | `gl.openInGitLab`(プロジェクトのみ)/ `gl.copyLinkToClipboard` | D16 | 同上。ファイル対象は #3 の専用コマンドが担う。コミット対象は Phase 3 送り(§9 決定表) |
 | 5 | `gl.openCreateNewIssue` | D11 | `${webUrl}/-/issues/new` をブラウザ |
 | 6 | `gl.issueSearch` / `gl.mergeRequestSearch` / `gl.advancedSearch` | D11/D16 | 入力ダイアログ → URL → ブラウザ |
 
@@ -134,7 +137,7 @@ com.gitlab.eclipse
 
 ### SearchQueryBuilder(純関数)
 - VSCode `search_input.ts` の `parseQuery` を移植。トークン(`labels`/`label`/`title`/`milestone`/`author`(`me`→`created-by-me`)/`assignee`(`me`→`assigned-to-me`、issues は `assignee_username[]`、MR は `assignee_username`))と基本テキスト検索を URL クエリへ変換。
-- 高度な検索のスコープ/レベル対応(project/instance、GitLab.com/self-managed のスコープ表)は `AdvancedSearchHandler` 側で選択、本ビルダは `search`/`project_id`/`scope` からクエリ文字列を組む。
+- 高度な検索のスコープ/レベル対応(project/instance、GitLab.com/self-managed のスコープ表)は `AdvancedSearchHandler` 側で選択、本ビルダは `search`/`scope` からクエリ文字列を組む(数値 `project_id` は用いない。project スコープはプロジェクト検索エンドポイント `${webUrl}/-/search` を使うため — §9 フロー B'/P1-new-2)。
 
 ### McpConfigService
 - user パス: `${HOME}/.gitlab/duo/mcp.json`。workspace パス: `<workspaceRoot>/.gitlab/duo/mcp.json`。
@@ -289,7 +292,7 @@ VSCode の `gl.openInGitLab` はツリー項目(Issue/MR/Job/Pipeline)専用だ�
 
 - 手動検証(実機):
   - openActiveFile が選択行アンカー付きの正しい blob URL をブラウザで開く。copyLinkToActiveFile がクリップボードに同 URL を入れる。特殊文字を含むファイル名でもリンクが壊れない。
-  - openInGitLab(**プロジェクト/ファイル**。コミットは Phase 3 送り)・copyLinkToClipboard が正しく動く。
+  - openInGitLab(**プロジェクトのみ**)・copyLinkToClipboard が正しく動く。ファイル(blob)対象は専用コマンド openActiveFile/copyLinkToActiveFile で検証する(上項)。コミット対象は Phase 3 送り。
   - 新規 Issue・Issue 検索・MR 検索の各ブラウザ遷移が VSCode と一致。
   - **高度な検索**: リポジトリ未オープン/複数リポジトリでも instance スコープで成功する。project スコープ選択時のみプロジェクト解決が働く。
   - MCP user/workspace 設定がファイル生成 + エディタで開く。2 回目は上書きしない。
@@ -312,7 +315,7 @@ Phase 2 は独立 3 クラスタ。実装は 3 PR に分割予定(最終確定�
 ## 21. 未決事項
 
 - **U-1**: リポジトリ選択で複数 GitLab リポジトリがある場合の選択 UI(SWT リストダイアログ)の具体仕様。VSCode の `run_with_valid_project` 相当を Eclipse でどこまで踏襲するか。実装計画で確定。
-- **U-2(確定・Codex P1-a)**: `openInGitLab`/`copyLinkToClipboard` の起動契約は §9 決定表で確定(対象=ファイル/プロジェクト、起動口=エディタ右クリック/コマンド、コミット対象は Phase 3 送り)。
+- **U-2(確定・Codex P1-a/P1-new-1)**: `openInGitLab`/`copyLinkToClipboard` の起動契約は §9 決定表で確定。**対象はプロジェクトのみ**(ファイル対象は専用コマンド `openActiveFile`/`copyLinkToActiveFile` に委譲、コミット対象は Phase 3 送り)、起動口=コマンド/プロジェクト右クリック。
 - **U-3(確定・Codex P1-b)**: LS 再起動は provider のアトミック `restart()`(§8:単一ロック + プロセス同一性ガード + executor 再生成 + 開始失敗時の停止確定)で実装。bundle 取得は `FrameworkUtil.getBundle` を用いる。残る詳細(世代トークン vs 参照比較)は実装時に選択。
 - **U-4**: 高度な検索のスコープ表(GitLab.com vs self-managed)の維持責務を定数としてどこに置くか(`navigation` 内の定数オブジェクト想定)。実装計画で確定。
 
