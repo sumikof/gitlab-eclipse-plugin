@@ -25,6 +25,8 @@ class OpenMcpWorkspaceConfigHandler : AbstractHandler() {
       logger.info("Opened MCP workspace config at $path")
     } catch (e: IllegalStateException) {
       logger.error("Could not open MCP workspace config.", e)
+    } catch (e: org.eclipse.ui.PartInitException) {
+      logger.error("Could not open an editor for the MCP workspace config at $path.", e)
     }
     return null
   }

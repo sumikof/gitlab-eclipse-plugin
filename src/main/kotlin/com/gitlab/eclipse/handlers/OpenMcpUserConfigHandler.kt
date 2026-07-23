@@ -19,6 +19,8 @@ class OpenMcpUserConfigHandler : AbstractHandler() {
       logger.info("Opened MCP user config at $path")
     } catch (e: IllegalStateException) {
       logger.error("Could not open MCP user config.", e)
+    } catch (e: org.eclipse.ui.PartInitException) {
+      logger.error("Could not open an editor for the MCP user config at $path.", e)
     }
     return null
   }

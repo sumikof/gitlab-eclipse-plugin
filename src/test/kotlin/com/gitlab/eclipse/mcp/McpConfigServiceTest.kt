@@ -20,7 +20,7 @@ class McpConfigServiceTest : DescribeSpec({
   }
 
   describe("template") {
-    it("is valid JSON with comments containing an mcpServers object") {
+    it("contains an mcpServers object") {
       McpConfigService.DEFAULT_CONFIG_TEMPLATE.contains("\"mcpServers\"") shouldBe true
     }
   }
@@ -54,6 +54,16 @@ class McpConfigServiceTest : DescribeSpec({
       val service = McpConfigService()
       val target = tmp.resolve(".gitlab/duo/mcp.json")
       java.nio.file.Files.createDirectories(target)
+
+      shouldThrow<IllegalStateException> { service.ensureConfigFile(target) }
+    }
+
+    it("throws IllegalStateException when a parent segment is a regular file") {
+      val tmp = kotlin.io.path.createTempDirectory("mcp-test")
+      val service = McpConfigService()
+      // Make ".gitlab" a regular file so createDirectories(".gitlab/duo") fails.
+      java.nio.file.Files.writeString(tmp.resolve(".gitlab"), "x")
+      val target = tmp.resolve(".gitlab/duo/mcp.json")
 
       shouldThrow<IllegalStateException> { service.ensureConfigFile(target) }
     }

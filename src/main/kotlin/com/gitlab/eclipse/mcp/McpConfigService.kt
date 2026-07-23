@@ -26,11 +26,15 @@ class McpConfigService(
     if (Files.isDirectory(path)) {
       error("MCP config path exists but is a directory: $path. Please remove or rename it.")
     }
-    Files.createDirectories(path.parent)
     try {
-      Files.writeString(path, DEFAULT_CONFIG_TEMPLATE, StandardOpenOption.CREATE_NEW)
-    } catch (_: java.nio.file.FileAlreadyExistsException) {
-      // Idempotent: keep the user's existing config.
+      path.parent?.let { Files.createDirectories(it) }
+      try {
+        Files.writeString(path, DEFAULT_CONFIG_TEMPLATE, StandardOpenOption.CREATE_NEW)
+      } catch (_: java.nio.file.FileAlreadyExistsException) {
+        // Idempotent: keep the user's existing config.
+      }
+    } catch (e: java.io.IOException) {
+      error("Could not create MCP config at $path: ${e.message}")
     }
   }
 
