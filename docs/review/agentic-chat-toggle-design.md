@@ -17,6 +17,10 @@
   - P1-B(旧 U1): Agentic の webview メッセージ契約を**実装前提の確定事項**へ格上げ。共有ホストメッセージ契約を実ソースで確定し、`agentic-duo-chat` 用コントローラ登録を設計に含めた。
   - P1-C(旧 U2): 候補変更時の `Browser` ライフサイクルと状態保持規則を確定。
   - P1-D(§9.1): metadata 取得を UI スレッド外へ。世代番号 latest-wins + dispose ガード + 進行中表示を明記。
+- r3: Codex レビュー round 2 P1×3 を反映。
+  - P1-E(§17.1 新設): 起動導線(Open/Focus/status)を **集約可用性**でゲート。`duo_chat_enabled`(classic のみ)では Duo Core でビューを開けない問題を解消。
+  - P1-F(§10.3/§13): agentic を含む feature-state 遷移で **`refresh()` を起動**する購読責務を確定(遅延有効化に追随)。
+  - P1-G(§9.1): **LS 未生成(`languageServer==null`)時に loading を必ず終端**し、LS ready 後の再評価で回復する規則を明記。
 
 ---
 
@@ -87,7 +91,9 @@
   - notification: `insertCodeSnippet` / `copyCodeSnippet` / `copyMessage` / `showMessage` / `focusChange` / `appReady` / `openLink` / `openUrl`
   - Eclipse の classic コントローラ(`GitLabDuoChatWebViewController`)は `openUrl` を除き実装済み。`openUrl` は `openLink` のエイリアス(同ファイルのコメント)。
 - feature-state 通知 `$/gitlab/featureStateChange` は featureId ごとに届く(`GitLabLanguageServerClient.kt:64-77`)。現状 `chat` のみ `DuoChatStateService` に配線。`agentic_chat` は未配線(else で無視)。
-- webview 取得は既存 `GitLabLanguageServerWrapper.languageServer?.webviewMetadata()`(戻り値 `CompletableFuture<List<WebviewInfo?>>`、各要素 `id`/`title`/`uris`)。
+- **起動導線のゲート(実 `plugin.xml` で確認)**: `OpenDuoChat` の各 `visibleWhen` は source 変数 `duo_chat_enabled` にゲート(`src/main/resources/plugin.xml:353-425`)。同変数は `DuoChatStateService`(sourceProvider、`:165-167`)が供給し、その値 `isEnabled` は **classic `chat` のみ・未受信時 false**。`NewChatConversation` も同変数ゲート(`:464`)。→ Duo Core(classic 無効・agentic 有効)では Open Duo Chat が非表示になり**ビューを開けない**。
+- **refresh 連鎖(実コードで確認)**: `DuoChatStateService.update()` は状態遷移時のみ `refreshDuoChatWindow()` を呼び(`DuoChatStateService.kt:27`)、それが `LanguageServerBrowserView.refresh()` を起動する(`chat/utils/DuoChatWindow.kt:35`)。agentic は未配線。
+- webview 取得は既存 `GitLabLanguageServerWrapper.languageServer?.webviewMetadata()`。ただし **`languageServer: GitLabLanguageServer?` は nullable**(`GitLabLanguageServerWrapper.kt:8`)、`webviewMetadata()` の戻り値も nullable。LS 未生成時は Future 自体が得られない。戻り値要素は `id`/`title`/`uris`。
 - 実機依存(SWT `Browser`/`StackLayout`/view toolbar)は headless 検証不可。手動検証手順を実装 PR に記載。
 - VSCode 参照コピー(`out/gitlab-vscode-extension`)は読み取り専用。
 
@@ -117,7 +123,7 @@ LanguageServerBrowserView (ViewPart)  … 単一ビュー
 
 - **`ChatWebviewCatalog`(新規・純ロジック)**: `webviewMetadata()` 結果から chat 対象 id(`duo-chat-v2`,`agentic-duo-chat`)のみを LS 広告順で抽出、null/uri 欠落/未知 id/重複を除外し `List<ChatWebviewEntry(id,title,uri)>` を返す。
 - **`ChatSelectionResolver`(新規・純ロジック)**: 候補 + 各 webview の有効/無効 + 保存値 から初期選択 id を決める(§9.2)。
-- **`ChatAvailabilityService`(可用性集約)**: webview 単位に「広告有無 × feature-state(有効/無効 + 理由)」を返す。classic は既存 `DuoChatStateService`(featureId `chat`)、agentic は featureId `agentic_chat` の状態(§10.3 で client に配線を追加)。
+- **`ChatAvailabilityService`(可用性集約 + source provider)**: classic(`chat`)と agentic(`agentic_chat`)両方の feature-state を購読し、(a) **webview 単位**の「有効/無効 + 理由」、(b) **集約状態** `anyChatEnabled`(いずれかの chat webview が有効)を提供する。集約状態は起動導線ゲート用の source 変数 `duo_chat_available` として公開(§17.1)。**いずれの featureId の遷移でも** source 変更発火 + `refreshDuoChatWindow()`(=`view.refresh()`)を起動する(§10.3/§13、P1-F)。既存 `DuoChatStateService`(classic・`duo_chat_enabled`)は classic 専用コマンド用に温存し挙動を変えない。
 - **`LanguageServerBrowserView`(改修)**: metadata を非ブロッキング取得(§9.1)。有効候補ごとに `Browser` を生成、`StackLayout` で切替。per-webview の disabled/理由表示。選択保存。
 - **ChatSelector(view toolbar 貢献)**: 候補をラジオ提示。選択で topControl 差し替え。候補 ≤1 は非表示/無効。
 - **`AgenticChatWebViewController`(新規)**: `PluginController("agentic-duo-chat")`。§10.2 の共有契約を処理(classic 実装を共有化)。
@@ -127,11 +133,18 @@ LanguageServerBrowserView (ViewPart)  … 単一ビュー
 
 ### 9.1 ビュー生成 / リフレッシュ(非ブロッキング・latest-wins)
 1. 現在の世代番号を +1 し `gen` を捕捉。ルート StackLayout を "loading" ページに。
-2. `webviewMetadata()`(既存 `completeOnTimeout(10s)`)を **`join()` せず** `whenComplete` で消費(LS スレッド)。
-3. 継続処理は UI スレッドへ `asyncExec`。その中で **(a) View が dispose 済みでない、(b) `gen` が最新世代と一致** を確認。不一致/dispose 済みなら破棄(古い結果で上書きしない)。
-4. `ChatWebviewCatalog.extract(metadata)` → 候補。各候補の有効/無効を `ChatAvailabilityService` で付与。
-5. 候補が空 → empty ページ。全候補が無効 → 選択候補の disabled ページ(理由文言)。それ以外 → §12 の規則で `Browser` を用意し、`ChatSelectionResolver` の初期選択を topControl に。
-6. 取得失敗/タイムアウトの空結果時は disabled/empty へ進めつつ、ツールバーの Refresh で再試行可能(既存 `refresh()` を利用)。
+2. **LS 未生成ガード(P1-G)**: `languageServer` または `webviewMetadata()` が null の場合、Future が得られないため **loading を即座に終端**し「LS 準備中(empty 相当)」ページを表示して return する。**loading を残置しない**。この状態は LS ready 後に再評価で回復する(下記 9.1a)。
+3. `webviewMetadata()`(既存 `completeOnTimeout(10s)`)を **`join()` せず** `whenComplete` で消費(LS スレッド)。
+4. 継続処理は UI スレッドへ `asyncExec`。その中で **(a) View が dispose 済みでない、(b) `gen` が最新世代と一致** を確認。不一致/dispose 済みなら破棄(古い結果で上書きしない)。
+5. `ChatWebviewCatalog.extract(metadata)` → 候補。各候補の有効/無効を `ChatAvailabilityService` で付与。
+6. 候補が空 → empty ページ。全候補が無効 → 選択候補の disabled ページ(理由文言)。それ以外 → §12 の規則で `Browser` を用意し、`ChatSelectionResolver` の初期選択を topControl に。
+7. 取得失敗/タイムアウトの空結果時は disabled/empty へ進めつつ、ツールバーの Refresh で再試行可能。
+
+### 9.1a 再評価トリガー(P1-F/P1-G)
+`refresh()` は次のいずれでも起動する:
+- classic(`chat`)または agentic(`agentic_chat`)の feature-state 遷移(`ChatAvailabilityService` の購読 → `refreshDuoChatWindow()`)。これにより **初期通知後に Agentic が有効化されるケース**でも、開いているビューが loading/disabled/古い候補から更新される。
+- ツールバーの Refresh 手動操作。
+- LS 未生成状態(9.1-2)は、LS ready 後に最初に届く feature-state 通知が上記経路で `refresh()` を起動して回復する。LS ready を示す feature-state が来ない環境では手動 Refresh を最終手段とする(§18 U3 で経路を棚卸し)。
 
 ### 9.2 初期選択(`ChatSelectionResolver`)
 - 保存値が候補にあり **有効** → それ。
@@ -166,8 +179,10 @@ object ChatSelectionResolver {
 - 併せて classic 側にも `openUrl`(= `openLink` エイリアス)を追加し両者の欠落を解消。
 - payload 検証は既存 `PluginMessageHandler` の型パースに準拠(パース不能は既存どおり warn で skip)。
 
-### 10.3 agentic feature-state 配線
-`GitLabLanguageServerClient.gitlabFeatureStateChange` の `when(featureId)` に `"agentic_chat" -> ...` を追加し、agentic の有効/無効 + 理由を `ChatAvailabilityService` が参照できる状態に保持する(classic の `DuoChatStateService` と対称の最小実装)。
+### 10.3 agentic feature-state 配線と再評価責務(P1-F)
+- `GitLabLanguageServerClient.gitlabFeatureStateChange` の `when(featureId)` に `"agentic_chat" -> ...` を追加し、`ChatAvailabilityService` に届ける。
+- `ChatAvailabilityService` は agentic 状態遷移時に、classic の `DuoChatStateService.update()` と**対称に**: (a) 集約 `anyChatEnabled` を再計算し source 変数 `duo_chat_available` の変更を発火、(b) `refreshDuoChatWindow()`(=`view.refresh()`)を起動、(c) status(`chatStatus`)を再描画する。
+- **状態を保持するだけでは不十分**(P1-F)。保持 + 上記 refresh 起動までを一体で実装し、遅延有効化に追随する。
 
 ## 11. データモデル
 - `ChatWebviewEntry(id,title,uri)` / `ChatAvailability(id,enabled,disabledReason)`。
@@ -209,14 +224,23 @@ object ChatSelectionResolver {
 - Agentic メッセージ handler 内例外 → 既存の `supplyAsync` + warn で握り(`PluginMessageService.kt`)、UI は落とさない。
 
 ## 17. 既存機能への影響
+
+### 17.1 起動導線のゲート再設計(P1-E)
+現行 `plugin.xml` は `OpenDuoChat`(および `NewChatConversation`・status)を source 変数 `duo_chat_enabled`(classic のみ)でゲートしており、Duo Core では Agentic 有効でも Open Duo Chat が非表示=ビューを開けない。これを次のように再設計する:
+- **集約変数 `duo_chat_available`** を新設(`ChatAvailabilityService` が source provider として供給。値 = classic OR agentic のいずれかが有効)。
+- **Open Duo Chat / Focus / status(`chatStatus`)** の `visibleWhen`/enable 条件を `duo_chat_available` に切り替える(いずれかの chat が使えるならビューへ到達できる)。
+- **classic 専用コマンド**(`NewChatConversation` 等)は従来どおり `duo_chat_enabled`(classic)にゲートし、Agentic だけ有効な状況では個別に無効化する。
+- 既存 `duo_chat_enabled` の意味・供給元(`DuoChatStateService`)は変えない(後方互換)。追加 source 変数のみで実現する。
+
+### 17.2 その他
 - クラシック: 既定挙動維持(両方有効時 classic 既定)。既存 New Conversation/Close/Focus は classic のまま。
-- feature-state: 全体遮断をやめ **per-webview** 化。`DuoChatStateService` は参照利用 + agentic 用に対称サービスを追加(既存 classic 挙動は不変)。
-- plugin.xml: ビューは増やさず view toolbar 貢献のみ追加。
+- feature-state: 全体遮断をやめ **per-webview** 化。`DuoChatStateService`(classic)は温存し、agentic + 集約は `ChatAvailabilityService` を新設(既存 classic 挙動は不変)。
+- plugin.xml: **ビューは増やさず**、view toolbar 貢献 + 起動導線の `visibleWhen` 変数切替 + 追加 sourceProvider(`duo_chat_available`)のみ。
 - webview メッセージ配線: `agentic-duo-chat` コントローラ追加 + classic への `openUrl` 追加(後方互換・既存挙動不変)。
 - ハードコード `duo-chat-v2`(View 内)は動的化。`GitLabDuoChatWebViewController`/`Client` の classic 用途は維持。
 
 ## 18. 未決事項(推測で確定しない)
-- U2(旧 U3): refresh トリガー(認証/feature-state 変化)が agentic 可用性変化を確実に拾うか。既存 `refresh()` 経路の棚卸しを計画時に実施。
+- U3: LS ready を示す最初の feature-state 通知が全環境で確実に届き `refresh()` を起動するか(9.1a)。既存 `refresh()`/`refreshDuoChatWindow()` 経路と LS 起動シーケンス(`GitLabLanguageServerProcessProvider` / `sendConfiguration`)を計画時に棚卸しし、届かない場合の手動 Refresh 以外の回復手段(LS ready 購読)要否を確定。
 - U4: 両方有効・保存値なしの既定を classic とするか agentic とするか。現設計は classic。運用判断で変更可。
 - U5: view toolbar 切替 UI 形態(ラジオ式ドロップダウン vs 2 トグル)。Eclipse 慣行で確定。
 - U6: agentic の `getCurrentFileContext` 応答が classic と同一 payload 型でよいか(LS agentic 契約の request 応答形を計画時に v9 で最終確認)。
@@ -228,6 +252,7 @@ object ChatSelectionResolver {
 - `ChatWebviewCatalog.extract`: 空/null 要素/既知 2 種抽出/広告順保持/uri 欠落除外/未知 id 無視/重複除外。
 - `ChatSelectionResolver.resolve`: 保存値有効ヒット / 保存値無効→有効先頭 / classic 無効・agentic 有効→agentic / 両有効保存値なし→classic / 有効ゼロ→候補先頭 / 候補空→null。
 - 世代番号 latest-wins の単体テスト(古い世代の反映が破棄される)。
+- 集約可用性(`ChatAvailabilityService`): classic のみ有効 / agentic のみ有効 / 両方 / 両方無効 で `anyChatEnabled`(=`duo_chat_available`)が正しいこと。agentic 遷移で refresh 起動が呼ばれること(協調オブジェクトのモックで検証)。
 - Preference 既定・保存/復元。
 - SWT(`StackLayout`/`Browser`/toolbar/実メッセージ往復)は headless 不可 → 手動検証手順を PR に記載。
 
@@ -240,6 +265,9 @@ object ChatSelectionResolver {
 - AC6: 候補集合変化(認証/LS 再起動等で URI 変化)時に、選択・topControl・Preference が整合し、URI 変化した webview は明示的に再読込される(手動)。
 - AC7: Agentic で `getCurrentFileContext`/`insertCodeSnippet`/`copyCodeSnippet`/`copyMessage`/`openLink`/`openUrl` が機能し、`No plugin registered` warn が正常系で出ない(手動 + ログ確認)。
 - AC8: LS 無応答時に metadata 取得が UI をブロックしない(手動: LS 停止状態でビューを開いても Eclipse が固まらない)。
+- AC10(P1-E): Agentic のみ有効(classic 無効)でも **Open Duo Chat がツールバー/メニューに表示され、ビューを開ける**。classic 専用の New Conversation は無効のまま(手動)。
+- AC11(P1-F): ビューを開いた後に Agentic が有効化された場合、開いているビューが自動 `refresh()` され Agentic を表示する(手動 + 集約状態遷移の単体テスト)。
+- AC12(P1-G): LS 未生成の起動直後にビューを開いても **loading が永続せず** empty/準備中を表示し、LS ready 後の feature-state 到達で回復する(手動: ワークベンチ起動直後にビューを開く)。
 - AC9: `./gradlew build` で detekt green、テストは既定 SWT 環境失敗(36 件)を超える新規失敗なし。
 
 ## 20. 想定されるリスク
