@@ -1,8 +1,7 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.chat.utils.openDuoChatWindow
-import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
+import com.gitlab.eclipse.chat.utils.openDuoChatWindowWithClassicPrompt
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.PlatformUtils
@@ -14,8 +13,6 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.ui.editors.text.TextEditor
 
@@ -24,11 +21,8 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
   val textEditor = mockk<TextEditor>()
   val platformUtils = mockk<PlatformUtils>()
   val currentFileContextProvider = mockk<CurrentFileContextProvider>()
-  val gitLabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>(relaxUnitFun = true)
 
   val handler = NewChatConversationCommandHandler(
-    coroutineScope = CoroutineScope(Dispatchers.Unconfined),
-    gitLabDuoChatWebViewClient = gitLabDuoChatWebViewClient,
     platformUtils = platformUtils,
     currentFileContextProvider = currentFileContextProvider
   )
@@ -36,7 +30,7 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
   beforeSpec { mockkStatic("com.gitlab.eclipse.chat.utils.DuoChatWindowKt") }
 
   beforeEach {
-    every { openDuoChatWindow() } returns Unit
+    every { openDuoChatWindowWithClassicPrompt(any()) } returns Unit
     every { platformUtils.getActiveTextEditor() } returns textEditor
   }
 
@@ -56,9 +50,8 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
       handler.execute(event)
 
       verify(exactly = 1) {
-        gitLabDuoChatWebViewClient.notify(
-          type = "newPrompt",
-          payload = NewPromptRequest(prompt = "newConversation", fileContext = fileContext)
+        openDuoChatWindowWithClassicPrompt(
+          NewPromptRequest(prompt = "newConversation", fileContext = fileContext)
         )
       }
     }
@@ -77,9 +70,8 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
       handler.execute(event)
 
       verify(exactly = 1) {
-        gitLabDuoChatWebViewClient.notify(
-          type = "newPrompt",
-          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        openDuoChatWindowWithClassicPrompt(
+          NewPromptRequest(prompt = "newConversation", fileContext = null)
         )
       }
     }
@@ -90,9 +82,8 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
       handler.execute(event)
 
       verify(exactly = 1) {
-        gitLabDuoChatWebViewClient.notify(
-          type = "newPrompt",
-          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        openDuoChatWindowWithClassicPrompt(
+          NewPromptRequest(prompt = "newConversation", fileContext = null)
         )
       }
     }
@@ -103,19 +94,10 @@ class NewChatConversationCommandHandlerTest : DescribeSpec({
       handler.execute(event)
 
       verify(exactly = 1) {
-        gitLabDuoChatWebViewClient.notify(
-          type = "newPrompt",
-          payload = NewPromptRequest(prompt = "newConversation", fileContext = null)
+        openDuoChatWindowWithClassicPrompt(
+          NewPromptRequest(prompt = "newConversation", fileContext = null)
         )
       }
-    }
-
-    it("opens the chat window") {
-      every { currentFileContextProvider.provide(textEditor) } returns null
-
-      handler.execute(event)
-
-      verify(exactly = 1) { openDuoChatWindow() }
     }
 
     it("is enabled even without a selection") {

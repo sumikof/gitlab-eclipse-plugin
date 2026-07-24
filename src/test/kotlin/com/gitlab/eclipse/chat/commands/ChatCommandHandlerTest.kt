@@ -1,7 +1,6 @@
 package com.gitlab.eclipse.chat.commands
 
-import com.gitlab.eclipse.chat.utils.openDuoChatWindow
-import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
+import com.gitlab.eclipse.chat.utils.openDuoChatWindowWithClassicPrompt
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.PlatformUtils
@@ -19,7 +18,7 @@ import org.eclipse.ui.editors.text.TextEditor
 @Suppress("UnnecessaryAbstractClass")
 abstract class ChatCommandHandlerTest(
   val promptTypeUnderTest: String,
-  val createCommandHandler: (GitLabDuoChatWebViewClient, PlatformUtils) -> ChatCommandHandler
+  val createCommandHandler: (PlatformUtils) -> ChatCommandHandler
 ) : DescribeSpec({
   val event = mockk<ExecutionEvent>()
 
@@ -30,9 +29,8 @@ abstract class ChatCommandHandlerTest(
   val selection = mockk<ITextSelection>()
 
   val platformUtils = mockk<PlatformUtils>()
-  val gitLabDuoChatWebViewClient = mockk<GitLabDuoChatWebViewClient>()
 
-  val handler = createCommandHandler(gitLabDuoChatWebViewClient, platformUtils)
+  val handler = createCommandHandler(platformUtils)
 
   beforeSpec {
     mockkStatic("com.gitlab.eclipse.utils.FileKt")
@@ -48,7 +46,7 @@ abstract class ChatCommandHandlerTest(
     every { textEditor.selectionProvider.selection } returns selection
     every { textEditor.documentProvider.getDocument(editorInput) } returns document
 
-    every { openDuoChatWindow() } returns Unit
+    every { openDuoChatWindowWithClassicPrompt(any()) } returns Unit
   }
 
   afterEach { clearAllMocks() }
@@ -60,7 +58,7 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
-    verify(exactly = 0) { gitLabDuoChatWebViewClient.notify(any(), any()) }
+    verify(exactly = 0) { openDuoChatWindowWithClassicPrompt(any()) }
   }
 
   it("should not send prompt if no text is selected") {
@@ -68,10 +66,10 @@ abstract class ChatCommandHandlerTest(
 
     handler.execute(event)
 
-    verify(exactly = 0) { gitLabDuoChatWebViewClient.notify(any(), any()) }
+    verify(exactly = 0) { openDuoChatWindowWithClassicPrompt(any()) }
   }
 
-  it("should send prompt including current file context") {
+  it("should defer prompt including current file context to the view") {
     every { file.relativePath } returns Path.fromPortableString("a/main.kt")
     every { document.get() } returns "abc\ndef\nijk"
     every { selection.offset } returns 4
@@ -81,9 +79,8 @@ abstract class ChatCommandHandlerTest(
     handler.execute(event)
 
     verify(exactly = 1) {
-      gitLabDuoChatWebViewClient.notify(
-        type = "newPrompt",
-        payload = NewPromptRequest(
+      openDuoChatWindowWithClassicPrompt(
+        NewPromptRequest(
           prompt = promptTypeUnderTest,
           fileContext = FileContext(
             fileName = "a/main.kt",

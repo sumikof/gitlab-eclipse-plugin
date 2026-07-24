@@ -1,14 +1,10 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.chat.utils.openDuoChatWindow
-import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
-import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.chat.utils.openDuoChatWindowWithClassicPrompt
 import com.gitlab.eclipse.lsp.FileContext
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.PlatformUtils
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 
@@ -19,19 +15,13 @@ import org.eclipse.core.commands.ExecutionEvent
  * resetting the conversation is unrelated to what is selected.
  */
 class NewChatConversationCommandHandler(
-  private val coroutineScope: CoroutineScope = service(),
-  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient = service(),
   private val platformUtils: PlatformUtils = PlatformUtils(),
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
 ) : AbstractHandler() {
   override fun execute(event: ExecutionEvent) {
     val payload = NewPromptRequest(prompt = "newConversation", fileContext = selectedFileContext())
 
-    openDuoChatWindow()
-
-    coroutineScope.launch {
-      gitLabDuoChatWebViewClient.notify("newPrompt", payload)
-    }
+    openDuoChatWindowWithClassicPrompt(payload)
   }
 
   /**
