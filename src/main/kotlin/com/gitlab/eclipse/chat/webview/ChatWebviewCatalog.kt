@@ -4,7 +4,8 @@ import com.gitlab.eclipse.lsp.WebviewInfo
 
 /**
  * Extracts the known chat webviews (classic and Agentic Duo Chat) from the Language Server's
- * `webviewMetadata()` response, preserving the order in which [CHAT_WEBVIEW_IDS] advertises them.
+ * `webviewMetadata()` response, preserving the order in which the Language Server advertises them
+ * (the input order, not the declaration order of [CHAT_WEBVIEW_IDS]).
  */
 object ChatWebviewCatalog {
   val CHAT_WEBVIEW_IDS = listOf("duo-chat-v2", "agentic-duo-chat")

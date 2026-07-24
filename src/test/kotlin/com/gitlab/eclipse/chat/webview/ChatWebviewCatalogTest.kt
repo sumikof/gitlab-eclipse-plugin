@@ -36,6 +36,7 @@ class ChatWebviewCatalogTest : DescribeSpec({
       )
 
       out.map { it.id } shouldBe listOf("duo-chat-v2")
+      out.first().uri shouldBe "u1"
     }
 
     it("returns empty for null or empty metadata") {
