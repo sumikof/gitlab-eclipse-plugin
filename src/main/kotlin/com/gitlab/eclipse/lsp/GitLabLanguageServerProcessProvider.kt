@@ -87,6 +87,11 @@ class GitLabLanguageServerProcessProvider(
       // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
       startLocked(bundle).get(LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
       true
+    } catch (e: InterruptedException) {
+      Thread.currentThread().interrupt()
+      logger.error("Failed to restart the Language Server.", e)
+      stopLocked()
+      false
     } catch (e: Exception) {
       // Any start failure must settle to the stopped state, not leave a partial start.
       logger.error("Failed to restart the Language Server.", e)
@@ -146,8 +151,9 @@ class GitLabLanguageServerProcessProvider(
         } else if (synchronized(lifecycleLock) { process !== startedProcess }) {
           // A superseded server's late init response must not run the readiness side
           // effects: they would resolve against the wrapper's CURRENT proxy and fire at
-          // the new server before its own initialize completes. (Residual TOCTOU after
-          // this check is closed off by restart holding the lock for its full duration.)
+          // the new server before its own initialize completes. A response that passes
+          // this check can still race a restart that starts in the microseconds before
+          // its side effects run — a pre-existing window this guard narrows, not closes.
           logger.info("Ignoring initialization result from a superseded Language Server process.")
         } else {
           logger.info("Initialized Language Server: $result")
