@@ -59,6 +59,10 @@ class GitLabLanguageServerConfigurationService(
     )
 
     logger.info("Sending configuration change notification to Language Server.")
+    logger.info(
+      "DIAGNOSTIC[agentic-toggle] sending workspaceFolders=" +
+        params.workspaceFolders?.map { "${it.name}=${it.uri}" }.toString()
+    )
     coroutineScope.launch {
       languageServerWrapper.languageServer?.didChangeConfiguration(
         DidChangeConfigurationParams(params)
