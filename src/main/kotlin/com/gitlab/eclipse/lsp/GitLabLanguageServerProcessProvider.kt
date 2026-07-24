@@ -1,12 +1,14 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
@@ -100,6 +102,11 @@ class GitLabLanguageServerProcessProvider(
           languageServerOpenFilesService.sendOpenTabs()
           languageServerWebviewService.sendThemeChange()
           languageServerWebviewService.subscribeToThemeChanges()
+          // The Duo Chat view shows a "not ready" page when opened before the LS is up;
+          // re-evaluate it now that the LS is ready. asyncExec (not syncExec) so this LS
+          // callback thread never blocks on the UI thread. refreshDuoChatWindow() is
+          // null-guarded, so it is safe when the view is not open.
+          currentDisplay.asyncExec { refreshDuoChatWindow() }
         }
       }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
   }

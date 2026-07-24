@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
@@ -29,6 +30,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val gitDiffService = mockk<GitDiffService>(relaxUnitFun = true)
 
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
+  val chatAvailabilityService = mockk<ChatAvailabilityService>(relaxUnitFun = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
 
   val editorSelectionContextProvider = mockk<EditorSelectionContextProvider>()
@@ -44,6 +46,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       modules(
         module {
           single<DuoChatStateService> { duoChatStateService }
+          single<ChatAvailabilityService> { chatAvailabilityService }
           single<CodeSuggestionsStateService> { codeSuggestionsStateService }
           single<DidChangeWatchedFileCapability> { didChangeWatchedFilesCapability }
           single<GitDiffService> { gitDiffService }
@@ -70,6 +73,19 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.gitlabFeatureStateChange(arrayOf(featureState)).join()
 
       verify { duoChatStateService.update(featureState) }
+      verify { chatAvailabilityService.updateClassic(featureState) }
+    }
+
+    it("should update agentic chat availability based on the feature state") {
+      val featureState = FeatureStateChange(
+        featureId = "agentic_chat",
+        allChecks = emptyList()
+      )
+
+      client.gitlabFeatureStateChange(arrayOf(featureState)).join()
+
+      verify { chatAvailabilityService.updateAgentic(featureState) }
+      verify { duoChatStateService wasNot Called }
     }
 
     it("should update code suggestions state based on the feature state") {

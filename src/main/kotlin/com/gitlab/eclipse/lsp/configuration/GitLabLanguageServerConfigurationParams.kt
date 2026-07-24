@@ -28,7 +28,17 @@ data class GitLabLanguageServerConfigurationParams(
   data class DuoChat(val enabled: Boolean)
 
   // Spelling matters: the language server reads `enabledWithoutGitlabProject` (lowercase "l").
-  data class Duo(val enabledWithoutGitlabProject: Boolean)
+  data class Duo(
+    val enabledWithoutGitlabProject: Boolean,
+    // The language server's AgenticChatSupportCheck reads `duo.agentPlatform.enabled` and
+    // defaults it to FALSE when absent (`get("duo.agentPlatform.enabled") ?? false`), skipping
+    // the agentic availability check entirely. It must be sent explicitly for Agentic Chat to
+    // ever become available. (`agent-platform-disabled-by-user` treats absent as enabled, so
+    // the mismatch is invisible in feature-state checks.)
+    val agentPlatform: AgentPlatform? = null,
+  )
+
+  data class AgentPlatform(val enabled: Boolean)
 
   data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null)
 

@@ -1,20 +1,15 @@
 package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
-import com.gitlab.eclipse.chat.utils.openDuoChatWindow
-import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
+import com.gitlab.eclipse.chat.utils.openDuoChatWindowWithClassicPrompt
 import com.gitlab.eclipse.lsp.NewPromptRequest
 import com.gitlab.eclipse.utils.PlatformUtils
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.jface.text.ITextSelection
 
 open class ChatCommandHandler(
   private val promptType: String,
-  private val coroutineScope: CoroutineScope,
-  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
   private val platformUtils: PlatformUtils,
   private val currentFileContextProvider: CurrentFileContextProvider = CurrentFileContextProvider()
 ) : AbstractHandler() {
@@ -27,11 +22,7 @@ open class ChatCommandHandler(
       fileContext = context
     )
 
-    openDuoChatWindow()
-
-    coroutineScope.launch {
-      gitLabDuoChatWebViewClient.notify("newPrompt", payload)
-    }
+    openDuoChatWindowWithClassicPrompt(payload)
   }
 
   override fun isEnabled(): Boolean {

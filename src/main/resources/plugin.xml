@@ -71,6 +71,16 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                name="Switch Duo Chat Mode"
+                categoryId="gitlab-eclipse-plugin">
+            <commandParameter
+                    id="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
+                    name="Webview Id"
+                    optional="true"/>
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
                 name="Toggle Code Suggestions"
                 categoryId="gitlab-eclipse-plugin">
@@ -164,6 +174,10 @@
     <extension point="org.eclipse.ui.services">
         <sourceProvider provider="com.gitlab.eclipse.chat.DuoChatStateService">
             <variable name="duo_chat_enabled" priorityLevel="workbench"/>
+        </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.chat.ChatAvailabilityService">
+            <variable name="duo_chat_available" priorityLevel="workbench"/>
         </sourceProvider>
 
         <sourceProvider provider="com.gitlab.eclipse.utils.theming.ThemeSourceProvider">
@@ -275,6 +289,11 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                class="com.gitlab.eclipse.chat.commands.SelectChatWebviewCommandHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                 class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
         />
@@ -356,7 +375,7 @@
                 >
                     <visibleWhen checkEnabled="false">
                         <and>
-                            <with variable="duo_chat_enabled">
+                            <with variable="duo_chat_available">
                                 <equals value="true"/>
                             </with>
                             <with variable="theme_tone">
@@ -374,7 +393,7 @@
                 >
                     <visibleWhen checkEnabled="false">
                         <and>
-                            <with variable="duo_chat_enabled">
+                            <with variable="duo_chat_available">
                                 <equals value="true"/>
                             </with>
                             <with variable="theme_tone">
@@ -428,22 +447,50 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                         label="Explain Code"
-                        tooltip="Explain the selected snippet"/>
+                        tooltip="Explain the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FixCode"
                         label="Fix Code"
-                        tooltip="Fix the selected code snippet"/>
+                        tooltip="Fix the selected code snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.GenerateTests"
                         label="Generate Tests"
-                        tooltip="Write tests for the selected snippet"/>
+                        tooltip="Write tests for the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                         label="Refactor Code"
-                        tooltip="Refactor the selected snippet"/>
+                        tooltip="Refactor the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FocusDuoChat"
@@ -458,14 +505,57 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.NewChatConversation"
                         label="New Conversation"
-                        tooltip="Start a new Duo Chat conversation"/>
+                        tooltip="Start a new Duo Chat conversation"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <visibleWhen checkEnabled="false">
-                    <with variable="duo_chat_enabled">
+                    <with variable="duo_chat_available">
                         <equals value="true"/>
                     </with>
                 </visibleWhen>
             </menu>
+        </menuContribution>
+
+        <!-- Chat-mode selector on the Duo Chat view toolbar: a pulldown whose menu offers the two
+             chat webviews as plain push items (no radio state — the effective selection can change
+             programmatically, e.g. a classic-only command forces classic, so a checked radio would
+             go stale). Clicking the pulldown button itself just re-resolves the view. -->
+        <menuContribution locationURI="toolbar:com.gitlab.eclipse.views.LanguageServerBrowserView">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                    id="gitlab-eclipse-plugin.menus.chatSelectorMenu"
+                    icon="icons/notification.png"
+                    style="pulldown"
+                    tooltip="Switch Duo Chat Mode">
+            </command>
+        </menuContribution>
+
+        <menuContribution locationURI="menu:gitlab-eclipse-plugin.menus.chatSelectorMenu">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                    label="Duo Chat (Classic)"
+                    style="push"
+                    tooltip="Show the classic Duo Chat webview">
+                <parameter
+                        name="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
+                        value="duo-chat-v2"/>
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                    label="Duo Chat (Agentic)"
+                    style="push"
+                    tooltip="Show the Agentic Duo Chat webview">
+                <parameter
+                        name="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
+                        value="agentic-duo-chat"/>
+            </command>
         </menuContribution>
 
         <menuContribution locationURI="toolbar:org.eclipse.ui.trim.status">

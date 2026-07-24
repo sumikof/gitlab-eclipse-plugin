@@ -1,18 +1,45 @@
 package com.gitlab.eclipse.chat.utils
 
-import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
-import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.LanguageServerBrowserView
 import org.eclipse.ui.PlatformUI
 
 private const val VIEW_ID = "com.gitlab.eclipse.views.LanguageServerBrowserView"
 
-fun openDuoChatWindow() {
-  val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage ?: return
-  page.showView(VIEW_ID)
+// Lazy so that loading this file's class (e.g. mockkStatic in headless unit tests) does not
+// touch the Eclipse Platform log. The type argument only selects the bundle whose log is used.
+private val logger by lazy { logger<LanguageServerBrowserView>() }
 
-  service<GitLabDuoChatWebViewClient>().notify("newPrompt", NewPromptRequest(prompt = "focusChat"))
+fun openDuoChatWindow() {
+  // Deliberately no direct classic-client notification: the view flushes a `focusChat` prompt
+  // only when the classic webview is actually shown, so an agentic-only selection does not
+  // strand the message in the classic client's push queue.
+  showDuoChatView()?.requestFocus()
+}
+
+/**
+ * Reveals the Duo Chat view and hands [payload] to the view's pending-intent API: the view
+ * force-selects the classic webview and flushes the prompt only after classic is resolved and
+ * shown, so a classic-only command issued while agentic is selected is not stranded.
+ */
+fun openDuoChatWindowWithClassicPrompt(payload: NewPromptRequest) {
+  showDuoChatView()?.requestClassicPrompt(payload)
+}
+
+/**
+ * Switches the Duo Chat view to the webview [id] and re-resolves it: [LanguageServerBrowserView.selectWebview]
+ * alone does not consult availability, so the follow-up [LanguageServerBrowserView.refresh] re-runs the
+ * resolver, which falls back to another enabled webview when [id] is disabled and surfaces a
+ * disabled reason only when no candidate is enabled.
+ * A null [id] (the selector pulldown button itself) just reveals and re-resolves the view.
+ */
+fun selectDuoChatWebview(id: String?) {
+  val view = showDuoChatView() ?: return
+  if (id != null) {
+    view.selectWebview(id)
+  }
+  view.refresh()
 }
 
 fun closeDuoChatWindow() {
@@ -33,4 +60,18 @@ fun refreshDuoChatWindow() {
 
   val view = page.findView(VIEW_ID) as? LanguageServerBrowserView ?: return
   view.refresh()
+}
+
+private fun showDuoChatView(): LanguageServerBrowserView? {
+  val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
+  if (page == null) {
+    logger.warn("Cannot show the Duo Chat view: no active workbench page")
+    return null
+  }
+
+  val view = page.showView(VIEW_ID) as? LanguageServerBrowserView
+  if (view == null) {
+    logger.warn("Cannot show the Duo Chat view: '$VIEW_ID' did not resolve to LanguageServerBrowserView")
+  }
+  return view
 }

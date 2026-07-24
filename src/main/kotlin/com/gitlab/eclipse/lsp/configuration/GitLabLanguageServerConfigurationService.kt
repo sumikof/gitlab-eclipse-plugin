@@ -54,7 +54,12 @@ class GitLabLanguageServerConfigurationService(
       workspaceFolders = workspaceFolders,
       duoChat = DuoChat(enabled = preferenceStore.getBoolean(PreferenceConstants.DUO_CHAT_ENABLED)),
       duo = Duo(
-        enabledWithoutGitlabProject = preferenceStore.getBoolean(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT)
+        enabledWithoutGitlabProject = preferenceStore.getBoolean(
+          PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT
+        ),
+        // Required for Agentic Chat: the LS agentic support check treats an absent
+        // `duo.agentPlatform.enabled` as false and never evaluates availability.
+        agentPlatform = GitLabLanguageServerConfigurationParams.AgentPlatform(enabled = true),
       )
     )
 

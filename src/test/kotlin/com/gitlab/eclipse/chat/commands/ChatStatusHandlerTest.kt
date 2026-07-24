@@ -1,8 +1,8 @@
 package com.gitlab.eclipse.chat.commands
 
-import com.gitlab.eclipse.chat.DuoChatStateService
+import com.gitlab.eclipse.chat.ChatAvailability
+import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.utils.openDuoChatWindow
-import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.utils.system.SystemUtils
 import com.gitlab.eclipse.utils.theming.IconTone
 import com.gitlab.eclipse.utils.theming.ThemeUtils
@@ -17,7 +17,7 @@ import org.koin.dsl.module
 
 class ChatStatusHandlerTest : DescribeSpec({
   val element = mockk<UIElement>(relaxUnitFun = true)
-  val duoChatStatusService = mockk<DuoChatStateService>()
+  val chatAvailabilityService = mockk<ChatAvailabilityService>()
   val handler by lazy { ChatStatusHandler() }
 
   beforeSpec {
@@ -28,7 +28,7 @@ class ChatStatusHandlerTest : DescribeSpec({
     startKoin {
       modules(
         module {
-          single<DuoChatStateService> { duoChatStatusService }
+          single<ChatAvailabilityService> { chatAvailabilityService }
         }
       )
     }
@@ -56,17 +56,22 @@ class ChatStatusHandlerTest : DescribeSpec({
     verify { openDuoChatWindow() }
   }
 
-  it("should be enabled only when chat is enabled") {
-    every { duoChatStatusService.isEnabled } returns true
-    handler.isEnabled() shouldBe true
+  // Agentic-only: the aggregate is true even though classic chat is disabled.
+  it("should be enabled when any chat webview is enabled") {
+    every { chatAvailabilityService.anyChatEnabled } returns true
 
-    every { duoChatStatusService.isEnabled } returns false
+    handler.isEnabled() shouldBe true
+  }
+
+  it("should be disabled when no chat webview is enabled") {
+    every { chatAvailabilityService.anyChatEnabled } returns false
+
     handler.isEnabled() shouldBe false
   }
 
   describe("updateElement") {
     it("should always display dark icon on windows") {
-      every { duoChatStatusService.getFirstEngagedCheck() } returns null
+      every { chatAvailabilityService.anyChatEnabled } returns true
       every { SystemUtils.isWindows() } returns true
       handler.updateElement(element, mutableMapOf())
 
@@ -77,8 +82,8 @@ class ChatStatusHandlerTest : DescribeSpec({
       }
     }
 
-    it("should show enabled status when chat has no engaged check") {
-      every { duoChatStatusService.getFirstEngagedCheck() } returns null
+    it("should show enabled status when any chat webview is enabled") {
+      every { chatAvailabilityService.anyChatEnabled } returns true
       handler.updateElement(element, mutableMapOf())
 
       verify {
@@ -88,16 +93,34 @@ class ChatStatusHandlerTest : DescribeSpec({
       }
     }
 
-    it("should show disabled status with a chat check is engaged") {
-      every { duoChatStatusService.getFirstEngagedCheck() } returns FeatureStateChangeCheck(
-        checkId = "authentication-required",
-        engaged = true
+    it("should show disabled status with the classic disabled reason") {
+      every { chatAvailabilityService.anyChatEnabled } returns false
+      every { chatAvailabilityService.availabilityFor("duo-chat-v2") } returns ChatAvailability(
+        id = "duo-chat-v2",
+        enabled = false,
+        disabledReason = "authentication-required"
       )
       handler.updateElement(element, mutableMapOf())
 
       verify {
         ThemeUtils.getThemedIcon("chat_off_obj")
         element.setText("Duo Chat: Disabled (authentication-required)")
+        element.setIcon(any())
+      }
+    }
+
+    it("should show plain disabled status when no reason is known") {
+      every { chatAvailabilityService.anyChatEnabled } returns false
+      every { chatAvailabilityService.availabilityFor("duo-chat-v2") } returns ChatAvailability(
+        id = "duo-chat-v2",
+        enabled = false,
+        disabledReason = null
+      )
+      handler.updateElement(element, mutableMapOf())
+
+      verify {
+        ThemeUtils.getThemedIcon("chat_off_obj")
+        element.setText("Duo Chat: Disabled")
         element.setIcon(any())
       }
     }
