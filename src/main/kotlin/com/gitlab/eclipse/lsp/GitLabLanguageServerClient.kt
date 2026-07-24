@@ -67,10 +67,6 @@ class GitLabLanguageServerClient(
     changes: Array<FeatureStateChange>
   ): CompletableFuture<Void> = CompletableFuture.runAsync {
     changes.forEach { change ->
-      logger.info(
-        "DIAGNOSTIC[agentic-toggle] featureStateChange featureId=${change.featureId} " +
-          "checks=${change.allChecks?.map { "${it.checkId}(engaged=${it.engaged},details=${it.details})" }}"
-      )
       when (change.featureId) {
         "authentication" -> service<AuthenticationStateService>().update(change)
         "chat" -> {
