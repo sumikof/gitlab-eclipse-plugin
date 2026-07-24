@@ -20,5 +20,6 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_ENABLED, true)
     store.setDefault(PreferenceConstants.DUO_CHAT_ENABLED, true)
     store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true)
+    store.setDefault(PreferenceConstants.DUO_CHAT_SELECTED_WEBVIEW, "")
   }
 }

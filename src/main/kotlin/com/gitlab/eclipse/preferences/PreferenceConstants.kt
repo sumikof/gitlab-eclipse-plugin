@@ -19,4 +19,5 @@ object PreferenceConstants {
   const val CODE_SUGGESTIONS_ENABLED: String = "gitlab.codeSuggestions.enabled"
   const val DUO_CHAT_ENABLED: String = "gitlab.duoChat.enabled"
   const val DUO_ENABLED_WITHOUT_GITLAB_PROJECT: String = "gitlab.duo.enabledWithoutGitlabProject"
+  const val DUO_CHAT_SELECTED_WEBVIEW: String = "gitlab.duoChat.selectedWebview"
 }
