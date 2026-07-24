@@ -97,8 +97,8 @@ class LanguageServerBrowserView : ViewPart() {
     val future = languageServerWrapper.languageServer?.webviewMetadata()
     if (future == null) {
       // P1-G: no LS / no future — a failed fetch, same as timeout/error below: keep any live
-      // chat Browsers untouched; a later refresh (feature-state transition or LS-ready hook)
-      // recovers this state.
+      // chat Browsers untouched; the message page is shown unless an enabled chat is visible.
+      // A later refresh (feature-state transition or LS-ready hook) recovers this state.
       showMessagePageUnlessChatVisible(
         "GitLab Duo Chat is not ready yet: waiting for the language server to start."
       )
@@ -118,7 +118,8 @@ class LanguageServerBrowserView : ViewPart() {
             // Failed fetch (timeout or exceptional completion) — distinct from a successful
             // response that is genuinely empty. Do NOT sync/dispose Browsers: the live chat
             // (and its conversation) must survive a transient metadata failure. Park on the
-            // message page only when no chat is currently visible; recovery comes from a
+            // message page unless an ENABLED chat is currently visible — a chat whose feature
+            // was just disabled is hidden even though the fetch failed; recovery comes from a
             // later refresh (feature-state transition or LS-ready hook).
             showMessagePageUnlessChatVisible(
               "GitLab Duo Chat is currently unavailable: could not reach the language server."
@@ -266,11 +267,14 @@ class LanguageServerBrowserView : ViewPart() {
   }
 
   /**
-   * Shows the loading page unless a chat Browser is currently visible: an in-place re-resolution
-   * keeps the live chat on screen instead of flashing a loading page (latest-wins still applies).
+   * Shows the loading page unless an ENABLED chat Browser is currently visible: an in-place
+   * re-resolution keeps a healthy live chat on screen instead of flashing a loading page
+   * (latest-wins still applies). A shown chat whose feature was just disabled (the feature-state
+   * transition that triggered this refresh) is hidden immediately rather than staying interactive
+   * for the duration of the pending metadata fetch.
    */
   private fun showLoadingUnlessChatVisible() {
-    if (isChatVisible()) return
+    if (isEnabledChatVisible()) return
 
     val page = loadingPage ?: return
     page.setText(themedHtml("Loading GitLab Duo Chat..."))
@@ -279,17 +283,28 @@ class LanguageServerBrowserView : ViewPart() {
   }
 
   /**
-   * Failure path (timeout / error / no LS): shows the message page only when no chat Browser is
-   * currently visible, so a healthy on-screen conversation is never clobbered by a failed fetch.
+   * Failure path (timeout / error / no LS): shows the message page unless an ENABLED chat Browser
+   * is currently visible. A healthy on-screen conversation survives a transient fetch failure,
+   * but a chat whose feature was disabled (logout, entitlement revocation) is hidden even when
+   * the ensuing metadata fetch also fails: feature state via [ChatAvailabilityService] is
+   * authoritative and was already applied before [refresh] ran.
    */
   private fun showMessagePageUnlessChatVisible(message: String) {
-    if (isChatVisible()) return
+    if (isEnabledChatVisible()) return
     showMessagePage(message)
   }
 
-  private fun isChatVisible(): Boolean {
+  /** True when the top control is a live chat Browser whose feature is still enabled. */
+  private fun isEnabledChatVisible(): Boolean {
+    val shownId = shownChatId() ?: return false
+    return chatAvailabilityService.availabilityFor(shownId).enabled
+  }
+
+  /** The webview id of the chat Browser currently on top, or null when no chat is shown. */
+  private fun shownChatId(): String? {
     val top = stackLayout.topControl
-    return top != null && !top.isDisposed && pages.containsValue(top)
+    if (top == null || top.isDisposed) return null
+    return pages.entries.firstOrNull { it.value == top }?.key
   }
 
   private fun showMessagePage(message: String) {
