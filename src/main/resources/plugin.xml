@@ -447,22 +447,50 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                         label="Explain Code"
-                        tooltip="Explain the selected snippet"/>
+                        tooltip="Explain the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FixCode"
                         label="Fix Code"
-                        tooltip="Fix the selected code snippet"/>
+                        tooltip="Fix the selected code snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.GenerateTests"
                         label="Generate Tests"
-                        tooltip="Write tests for the selected snippet"/>
+                        tooltip="Write tests for the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.RefactorCode"
                         label="Refactor Code"
-                        tooltip="Refactor the selected snippet"/>
+                        tooltip="Refactor the selected snippet"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <command
                         commandId="gitlab-eclipse-plugin.commands.FocusDuoChat"
@@ -477,10 +505,17 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.NewChatConversation"
                         label="New Conversation"
-                        tooltip="Start a new Duo Chat conversation"/>
+                        tooltip="Start a new Duo Chat conversation"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
 
                 <visibleWhen checkEnabled="false">
-                    <with variable="duo_chat_enabled">
+                    <with variable="duo_chat_available">
                         <equals value="true"/>
                     </with>
                 </visibleWhen>

@@ -28,14 +28,13 @@ class ChatWebViewMessageHandlers(
 ) {
   private val logger by lazy { logger<ChatWebViewMessageHandlers>() }
 
-  fun getCurrentFileContext(): FileContext? {
-    val textEditor = platformUtils.getActiveTextEditor()
-      ?: return null
+  fun getCurrentFileContext(): FileContext? =
+    currentDisplay.syncCall<FileContext?, Exception> {
+      val textEditor = platformUtils.getActiveTextEditor()
+        ?: return@syncCall null
 
-    return currentDisplay.syncCall<FileContext, Exception> {
       currentFileContextProvider.provide(textEditor)
     }
-  }
 
   fun showMessage(notification: ShowMessageNotification) {
     when (val type = notification.type) {
