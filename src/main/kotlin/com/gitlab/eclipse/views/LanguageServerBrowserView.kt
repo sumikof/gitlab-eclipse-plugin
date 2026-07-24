@@ -135,6 +135,12 @@ class LanguageServerBrowserView : ViewPart() {
    * Switches the visible chat webview to [id] and persists the selection. Existing Browsers are
    * kept alive (chat state is preserved). If no Browser exists yet for [id], only the selection
    * is persisted; the next [refresh] resolution honors it.
+   *
+   * Keyboard focus moves into the shown Browser here — and only here — because [selectWebview]
+   * runs exclusively on user actions (toolbar selector, classic-prompt commands). The passive
+   * resolution path ([showResolvedSelection], reached by every [refresh]) must never call
+   * `setFocus()`: it also fires on background refreshes (feature-state changes, LS-ready hook)
+   * and would steal focus from whatever widget the user is typing in.
    */
   fun selectWebview(id: String) {
     selectedId = id
@@ -143,6 +149,7 @@ class LanguageServerBrowserView : ViewPart() {
     val page = pages[id] ?: return
     stackLayout.topControl = page
     container?.layout()
+    page.setFocus()
   }
 
   /**
