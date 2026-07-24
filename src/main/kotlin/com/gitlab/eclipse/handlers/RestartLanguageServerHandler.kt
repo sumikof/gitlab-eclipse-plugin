@@ -24,7 +24,14 @@ class RestartLanguageServerHandler : AbstractHandler() {
     NotificationUtils.show("Restarting the GitLab Language Server...")
     // restart() blocks while the server stops and starts, so run it off the UI thread.
     service<CoroutineScope>().launch {
-      val restarted = service<GitLabLanguageServerProcessProvider>().restart(bundle)
+      // The shared CoroutineScope has a plain Job: an escaped exception would cancel it
+      // for every other user, so nothing may propagate out of this launch.
+      val restarted = try {
+        service<GitLabLanguageServerProcessProvider>().restart(bundle)
+      } catch (e: Exception) {
+        logger.error("Unexpected failure while restarting the Language Server.", e)
+        false
+      }
       if (restarted) {
         NotificationUtils.show("GitLab Language Server restarted.")
       } else {

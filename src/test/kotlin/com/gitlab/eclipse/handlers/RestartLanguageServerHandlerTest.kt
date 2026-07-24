@@ -58,6 +58,7 @@ class RestartLanguageServerHandlerTest : DescribeSpec({
 
       verify { provider.restart(bundle) }
       verify { NotificationUtils.show("GitLab Language Server restarted.") }
+      verify { NotificationUtils.show("Restarting the GitLab Language Server...") }
     }
 
     it("notifies that the restart failed and can be retried") {
@@ -66,6 +67,18 @@ class RestartLanguageServerHandlerTest : DescribeSpec({
       RestartLanguageServerHandler().execute(mockk())
 
       verify { provider.restart(bundle) }
+      verify {
+        NotificationUtils.show(
+          "GitLab Language Server restart failed. Check the error log and run the command again to retry."
+        )
+      }
+    }
+
+    it("notifies failure when the restart throws unexpectedly") {
+      every { provider.restart(bundle) } throws IllegalStateException("boom")
+
+      RestartLanguageServerHandler().execute(mockk())
+
       verify {
         NotificationUtils.show(
           "GitLab Language Server restart failed. Check the error log and run the command again to retry."
