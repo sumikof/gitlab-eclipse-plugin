@@ -76,6 +76,18 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       verify { chatAvailabilityService.updateClassic(featureState) }
     }
 
+    it("should update agentic chat availability based on the feature state") {
+      val featureState = FeatureStateChange(
+        featureId = "agentic_chat",
+        allChecks = emptyList()
+      )
+
+      client.gitlabFeatureStateChange(arrayOf(featureState)).join()
+
+      verify { chatAvailabilityService.updateAgentic(featureState) }
+      verify { duoChatStateService wasNot Called }
+    }
+
     it("should update code suggestions state based on the feature state") {
       val featureState = FeatureStateChange(
         featureId = "code_suggestions",

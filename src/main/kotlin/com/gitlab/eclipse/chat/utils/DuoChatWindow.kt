@@ -29,8 +29,9 @@ fun openDuoChatWindowWithClassicPrompt(payload: NewPromptRequest) {
 
 /**
  * Switches the Duo Chat view to the webview [id] and re-resolves it: [LanguageServerBrowserView.selectWebview]
- * alone does not consult availability, so the follow-up [LanguageServerBrowserView.refresh] lets a
- * selected-but-disabled webview surface its disabled reason instead of a stale page (AC5).
+ * alone does not consult availability, so the follow-up [LanguageServerBrowserView.refresh] re-runs the
+ * resolver, which falls back to another enabled webview when [id] is disabled and surfaces a
+ * disabled reason only when no candidate is enabled.
  * A null [id] (the selector pulldown button itself) just reveals and re-resolves the view.
  */
 fun selectDuoChatWebview(id: String?) {

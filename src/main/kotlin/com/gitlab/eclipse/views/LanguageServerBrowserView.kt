@@ -96,14 +96,17 @@ class LanguageServerBrowserView : ViewPart() {
 
     val future = languageServerWrapper.languageServer?.webviewMetadata()
     if (future == null) {
-      // P1-G: no LS / no future — terminate loading immediately; a later refresh
-      // (feature-state transition or LS-ready hook) recovers this state.
-      showMessagePage("GitLab Duo Chat is not ready yet: waiting for the language server to start.")
+      // P1-G: no LS / no future — a failed fetch, same as timeout/error below: keep any live
+      // chat Browsers untouched; a later refresh (feature-state transition or LS-ready hook)
+      // recovers this state.
+      showMessagePageUnlessChatVisible(
+        "GitLab Duo Chat is not ready yet: waiting for the language server to start."
+      )
       return
     }
 
     future
-      .completeOnTimeout(ArrayList<WebviewInfo?>(), METADATA_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+      .orTimeout(METADATA_TIMEOUT_SECONDS, TimeUnit.SECONDS)
       .whenComplete { metadata, error ->
         if (error != null) {
           logger.error("Failed to fetch webview metadata", error)
@@ -111,7 +114,18 @@ class LanguageServerBrowserView : ViewPart() {
         currentDisplay.asyncExec {
           val current = container
           if (current == null || current.isDisposed || gen != generation) return@asyncExec
-          applyMetadata(metadata)
+          if (error != null || metadata == null) {
+            // Failed fetch (timeout or exceptional completion) — distinct from a successful
+            // response that is genuinely empty. Do NOT sync/dispose Browsers: the live chat
+            // (and its conversation) must survive a transient metadata failure. Park on the
+            // message page only when no chat is currently visible; recovery comes from a
+            // later refresh (feature-state transition or LS-ready hook).
+            showMessagePageUnlessChatVisible(
+              "GitLab Duo Chat is currently unavailable: could not reach the language server."
+            )
+          } else {
+            applyMetadata(metadata)
+          }
         }
       }
   }
@@ -256,13 +270,26 @@ class LanguageServerBrowserView : ViewPart() {
    * keeps the live chat on screen instead of flashing a loading page (latest-wins still applies).
    */
   private fun showLoadingUnlessChatVisible() {
-    val top = stackLayout.topControl
-    if (top != null && !top.isDisposed && pages.containsValue(top)) return
+    if (isChatVisible()) return
 
     val page = loadingPage ?: return
     page.setText(themedHtml("Loading GitLab Duo Chat..."))
     stackLayout.topControl = page
     container?.layout()
+  }
+
+  /**
+   * Failure path (timeout / error / no LS): shows the message page only when no chat Browser is
+   * currently visible, so a healthy on-screen conversation is never clobbered by a failed fetch.
+   */
+  private fun showMessagePageUnlessChatVisible(message: String) {
+    if (isChatVisible()) return
+    showMessagePage(message)
+  }
+
+  private fun isChatVisible(): Boolean {
+    val top = stackLayout.topControl
+    return top != null && !top.isDisposed && pages.containsValue(top)
   }
 
   private fun showMessagePage(message: String) {
