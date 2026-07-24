@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
 @Suppress("TooManyFunctions")
 class LanguageServerBrowserView : ViewPart() {
   companion object {
-    private const val CLASSIC_WEBVIEW_ID = "duo-chat-v2"
+    private const val CLASSIC_WEBVIEW_ID = ChatWebviewCatalog.CLASSIC_WEBVIEW_ID
     private const val METADATA_TIMEOUT_SECONDS = 10L
   }
 

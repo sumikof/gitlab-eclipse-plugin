@@ -24,7 +24,7 @@ class AgenticChatWebViewController(
   platformUtils: PlatformUtils,
   currentFileContextProvider: CurrentFileContextProvider,
   insertCodeSnippetService: InsertCodeSnippetService
-) : PluginController("agentic-duo-chat") {
+) : PluginController(ChatWebviewCatalog.AGENTIC_WEBVIEW_ID) {
   private val logger by lazy { logger<AgenticChatWebViewController>() }
 
   private val handlers = ChatWebViewMessageHandlers(

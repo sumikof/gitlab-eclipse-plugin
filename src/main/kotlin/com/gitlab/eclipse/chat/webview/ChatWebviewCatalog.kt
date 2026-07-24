@@ -8,7 +8,13 @@ import com.gitlab.eclipse.lsp.WebviewInfo
  * (the input order, not the declaration order of [CHAT_WEBVIEW_IDS]).
  */
 object ChatWebviewCatalog {
-  val CHAT_WEBVIEW_IDS = listOf("duo-chat-v2", "agentic-duo-chat")
+  /** Webview id of the classic Duo Chat surface, as advertised by the Language Server. */
+  const val CLASSIC_WEBVIEW_ID = "duo-chat-v2"
+
+  /** Webview id of the Agentic Duo Chat surface, as advertised by the Language Server. */
+  const val AGENTIC_WEBVIEW_ID = "agentic-duo-chat"
+
+  val CHAT_WEBVIEW_IDS = listOf(CLASSIC_WEBVIEW_ID, AGENTIC_WEBVIEW_ID)
 
   fun extract(metadata: List<WebviewInfo?>?): List<ChatWebviewEntry> {
     if (metadata == null) return emptyList()

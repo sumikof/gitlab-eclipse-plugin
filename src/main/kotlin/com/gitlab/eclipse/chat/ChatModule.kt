@@ -20,6 +20,15 @@ val chatModule = module {
       .getSourceProvider(DuoChatStateService.DUO_CHAT_ENABLED_KEY) as DuoChatStateService
   }
 
+  // P1-K: resolve the workbench-created source provider instance (declared in plugin.xml) so the
+  // Koin singleton IS the provider that fires `duo_chat_available` source changes.
+  single<ChatAvailabilityService> {
+    PlatformUI
+      .getWorkbench()
+      .getService(ISourceProviderService::class.java)
+      .getSourceProvider(ChatAvailabilityService.DUO_CHAT_AVAILABLE_KEY) as ChatAvailabilityService
+  }
+
   single<CurrentFileContextProvider> { CurrentFileContextProvider() }
   single<EditorSelectionContextProvider> { EditorSelectionContextProvider() }
   single<InsertCodeSnippetService> { InsertCodeSnippetService(get(), get()) }

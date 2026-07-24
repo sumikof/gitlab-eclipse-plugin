@@ -13,7 +13,7 @@ class GitLabDuoChatWebViewController(
   currentFileContextProvider: CurrentFileContextProvider,
   private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
   insertCodeSnippetService: InsertCodeSnippetService
-) : PluginController("duo-chat-v2") {
+) : PluginController(ChatWebviewCatalog.CLASSIC_WEBVIEW_ID) {
   private val handlers = ChatWebViewMessageHandlers(
     platformUtils,
     currentFileContextProvider,

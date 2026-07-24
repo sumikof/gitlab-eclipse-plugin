@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.chat
 
+import com.gitlab.eclipse.chat.webview.ChatWebviewCatalog
 import com.gitlab.eclipse.chat.webview.ChatWebviewEntry
 
 /**
@@ -20,7 +21,7 @@ data class ChatAvailability(val id: String, val enabled: Boolean, val disabledRe
  * 4. If there are no candidates, `null` is returned.
  */
 object ChatSelectionResolver {
-  private const val CLASSIC = "duo-chat-v2"
+  private const val CLASSIC = ChatWebviewCatalog.CLASSIC_WEBVIEW_ID
 
   fun resolve(
     candidates: List<ChatWebviewEntry>,

@@ -11,7 +11,7 @@ class GitLabDuoChatWebViewClient(
 
   fun notify(type: String, payload: Any?) {
     val message = ExtensionToPluginNotification(
-      pluginId = "duo-chat-v2",
+      pluginId = ChatWebviewCatalog.CLASSIC_WEBVIEW_ID,
       type = type,
       payload = payload
     )

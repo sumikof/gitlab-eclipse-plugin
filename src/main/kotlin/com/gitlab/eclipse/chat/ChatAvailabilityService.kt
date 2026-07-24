@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.chat
 
 import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
+import com.gitlab.eclipse.chat.webview.ChatWebviewCatalog.AGENTIC_WEBVIEW_ID
+import com.gitlab.eclipse.chat.webview.ChatWebviewCatalog.CLASSIC_WEBVIEW_ID
 import com.gitlab.eclipse.lsp.FeatureStateChange
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import com.gitlab.eclipse.utils.currentDisplay
@@ -26,8 +28,6 @@ class ChatAvailabilityService(
 ) : AbstractSourceProvider() {
   companion object {
     const val DUO_CHAT_AVAILABLE_KEY = "duo_chat_available"
-    private const val CLASSIC_WEBVIEW_ID = "duo-chat-v2"
-    private const val AGENTIC_WEBVIEW_ID = "agentic-duo-chat"
     private const val CLASSIC_FEATURE_ID = "chat"
   }
 

@@ -2,6 +2,7 @@ package com.gitlab.eclipse.chat.commands
 
 import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.utils.openDuoChatWindow
+import com.gitlab.eclipse.chat.webview.ChatWebviewCatalog
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.system.SystemUtils
 import com.gitlab.eclipse.utils.theming.IconTone
@@ -13,7 +14,7 @@ import org.eclipse.ui.menus.UIElement
 
 class ChatStatusHandler : AbstractHandler(), IElementUpdater {
   companion object {
-    private const val CLASSIC_WEBVIEW_ID = "duo-chat-v2"
+    private const val CLASSIC_WEBVIEW_ID = ChatWebviewCatalog.CLASSIC_WEBVIEW_ID
   }
 
   private val availabilityService by lazyService<ChatAvailabilityService>()

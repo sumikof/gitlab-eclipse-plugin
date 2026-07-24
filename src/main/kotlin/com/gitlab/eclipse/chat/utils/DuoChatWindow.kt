@@ -1,10 +1,15 @@
 package com.gitlab.eclipse.chat.utils
 
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.LanguageServerBrowserView
 import org.eclipse.ui.PlatformUI
 
 private const val VIEW_ID = "com.gitlab.eclipse.views.LanguageServerBrowserView"
+
+// Lazy so that loading this file's class (e.g. mockkStatic in headless unit tests) does not
+// touch the Eclipse Platform log. The type argument only selects the bundle whose log is used.
+private val logger by lazy { logger<LanguageServerBrowserView>() }
 
 fun openDuoChatWindow() {
   // Deliberately no direct classic-client notification: the view flushes a `focusChat` prompt
@@ -20,6 +25,20 @@ fun openDuoChatWindow() {
  */
 fun openDuoChatWindowWithClassicPrompt(payload: NewPromptRequest) {
   showDuoChatView()?.requestClassicPrompt(payload)
+}
+
+/**
+ * Switches the Duo Chat view to the webview [id] and re-resolves it: [LanguageServerBrowserView.selectWebview]
+ * alone does not consult availability, so the follow-up [LanguageServerBrowserView.refresh] lets a
+ * selected-but-disabled webview surface its disabled reason instead of a stale page (AC5).
+ * A null [id] (the selector pulldown button itself) just reveals and re-resolves the view.
+ */
+fun selectDuoChatWebview(id: String?) {
+  val view = showDuoChatView() ?: return
+  if (id != null) {
+    view.selectWebview(id)
+  }
+  view.refresh()
 }
 
 fun closeDuoChatWindow() {
@@ -43,6 +62,15 @@ fun refreshDuoChatWindow() {
 }
 
 private fun showDuoChatView(): LanguageServerBrowserView? {
-  val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage ?: return null
-  return page.showView(VIEW_ID) as? LanguageServerBrowserView
+  val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
+  if (page == null) {
+    logger.warn("Cannot show the Duo Chat view: no active workbench page")
+    return null
+  }
+
+  val view = page.showView(VIEW_ID) as? LanguageServerBrowserView
+  if (view == null) {
+    logger.warn("Cannot show the Duo Chat view: '$VIEW_ID' did not resolve to LanguageServerBrowserView")
+  }
+  return view
 }
