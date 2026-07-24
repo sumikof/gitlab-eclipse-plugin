@@ -26,6 +26,10 @@
   - P1-I(§17.1): `ChatStatusHandler` の**データ取得先を集約サービスへ置換**(isEnabled・文言・アイコン)。Agentic-only の handler テストを追加。
 - r5: Codex レビュー round 4 P1×1 を反映。
   - P1-J(§10.3): **classic(`chat`)feature-state も集約サービスへ配送**することを明記。`agentic_chat` だけ配線すると classic-only で `anyChatEnabled` が false のままとなり、起動導線/status が回帰する問題を解消。`chat` を既存 `DuoChatStateService` と `ChatAvailabilityService` の**双方へ配送**する。
+- r6: Codex レビュー round 5 P1×3 を反映。
+  - P1-K(§8/§17.1): `ChatAvailabilityService`(source provider)を **ワークベンチ生成インスタンスと同一**に登録する規則(`ISourceProviderService.getSourceProvider` + `chatModule` bind + `plugin.xml` 宣言)を確定。別インスタンス化による `duo_chat_available` 未更新回帰を防止。
+  - P1-L(§10.2): Agentic コントローラを **`chatModule` で `bind PluginController::class`** 登録する具体 binding + `agentic-duo-chat` route の dispatch テストを明記。
+  - P1-M(§17.1): Focus/`openDuoChatWindow()` の classic 固有 `newPrompt(focusChat)` 送信を是正。集約ゲートは **Open + status のみ**、Focus は classic 固有として据え置き、`openDuoChatWindow()` の classic 通知は選択 webview が classic の時のみに条件化。
 
 ---
 
@@ -100,6 +104,9 @@
 - **refresh 連鎖(実コードで確認)**: `DuoChatStateService.update()` は状態遷移時のみ `refreshDuoChatWindow()` を呼び(`DuoChatStateService.kt:27`)、それが `LanguageServerBrowserView.refresh()` を起動する(`chat/utils/DuoChatWindow.kt:35`)。agentic は未配線。
 - **LS ready の具体点(実コードで確認)**: `GitLabLanguageServerProcessProvider.start()` は LS プロセス起動後 `languageServerWrapper.registerLanguageServer(...)` し、`initialize().handleAsync { result, err -> ... }` の成功分岐で `initialized()` → `sendConfiguration()` 等を実行する(`GitLabLanguageServerProcessProvider.kt` 初期化ブロック)。ここが「LS ready」を示す唯一の確定点で、ビュー再評価のフック候補。現状ここからビュー refresh は呼ばれていない。
 - **status ハンドラの取得先(実コードで確認)**: `ChatStatusHandler` は `isEnabled()`・表示文言・アイコンを `DuoChatStateService`(classic)から取得(`chat/commands/ChatStatusHandler.kt`)。
+- **source provider の DI 登録パターン(実コードで確認)**: `DuoChatStateService` は `plugin.xml` の `<sourceProvider>` でワークベンチが生成し、`chatModule` は `ISourceProviderService.getSourceProvider(DUO_CHAT_ENABLED_KEY) as DuoChatStateService` で**その同一インスタンス**を Koin に `single` 登録する(`ChatModule.kt:15-19`)。これにより LS 通知を受ける DI 参照と `duo_chat_enabled` を供給する provider が同一になる。
+- **PluginController の DI 登録(実コードで確認)**: classic は `chatModule` で `single<GitLabDuoChatWebViewController> { ... } bind PluginController::class`(`ChatModule.kt:28-30`)。`PluginRegistry` は `getAll()`(= `PluginController` bind 済み)を収集する。bind しない限り route に載らない。
+- **focus 機構(実コードで確認)**: `openDuoChatWindow()` は `page.showView` の後、**常に** classic `GitLabDuoChatWebViewClient` へ `notify("newPrompt", focusChat)` を送る(`chat/utils/DuoChatWindow.kt:11-18`)。Focus コマンド(`ChatCommandHandler`)・New Conversation も同 classic クライアント経由。`GitLabDuoChatWebViewClient` は未フォーカス時メッセージをキューに滞留させる。
 - webview 取得は既存 `GitLabLanguageServerWrapper.languageServer?.webviewMetadata()`。ただし **`languageServer: GitLabLanguageServer?` は nullable**(`GitLabLanguageServerWrapper.kt:8`)、`webviewMetadata()` の戻り値も nullable。LS 未生成時は Future 自体が得られない。戻り値要素は `id`/`title`/`uris`。
 - 実機依存(SWT `Browser`/`StackLayout`/view toolbar)は headless 検証不可。手動検証手順を実装 PR に記載。
 - VSCode 参照コピー(`out/gitlab-vscode-extension`)は読み取り専用。
@@ -131,6 +138,7 @@ LanguageServerBrowserView (ViewPart)  … 単一ビュー
 - **`ChatWebviewCatalog`(新規・純ロジック)**: `webviewMetadata()` 結果から chat 対象 id(`duo-chat-v2`,`agentic-duo-chat`)のみを LS 広告順で抽出、null/uri 欠落/未知 id/重複を除外し `List<ChatWebviewEntry(id,title,uri)>` を返す。
 - **`ChatSelectionResolver`(新規・純ロジック)**: 候補 + 各 webview の有効/無効 + 保存値 から初期選択 id を決める(§9.2)。
 - **`ChatAvailabilityService`(可用性集約 + source provider)**: classic(`chat`)と agentic(`agentic_chat`)両方の feature-state を購読し、(a) **webview 単位**の「有効/無効 + 理由」、(b) **集約状態** `anyChatEnabled`(いずれかの chat webview が有効)を提供する。集約状態は起動導線ゲート用の source 変数 `duo_chat_available` として公開(§17.1)。**いずれの featureId の遷移でも** source 変更発火 + `refreshDuoChatWindow()`(=`view.refresh()`)を起動する(§10.3/§13、P1-F)。既存 `DuoChatStateService`(classic・`duo_chat_enabled`)は classic 専用コマンド用に温存し挙動を変えない。
+  - **DI 登録(P1-K、`DuoChatStateService` と同一パターン)**: `AbstractSourceProvider` を継承し `plugin.xml` の `<sourceProvider>` に `duo_chat_available` を宣言(ワークベンチが生成)。`chatModule` は `ISourceProviderService.getSourceProvider("duo_chat_available") as ChatAvailabilityService` で **その同一インスタンス**を Koin `single` 登録する。これにより LS 通知(§10.3 の配送先)と Eclipse が読む provider が同一インスタンスになり、`duo_chat_available` が確実に更新される(別インスタンス化による false 固定回帰の防止)。
 - **`LanguageServerBrowserView`(改修)**: metadata を非ブロッキング取得(§9.1)。有効候補ごとに `Browser` を生成、`StackLayout` で切替。per-webview の disabled/理由表示。選択保存。
 - **ChatSelector(view toolbar 貢献)**: 候補をラジオ提示。選択で topControl 差し替え。候補 ≤1 は非表示/無効。
 - **`AgenticChatWebViewController`(新規)**: `PluginController("agentic-duo-chat")`。§10.2 の共有契約を処理(classic 実装を共有化)。
@@ -185,6 +193,7 @@ object ChatSelectionResolver {
 - 実装は既存 classic コントローラのロジックを共有化(重複回避のため共通基底 or 委譲。ディレクトリ構成は不変、`chat/webview/` 内に追加)。
 - 併せて classic 側にも `openUrl`(= `openLink` エイリアス)を追加し両者の欠落を解消。
 - payload 検証は既存 `PluginMessageHandler` の型パースに準拠(パース不能は既存どおり warn で skip)。
+- **DI 登録(P1-L、必須)**: `chatModule` に `single<AgenticChatWebViewController> { AgenticChatWebViewController(...) } bind PluginController::class` を追加する。これがないと `PluginRegistry`(`getAll()`)が収集せず、`agentic-duo-chat` 宛て全メッセージが `No plugin registered` で破棄され AC7 を満たせない。合わせて **`agentic-duo-chat` route が実際に dispatch されること**の単体テスト(`PluginRegistry`/`PluginMessageService` に対する route 解決テスト)を追加する。
 
 ### 10.3 feature-state 配線と再評価責務(P1-F / P1-J)
 - `GitLabLanguageServerClient.gitlabFeatureStateChange` の `when(featureId)`(現行 `GitLabLanguageServerClient.kt:69-74`)を次のように変更する:
@@ -238,7 +247,10 @@ object ChatSelectionResolver {
 ### 17.1 起動導線のゲート再設計(P1-E)
 現行 `plugin.xml` は `OpenDuoChat`(および `NewChatConversation`・status)を source 変数 `duo_chat_enabled`(classic のみ)でゲートしており、Duo Core では Agentic 有効でも Open Duo Chat が非表示=ビューを開けない。これを次のように再設計する:
 - **集約変数 `duo_chat_available`** を新設(`ChatAvailabilityService` が source provider として供給。値 = classic OR agentic のいずれかが有効)。
-- **Open Duo Chat / Focus / status(`chatStatus`)** の `visibleWhen`/enable 条件を `duo_chat_available` に切り替える(いずれかの chat が使えるならビューへ到達できる)。
+- **Open Duo Chat / status(`chatStatus`)** の `visibleWhen`/enable 条件を `duo_chat_available` に切り替える(いずれかの chat が使えるならビューへ到達できる)。**Focus はここに含めない**(下記 P1-M)。
+- **Focus の扱い(P1-M)**: 現行 `openDuoChatWindow()` / Focus コマンドは常に classic `GitLabDuoChatWebViewClient` へ `newPrompt(focusChat)` を送る classic 固有機構(`DuoChatWindow.kt:11-18`)。Agentic-only(classic 未広告)では通知がキューに滞留し Agentic にフォーカスされない。よって:
+  - **Focus コマンドは classic 固有として `duo_chat_enabled`(classic)ゲートのまま据え置く**(Agentic 入力欄フォーカスは agentic 固有機構で別スライス。§3 対象外)。
+  - **`openDuoChatWindow()` の classic `newPrompt(focusChat)` 送信を条件化**: 選択中 webview が classic の時のみ送る。Agentic 選択時は `page.showView`(ビュー表示)までで止め、classic クライアントへ通知しない(滞留・誤動作の防止)。これにより Open/status(集約ゲート)から呼ばれても Agentic-only で破綻しない。
 - **`ChatStatusHandler` のデータ取得先を集約サービスへ置換(P1-I)**: 現行 `ChatStatusHandler` は `isEnabled()`・表示文言・アイコンをすべて `DuoChatStateService`(classic の `isEnabled`/`getFirstEngagedCheck`)から取得している(`chat/commands/ChatStatusHandler.kt`)。これを `ChatAvailabilityService` に依存替えする:
   - `isEnabled()` = 集約 `anyChatEnabled`(Agentic-only でも enabled)。
   - `updateElement` の文言/アイコン規則: いずれかの chat が有効なら Enabled 表示。全無効時のみ Disabled 文言(理由は「表示中/選択対象 webview の disabledReason」を用いる。classic のみ無効で agentic 有効なら Enabled)。
@@ -283,7 +295,10 @@ object ChatSelectionResolver {
 - AC11(P1-F): ビューを開いた後に Agentic が有効化された場合、開いているビューが自動 `refresh()` され Agentic を表示する(手動 + 集約状態遷移の単体テスト)。
 - AC12(P1-G/P1-H): LS 未生成の起動直後にビューを開いても **loading が永続せず** 準備中を表示し、**LS ready フック(§9.1a、feature-state 通知の有無に関わらず)** で回復して chat を表示する(手動: ワークベンチ起動直後にビューを開き、LS 起動完了後に自動表示されることを確認)。
 - AC13(P1-I): Agentic のみ有効(classic 無効)で、**status ウィジェットが Enabled 表示**になりクリックでビューを開ける(手動 + `ChatStatusHandler` の Agentic-only 単体テスト)。
-- AC14(P1-J・回帰防止): **classic のみ有効**(agentic 通知が来ない/未対応環境)で、`duo_chat_available` が true になり Open/Focus/status が従来どおり有効(手動 + 集約サービスの classic-only 単体テスト)。
+- AC14(P1-J・回帰防止): **classic のみ有効**(agentic 通知が来ない/未対応環境)で、`duo_chat_available` が true になり Open/status が従来どおり有効。Focus も従来どおり(classic ゲート)有効(手動 + 集約サービスの classic-only 単体テスト)。
+- AC15(P1-K): feature-state 更新が source provider へ確実に届く(Koin 参照とワークベンチ provider が同一インスタンス)。classic のみ有効で `duo_chat_available` が true になり Open/status が有効(手動: 実機で classic 有効時に status/Open が出る)。
+- AC16(P1-L): Agentic で共有メッセージが実際に dispatch される(`agentic-duo-chat` route の解決を単体テストで確認 + 手動でコード挿入/コピー/リンクが動作、`No plugin registered` warn が出ない)。
+- AC17(P1-M): Agentic-only で Open/status からビューを開くと Agentic が表示され、classic クライアントへ `focusChat` 通知が送られない(滞留しない)。Focus コマンドは classic 有効時のみ動作(手動 + ログ確認)。
 - AC9: `./gradlew build` で detekt green、テストは既定 SWT 環境失敗(36 件)を超える新規失敗なし。
 
 ## 20. 想定されるリスク
