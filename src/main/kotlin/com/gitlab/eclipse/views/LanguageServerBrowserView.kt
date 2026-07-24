@@ -177,8 +177,15 @@ class LanguageServerBrowserView : ViewPart() {
   }
 
   private fun applyMetadata(metadata: List<WebviewInfo?>?) {
+    logger.info(
+      "DIAGNOSTIC[agentic-toggle] advertised webview ids=${metadata?.mapNotNull { it?.id }}"
+    )
     val candidates = ChatWebviewCatalog.extract(metadata)
     val availability = candidates.associate { it.id to chatAvailabilityService.availabilityFor(it.id) }
+    logger.info(
+      "DIAGNOSTIC[agentic-toggle] chat candidates=${candidates.map { it.id }} " +
+        "availability=${availability.mapValues { "enabled=${it.value.enabled},reason=${it.value.disabledReason}" }}"
+    )
     syncBrowsers(candidates, availability)
 
     val saved = preferenceStore
