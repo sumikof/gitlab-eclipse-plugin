@@ -7,13 +7,26 @@ import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.PlatformUtils
+import com.gitlab.eclipse.utils.logger
 
-class GitLabDuoChatWebViewController(
+/**
+ * Handles webview-to-host messages from the Agentic Duo Chat webview (`agentic-duo-chat`).
+ *
+ * Registers the same shared handler set as the classic controller, mirroring
+ * `registerDuoChatHandlers` in gitlab-workflow which wires both webview ids identically.
+ *
+ * Host-to-webview push for Agentic chat is not implemented yet (deferred slice), so this
+ * controller has no [GitLabDuoChatWebViewClient]: `focusChange`/`appReady` are accepted
+ * without side effects. Agentic focus must never drive the classic client's push queue —
+ * [GitLabDuoChatWebViewClient] is classic-only (its `pluginId` is `duo-chat-v2`).
+ */
+class AgenticChatWebViewController(
   platformUtils: PlatformUtils,
   currentFileContextProvider: CurrentFileContextProvider,
-  private val gitLabDuoChatWebViewClient: GitLabDuoChatWebViewClient,
   insertCodeSnippetService: InsertCodeSnippetService
-) : PluginController("duo-chat-v2") {
+) : PluginController("agentic-duo-chat") {
+  private val logger by lazy { logger<AgenticChatWebViewController>() }
+
   private val handlers = ChatWebViewMessageHandlers(
     platformUtils,
     currentFileContextProvider,
@@ -34,7 +47,8 @@ class GitLabDuoChatWebViewController(
 
   @PluginNotification("focusChange")
   fun focusChange(notification: FocusChangeNotification) {
-    gitLabDuoChatWebViewClient.updateFocus(notification.isFocused)
+    // Intentionally does not update any push-queue focus state (host-to-webview push is deferred).
+    logger.info("Agentic chat focus changed: isFocused=${notification.isFocused}")
   }
 
   @PluginNotification("openLink")
