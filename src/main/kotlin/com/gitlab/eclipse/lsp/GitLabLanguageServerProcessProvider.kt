@@ -17,6 +17,7 @@ import org.osgi.framework.Bundle
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -62,21 +63,29 @@ class GitLabLanguageServerProcessProvider(
   internal val isRunning: Boolean
     get() = synchronized(lifecycleLock) { process != null }
 
-  fun start(bundle: Bundle): Unit = synchronized(lifecycleLock) { startLocked(bundle) }
+  fun start(bundle: Bundle) {
+    // Fire-and-forget: workbench startup must never block on the initialize handshake,
+    // so the future returned by startLocked is deliberately ignored here.
+    synchronized(lifecycleLock) { startLocked(bundle) }
+  }
 
   fun stop(): Unit = synchronized(lifecycleLock) { stopLocked() }
 
   /**
    * Atomically restarts the language server: stop and start run under the lifecycle lock,
-   * so concurrent start/stop/restart calls cannot interleave. On failure the provider
-   * settles in the stopped state (no partial start is left behind) and returns false;
-   * calling restart again retries from that clean state.
+   * so concurrent start/stop/restart calls cannot interleave. Success is reported only
+   * after the new server completes the initialize handshake (bounded by
+   * [LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS]). On any failure — spawn error, rejected
+   * initialize, or timeout — the provider settles in the stopped state (no partial start
+   * is left behind) and returns false; calling restart again retries from that clean state.
    */
   fun restart(bundle: Bundle): Boolean = synchronized(lifecycleLock) {
     logger.info("Restarting the Language Server.")
     stopLocked()
     try {
-      startLocked(bundle)
+      // Await the RAW initialize future (completed by the lsp4j listener thread), not the
+      // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
+      startLocked(bundle).get(LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
       true
     } catch (e: Exception) {
       // Any start failure must settle to the stopped state, not leave a partial start.
@@ -86,7 +95,7 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
-  private fun startLocked(bundle: Bundle) {
+  private fun startLocked(bundle: Bundle): CompletableFuture<InitializeResult> {
     val languageServerInstallationPath = languageServerInstaller.install()
       ?: error("Language server installation failed")
 
@@ -125,14 +134,21 @@ class GitLabLanguageServerProcessProvider(
     logger.info("Language server started successfully.")
     languageServerWrapper.registerLanguageServer(languageServerProxy.remoteProxy)
 
-    languageServerProxy
+    val initializeResult = languageServerProxy
       .remoteProxy
       .initialize(
         getInitializationOptions(bundle.version.toString())
       )
+    initializeResult
       .handleAsync { result, err ->
         if (err != null) {
           logger.error("Failed to initialize Language Server", err)
+        } else if (synchronized(lifecycleLock) { process !== startedProcess }) {
+          // A superseded server's late init response must not run the readiness side
+          // effects: they would resolve against the wrapper's CURRENT proxy and fire at
+          // the new server before its own initialize completes. (Residual TOCTOU after
+          // this check is closed off by restart holding the lock for its full duration.)
+          logger.info("Ignoring initialization result from a superseded Language Server process.")
         } else {
           logger.info("Initialized Language Server: $result")
           languageServerProxy.remoteProxy.initialized(null)
@@ -147,6 +163,7 @@ class GitLabLanguageServerProcessProvider(
           currentDisplay.asyncExec { refreshDuoChatWindow() }
         }
       }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    return initializeResult
   }
 
   private fun stopLocked() {

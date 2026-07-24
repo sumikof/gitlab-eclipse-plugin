@@ -7,6 +7,7 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -21,8 +22,6 @@ import org.koin.core.context.stopKoin
 import org.koin.dsl.module
 import org.osgi.framework.Bundle
 import org.osgi.framework.Version
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -30,17 +29,27 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.CompletableFuture
 import kotlin.io.path.createTempDirectory
+import kotlin.time.Duration.Companion.seconds
+
+private enum class InitializeReply { SUCCESS, FAILURE }
 
 /**
  * Stands in for the real language-server process so the lifecycle state machine can be
- * exercised headlessly and deterministically. Unlike a real [Process], [destroy] does NOT
+ * exercised headlessly and deterministically. Speaks just enough of the LSP wire protocol
+ * to answer the initialize request (success or failure per [initializeReply]); requests
+ * without an id (notifications) are ignored. Unlike a real [Process], [destroy] does NOT
  * complete [onExit]; tests deliver the exit notification explicitly via [completeExit],
  * which is exactly the asynchronous gap the provider's identity guard must survive.
  */
-private class FakeLanguageServerProcess : Process() {
+private class FakeLanguageServerProcess(
+  private val initializeReply: InitializeReply = InitializeReply.SUCCESS,
+) : Process() {
   private val exit = CompletableFuture<Process>()
-  private val stdin = ByteArrayOutputStream()
-  private val stdout = ByteArrayInputStream(ByteArray(0))
+
+  private val requestSink = PipedInputStream(PIPE_BUFFER_BYTES)
+  private val stdin = PipedOutputStream(requestSink)
+  private val stdout = PipedInputStream(PIPE_BUFFER_BYTES)
+  private val responseSink = PipedOutputStream(stdout)
 
   // Connected-but-never-written pipe: the stderr pull loop blocks instead of spinning,
   // and shutdownNow() interrupts it (InterruptedIOException ends the task).
@@ -48,6 +57,63 @@ private class FakeLanguageServerProcess : Process() {
 
   var destroyed = false
     private set
+
+  @Suppress("unused")
+  private val responder = Thread {
+    try {
+      while (true) {
+        val body = readFramedMessage() ?: break
+        // Notifications (initialized, didChangeConfiguration, ...) have no id: skip them.
+        val id = REQUEST_ID.find(body)?.groupValues?.get(1)
+        if (id != null) {
+          val reply = when (initializeReply) {
+            InitializeReply.SUCCESS -> """{"jsonrpc":"2.0","id":$id,"result":{"capabilities":{}}}"""
+            InitializeReply.FAILURE ->
+              """{"jsonrpc":"2.0","id":$id,"error":{"code":-32603,"message":"initialize rejected"}}"""
+          }
+          val bytes = reply.toByteArray(Charsets.UTF_8)
+          responseSink.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
+          responseSink.write(bytes)
+          responseSink.flush()
+        }
+      }
+    } catch (_: IOException) {
+      // Pipes closed by destroy(): the fake server is gone.
+    }
+  }.apply {
+    isDaemon = true
+    name = "fake-language-server"
+    start()
+  }
+
+  private fun readFramedMessage(): String? {
+    var contentLength = -1
+    while (true) {
+      val line = readHeaderLine() ?: return null
+      if (line.isEmpty()) break
+      CONTENT_LENGTH.find(line)?.let { contentLength = it.groupValues[1].toInt() }
+    }
+    if (contentLength < 0) return null
+    val body = ByteArray(contentLength)
+    var read = 0
+    while (read < contentLength) {
+      val n = requestSink.read(body, read, contentLength - read)
+      if (n < 0) return null
+      read += n
+    }
+    return String(body, Charsets.UTF_8)
+  }
+
+  private fun readHeaderLine(): String? {
+    val line = StringBuilder()
+    while (true) {
+      val b = requestSink.read()
+      if (b < 0) return null
+      if (b == '\n'.code) break
+      if (b != '\r'.code) line.append(b.toChar())
+    }
+    return line.toString()
+  }
 
   fun completeExit() {
     exit.complete(this)
@@ -64,10 +130,22 @@ private class FakeLanguageServerProcess : Process() {
   override fun exitValue(): Int = if (exit.isDone) 0 else throw IllegalThreadStateException()
   override fun destroy() {
     destroyed = true
+    runCatching { stdin.close() }
+    runCatching { requestSink.close() }
+    runCatching { responseSink.close() }
+    runCatching { stdout.close() }
   }
 
   override fun onExit(): CompletableFuture<Process> = exit
   override fun pid(): Long = 4242L
+
+  companion object {
+    private const val PIPE_BUFFER_BYTES = 1 shl 16
+
+    // Echoes the id verbatim (quoted or bare) so both string and numeric lsp4j ids round-trip.
+    private val REQUEST_ID = Regex("\"id\"\\s*:\\s*(\"?[0-9]+\"?)")
+    private val CONTENT_LENGTH = Regex("Content-Length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
+  }
 }
 
 class GitLabLanguageServerProcessProviderTest : DescribeSpec({
@@ -83,10 +161,11 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   val stateDir = createTempDirectory("ls-state").toFile()
 
   val spawnedProcesses = mutableListOf<FakeLanguageServerProcess>()
+  var nextInitializeReply = InitializeReply.SUCCESS
 
   fun newProvider(
     factory: (ProcessBuilder) -> Process = {
-      FakeLanguageServerProcess().also { fake -> spawnedProcesses += fake }
+      FakeLanguageServerProcess(nextInitializeReply).also { fake -> spawnedProcesses += fake }
     },
   ) = GitLabLanguageServerProcessProvider(
     languageServerWrapper,
@@ -110,6 +189,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   }
 
   beforeEach {
+    nextInitializeReply = InitializeReply.SUCCESS
     every { installer.install() } returns "/fake/language-server"
     every { proxyManager.getHttpProxyUrl() } returns null
     every { proxyManager.getHttpsProxyUrl() } returns null
@@ -141,6 +221,10 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       provider.start(bundle)
       spawnedProcesses.size shouldBe 1
       provider.isRunning shouldBe true
+
+      // The initialize handshake completes against the fake server and the readiness
+      // side effects really run (they never fired when the fake did not answer).
+      eventually(2.seconds) { verify { configurationService.sendConfiguration() } }
 
       provider.restart(bundle) shouldBe true
 
@@ -189,6 +273,23 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       spawnedProcesses.size shouldBe 2
       provider.isRunning shouldBe true
 
+      provider.stop()
+    }
+
+    it("returns false and settles stopped when the new server rejects initialization") {
+      val provider = newProvider()
+      provider.start(bundle)
+
+      nextInitializeReply = InitializeReply.FAILURE
+      provider.restart(bundle) shouldBe false
+
+      spawnedProcesses.size shouldBe 2
+      spawnedProcesses[1].destroyed shouldBe true
+      provider.isRunning shouldBe false
+
+      nextInitializeReply = InitializeReply.SUCCESS
+      provider.restart(bundle) shouldBe true
+      provider.isRunning shouldBe true
       provider.stop()
     }
   }
