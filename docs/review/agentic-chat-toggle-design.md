@@ -30,6 +30,8 @@
   - P1-K(§8/§17.1): `ChatAvailabilityService`(source provider)を **ワークベンチ生成インスタンスと同一**に登録する規則(`ISourceProviderService.getSourceProvider` + `chatModule` bind + `plugin.xml` 宣言)を確定。別インスタンス化による `duo_chat_available` 未更新回帰を防止。
   - P1-L(§10.2): Agentic コントローラを **`chatModule` で `bind PluginController::class`** 登録する具体 binding + `agentic-duo-chat` route の dispatch テストを明記。
   - P1-M(§17.1): Focus/`openDuoChatWindow()` の classic 固有 `newPrompt(focusChat)` 送信を是正。集約ゲートは **Open + status のみ**、Focus は classic 固有として据え置き、`openDuoChatWindow()` の classic 通知は選択 webview が classic の時のみに条件化。
+- r7: Codex レビュー round 6 P1×1 を反映。
+  - P1-N(§17.1): classic `focusChat` 通知を **`showView` 直後の Preference 参照ではなく、view の非同期選択解決(最新世代)後に、実際に表示された webview が classic の時だけ** 送る契約に是正。未解決状態での classic キュー滞留(AC17 破り)を防止。
 
 ---
 
@@ -248,9 +250,11 @@ object ChatSelectionResolver {
 現行 `plugin.xml` は `OpenDuoChat`(および `NewChatConversation`・status)を source 変数 `duo_chat_enabled`(classic のみ)でゲートしており、Duo Core では Agentic 有効でも Open Duo Chat が非表示=ビューを開けない。これを次のように再設計する:
 - **集約変数 `duo_chat_available`** を新設(`ChatAvailabilityService` が source provider として供給。値 = classic OR agentic のいずれかが有効)。
 - **Open Duo Chat / status(`chatStatus`)** の `visibleWhen`/enable 条件を `duo_chat_available` に切り替える(いずれかの chat が使えるならビューへ到達できる)。**Focus はここに含めない**(下記 P1-M)。
-- **Focus の扱い(P1-M)**: 現行 `openDuoChatWindow()` / Focus コマンドは常に classic `GitLabDuoChatWebViewClient` へ `newPrompt(focusChat)` を送る classic 固有機構(`DuoChatWindow.kt:11-18`)。Agentic-only(classic 未広告)では通知がキューに滞留し Agentic にフォーカスされない。よって:
+- **Focus の扱い(P1-M / P1-N)**: 現行 `openDuoChatWindow()` / Focus コマンドは常に classic `GitLabDuoChatWebViewClient` へ `newPrompt(focusChat)` を送る classic 固有機構(`DuoChatWindow.kt:11-18`)。Agentic-only(classic 未広告)では通知がキューに滞留し Agentic にフォーカスされない。よって:
   - **Focus コマンドは classic 固有として `duo_chat_enabled`(classic)ゲートのまま据え置く**(Agentic 入力欄フォーカスは agentic 固有機構で別スライス。§3 対象外)。
-  - **`openDuoChatWindow()` の classic `newPrompt(focusChat)` 送信を条件化**: 選択中 webview が classic の時のみ送る。Agentic 選択時は `page.showView`(ビュー表示)までで止め、classic クライアントへ通知しない(滞留・誤動作の防止)。これにより Open/status(集約ゲート)から呼ばれても Agentic-only で破綻しない。
+  - **classic `focusChat` 通知は「view の選択解決後」に view が送る(P1-N)**: `openDuoChatWindow()` は (1) `page.showView` でビューを表示、(2) view に **focus 要求(transient intent)** を立てて選択解決(refresh)を起動するのみとし、**その場で classic クライアントへ通知しない**。`showView` 直後は §9.1 の非同期 metadata 取得と `ChatSelectionResolver` により **選択中 webview が未確定**であり、Preference 保存値(例 `duo-chat-v2`)を参照すると実際は Agentic が選ばれる場合に classic キューへ誤送出されるため。
+  - view は **最新世代の選択が解決し topControl を確定した後**に、focus 要求が立っていて **かつ表示 webview が classic の場合のみ** classic クライアントへ `focusChat` を送り、intent をクリアする。表示 webview が agentic の場合は classic へ通知しない(showView によるビュー表示までで止める)。
+  - これにより Open/status(集約ゲート)経由でも、選択未解決タイミングや保存値と実選択の不一致(Agentic-only)で classic キューに滞留しない(AC17)。
 - **`ChatStatusHandler` のデータ取得先を集約サービスへ置換(P1-I)**: 現行 `ChatStatusHandler` は `isEnabled()`・表示文言・アイコンをすべて `DuoChatStateService`(classic の `isEnabled`/`getFirstEngagedCheck`)から取得している(`chat/commands/ChatStatusHandler.kt`)。これを `ChatAvailabilityService` に依存替えする:
   - `isEnabled()` = 集約 `anyChatEnabled`(Agentic-only でも enabled)。
   - `updateElement` の文言/アイコン規則: いずれかの chat が有効なら Enabled 表示。全無効時のみ Disabled 文言(理由は「表示中/選択対象 webview の disabledReason」を用いる。classic のみ無効で agentic 有効なら Enabled)。
@@ -298,7 +302,7 @@ object ChatSelectionResolver {
 - AC14(P1-J・回帰防止): **classic のみ有効**(agentic 通知が来ない/未対応環境)で、`duo_chat_available` が true になり Open/status が従来どおり有効。Focus も従来どおり(classic ゲート)有効(手動 + 集約サービスの classic-only 単体テスト)。
 - AC15(P1-K): feature-state 更新が source provider へ確実に届く(Koin 参照とワークベンチ provider が同一インスタンス)。classic のみ有効で `duo_chat_available` が true になり Open/status が有効(手動: 実機で classic 有効時に status/Open が出る)。
 - AC16(P1-L): Agentic で共有メッセージが実際に dispatch される(`agentic-duo-chat` route の解決を単体テストで確認 + 手動でコード挿入/コピー/リンクが動作、`No plugin registered` warn が出ない)。
-- AC17(P1-M): Agentic-only で Open/status からビューを開くと Agentic が表示され、classic クライアントへ `focusChat` 通知が送られない(滞留しない)。Focus コマンドは classic 有効時のみ動作(手動 + ログ確認)。
+- AC17(P1-M/P1-N): Agentic-only(**保存値が `duo-chat-v2` でも**)で Open/status からビューを開くと Agentic が表示され、classic クライアントへ `focusChat` 通知が送られない(選択解決後に表示 webview=agentic と判定されるため滞留しない)。classic 選択時は解決後に `focusChat` が送られ入力欄がフォーカスされる。Focus コマンドは classic 有効時のみ動作(手動 + ログ確認)。
 - AC9: `./gradlew build` で detekt green、テストは既定 SWT 環境失敗(36 件)を超える新規失敗なし。
 
 ## 20. 想定されるリスク
