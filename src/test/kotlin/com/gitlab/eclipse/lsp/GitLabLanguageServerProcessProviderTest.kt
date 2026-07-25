@@ -10,6 +10,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.every
@@ -240,8 +241,13 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       provider.isRunning shouldBe true
 
       // The initialize handshake completes against the fake server and the readiness
-      // side effects really run (they never fired when the fake did not answer).
-      eventually(2.seconds) { verify { configurationService.sendConfiguration() } }
+      // side effects really run (they never fired when the fake did not answer). The
+      // callback must pass its captured (non-null) proxy, not rely on the default.
+      eventually(2.seconds) {
+        val readinessServers = mutableListOf<GitLabLanguageServer?>()
+        verify { configurationService.sendConfiguration(captureNullable(readinessServers)) }
+        readinessServers.last().shouldNotBeNull()
+      }
 
       provider.restart(bundle) shouldBe true
 

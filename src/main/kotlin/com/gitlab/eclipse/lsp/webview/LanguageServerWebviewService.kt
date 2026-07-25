@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.webview
 
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
@@ -17,11 +18,22 @@ class LanguageServerWebviewService(
 
   private val themeSubscribed = AtomicBoolean(false)
 
-  fun sendThemeChange() {
+  // Overload (not a default argument): a default expression reading the wrapper would be
+  // evaluated by the Kotlin $default bridge even on MockK mocks, NPE-ing tests that mock
+  // this service and trigger a no-arg send. The theme-event subscription deliberately
+  // uses this no-arg path: one subscription serves all restarts by resolving the
+  // wrapper's current server when the event fires.
+  fun sendThemeChange() = sendThemeChange(languageServerWrapper.languageServer)
+
+  // The [server] parameter binds the queued didChangeTheme to the server captured at
+  // CALL time (the readiness callback passes its own initialized proxy), so a rapid
+  // restart strands the queued send with the old server instead of redirecting it at a
+  // new pre-initialize one.
+  fun sendThemeChange(server: GitLabLanguageServer?) {
     logger.info("Sending configuration change notification to Language Server.")
     coroutineScope.launch {
       try {
-        languageServerWrapper.languageServer?.didChangeTheme(ThemeProvider.currentTheme())
+        server?.didChangeTheme(ThemeProvider.currentTheme())
       } catch (e: Throwable) {
         logger.error("Failed to send update language server theme. ", e)
       }

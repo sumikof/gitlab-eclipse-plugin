@@ -18,6 +18,8 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
@@ -74,6 +76,25 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
     val captured = slot<DidChangeConfigurationParams>()
     verify { languageServer.didChangeConfiguration(capture(captured)) }
     return captured.captured.settings as GitLabLanguageServerConfigurationParams
+  }
+
+  describe("server binding") {
+    it("delivers the queued notification to the server captured at call time, not the wrapper's current one") {
+      val serverA = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      val serverB = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      // StandardTestDispatcher queues the launch instead of running it inline, exposing
+      // the gap between capturing the server and the coroutine actually sending.
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope)
+
+      queuedService.sendConfiguration(serverA)
+      // A rapid second restart registers process B's proxy before the coroutine runs.
+      every { wrapper.languageServer } returns serverB
+      testScope.testScheduler.runCurrent()
+
+      verify { serverA.didChangeConfiguration(any()) }
+      verify(exactly = 0) { serverB.didChangeConfiguration(any()) }
+    }
   }
 
   describe("httpAgentOptions") {

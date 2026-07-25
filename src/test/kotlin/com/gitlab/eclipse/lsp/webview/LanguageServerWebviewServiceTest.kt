@@ -8,6 +8,7 @@ import io.kotest.matchers.equals.shouldBeEqual
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.e4.core.services.events.IEventBroker
@@ -74,6 +75,23 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
         styles["--editor-font-family"].shouldNotBeNull().shouldBeEqual("Lucida Grande")
         styles["--editor-textLink-foreground"].shouldNotBeNull().shouldBeEqual(expectedColor.css())
       }
+    }
+
+    it("delivers the queued theme change to the server captured at call time, not the wrapper's current one") {
+      val serverA = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      val serverB = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      // StandardTestDispatcher queues the launch instead of running it inline, exposing
+      // the gap between capturing the server and the coroutine actually sending.
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = LanguageServerWebviewService(languageServerWrapper, testScope)
+
+      queuedService.sendThemeChange(serverA)
+      // A rapid second restart registers process B's proxy before the coroutine runs.
+      every { languageServerWrapper.languageServer } returns serverB
+      testScope.testScheduler.runCurrent()
+
+      verify { serverA.didChangeTheme(any()) }
+      verify(exactly = 0) { serverB.didChangeTheme(any()) }
     }
   }
 

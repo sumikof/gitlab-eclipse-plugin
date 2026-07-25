@@ -158,17 +158,21 @@ class GitLabLanguageServerProcessProvider(
           logger.error("Failed to initialize Language Server", err)
         } else if (synchronized(lifecycleLock) { process !== startedProcess }) {
           // A superseded server's late init response must not run the readiness side
-          // effects: they would resolve against the wrapper's CURRENT proxy and fire at
-          // the new server before its own initialize completes. A response that passes
-          // this check can still race a restart that starts in the microseconds before
-          // its side effects run — a pre-existing window this guard narrows, not closes.
+          // effects. They are bound to this callback's own proxy (below), so they could
+          // no longer reach a newer server — but skipping them avoids pointless sends
+          // to a process that is already dead.
           logger.info("Ignoring initialization result from a superseded Language Server process.")
         } else {
           logger.info("Initialized Language Server: $result")
           languageServerProxy.remoteProxy.initialized(null)
-          languageServerConfigurationService.sendConfiguration()
-          languageServerOpenFilesService.sendOpenTabs()
-          languageServerWebviewService.sendThemeChange()
+          // Pass the captured proxy explicitly: the sends launch coroutines, and a rapid
+          // second restart can register the new server's proxy before they run. Binding
+          // them here strands the superseded callback's queued work at the old server
+          // instead of redirecting it at the new one before its initialize completes.
+          val readinessServer = languageServerProxy.remoteProxy
+          languageServerConfigurationService.sendConfiguration(readinessServer)
+          languageServerOpenFilesService.sendOpenTabs(readinessServer)
+          languageServerWebviewService.sendThemeChange(readinessServer)
           languageServerWebviewService.subscribeToThemeChanges()
           // The Duo Chat view shows a "not ready" page when opened before the LS is up;
           // re-evaluate it now that the LS is ready. asyncExec (not syncExec) so this LS
