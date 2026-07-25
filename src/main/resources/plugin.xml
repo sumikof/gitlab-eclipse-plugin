@@ -93,6 +93,54 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.OpenActiveFile"
+                name="Open Active File in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.CopyLinkToActiveFile"
+                name="Copy GitLab Link to Active File"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                name="Open Project in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                name="Copy GitLab Project Link"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                name="Create New Issue in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.IssueSearch"
+                name="Search GitLab Issues"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                name="Search GitLab Merge Requests"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                name="GitLab Advanced Search"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 name="Open MCP User Configuration"
                 categoryId="gitlab-eclipse-plugin">
@@ -360,6 +408,46 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenActiveFile"
+                class="com.gitlab.eclipse.handlers.OpenActiveFileHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFile"
+                class="com.gitlab.eclipse.handlers.CopyLinkToActiveFileHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                class="com.gitlab.eclipse.handlers.OpenInGitLabHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                class="com.gitlab.eclipse.handlers.CopyLinkToClipboardHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                class="com.gitlab.eclipse.handlers.OpenCreateNewIssueHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.IssueSearch"
+                class="com.gitlab.eclipse.handlers.IssueSearchHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                class="com.gitlab.eclipse.handlers.MergeRequestSearchHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                class="com.gitlab.eclipse.handlers.AdvancedSearchHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 class="com.gitlab.eclipse.handlers.OpenMcpUserConfigHandler"
         />
@@ -530,6 +618,54 @@
                         <equals value="true"/>
                     </with>
                 </visibleWhen>
+            </menu>
+        </menuContribution>
+
+        <menuContribution locationURI="popup:#AbstractTextEditorContext?after=additions">
+            <menu id="com.gitlab.eclipse.navigation.menu" label="GitLab">
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenActiveFile"
+                        label="Open Active File in GitLab"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFile"
+                        label="Copy Link to Active File"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep1" visible="true"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                        label="Open Project in GitLab"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                        label="Copy Project Link"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                        label="Create New Issue"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep2" visible="true"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.IssueSearch"
+                        label="Search Issues"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                        label="Search Merge Requests"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                        label="Advanced Search"
+                />
             </menu>
         </menuContribution>
 

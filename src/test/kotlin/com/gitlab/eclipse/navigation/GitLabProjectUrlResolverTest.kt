@@ -1,0 +1,165 @@
+package com.gitlab.eclipse.navigation
+
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.preferences.PreferenceConstants
+import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
+import io.mockk.every
+import io.mockk.mockk
+import org.eclipse.jgit.api.Git
+import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.io.File
+import java.nio.file.Files
+
+class GitLabProjectUrlResolverTest : DescribeSpec({
+  extensions(LoggingKotestExtension)
+
+  // Every temp file/dir created below is registered here and wiped in afterSpec, so the
+  // suite stops leaking git repos into the OS temp dir on every run.
+  val createdTempPaths = mutableListOf<File>()
+
+  fun store(url: String): ScopedPreferenceStore = mockk {
+    every { getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns url
+  }
+
+  // Creates a temp repo with an origin remote (plus optional extra remotes) and
+  // returns (repoDir, committedFile).
+  fun tempRepo(
+    remote: String,
+    fileName: String,
+    commit: Boolean,
+    extraRemotes: Map<String, String> = emptyMap(),
+  ): Pair<File, File> {
+    val dir = Files.createTempDirectory("nav-repo").toFile()
+    createdTempPaths += dir
+    val git = Git.init().setDirectory(dir).call()
+    git.repository.config.apply {
+      setString("remote", "origin", "url", remote)
+      extraRemotes.forEach { (name, url) -> setString("remote", name, "url", url) }
+      save()
+    }
+    val f = File(dir, fileName).apply {
+      parentFile.mkdirs()
+      writeText("hello")
+    }
+    if (commit) {
+      git.add().addFilepattern(".").call()
+      git.commit().setMessage("init").setAuthor("t", "t@e").setCommitter("t", "t@e").call()
+    }
+    git.close()
+    return dir to f
+  }
+
+  afterSpec { createdTempPaths.forEach { it.deleteRecursively() } }
+
+  describe("resolveWebUrlForRepo") {
+    it("builds the project web URL from the origin remote") {
+      val (dir, _) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+    }
+    it("resolves a subgroup remote to its nested project URL") {
+      val (dir, _) = tempRepo("git@gitlab.com:group/subgroup/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/subgroup/proj")
+    }
+    it("keeps percent-escapes from an HTTP remote path verbatim (no double-encoding)") {
+      // namespaceWithPath comes from the remote URL's rawPath, so it is already
+      // URL-path-encoded; re-encoding would turn %C3%BC into %25C3%25BC.
+      val (dir, _) = tempRepo("https://gitlab.com/gr%C3%BCp/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/gr%C3%BCp/proj")
+    }
+    it("falls back to a matching secondary remote when origin points at a different host") {
+      // VSCode's parseProjects collects remotes matching the instance instead of
+      // privileging a non-matching origin; a github origin must not shadow the gitlab remote.
+      val (dir, _) = tempRepo(
+        "https://github.com/x/y.git",
+        "a.txt",
+        commit = true,
+        extraRemotes = mapOf("gitlab" to "git@gitlab.com:group/proj.git"),
+      )
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+    }
+    it("warns NO_REMOTE when no remote parses as a GitLab remote at all") {
+      // A scheme-less local path never parses to a GitLabRemote, so nothing is
+      // GitLab-shaped → NO_REMOTE (not MISMATCH).
+      val (dir, _) = tempRepo("/srv/git/mirror.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "No GitLab remote is configured for the current project.",
+      )
+    }
+    it("warns when the remote host does not match the instance") {
+      val (dir, _) = tempRepo("git@other.com:group/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "The current project does not match your configured GitLab instance.",
+      )
+    }
+  }
+
+  describe("resolveWebUrlForFile") {
+    it("builds the project web URL from a file inside the repo") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForFile(file)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+    }
+  }
+
+  describe("resolveBlobUrl") {
+    it("builds a blob URL with commit SHA, encoded path and line anchor") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "dir a/b c.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(file, 2, 4)
+      r as GitLabProjectUrlResolver.Resolution.Ok
+      r.url shouldContain "https://gitlab.com/group/proj/-/blob/"
+      r.url shouldContain "/dir%20a/b%20c.txt#L3-5"
+    }
+    it("resolves a committed file whose name starts with two dots") {
+      // "..config" is a legal committed filename; only ".." / "../..." mean outside the repo.
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "..config", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(file, null, null)
+      r as GitLabProjectUrlResolver.Resolution.Ok
+      r.url shouldContain "/-/blob/"
+      r.url.endsWith("/..config") shouldBe true
+    }
+    it("warns when the file has never been committed") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "fresh.txt", commit = false)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(file, null, null)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "No link exists for the current file. Commit the current file to the repository.",
+      )
+    }
+    it("warns when the repository has commits but the file itself was never committed") {
+      val (dir, _) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val untracked = File(dir, "untracked.txt").apply { writeText("never added") }
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(untracked, null, null)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "No link exists for the current file. Commit the current file to the repository.",
+      )
+    }
+    it("returns Warn instead of throwing when the repository is bare") {
+      // A bare repo has no work tree: repo.workTree inside the resolve block throws
+      // NoWorkTreeException. The never-throws contract requires this to surface as a Warn.
+      val dir = Files.createTempDirectory("nav-bare").toFile()
+      createdTempPaths += dir
+      Git.init().setBare(true).setDirectory(dir).call().use { git ->
+        git.repository.config.apply {
+          setString("remote", "origin", "url", "git@gitlab.com:group/proj.git")
+          save()
+        }
+      }
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com"))
+        .resolveBlobUrl(File(dir, "x.txt"), null, null)
+      (r is GitLabProjectUrlResolver.Resolution.Warn) shouldBe true
+    }
+    it("warns when the file is not inside any repository") {
+      val loose = Files.createTempFile("loose", ".txt").toFile()
+      createdTempPaths += loose
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(loose, null, null)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn("The current file is not in the project repository.")
+    }
+  }
+})
