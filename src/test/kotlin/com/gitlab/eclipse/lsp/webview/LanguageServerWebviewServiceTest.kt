@@ -129,5 +129,22 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
 
       verify(exactly = 1) { eventBroker.subscribe(any(), any<EventHandler>()) }
     }
+
+    it("retries on a later start when the broker rejects the subscription") {
+      val eventBroker = mockk<IEventBroker>()
+      every { PlatformUI.getWorkbench().getService(eq(IEventBroker::class.java)) } returns eventBroker
+      // The broker rejects the first registration without throwing, then accepts.
+      every { eventBroker.subscribe(any(), any<EventHandler>()) } returnsMany listOf(false, true)
+      val service = LanguageServerWebviewService(
+        languageServerWrapper = languageServerWrapper,
+        coroutineScope = TestScope(UnconfinedTestDispatcher())
+      )
+
+      service.subscribeToThemeChanges()
+      service.subscribeToThemeChanges()
+
+      // A rejected registration must not latch the guard on: the next start retries.
+      verify(exactly = 2) { eventBroker.subscribe(any(), any<EventHandler>()) }
+    }
   }
 })

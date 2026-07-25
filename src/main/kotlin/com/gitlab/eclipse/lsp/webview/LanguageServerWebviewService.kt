@@ -51,8 +51,14 @@ class LanguageServerWebviewService(
     }
     try {
       val events = PlatformUI.getWorkbench().getService(IEventBroker::class.java)
-      events.subscribe(IThemeEngine.Events.THEME_CHANGED) {
+      val subscribed = events.subscribe(IThemeEngine.Events.THEME_CHANGED) {
         sendThemeChange()
+      }
+      if (!subscribed) {
+        // The broker rejected the registration without throwing; let the next
+        // start()/restart() retry instead of latching the guard on permanently.
+        themeSubscribed.set(false)
+        logger.warn("Failed to subscribe to theme changes: the event broker rejected the registration.")
       }
     } catch (ex: Exception) {
       // Allow the next start()/restart() to retry the subscription.
