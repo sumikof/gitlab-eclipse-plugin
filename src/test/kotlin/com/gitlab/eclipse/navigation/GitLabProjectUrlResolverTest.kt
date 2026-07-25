@@ -48,7 +48,9 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
     it("warns when the remote host does not match the instance") {
       val (dir, _) = tempRepo("git@other.com:group/proj.git", "a.txt", commit = true)
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
-      (r is GitLabProjectUrlResolver.Resolution.Warn) shouldBe true
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "The current project does not match your configured GitLab instance.",
+      )
     }
   }
 
@@ -66,6 +68,28 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
         "No link exists for the current file. Commit the current file to the repository.",
       )
+    }
+    it("warns when the repository has commits but the file itself was never committed") {
+      val (dir, _) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val untracked = File(dir, "untracked.txt").apply { writeText("never added") }
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(untracked, null, null)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "No link exists for the current file. Commit the current file to the repository.",
+      )
+    }
+    it("returns Warn instead of throwing when the repository is bare") {
+      // A bare repo has no work tree: repo.workTree inside the resolve block throws
+      // NoWorkTreeException. The never-throws contract requires this to surface as a Warn.
+      val dir = Files.createTempDirectory("nav-bare").toFile()
+      Git.init().setBare(true).setDirectory(dir).call().use { git ->
+        git.repository.config.apply {
+          setString("remote", "origin", "url", "git@gitlab.com:group/proj.git")
+          save()
+        }
+      }
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com"))
+        .resolveBlobUrl(File(dir, "x.txt"), null, null)
+      (r is GitLabProjectUrlResolver.Resolution.Warn) shouldBe true
     }
     it("warns when the file is not inside any repository") {
       val loose = Files.createTempFile("loose", ".txt").toFile()

@@ -87,12 +87,16 @@ class GitLabProjectUrlResolver(
   }
 
   private inline fun withRepo(start: File, block: (Repository) -> Resolution): Resolution? {
-    val repo = try {
-      FileRepositoryBuilder().findGitDir(start).setMustExist(true).build()
+    // The block runs inside the try on purpose: public resolve* methods must NEVER throw
+    // (callers share a coroutine scope), so any JGit failure — bare repo (NoWorkTreeException),
+    // relativize on mismatched paths, corrupt pack during log(), config reload race — is
+    // logged and mapped to null (→ NOT_IN_REPO Warn) instead of escaping.
+    return try {
+      val repo = FileRepositoryBuilder().findGitDir(start).setMustExist(true).build()
+      repo.use { block(it) }
     } catch (e: Exception) {
-      logger.warn("Could not open a git repository containing ${start.path}.", e)
-      return null
+      logger.warn("Could not resolve a GitLab URL for ${start.path}.", e)
+      null
     }
-    return repo.use { block(it) }
   }
 }
