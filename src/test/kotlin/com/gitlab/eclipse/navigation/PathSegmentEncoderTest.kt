@@ -21,4 +21,11 @@ class PathSegmentEncoderTest : DescribeSpec({
   it("encodeSegment does not preserve slashes") {
     PathSegmentEncoder.encodeSegment("a/b") shouldBe "a%2Fb"
   }
+  it("preserves ~ and encodes sub-delims") {
+    PathSegmentEncoder.encodePath("a~b+c*d!e") shouldBe "a~b%2Bc%2Ad%21e"
+  }
+  it("preserves empty segments and the empty string") {
+    PathSegmentEncoder.encodePath("/a//b") shouldBe "/a//b"
+    PathSegmentEncoder.encodeSegment("") shouldBe ""
+  }
 })
