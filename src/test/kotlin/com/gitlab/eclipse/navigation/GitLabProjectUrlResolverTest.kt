@@ -23,13 +23,20 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
     every { getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns url
   }
 
-  // Creates a temp repo with an origin remote and returns (repoDir, committedFile).
-  fun tempRepo(remote: String, fileName: String, commit: Boolean): Pair<File, File> {
+  // Creates a temp repo with an origin remote (plus optional extra remotes) and
+  // returns (repoDir, committedFile).
+  fun tempRepo(
+    remote: String,
+    fileName: String,
+    commit: Boolean,
+    extraRemotes: Map<String, String> = emptyMap(),
+  ): Pair<File, File> {
     val dir = Files.createTempDirectory("nav-repo").toFile()
     createdTempPaths += dir
     val git = Git.init().setDirectory(dir).call()
     git.repository.config.apply {
       setString("remote", "origin", "url", remote)
+      extraRemotes.forEach { (name, url) -> setString("remote", name, "url", url) }
       save()
     }
     val f = File(dir, fileName).apply {
@@ -63,6 +70,27 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       val (dir, _) = tempRepo("https://gitlab.com/gr%C3%BCp/proj.git", "a.txt", commit = true)
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
       r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/gr%C3%BCp/proj")
+    }
+    it("falls back to a matching secondary remote when origin points at a different host") {
+      // VSCode's parseProjects collects remotes matching the instance instead of
+      // privileging a non-matching origin; a github origin must not shadow the gitlab remote.
+      val (dir, _) = tempRepo(
+        "https://github.com/x/y.git",
+        "a.txt",
+        commit = true,
+        extraRemotes = mapOf("gitlab" to "git@gitlab.com:group/proj.git"),
+      )
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+    }
+    it("warns NO_REMOTE when no remote parses as a GitLab remote at all") {
+      // A scheme-less local path never parses to a GitLabRemote, so nothing is
+      // GitLab-shaped → NO_REMOTE (not MISMATCH).
+      val (dir, _) = tempRepo("/srv/git/mirror.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
+        "No GitLab remote is configured for the current project.",
+      )
     }
     it("warns when the remote host does not match the instance") {
       val (dir, _) = tempRepo("git@other.com:group/proj.git", "a.txt", commit = true)

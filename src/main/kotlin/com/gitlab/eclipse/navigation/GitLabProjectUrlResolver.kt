@@ -65,18 +65,19 @@ class GitLabProjectUrlResolver(
   private fun webUrlFor(repo: Repository): Resolution {
     val instanceUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL).trimEnd('/')
     if (instanceUrl.isBlank()) return Resolution.Warn(NO_INSTANCE)
+    // Prefer origin, but fall back to any other remote that matches the instance —
+    // VSCode's parseProjects collects the remotes matching the instance instead of
+    // privileging a non-matching (or unparsable) origin.
     val config = repo.config
-    val origin = config.getString("remote", "origin", "url")
-    val remoteUrl = origin ?: config.getSubsections("remote").asSequence()
+    val names = config.getSubsections("remote")
+    val ordered = (if ("origin" in names) listOf("origin") else emptyList()) + names.filter { it != "origin" }
+    val parsed = ordered
       .mapNotNull { name -> config.getString("remote", name, "url") }
-      .firstOrNull { url ->
-        GitLabRemoteParser.parseGitLabRemote(url, instanceUrl)
-          ?.let { GitLabRemoteParser.remoteMatchesInstance(it, instanceUrl) } == true
-      }
-      ?: return Resolution.Warn(NO_REMOTE)
-    val remote = GitLabRemoteParser.parseGitLabRemote(remoteUrl, instanceUrl)
-      ?: return Resolution.Warn(NO_REMOTE)
-    if (!GitLabRemoteParser.remoteMatchesInstance(remote, instanceUrl)) return Resolution.Warn(MISMATCH)
+      .mapNotNull { url -> GitLabRemoteParser.parseGitLabRemote(url, instanceUrl) }
+    val remote = parsed.firstOrNull { GitLabRemoteParser.remoteMatchesInstance(it, instanceUrl) }
+      // A GitLab-shaped remote exists but none targets this instance → MISMATCH;
+      // nothing even parsed as a GitLab remote → NO_REMOTE.
+      ?: return if (parsed.isEmpty()) Resolution.Warn(NO_REMOTE) else Resolution.Warn(MISMATCH)
     // namespaceWithPath is derived from the remote URL's rawPath, so it is already in
     // URL-path form; re-encoding it would double-encode escapes from HTTP(S) remotes
     // (e.g. gr%C3%BCp → gr%25C3%25BCp). Use it verbatim.

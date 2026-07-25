@@ -28,6 +28,13 @@ class AdvancedSearchHandler(
 
   override fun execute(event: ExecutionEvent): Any? {
     val instanceUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL).trimEnd('/')
+    // An unset instance URL breaks both scopes (instance-level would build a relative
+    // "/search?..." that BrowserLauncher silently drops; project scope warns NO_INSTANCE
+    // in the resolver anyway) — fail fast with the resolver's NO_INSTANCE message.
+    if (instanceUrl.isBlank()) {
+      NotificationUtils.show("Set your GitLab instance URL in the GitLab preferences.")
+      return null
+    }
     val text = promptForText() ?: return null
     val level = pickOne(
       "Search scope",
