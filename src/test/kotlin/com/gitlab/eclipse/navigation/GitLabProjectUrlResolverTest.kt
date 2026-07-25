@@ -15,6 +15,10 @@ import java.nio.file.Files
 class GitLabProjectUrlResolverTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
+  // Every temp file/dir created below is registered here and wiped in afterSpec, so the
+  // suite stops leaking git repos into the OS temp dir on every run.
+  val createdTempPaths = mutableListOf<File>()
+
   fun store(url: String): ScopedPreferenceStore = mockk {
     every { getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns url
   }
@@ -22,6 +26,7 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
   // Creates a temp repo with an origin remote and returns (repoDir, committedFile).
   fun tempRepo(remote: String, fileName: String, commit: Boolean): Pair<File, File> {
     val dir = Files.createTempDirectory("nav-repo").toFile()
+    createdTempPaths += dir
     val git = Git.init().setDirectory(dir).call()
     git.repository.config.apply {
       setString("remote", "origin", "url", remote)
@@ -39,6 +44,8 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
     return dir to f
   }
 
+  afterSpec { createdTempPaths.forEach { it.deleteRecursively() } }
+
   describe("resolveWebUrlForRepo") {
     it("builds the project web URL from the origin remote") {
       val (dir, _) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
@@ -51,6 +58,14 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       r shouldBe GitLabProjectUrlResolver.Resolution.Warn(
         "The current project does not match your configured GitLab instance.",
       )
+    }
+  }
+
+  describe("resolveWebUrlForFile") {
+    it("builds the project web URL from a file inside the repo") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForFile(file)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
     }
   }
 
@@ -81,6 +96,7 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       // A bare repo has no work tree: repo.workTree inside the resolve block throws
       // NoWorkTreeException. The never-throws contract requires this to surface as a Warn.
       val dir = Files.createTempDirectory("nav-bare").toFile()
+      createdTempPaths += dir
       Git.init().setBare(true).setDirectory(dir).call().use { git ->
         git.repository.config.apply {
           setString("remote", "origin", "url", "git@gitlab.com:group/proj.git")
@@ -93,6 +109,7 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
     }
     it("warns when the file is not inside any repository") {
       val loose = Files.createTempFile("loose", ".txt").toFile()
+      createdTempPaths += loose
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(loose, null, null)
       r shouldBe GitLabProjectUrlResolver.Resolution.Warn("The current file is not in the project repository.")
     }
