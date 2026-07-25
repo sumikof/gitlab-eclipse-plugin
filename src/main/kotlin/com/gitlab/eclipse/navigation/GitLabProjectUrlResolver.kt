@@ -41,7 +41,7 @@ class GitLabProjectUrlResolver(
   fun resolveBlobUrl(file: File, startLine: Int?, endLine: Int?): Resolution =
     withRepo(file) { repo ->
       val relPath = repo.workTree.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-      if (relPath.startsWith("..")) return@withRepo Resolution.Warn(NOT_IN_REPO)
+      if (relPath == ".." || relPath.startsWith("../")) return@withRepo Resolution.Warn(NOT_IN_REPO)
       // A repo with zero commits has no HEAD; log() throws NoHeadException rather than
       // returning an empty result — that also means "this file was never committed".
       val sha = Git(repo).use {
@@ -77,7 +77,10 @@ class GitLabProjectUrlResolver(
     val remote = GitLabRemoteParser.parseGitLabRemote(remoteUrl, instanceUrl)
       ?: return Resolution.Warn(NO_REMOTE)
     if (!GitLabRemoteParser.remoteMatchesInstance(remote, instanceUrl)) return Resolution.Warn(MISMATCH)
-    return Resolution.Ok("$instanceUrl/${PathSegmentEncoder.encodePath(remote.namespaceWithPath)}")
+    // namespaceWithPath is derived from the remote URL's rawPath, so it is already in
+    // URL-path form; re-encoding it would double-encode escapes from HTTP(S) remotes
+    // (e.g. gr%C3%BCp → gr%25C3%25BCp). Use it verbatim.
+    return Resolution.Ok("$instanceUrl/${remote.namespaceWithPath}")
   }
 
   private fun anchor(startLine: Int?, endLine: Int?): String {

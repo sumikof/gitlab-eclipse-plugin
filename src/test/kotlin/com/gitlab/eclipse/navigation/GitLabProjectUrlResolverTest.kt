@@ -52,6 +52,18 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
       r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
     }
+    it("resolves a subgroup remote to its nested project URL") {
+      val (dir, _) = tempRepo("git@gitlab.com:group/subgroup/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/subgroup/proj")
+    }
+    it("keeps percent-escapes from an HTTP remote path verbatim (no double-encoding)") {
+      // namespaceWithPath comes from the remote URL's rawPath, so it is already
+      // URL-path-encoded; re-encoding would turn %C3%BC into %25C3%25BC.
+      val (dir, _) = tempRepo("https://gitlab.com/gr%C3%BCp/proj.git", "a.txt", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
+      r shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/gr%C3%BCp/proj")
+    }
     it("warns when the remote host does not match the instance") {
       val (dir, _) = tempRepo("git@other.com:group/proj.git", "a.txt", commit = true)
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveWebUrlForRepo(dir)
@@ -76,6 +88,14 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       r as GitLabProjectUrlResolver.Resolution.Ok
       r.url shouldContain "https://gitlab.com/group/proj/-/blob/"
       r.url shouldContain "/dir%20a/b%20c.txt#L3-5"
+    }
+    it("resolves a committed file whose name starts with two dots") {
+      // "..config" is a legal committed filename; only ".." / "../..." mean outside the repo.
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "..config", commit = true)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(file, null, null)
+      r as GitLabProjectUrlResolver.Resolution.Ok
+      r.url shouldContain "/-/blob/"
+      r.url.endsWith("/..config") shouldBe true
     }
     it("warns when the file has never been committed") {
       val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "fresh.txt", commit = false)
