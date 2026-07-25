@@ -105,6 +105,24 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                name="Open Project in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                name="Copy GitLab Project Link"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                name="Create New Issue in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 name="Open MCP User Configuration"
                 categoryId="gitlab-eclipse-plugin">
@@ -382,6 +400,21 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                class="com.gitlab.eclipse.handlers.OpenInGitLabHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                class="com.gitlab.eclipse.handlers.CopyLinkToClipboardHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                class="com.gitlab.eclipse.handlers.OpenCreateNewIssueHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 class="com.gitlab.eclipse.handlers.OpenMcpUserConfigHandler"
         />
@@ -565,6 +598,23 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFile"
                         label="Copy Link to Active File"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep1" visible="true"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenInGitLab"
+                        label="Open Project in GitLab"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.CopyLinkToClipboard"
+                        label="Copy Project Link"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
+                        label="Create New Issue"
                 />
             </menu>
         </menuContribution>
