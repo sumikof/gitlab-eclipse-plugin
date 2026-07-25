@@ -4,6 +4,7 @@ import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
@@ -26,7 +27,12 @@ class GitLabLanguageServerConfigurationService(
 ) {
   private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
 
-  fun sendConfiguration() {
+  // Overload (not a default argument): a default expression reading the wrapper would be
+  // evaluated by the Kotlin $default bridge even on MockK mocks, NPE-ing every test that
+  // mocks this service and triggers a no-arg send.
+  fun sendConfiguration() = sendConfiguration(languageServerWrapper.languageServer)
+
+  fun sendConfiguration(server: GitLabLanguageServer?) {
     val params = GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
@@ -64,8 +70,12 @@ class GitLabLanguageServerConfigurationService(
     )
 
     logger.info("Sending configuration change notification to Language Server.")
+    // Send to the server captured at CALL time, never the wrapper's current proxy at
+    // coroutine-execution time: a rapid restart may register a new pre-initialize server
+    // before this coroutine runs, and the queued work must strand with the old server
+    // instead of being redirected at the new one.
     coroutineScope.launch {
-      languageServerWrapper.languageServer?.didChangeConfiguration(
+      server?.didChangeConfiguration(
         DidChangeConfigurationParams(params)
       )
     }

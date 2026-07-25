@@ -8,6 +8,7 @@ import io.kotest.matchers.equals.shouldBeEqual
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.e4.core.services.events.IEventBroker
@@ -75,6 +76,23 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
         styles["--editor-textLink-foreground"].shouldNotBeNull().shouldBeEqual(expectedColor.css())
       }
     }
+
+    it("delivers the queued theme change to the server captured at call time, not the wrapper's current one") {
+      val serverA = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      val serverB = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      // StandardTestDispatcher queues the launch instead of running it inline, exposing
+      // the gap between capturing the server and the coroutine actually sending.
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = LanguageServerWebviewService(languageServerWrapper, testScope)
+
+      queuedService.sendThemeChange(serverA)
+      // A rapid second restart registers process B's proxy before the coroutine runs.
+      every { languageServerWrapper.languageServer } returns serverB
+      testScope.testScheduler.runCurrent()
+
+      verify { serverA.didChangeTheme(any()) }
+      verify(exactly = 0) { serverB.didChangeTheme(any()) }
+    }
   }
 
   describe("subscribeToThemeChanges") {
@@ -93,6 +111,40 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
       val themeSlot = slot<ThemeChangedParams>()
       verify { languageServer.didChangeTheme(capture(themeSlot)) }
       themeSlot.captured.styles["--editor-textLink-foreground"].shouldNotBeNull().shouldBeEqual(expectedColor.css())
+    }
+
+    it("subscribes to the event broker only once") {
+      val eventBroker = mockk<IEventBroker>()
+      every { PlatformUI.getWorkbench().getService(eq(IEventBroker::class.java)) } returns eventBroker
+      every { eventBroker.subscribe(any(), any<EventHandler>()) } returns true
+      // The spec-level service instance is shared across tests and the test above has
+      // already subscribed it; a fresh instance keeps this test independent.
+      val service = LanguageServerWebviewService(
+        languageServerWrapper = languageServerWrapper,
+        coroutineScope = TestScope(UnconfinedTestDispatcher())
+      )
+
+      service.subscribeToThemeChanges()
+      service.subscribeToThemeChanges()
+
+      verify(exactly = 1) { eventBroker.subscribe(any(), any<EventHandler>()) }
+    }
+
+    it("retries on a later start when the broker rejects the subscription") {
+      val eventBroker = mockk<IEventBroker>()
+      every { PlatformUI.getWorkbench().getService(eq(IEventBroker::class.java)) } returns eventBroker
+      // The broker rejects the first registration without throwing, then accepts.
+      every { eventBroker.subscribe(any(), any<EventHandler>()) } returnsMany listOf(false, true)
+      val service = LanguageServerWebviewService(
+        languageServerWrapper = languageServerWrapper,
+        coroutineScope = TestScope(UnconfinedTestDispatcher())
+      )
+
+      service.subscribeToThemeChanges()
+      service.subscribeToThemeChanges()
+
+      // A rejected registration must not latch the guard on: the next start retries.
+      verify(exactly = 2) { eventBroker.subscribe(any(), any<EventHandler>()) }
     }
   }
 })

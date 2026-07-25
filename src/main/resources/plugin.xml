@@ -103,6 +103,12 @@
                 name="Open MCP Workspace Configuration"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.RestartLanguageServer"
+                name="Restart GitLab Language Server"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -361,6 +367,11 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
                 class="com.gitlab.eclipse.handlers.OpenMcpWorkspaceConfigHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
+                class="com.gitlab.eclipse.handlers.RestartLanguageServerHandler"
         />
     </extension>
 
@@ -626,6 +637,11 @@
                     commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
                     label="Open MCP Workspace Configuration"
                     tooltip="Create/open the workspace-level GitLab Duo MCP config"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
+                    label="Restart Language Server"
+                    tooltip="Stop and restart the GitLab Language Server"/>
         </menuContribution>
     </extension>
 

@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp.configuration
 
 import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
@@ -28,12 +29,23 @@ class GitLabLanguageServerOpenFilesService(
     }
   }
 
-  fun sendOpenTabs() {
+  // Overload (not a default argument): a default expression reading the wrapper would be
+  // evaluated by the Kotlin $default bridge even on MockK mocks, NPE-ing tests that mock
+  // this service and trigger a no-arg send.
+  fun sendOpenTabs() = sendOpenTabs(gitLabLanguageServerWrapper.languageServer)
+
+  // The [server] parameter binds the queued didOpen/didSetActive notifications to the
+  // server captured at CALL time (the readiness callback passes its own initialized
+  // proxy): a rapid restart may register a new pre-initialize server before the
+  // coroutines run, and the queued work must strand with the old server instead of
+  // being redirected at the new one. Workbench listeners use the no-arg paths, which
+  // resolve the wrapper's current server at call time.
+  fun sendOpenTabs(server: GitLabLanguageServer?) {
     val activePage = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
       ?: return
 
-    activePage.editorReferences.forEach { editorRef -> editorOpen(editorRef) }
-    activePage.activePartReference?.let { activePagePart -> editorActive(activePagePart) }
+    activePage.editorReferences.forEach { editorRef -> editorOpen(editorRef, server) }
+    activePage.activePartReference?.let { activePagePart -> editorActive(activePagePart, server) }
   }
 
   override fun partOpened(partRef: IWorkbenchPartReference) {
@@ -65,12 +77,15 @@ class GitLabLanguageServerOpenFilesService(
     refreshCodeSuggestionsLanguageToggle()
   }
 
-  private fun editorActive(editorRef: IWorkbenchPartReference) {
+  private fun editorActive(
+    editorRef: IWorkbenchPartReference,
+    server: GitLabLanguageServer? = gitLabLanguageServerWrapper.languageServer,
+  ) {
     val editorInput = editorRef.fileEditorInput
       ?: return
 
     coroutineScope.launch {
-      gitLabLanguageServerWrapper.languageServer?.didChangeDocumentInActiveEditor(
+      server?.didChangeDocumentInActiveEditor(
         editorInput.file.locationURI.toASCIIString()
       )
     }
@@ -97,12 +112,15 @@ class GitLabLanguageServerOpenFilesService(
 
   override fun documentAboutToBeChanged(event: DocumentEvent) = Unit
 
-  private fun editorOpen(editorRef: IWorkbenchPartReference) {
+  private fun editorOpen(
+    editorRef: IWorkbenchPartReference,
+    server: GitLabLanguageServer? = gitLabLanguageServerWrapper.languageServer,
+  ) {
     val editorInput = editorRef.fileEditorInput
       ?: return
 
     coroutineScope.launch {
-      gitLabLanguageServerWrapper.languageServer?.didOpen(
+      server?.didOpen(
         DidOpenTextDocumentParams(editorInput.toTextDocumentItem())
       )
 
