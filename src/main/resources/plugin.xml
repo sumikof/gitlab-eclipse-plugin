@@ -123,6 +123,24 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.IssueSearch"
+                name="Search GitLab Issues"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                name="Search GitLab Merge Requests"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                name="GitLab Advanced Search"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 name="Open MCP User Configuration"
                 categoryId="gitlab-eclipse-plugin">
@@ -415,6 +433,21 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.IssueSearch"
+                class="com.gitlab.eclipse.handlers.IssueSearchHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                class="com.gitlab.eclipse.handlers.MergeRequestSearchHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                class="com.gitlab.eclipse.handlers.AdvancedSearchHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenMcpUserConfig"
                 class="com.gitlab.eclipse.handlers.OpenMcpUserConfigHandler"
         />
@@ -615,6 +648,23 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.OpenCreateNewIssue"
                         label="Create New Issue"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep2" visible="true"/>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.IssueSearch"
+                        label="Search Issues"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.MergeRequestSearch"
+                        label="Search Merge Requests"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.AdvancedSearch"
+                        label="Advanced Search"
                 />
             </menu>
         </menuContribution>
