@@ -85,7 +85,15 @@ class GitLabLanguageServerProcessProvider(
     try {
       // Await the RAW initialize future (completed by the lsp4j listener thread), not the
       // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
-      startLocked(bundle).get(LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+      val initialization = startLocked(bundle)
+      val startedProcess = checkNotNull(process) { "Language server process is not tracked after start" }
+      // Race the handshake against the process's own exit so a server that dies during
+      // (or right after) initialization fails the restart quickly instead of timing out.
+      CompletableFuture.anyOf(initialization, startedProcess.onExit())
+        .get(LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+      check(initialization.isDone) { "Language server exited before completing initialization" }
+      initialization.get()
+      check(startedProcess.isAlive) { "Language server exited right after initialization" }
       true
     } catch (e: InterruptedException) {
       Thread.currentThread().interrupt()

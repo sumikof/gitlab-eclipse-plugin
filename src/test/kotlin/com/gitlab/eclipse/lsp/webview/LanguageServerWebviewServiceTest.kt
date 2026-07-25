@@ -94,5 +94,22 @@ class LanguageServerWebviewServiceTest : DescribeSpec({
       verify { languageServer.didChangeTheme(capture(themeSlot)) }
       themeSlot.captured.styles["--editor-textLink-foreground"].shouldNotBeNull().shouldBeEqual(expectedColor.css())
     }
+
+    it("subscribes to the event broker only once") {
+      val eventBroker = mockk<IEventBroker>()
+      every { PlatformUI.getWorkbench().getService(eq(IEventBroker::class.java)) } returns eventBroker
+      every { eventBroker.subscribe(any(), any<EventHandler>()) } returns true
+      // The spec-level service instance is shared across tests and the test above has
+      // already subscribed it; a fresh instance keeps this test independent.
+      val service = LanguageServerWebviewService(
+        languageServerWrapper = languageServerWrapper,
+        coroutineScope = TestScope(UnconfinedTestDispatcher())
+      )
+
+      service.subscribeToThemeChanges()
+      service.subscribeToThemeChanges()
+
+      verify(exactly = 1) { eventBroker.subscribe(any(), any<EventHandler>()) }
+    }
   }
 })

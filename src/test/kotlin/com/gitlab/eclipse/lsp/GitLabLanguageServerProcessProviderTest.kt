@@ -31,7 +31,7 @@ import java.util.concurrent.CompletableFuture
 import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.seconds
 
-private enum class InitializeReply { SUCCESS, FAILURE }
+private enum class InitializeReply { SUCCESS, FAILURE, SUCCESS_THEN_EXIT }
 
 /**
  * Stands in for the real language-server process so the lifecycle state machine can be
@@ -66,8 +66,25 @@ private class FakeLanguageServerProcess(
         // Notifications (initialized, didChangeConfiguration, ...) have no id: skip them.
         val id = REQUEST_ID.find(body)?.groupValues?.get(1)
         if (id != null) {
+          if (initializeReply == InitializeReply.SUCCESS_THEN_EXIT) {
+            // Deterministic respond-then-die: exit is observably done BEFORE the reply is
+            // written, so whichever race arm restart sees first (exit or reply), the
+            // process is already provably dead and restart must report failure. Completing
+            // from a helper thread keeps the responder free: exit dependents include the
+            // provider's lock-taking guard, which would otherwise capture this thread and
+            // stall the reply until restart times out.
+            Thread { completeExit() }.apply {
+              isDaemon = true
+              name = "fake-language-server-exit"
+              start()
+            }
+            while (!exit.isDone) {
+              Thread.yield()
+            }
+          }
           val reply = when (initializeReply) {
-            InitializeReply.SUCCESS -> """{"jsonrpc":"2.0","id":$id,"result":{"capabilities":{}}}"""
+            InitializeReply.SUCCESS, InitializeReply.SUCCESS_THEN_EXIT ->
+              """{"jsonrpc":"2.0","id":$id,"result":{"capabilities":{}}}"""
             InitializeReply.FAILURE ->
               """{"jsonrpc":"2.0","id":$id,"error":{"code":-32603,"message":"initialize rejected"}}"""
           }
@@ -273,6 +290,20 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       spawnedProcesses.size shouldBe 2
       provider.isRunning shouldBe true
 
+      provider.stop()
+    }
+
+    it("returns false and settles stopped when the server exits right after answering initialize") {
+      val provider = newProvider()
+      provider.start(bundle)
+
+      nextInitializeReply = InitializeReply.SUCCESS_THEN_EXIT
+      provider.restart(bundle) shouldBe false
+      provider.isRunning shouldBe false
+
+      nextInitializeReply = InitializeReply.SUCCESS
+      provider.restart(bundle) shouldBe true
+      provider.isRunning shouldBe true
       provider.stop()
     }
 
