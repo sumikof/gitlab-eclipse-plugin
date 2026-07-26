@@ -85,6 +85,15 @@ class GitLabSidebarView : ViewPart() {
           val mrs = async { runCatching { mergeRequestService.getMergeRequestsAssignedToMe() } }
           val issuesResult = issues.await()
           val mrsResult = mrs.await()
+          // Log per-root failures here so the "see the Error Log" message the tree renders
+          // actually has a matching Error Log entry; the failed Results still flow to
+          // buildRoots so the other root stays populated.
+          issuesResult.exceptionOrNull()?.let {
+            logger.error("Failed to load issues assigned to you.", it)
+          }
+          mrsResult.exceptionOrNull()?.let {
+            logger.error("Failed to load merge requests assigned to you.", it)
+          }
           val control = viewer.control
           if (!control.isDisposed) {
             control.display.asyncExec { applyResults(generation, issuesResult, mrsResult) }
