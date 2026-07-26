@@ -31,6 +31,11 @@ import java.net.URI
  * [SidebarViewMode] toggle re-composes the tree without re-fetching.
  */
 class GitLabSidebarView : ViewPart() {
+  companion object {
+    /** Must match the view id declared in plugin.xml. */
+    const val VIEW_ID = "com.gitlab.eclipse.views.GitLabSidebarView"
+  }
+
   private val logger = logger<GitLabSidebarView>()
   private val issueService by lazyService<IssueService>()
   private val mergeRequestService by lazyService<MergeRequestService>()
