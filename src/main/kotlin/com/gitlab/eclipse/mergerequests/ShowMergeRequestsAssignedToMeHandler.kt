@@ -8,6 +8,7 @@ import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
 import com.gitlab.eclipse.navigation.WorkspaceProjectPicker
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
@@ -46,6 +47,8 @@ class ShowMergeRequestsAssignedToMeHandler(
       try {
         val userId = currentUserService.getCurrentUser().id
         browser.open(MrUrlBuilder.assignedMergeRequestsUrl(projectWebUrl, userId))
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         logger.error("Failed to open assigned merge requests.", e)
         NotificationUtils.show("GitLab: Could not open merge requests. Check your token and connection.")
