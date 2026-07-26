@@ -5,7 +5,9 @@
 - パリティ基準: VSCode `gitlab-workflow` v6.85.3(参照コピー `/workspace/out/gitlab-vscode-extension`、読み取り専用)
 - ベースブランチ: `develop`(tip `1e32d4c`)
 - 本書はレビュー専用。実装コードではなく **システム設計書** としてレビューする。実装 PR・マージ先には含めない。
-- **改訂履歴**: rev2 = Codex 設計レビュー round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
+- **改訂履歴**:
+  - rev2 = Codex round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
+  - rev3 = Codex round 2(P1×6)反映。主な追加: SSH transport 依存の明示(§7.1)、ピッカーが返す `RepositoryContext` 契約(§6.1/§11)、fork MR を global lookup + source_project_id 照合に変更(§8.3/§10)、checkout の最終 HEAD SHA 検証 + 既存ブランチ ff/reset/拒否(§8.4/§16)、push 直接 URL 経路の upstream-remote 一致検証(§8.5)、openMrFile の repo HEAD ↔ MR revision 検証(§8.6)。
 
 ---
 
@@ -93,6 +95,15 @@ PR 分割(3 本、`develop` ベース):
 
 選択したリポジトリから、Phase 2 resolver で `namespaceWithPath` + instance + 一致 remote 名を解決する。resolver が GitLab remote を見つけられない場合は中止し通知。**受け入れ条件に複数リポジトリ・エディタ無し・resolver 失敗の各ケースを含める**。
 
+**ピッカー/解決の返却契約 = `RepositoryContext`**: Phase 2 の `WorkspaceProjectPicker.pickWebUrl` / `GitLabProjectUrlResolver.Resolution.Ok` は **URL 文字列のみ**を返し、後続の push/checkout が必要とする repo path/remote 名が失われる。そのまま流用すると「非同期前に固定」を保証できず、後段で再列挙/再解決が必要になる。したがって repo 選択の結果として、以下を一体で保持する **`RepositoryContext`** を返す:
+- `gitDir`(`.git` の正規化パス = repo identity、`GitOperationGuard` のキー)
+- `workTree`(work tree ルート)
+- `namespaceWithPath` / `instanceUrl` / `webUrl`
+- `remoteName`(解決した一致 remote 名)
+- `projectId`(REST 用にエンコードした `namespace/project`)
+
+`RepositoryContext` はコマンド起動時に一度だけ生成して以降の非同期処理・ツリーノード結合(§8.4/§8.6)へ渡す。既存の URL のみを返す Phase 2 API は変更せず、context を返す**新しいオーバーロード/バリアント**を追加する(既存挙動不変)。
+
 ## 7. システム構成(コンポーネント)
 
 パッケージ配置(すべて既存体系内の追加):
@@ -119,7 +130,11 @@ PR 分割(3 本、`develop` ベース):
 
 Phase 3 で初めてネットワーク git 操作を行うため、共通基盤を定義する。
 
-- **認証(HTTPS remote)**: JGit `CredentialsProvider` を、GitLab トークン(`GitLabTokenProviderManager.getToken()`)を用いて構成(username=`oauth2`、password=token)。instance ホストと remote ホストが一致する場合のみ適用(他ホストには適用しない)。SSH remote はローカル ssh-agent/既存鍵に委譲(トークンは使わない)。**トークンを含む URL やログ出力はしない**(§15)。
+- **認証(HTTPS remote)**: JGit `CredentialsProvider` を、GitLab トークン(`GitLabTokenProviderManager.getToken()`)を用いて構成(username=`oauth2`、password=token)。instance ホストと remote ホストが一致する場合のみ適用(他ホストには適用しない)。**トークンを含む URL やログ出力はしない**(§15)。
+- **SSH transport(必須依存の追加・明示)**: JGit core だけでは SSH 通信を開始できない(`SshSessionFactory` 実装が無いと fetch/push が実行時 transport error)。したがって SSH remote を扱うには **`org.eclipse.jgit.ssh.apache`(Apache MINA sshd ベース)を必須依存として追加**し、プラグイン起動時に `SshdSessionFactory` を `SshSessionFactory.setInstance(...)` で登録する。鍵/エージェント/known_hosts はユーザーの `~/.ssh`(および ssh-agent)を用いる。self-managed 環境の host-key 検証(未知ホストの扱い)は実機検証項目(§21 R-3)。
+  - **依存追加の扱い(CLAUDE.md 準拠)**: `build.gradle.kts` の依存 + `feature/feature.xml`(update-site 同梱バンドル)+ 必要な `Require-Bundle`/`Import-Package` を PR で**明示**する(ビルドシステム構成自体は変えない)。§17 に影響を記載。
+  - **決定点(ユーザー可変)**: 上記 SSH 対応が第一案(パリティ確保)。縮小案 = **Phase 3 の in-plugin git 操作を HTTPS remote に限定**し、解決 remote が SSH の場合は fetch/checkout/push を実行せず「Use HTTPS remote or your Git tooling for this operation.」と actionable に通知(SSH 対応は後続 issue 化)。どちらを採るかは実装計画時に確定(§24 U-8)。
+- **SSH remote(第一案採用時)**: 上記 `SshdSessionFactory` に委譲(トークンは使わない)。
 - **操作直列化(`GitOperationGuard`)**: **リポジトリ identity(`.git` ディレクトリの正規化パス)をキー**に、mutating git 操作(fetch+checkout、push)を直列化する in-memory レジストリ。処理中は同一 repo の該当 action を無効化し、重複要求は拒否(または同一 Job に合流)。並行実行テストを課す(§22)。
 - **実行文脈**: すべて `service<CoroutineScope>()`(Dispatchers.IO)上で実行し UI を塞がない。進捗は `IProgressService`/`Job` + 通知、キャンセル対応。本体は try/catch(共有スコープ汚染防止)。
 
@@ -146,8 +161,9 @@ sealed `SidebarNode` に PR-3 の受け入れ条件(MR 展開・変更ファイ�
 
 ### 8.3 現ブランチ MR / 閉じる Issue(For current branch、PR-2)
 1. §6.1 でリポジトリ確定。**ブランチ解決**(`CurrentBranchMrLookup`): HEAD がブランチを指す場合、tracking ブランチ名を `branch.<name>.merge`(`refs/heads/` 除去)から取得。**tracking 未設定なら HEAD のローカル短縮名にフォールバック**(VSCode `getTrackingBranchName` パリティ、調査 D2)。**detached HEAD は「No merge request found」**(通知/メッセージノード)。
-2. プロジェクト解決(§6.1)→ REST `GET /projects/:id/merge_requests?source_branch=<enc(branch)>`。
-3. 結果を絞り込み: `state=='opened'`(設定 `showClosedMergeRequests` は Phase 3 対象外、常に opened)、かつ **`source_project_id == 解決した project id`**(別 fork の同名 source_branch MR を除外)。残候補が複数なら updated_at 降順先頭を採用、可能なら head SHA がローカル HEAD と一致するものを優先。0 件 → 「No merge request found」。
+2. プロジェクト解決(§6.1、`RepositoryContext.projectId`)。**MR 検索は global エンドポイント** `GET /merge_requests?scope=all&state=opened&source_branch=<enc(branch)>` を用いる。**理由(fork 対応)**: 選択 repo が fork の場合、そのブランチの MR は upstream(target)project に属し、fork の project-scoped `/projects/:forkId/merge_requests`(:id は target 側を返す)では取得できない。global lookup なら target project に依らず、source 側のブランチから MR を発見できる。VSCode の project-scoped lookup(mr_lookup_helpers.ts)からの**意図的な correctness 改善**(§20)。
+3. 結果を絞り込み: `state=='opened'`(設定 `showClosedMergeRequests` は Phase 3 対象外、常に opened)、かつ **`source_project_id == RepositoryContext.projectId が指す数値 project id`**(別 fork の同名 source_branch MR を除外)。残候補が複数なら updated_at 降順先頭を採用、可能なら head SHA がローカル HEAD と一致するものを優先。0 件 → 「No merge request found」。
+   - 注: `source_project_id` は数値 id。`RepositoryContext` は path ベースのため、照合には (a) global 結果の `references.full`/`web_url` の namespace 照合、または (b) `GET /projects/:id` で数値 id を一度取得して比較、のいずれかを用いる(実装計画で確定、U-9)。
 4. MR があれば `GET /projects/:id/merge_requests/:iid/closes_issues` で閉じる Issue。
 5. 「For current branch」節に MR ノード + Issue ノード(無ければメッセージノード)。ケース(未 push=tracking 無し・push 済み・複数 remote)を受け入れ条件に含める。
 
@@ -155,21 +171,25 @@ sealed `SidebarNode` に PR-3 の受け入れ条件(MR 展開・変更ファイ�
 1. MR ノードのコンテキストメニュー(**同一プロジェクト MR = `source_project_id == target_project_id` のみ表示**)→ `CheckoutMrBranchHandler`。MR ノードは §8.6 の repo 結合(解決済み repo + remote 名)を保持。
 2. `GitOperationGuard`(§7.1)で当該 repo をロック(重複起動拒否・action 無効化)。
 3. **事前条件チェック**(§16): merge/rebase/cherry-pick 進行中なら中止し通知。dirty/untracked による checkout 競合は JGit 例外で検出し通知(強制上書きはしない)。
-4. `MrBranchCheckoutService`(bg): **MR 結合の remote 名**から明示 refspec `+refs/heads/<source_branch>:refs/remotes/<remote>/<source_branch>` で `FetchCommand`(§7.1 認証)。**fetched SHA を `mr.sha` と照合**(不一致は「out of sync with the remote branch」警告、続行可否をユーザーに委ねる)。
-5. ローカル追跡ブランチを作成/切替(無ければ `CheckoutCommand.setCreateBranch(true).setStartPoint(remote-tracking)`)し、HEAD 名を検証。成功で「Branch changed」通知。
-6. 失敗は §16 の段階別復旧に従い通知。
+4. `MrBranchCheckoutService`(bg): **MR 結合の remote 名**(`RepositoryContext.remoteName`)から明示 refspec `+refs/heads/<source_branch>:refs/remotes/<remote>/<source_branch>` で `FetchCommand`(§7.1 認証)。**fetched remote-tracking SHA を `mr.sha` と照合**(不一致は「out of sync with the remote branch」警告、続行可否をユーザーに委ねる)。
+5. ローカルブランチの整合(**最終 HEAD SHA を検証するまで成功にしない**):
+   - **同名ローカルブランチが無い** → `CheckoutCommand.setCreateBranch(true).setStartPoint(remote-tracking)` で作成・切替。
+   - **同名ローカルブランチが有る** → その先端と fetched remote-tracking SHA の関係を判定: **fast-forward 可能(remote が local の子孫)** なら切替 + ff、**一致** ならそのまま切替、**diverge(local に固有 commit)** なら**自動 reset せず**、警告して続行可否をユーザーに委ねる(silent に古い branch を checkout しない)。
+6. checkout 後、**HEAD 名の検証に加えて最終 HEAD SHA が fetched SHA(= 期待 `mr.sha`)と一致することを検証**。一致で「Branch changed」通知、不一致(既存 diverge を維持した等)は「out of sync」警告(誤成功通知を出さない)。
+7. 失敗は §16 の段階別復旧に従い通知。
 
 ### 8.5 openCreateNewMR の push 契約(PR-2)
-1. §6.1 でリポジトリ確定、現ブランチ・upstream 有無を判定。
-2. **upstream あり** → ブラウザで作成 URL(§10.1)を開く(git 操作なし)。
-3. **upstream 無し + worktree dirty** → 自動 push しない。「Commit and push the branch before creating a merge request.」通知 + Team/SCM への誘導(VSCode: SCM ビュー表示に相当)。
-4. **upstream 無し + clean** → `GitOperationGuard` でロックし、`BranchPushService` が **解決済み remote** へ `refs/heads/<branch>:refs/heads/<branch>` を push(§7.1 認証、`setUpstream`)。進捗・キャンセル対応。成功で upstream(`branch.<n>.remote`/`.merge`)設定 → 作成 URL を開く。失敗は通知 + upstream 不変(再実行=再 push を試行、push は冪等)。
-5. 誤 remote 防止のため remote は §6.1 の解決結果に固定(既定 remote 名に依存しない)。
+1. §6.1 でリポジトリ確定(`RepositoryContext`)、現ブランチ・upstream の有無と**指す先**を判定。
+2. **upstream が解決済み GitLab remote(`RepositoryContext.remoteName`)に属し、かつ upstream ref == `refs/heads/<branch>`** の場合のみ → ブラウザで作成 URL(§10.1)を直接開く(git 操作なし)。
+3. **upstream が別 remote(別 GitLab/GitHub/別名)や別ブランチを指す、または upstream 無し + worktree dirty** → 選択 GitLab remote にその source branch が存在しない/不確実なので、**直接 URL を開かない**。dirty は「Commit and push the branch before creating a merge request.」通知 + Team/SCM 誘導。非 dirty で upstream 不一致は、選択 remote への push(下記 4)または明示確認(「Push <branch> to <remoteName> for the merge request?」)を経る。
+4. **選択 remote へ push が必要な場合(upstream 無し + clean、または upstream 不一致で確認 OK)** → `GitOperationGuard` でロックし、`BranchPushService` が **`RepositoryContext.remoteName` の remote** へ `refs/heads/<branch>:refs/heads/<branch>` を push(§7.1 認証、`setUpstream`)。進捗・キャンセル対応。成功で upstream(`branch.<n>.remote`/`.merge`)設定 → 作成 URL を開く。失敗は通知 + upstream 不変(再実行=再 push、push は冪等)。
+5. 誤 remote 防止のため push/直接 URL の判定は常に §6.1 の解決 remote を基準にする(既定 remote 名や任意の upstream に依存しない)。
 
 ### 8.6 openMrFile の repo 限定(PR-3)
 1. 対象 MR の変更ファイルノードから起動。MR の `project_id`/`source_project_id` を **各 workspace repository の解決済み project id** と照合し、**一意な repo** を特定。0/複数一致は開かず理由を通知。
 2. `new_path`(削除は `old_path`)を repo work tree 直下で正規化し、**正規化後の実パスが work tree ルート配下に収まること**を検証(`..` によるトラバーサル防止)。
-3. ファイルが存在(checkout 済み)すれば `IDE.openEditor` で開く。未 checkout/削除/rename により不在なら開かず通知(VSCode は警告のみ、Eclipse も同様だが repo 特定を強化)。
+3. **MR revision の確認**: ファイルの存在だけでは MR ブランチが checkout 済みとは言えない(repo が default ブランチ上で同名パスがあると MR と異なる版を無警告で開く恐れ)。したがって開く前に、**repo HEAD が当該 MR の source(branch/SHA)に対応することを検証**する。対応する場合のみローカル実ファイルを `IDE.openEditor` で開く。対応しない(別ブランチ/別 SHA)場合は開かず、「Check out the MR branch first (current branch does not match this merge request).」と通知(FR-8「未 checkout は開かない」を満たす)。
+4. 将来オプション(§20): MR SHA 指定の revision-backed(read-only)エディタを開けば checkout 不要にできるが、内容取得を伴うため Phase 3 対象外。
 
 ## 9. 設計判断(承認済み + rev2 追記)
 
@@ -179,7 +199,8 @@ sealed `SidebarNode` に PR-3 の受け入れ条件(MR 展開・変更ファイ�
 - **(d) status.mr/status.issue の受け皿 = サイドバー「For current branch」節**。VSCode currentBranchInfo に忠実。
 - **(e) 更新はオンデマンド**(30 秒ポーリングを採らない)。
 - **(f) git 認証 = GitLab トークン(oauth2:token)を HTTPS remote に、SSH は既存鍵**(§7.1)。
-- **(g) 操作リポジトリは起動時に一意確定**(§6.1)。曖昧時はピッカー/中止で、暗黙選択しない。
+- **(g) 操作リポジトリは起動時に一意確定**(§6.1)。曖昧時はピッカー/中止で、暗黙選択しない。ピッカー/解決は `RepositoryContext` を返す。
+- **(h) SSH remote 対応(rev3、要ユーザー確定 U-8)**: 第一案 = `org.eclipse.jgit.ssh.apache` を明示依存追加してパリティ確保。縮小案 = HTTPS-only + actionable 通知。
 
 ## 10. インターフェース / API(REST・確定値)
 
@@ -189,7 +210,7 @@ sealed `SidebarNode` に PR-3 の受け入れ条件(MR 展開・変更ファイ�
 |---|---|---|---|
 | 現在ユーザー | GET | `/user` → `{id, username}` | get_current_user.ts:3-7 |
 | assigned MR 一覧(サイドバー根) | GET | `/merge_requests?scope=assigned_to_me&state=opened` | 既存 IssueService と対の global scope。VSCode はプロジェクト別 getIssuables(gitlab_service.ts:704-840)だが §9-b で global 採用 |
-| ブランチ→MR | GET | `/projects/:id/merge_requests?source_branch=<enc(branch)>` → opened かつ source_project_id 一致を updated_at 降順先頭 | get_merge_requests_for_branch.ts:4-12、mr_lookup_helpers.ts:58-101 |
+| ブランチ→MR(global、fork 対応) | GET | `/merge_requests?scope=all&state=opened&source_branch=<enc(branch)>` → source_project_id 一致で絞り updated_at 降順先頭(§8.3)。VSCode の project-scoped からの意図的改善 | get_merge_requests_for_branch.ts:4-12、mr_lookup_helpers.ts:58-101 |
 | 閉じる Issue | GET | `/projects/:id/merge_requests/:iid/closes_issues` | gitlab_service.ts:841-852 |
 | 既定ブランチ | GET | `/projects/:id` → `default_branch` | REST 代替(VSCode は GraphQL rootRef、§3 対象外) |
 | MR 変更ファイル(PR-3) | GET | `/projects/:project_id/merge_requests/:iid/versions` → 最新 → `/versions/:id`(diffs) | gitlab_service.ts:344-350 |
@@ -208,7 +229,8 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 
 - `GitLabUser`: `id: Long`, `username: String`(`@SerializedName`)。
 - `GitLabMergeRequest`(部分): `id, iid, title, projectId(project_id), webUrl(web_url), references.full, sha, state('opened'|'closed'|'merged'), draft, sourceProjectId(source_project_id), targetProjectId(target_project_id), sourceBranch(source_branch), updatedAt(updated_at)`。一覧描画は `iid/title/state/references`、checkout は `sourceBranch/sha/source/targetProjectId`、status 表示は `iid/state/draft`、lookup 照合は `source_project_id`。
-- `SidebarNode`(sealed): §7 + §7.2。ノードは表示ラベル・アイコン種別・アクティベート動作(open URL 等)・子取得契機・**起点 repo 結合**(MR/変更ファイル系)を持つ。
+- `RepositoryContext`(§6.1): `gitDir`(正規化パス=identity)、`workTree`、`namespaceWithPath`、`instanceUrl`、`webUrl`、`remoteName`、`projectId`(エンコード済み path)。コマンド起動時に一度生成し非同期・ノード結合へ渡す。
+- `SidebarNode`(sealed): §7 + §7.2。ノードは表示ラベル・アイコン種別・アクティベート動作(open URL 等)・子取得契機・**起点 `RepositoryContext` 結合**(MR/変更ファイル系)を持つ。
 - `GitLabIssue`(既存)を再利用。
 
 ## 12. 並行処理 / トランザクション境界
@@ -247,6 +269,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
   1. **fetch 後**: remote-tracking ref のみ更新。HEAD/index/working tree 不変。失敗しても副作用は remote-tracking のみで安全、再実行可。
   2. **ローカルブランチ作成後**: ローカル ref 追加のみ(HEAD 未移動)。以降で失敗した場合、作成済み ref は残置(害なし)で通知に明記、再実行は既存 ref を再利用。
   3. **checkout 後**: HEAD 移動 + working tree/index 更新。ここで失敗(競合等)した場合 JGit は checkout を中断し HEAD は元のまま → 「切替できなかった」旨を通知(HEAD 実値を併記)。
+- **既存同名ブランチ**(§8.4-5): fast-forward/一致は切替、diverge は自動 reset せず警告・ユーザー判断。**最終 HEAD SHA が期待 `mr.sha` と一致した場合のみ成功通知**、不一致は out-of-sync 警告(誤成功を出さない)。
 - **事前条件**: dirty/untracked による競合、merge/rebase/cherry-pick 進行中は checkout を実行せず理由通知(強制しない)。「失敗通知後に実は切替わっていた」を避けるため、通知は最終 HEAD 実値に基づく。
 - push 失敗 → upstream 不変・通知、再実行可(冪等)。
 
@@ -256,6 +279,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - Phase 2 `navigation` の `BrowserLauncher` / `GitLabRemoteParser` / `GitLabProjectUrlResolver` / `PathSegmentEncoder` / `WorkspaceProjectPicker` を再利用(参照のみ、変更なし)。resolver から remote 名を取り出す薄い拡張が要る場合は追加(既存挙動不変)。
 - `GitLabApiClient` に単一オブジェクト取得メソッド追加(既存 `fetchListFromApi` に影響なし)。
 - git ネットワーク操作(§7.1)は新規。既存の read-only git 利用には影響しない。
+- **SSH transport 依存**(§7.1 第一案採用時): `org.eclipse.jgit.ssh.apache` を `build.gradle.kts` 依存 + `feature/feature.xml`(update-site 同梱)+ 必要な `Require-Bundle`/`Import-Package` に**明示追加**(CLAUDE.md「必須依存の追加は PR で明示」)。ビルドシステム構成自体は変更しない。HTTPS-only 縮小案(U-8)を採る場合は依存追加不要。
 
 ## 18. 移行方法
 
@@ -274,21 +298,22 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - **openCurrentMergeRequest の MR 不在**: VSCode は silent no-op、Eclipse は情報通知(発見性優先、U-2)。
 - **現在ユーザー/assigned の取得スコープ**: global `/merge_requests`(§9-b)。
 - **既定ブランチ**: REST `default_branch`(GraphQL rootRef 不使用)。
-- **openMrFile の repo 特定**: VSCode は `repositoryRoot` 起点、Eclipse は global scope のため project 照合 + パス検証を強化(§8.6)。
+- **openMrFile の repo 特定**: VSCode は `repositoryRoot` 起点、Eclipse は global scope のため project 照合 + パス検証 + **repo HEAD ↔ MR revision 検証**を強化(§8.6)。revision-backed editor は将来オプション。
+- **ブランチ→MR は global lookup**: VSCode の project-scoped(fork 未対応)から global `/merge_requests` + source_project_id 照合へ改善(§8.3、fork のブランチからでも MR を発見)。
 - **更新契機**: オンデマンド(30 秒ポーリング不使用)。
 
 ## 21. 想定されるリスク
 
 - **R-1(checkoutMrBranch × EGit)**: EGit 管理下ワーキングツリーを JGit で直接 checkout すると EGit の index キャッシュと不整合の可能性。checkout 後に `IProject` リフレッシュ(`refreshLocal`)で緩和。実機のみ検証。PR-3 で index 更新/リフレッシュ要否を検証。
 - **R-2(UI スレッド/SWT/TreeViewer)**: headless で検証不能。fable 実装 + 手動検証手順で担保。
-- **R-3(git 認証/トランスポート)**: HTTPS の oauth2:token 認証・SSH 委譲・self-managed の証明書は実機のみ検証。トークン漏洩防止(§15)を検証項目に。
+- **R-3(git 認証/トランスポート)**: HTTPS の oauth2:token 認証、SSH(`SshdSessionFactory` + ~/.ssh/agent/known_hosts、self-managed の host-key 検証・未知ホスト扱い)、self-managed の TLS 証明書は実機のみ検証。トークン漏洩防止(§15)を検証項目に。SSH バンドル追加時は OSGi 解決(Require-Bundle/feature.xml)も検証。
 - **R-4(global assigned スコープ)**: 自分の全 MR が出る(VSCode プロジェクト別と結果集合が異なる)。§9-b の意図的差異として受容。repo 誤特定は §6.1/§8.6 で防止。
 - **R-5(旧 IssuesView 統合)**: view id 変更でユーザーレイアウト影響(プレリリースのため受容、§19 でロールバック明確化)。
 - **R-6(同名ブランチ/複数 remote)**: source_project_id 照合(§8.3)・remote 結合(§8.4)・repo 選択(§6.1)で誤対象を防止。多重 remote 一致時の順序は Phase 2 resolver 準拠(origin 優先)。
 
 ## 22. テスト方針
 
-- **純ロジック(TDD、sonnet)**: `SidebarViewModel`(根/子構成・list/tree グルーピング・latest-wins・**根ごと成功/失敗混在の合成**)、`MergeRequestService`/`CurrentUserService`/`ProjectDetailService`(URL/クエリ組立・JSON パース)、`CurrentBranchMrLookup`(tracking/フォールバック解決・source_project_id 照合・updated_at 降順)、`MrUrlBuilder`(§10.1 の特殊文字エンコード)、`GitOperationGuard`(直列化・重複拒否)。
+- **純ロジック(TDD、sonnet)**: `SidebarViewModel`(根/子構成・list/tree グルーピング・latest-wins・**根ごと成功/失敗混在の合成**)、`MergeRequestService`/`CurrentUserService`/`ProjectDetailService`(URL/クエリ組立・JSON パース、global lookup)、`CurrentBranchMrLookup`(tracking/フォールバック解決・source_project_id 照合・fork 経路・updated_at 降順)、`MrUrlBuilder`(§10.1 の特殊文字エンコード)、`GitOperationGuard`(直列化・重複拒否)、`RepositoryContext` 生成(§6.1、選択→context 一体化)。
 - **SWT/UI/JGit-transport(実機のみ、fable 実装)**: `SidebarView` 描画・list/tree トグル・コンテキストメニュー・repo ピッカー・`checkoutMrBranch`(fetch/checkout/段階別復旧)・`BranchPushService`(push/認証)・`openMrFile`。手動検証手順を各 PR 説明文に記載。
 - **並行**: `GitOperationGuard` の重複起動拒否/合流(決定的テスト)。
 - **検証ゲート**: 対象テスト PASS + headless suite 失敗数 36 のまま + 変更ファイル detekt 0。
@@ -296,18 +321,20 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 ## 23. 受け入れ条件(PR 単位)
 
 - **PR-1**: サイドバー view が表示され、Issues assigned / MRs assigned 根が展開でき、項目ダブルクリックでブラウザが開く。**先頭根 API が失敗しても他根は表示され、失敗根のみメッセージ**(混在テスト)。`refreshSidebar` で再取得。list/tree トグルでフラット ⇄ プロジェクト別。`showMergeRequestsAssignedToMe` が §6.1 の選択 repo の assigned MR ページを開く(複数 repo/エディタ無し/resolver 失敗を含む)。`ChangedFile/DirectoryNode` 型と `GitOperationGuard` が宣言され単体テスト green。detekt 0 / suite 36 維持。
-- **PR-2**: 「For current branch」節に §6.1 選択 repo の現ブランチ MR(source_project_id 一致・tracking 無しはローカル名フォールバック・detached は No MR)と閉じる Issue が表示、クリックでブラウザ。`openCurrentMergeRequest` は不在時に通知。`compareCurrentBranch`/新規 MR URL が §10.1 準拠で特殊文字ブランチでも正しい。`openCreateNewMR` は upstream 有=直接 URL、無+clean=push→URL、無+dirty=誘導通知(誤 remote に push しない)。
-- **PR-3**: MR ノード展開で変更ファイルが list/tree 表示。`openMrFile` は対応 repo を一意特定し work tree 内パス検証のうえ開く(多重一致/不在は通知)。`checkoutMrBranch`(同一プロジェクト MR)は MR 結合 remote から明示 refspec で fetch し SHA 照合、段階別復旧に従い、重複起動を拒否。out-of-sync 時警告。
+- **PR-2**: 「For current branch」節に §6.1 選択 repo の現ブランチ MR と閉じる Issue が表示、クリックでブラウザ。MR lookup は global `/merge_requests` + `source_project_id` 照合で **fork のブランチからでも発見**、tracking 無しはローカル名フォールバック、detached は No MR。`openCurrentMergeRequest` は不在時に通知。`compareCurrentBranch`/新規 MR URL が §10.1 準拠で特殊文字ブランチでも正しい。`openCreateNewMR` は **upstream が解決 remote の `refs/heads/<branch>` に一致する時のみ直接 URL**、それ以外(別 remote/別ブランチ/無 upstream)は clean なら選択 remote へ push→URL、dirty は誘導通知(誤 remote に push しない)。
+- **PR-3**: MR ノード展開で変更ファイルが list/tree 表示。`openMrFile` は対応 repo を一意特定し、**repo HEAD が MR revision に対応する時のみ** work tree 内パス検証のうえ開く(不一致/多重一致/不在は通知)。`checkoutMrBranch`(同一プロジェクト MR)は MR 結合 remote から明示 refspec で fetch、既存同名ブランチは ff/一致で切替・diverge は警告、**最終 HEAD SHA が `mr.sha` と一致した時のみ成功通知**、段階別復旧に従い、重複起動を拒否。(第一案採用時)SSH remote でも fetch/checkout が動作(実機)。
 
 ## 24. 未決事項(実装前に判断)
 
 - **U-1**: 単一サイドバー view の id とラベル。既存 `com.gitlab.eclipse.views.IssuesView` を改名/新設どちらか。既存 `LanguageServerBrowserView`(Duo)とは別 view 継続で良いか。
 - **U-6**: tree モードのグルーピングキー(プロジェクト `references.full` の namespace 部分か、`web_url` のプロジェクトパスか)。
 - **U-7**: 「For current branch」節と「Queries」節を単一 TreeViewer の疑似根として並置するか、`TreeViewer` の複数トップレベルノードにするか(描画・空状態表現の差)。
+- **U-8**: git SSH remote の扱い(§7.1)。第一案=`org.eclipse.jgit.ssh.apache` 追加で SSH 対応(パリティ)、縮小案=HTTPS-only + actionable 通知(依存追加なし、SSH は後続 issue)。実装計画時にユーザーが確定。
+- **U-9**: `source_project_id`(数値)照合の実現方法(§8.3): global 結果の namespace 照合か、`GET /projects/:id` で数値 id を取得して比較か。
 
 > rev2 で解決済み: U-2(openCurrentMergeRequest 不在時=通知, §20/FR-3)、U-3(checkout 多重実行=GitOperationGuard, §7.1/§12)、U-4(openMrFile 未取得/不在=通知, §8.6)、U-5(旧 IssuesView 削除の分離コミット + revert 手順, §19)。
 
 ## 25. 確定できた範囲 / 追加情報が必要な事項
 
-- 確定: REST エンドポイント/クエリ(§10、VSCode 実ソース根拠付き)、URL エンコード規則(§10.1)、PR 分割、サイドバー基盤方針、repo 選択規則(§6.1)、git 認証/操作基盤(§7.1)、status の受け皿、GraphQL 不使用の代替、根ごと障害分離(§8.1)、ブランチ→MR 解決(§8.3)、checkout/push/openMrFile の各契約。
-- 追加情報待ち: §24 の残 U-1/U-6/U-7(実装計画時に確定、いずれも view/ツリー描画の詳細で、PR-1 着手前に確定する)。self-managed 環境での git 認証・証明書挙動は実機検証で確定。
+- 確定: REST エンドポイント/クエリ(§10、VSCode 実ソース根拠付き)、URL エンコード規則(§10.1)、PR 分割、サイドバー基盤方針、repo 選択規則 + `RepositoryContext`(§6.1)、git 認証/操作基盤 + SSH 依存方針(§7.1)、status の受け皿、GraphQL 不使用の代替、根ごと障害分離(§8.1)、ブランチ→MR の global lookup + fork 対応(§8.3)、checkout(最終 HEAD SHA 検証・既存ブランチ ff/diverge)/push(upstream-remote 一致)/openMrFile(revision 検証)の各契約。
+- 追加情報待ち: §24 の U-1/U-6/U-7(view/ツリー描画の詳細、PR-1 着手前に確定)、**U-8(SSH 対応 vs HTTPS-only)= ユーザー確定が必要**、U-9(source_project_id 照合手段)。self-managed 環境での git 認証・host-key・証明書挙動は実機検証で確定。
