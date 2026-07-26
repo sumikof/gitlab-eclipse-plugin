@@ -9,6 +9,7 @@
   - rev2 = Codex round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
   - rev3 = Codex round 2(P1×6)反映。主な追加: SSH transport 依存の明示(§7.1)、ピッカーが返す `RepositoryContext` 契約(§6.1/§11)、fork MR を global lookup + source_project_id 照合に変更(§8.3/§10)、checkout の最終 HEAD SHA 検証 + 既存ブランチ ff/reset/拒否(§8.4/§16)、push 直接 URL 経路の upstream-remote 一致検証(§8.5)、openMrFile の repo HEAD ↔ MR revision 検証(§8.6)。
   - rev4 = Codex round 3(P1×5)反映。主な確定: source_project_id は数値 id 照合に**確定**(U-9 解決、§8.3)、closes_issues は MR の target project_id を使用(§8.3)、tracking 名は `branch.<n>.remote` が解決 remote と一致時のみ採用(§8.3)、fetch SHA 不一致は再取得/中止で誤成功を排除(§8.4)、SSH factory は対象 Transport 限定(`TransportConfigCallback`/`SshTransport`、プロセス全体を置換しない、§7.1)。
+  - rev6 = Codex round 5(P1×1)反映。SSH 第一案採用時の ssh-agent 認証に `org.eclipse.jgit.ssh.apache.agent`(+ ランタイム依存)を feature.xml/OSGi に追加、含めない場合は agent-only 非対応を通知する契約(§7.1/§17)。
   - rev5 = Codex round 4(P1×6)反映。主な追加: 候補 repo を正規化 gitDir で重複排除(§6.1/§8.6)、REST project id は既エンコード済み `namespaceWithPath` を再エンコードせず `/`→`%2F` のみ(§10/§11、Phase 2 PR#28 の二重エンコード修正と整合)、push は `PushResult` の `RemoteRefUpdate.Status` が OK/UP_TO_DATE の時だけ成功扱い(§8.5)、openMrFile は head SHA の厳密一致 + real-path 包含検査(§8.6)、§25 の U-9 矛盾を解消。
 
 ---
@@ -135,6 +136,7 @@ Phase 3 で初めてネットワーク git 操作を行うため、共通基盤�
 - **認証(HTTPS remote)**: JGit `CredentialsProvider` を、GitLab トークン(`GitLabTokenProviderManager.getToken()`)を用いて構成(username=`oauth2`、password=token)。instance ホストと remote ホストが一致する場合のみ適用(他ホストには適用しない)。**トークンを含む URL やログ出力はしない**(§15)。
 - **SSH transport(必須依存の追加・明示)**: JGit core だけでは SSH 通信を開始できない(`SshSessionFactory` 実装が無いと fetch/push が実行時 transport error)。したがって SSH remote を扱うには **`org.eclipse.jgit.ssh.apache`(Apache MINA sshd ベース)を必須依存として追加**する。**プロセス全体の静的置換(`SshSessionFactory.setInstance(...)`)はしない**(同一 JVM の EGit や他プラグインの factory を奪い、認証・proxy・host-key 処理を壊すため)。代わりに、当該 `FetchCommand`/`PushCommand` の **`setTransportConfigCallback` から対象 `SshTransport` にだけ** プラグイン所有の `SshdSessionFactory` を設定し、ライフサイクルもプラグイン内に閉じる。鍵/エージェント/known_hosts はユーザーの `~/.ssh`(および ssh-agent)を用いる。self-managed 環境の host-key 検証(未知ホストの扱い)は実機検証項目(§21 R-3)。
   - **依存追加の扱い(CLAUDE.md 準拠)**: `build.gradle.kts` の依存 + `feature/feature.xml`(update-site 同梱バンドル)+ 必要な `Require-Bundle`/`Import-Package` を PR で**明示**する(ビルドシステム構成自体は変えない)。§17 に影響を記載。
+  - **ssh-agent 認証の依存(JGit 7.5)**: 鍵を `ssh-agent` のみに登録した環境では `org.eclipse.jgit.ssh.apache` 単体では agent connector が無く agent 認証が動かない。第一案採用時は **`org.eclipse.jgit.ssh.apache.agent` とそのランタイム依存も feature.xml/OSGi 包装に含める**(公開鍵ファイル + agent 双方をカバー)。含めない選択をする場合は **agent-only 認証を非対応**として、その環境で actionable に通知する契約にする(PR-3 の SSH 受け入れ条件に明記)。
   - **決定点(ユーザー可変)**: 上記 SSH 対応が第一案(パリティ確保)。縮小案 = **Phase 3 の in-plugin git 操作を HTTPS remote に限定**し、解決 remote が SSH の場合は fetch/checkout/push を実行せず「Use HTTPS remote or your Git tooling for this operation.」と actionable に通知(SSH 対応は後続 issue 化)。どちらを採るかは実装計画時に確定(§24 U-8)。
 - **SSH remote(第一案採用時)**: 上記 `SshdSessionFactory` に委譲(トークンは使わない)。
 - **操作直列化(`GitOperationGuard`)**: **リポジトリ identity(`.git` ディレクトリの正規化パス)をキー**に、mutating git 操作(fetch+checkout、push)を直列化する in-memory レジストリ。処理中は同一 repo の該当 action を無効化し、重複要求は拒否(または同一 Job に合流)。並行実行テストを課す(§22)。
@@ -283,7 +285,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - Phase 2 `navigation` の `BrowserLauncher` / `GitLabRemoteParser` / `GitLabProjectUrlResolver` / `PathSegmentEncoder` / `WorkspaceProjectPicker` を再利用(参照のみ、変更なし)。resolver から remote 名を取り出す薄い拡張が要る場合は追加(既存挙動不変)。
 - `GitLabApiClient` に単一オブジェクト取得メソッド追加(既存 `fetchListFromApi` に影響なし)。
 - git ネットワーク操作(§7.1)は新規。既存の read-only git 利用には影響しない。
-- **SSH transport 依存**(§7.1 第一案採用時): `org.eclipse.jgit.ssh.apache` を `build.gradle.kts` 依存 + `feature/feature.xml`(update-site 同梱)+ 必要な `Require-Bundle`/`Import-Package` に**明示追加**(CLAUDE.md「必須依存の追加は PR で明示」)。ビルドシステム構成自体は変更しない。HTTPS-only 縮小案(U-8)を採る場合は依存追加不要。
+- **SSH transport 依存**(§7.1 第一案採用時): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証には `org.eclipse.jgit.ssh.apache.agent` とランタイム依存)を `build.gradle.kts` 依存 + `feature/feature.xml`(update-site 同梱)+ 必要な `Require-Bundle`/`Import-Package` に**明示追加**(CLAUDE.md「必須依存の追加は PR で明示」)。ビルドシステム構成自体は変更しない。HTTPS-only 縮小案(U-8)を採る場合は依存追加不要。
 
 ## 18. 移行方法
 
