@@ -47,6 +47,20 @@ class GitLabApiClient(
     }
   }
 
+  fun <T> fetchObject(path: String, query: Map<String, String> = emptyMap(), type: Class<T>): T {
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, query))
+      .header("Authorization", "Bearer ${tokenManager.getToken()}")
+      .header("Accept", "application/json")
+      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .GET()
+      .build()
+    val response = httpClient.send(httpRequest)
+    if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
+      throw GitLabApiException(response.statusCode(), response.body())
+    }
+    return gson.fromJson(response.body(), type)
+  }
+
   private fun <T> sendPage(request: ApiRequest<T>, page: Int): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
       put("per_page", PER_PAGE.toString())
