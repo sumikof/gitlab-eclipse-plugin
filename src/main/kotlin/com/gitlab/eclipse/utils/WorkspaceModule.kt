@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.utils
 
 import com.gitlab.eclipse.preferences.PreferenceInitializer
+import com.gitlab.eclipse.views.sidebar.SidebarViewState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.eclipse.core.runtime.preferences.InstanceScope
@@ -21,4 +22,8 @@ fun workspaceModule(bundleContext: BundleContext) = module {
 
   single { PlatformUtils() }
   single { CodeFormatter(get()) }
+
+  // Shared between GitLabSidebarView and the sidebar mode-toggle handlers: both must
+  // observe/mutate the SAME view state, so it lives here as a singleton.
+  single { SidebarViewState() }
 }

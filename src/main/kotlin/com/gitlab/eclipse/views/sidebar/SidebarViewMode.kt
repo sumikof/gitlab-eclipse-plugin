@@ -14,10 +14,16 @@ class SidebarViewState(initial: SidebarViewMode = SidebarViewMode.LIST) {
     set(value) {
       if (field == value) return
       field = value
-      listeners.forEach { it() }
+      // Snapshot so a listener that adds/removes listeners (or flips the mode again)
+      // does not cause a ConcurrentModificationException mid-iteration.
+      listeners.toList().forEach { it() }
     }
 
   fun addListener(listener: () -> Unit) {
     listeners.add(listener)
+  }
+
+  fun removeListener(listener: () -> Unit) {
+    listeners.remove(listener)
   }
 }
