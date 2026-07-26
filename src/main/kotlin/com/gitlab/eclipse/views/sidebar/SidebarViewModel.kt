@@ -4,13 +4,6 @@ import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.views.issues.configErrorMessage
 
-/** Result of loading one sidebar query root, kept separate so one root's failure never touches the other. */
-data class RootResult(
-  val title: String,
-  val issues: Result<List<GitLabIssue>>? = null,
-  val mrs: Result<List<GitLabMergeRequest>>? = null,
-)
-
 private const val NO_ISSUES_MESSAGE = "No issues assigned to you."
 private const val NO_MRS_MESSAGE = "No merge requests assigned to you."
 private const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
