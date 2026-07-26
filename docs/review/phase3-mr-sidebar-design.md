@@ -9,6 +9,7 @@
   - rev2 = Codex round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
   - rev3 = Codex round 2(P1×6)反映。主な追加: SSH transport 依存の明示(§7.1)、ピッカーが返す `RepositoryContext` 契約(§6.1/§11)、fork MR を global lookup + source_project_id 照合に変更(§8.3/§10)、checkout の最終 HEAD SHA 検証 + 既存ブランチ ff/reset/拒否(§8.4/§16)、push 直接 URL 経路の upstream-remote 一致検証(§8.5)、openMrFile の repo HEAD ↔ MR revision 検証(§8.6)。
   - rev4 = Codex round 3(P1×5)反映。主な確定: source_project_id は数値 id 照合に**確定**(U-9 解決、§8.3)、closes_issues は MR の target project_id を使用(§8.3)、tracking 名は `branch.<n>.remote` が解決 remote と一致時のみ採用(§8.3)、fetch SHA 不一致は再取得/中止で誤成功を排除(§8.4)、SSH factory は対象 Transport 限定(`TransportConfigCallback`/`SshTransport`、プロセス全体を置換しない、§7.1)。
+  - rev7 = U-8 をユーザー確定(2026-07-26、SSH 第一案採用)。SSH 対応を確定事項化し縮小案の分岐記述を整理(§7.1/§9-h/§17/§23/§24)。
   - rev6 = Codex round 5(P1×1)反映。SSH 第一案採用時の ssh-agent 認証に `org.eclipse.jgit.ssh.apache.agent`(+ ランタイム依存)を feature.xml/OSGi に追加、含めない場合は agent-only 非対応を通知する契約(§7.1/§17)。
   - rev5 = Codex round 4(P1×6)反映。主な追加: 候補 repo を正規化 gitDir で重複排除(§6.1/§8.6)、REST project id は既エンコード済み `namespaceWithPath` を再エンコードせず `/`→`%2F` のみ(§10/§11、Phase 2 PR#28 の二重エンコード修正と整合)、push は `PushResult` の `RemoteRefUpdate.Status` が OK/UP_TO_DATE の時だけ成功扱い(§8.5)、openMrFile は head SHA の厳密一致 + real-path 包含検査(§8.6)、§25 の U-9 矛盾を解消。
 
@@ -137,8 +138,8 @@ Phase 3 で初めてネットワーク git 操作を行うため、共通基盤�
 - **SSH transport(必須依存の追加・明示)**: JGit core だけでは SSH 通信を開始できない(`SshSessionFactory` 実装が無いと fetch/push が実行時 transport error)。したがって SSH remote を扱うには **`org.eclipse.jgit.ssh.apache`(Apache MINA sshd ベース)を必須依存として追加**する。**プロセス全体の静的置換(`SshSessionFactory.setInstance(...)`)はしない**(同一 JVM の EGit や他プラグインの factory を奪い、認証・proxy・host-key 処理を壊すため)。代わりに、当該 `FetchCommand`/`PushCommand` の **`setTransportConfigCallback` から対象 `SshTransport` にだけ** プラグイン所有の `SshdSessionFactory` を設定し、ライフサイクルもプラグイン内に閉じる。鍵/エージェント/known_hosts はユーザーの `~/.ssh`(および ssh-agent)を用いる。self-managed 環境の host-key 検証(未知ホストの扱い)は実機検証項目(§21 R-3)。
   - **依存追加の扱い(CLAUDE.md 準拠)**: `build.gradle.kts` の依存 + `feature/feature.xml`(update-site 同梱バンドル)+ 必要な `Require-Bundle`/`Import-Package` を PR で**明示**する(ビルドシステム構成自体は変えない)。§17 に影響を記載。
   - **ssh-agent 認証の依存(JGit 7.5)**: 鍵を `ssh-agent` のみに登録した環境では `org.eclipse.jgit.ssh.apache` 単体では agent connector が無く agent 認証が動かない。第一案採用時は **`org.eclipse.jgit.ssh.apache.agent` とそのランタイム依存も feature.xml/OSGi 包装に含める**(公開鍵ファイル + agent 双方をカバー)。含めない選択をする場合は **agent-only 認証を非対応**として、その環境で actionable に通知する契約にする(PR-3 の SSH 受け入れ条件に明記)。
-  - **決定点(ユーザー可変)**: 上記 SSH 対応が第一案(パリティ確保)。縮小案 = **Phase 3 の in-plugin git 操作を HTTPS remote に限定**し、解決 remote が SSH の場合は fetch/checkout/push を実行せず「Use HTTPS remote or your Git tooling for this operation.」と actionable に通知(SSH 対応は後続 issue 化)。どちらを採るかは実装計画時に確定(§24 U-8)。
-- **SSH remote(第一案採用時)**: 上記 `SshdSessionFactory` に委譲(トークンは使わない)。
+  - **決定(U-8 確定 = SSH 第一案 / パリティ確保)**: 上記 SSH 対応を採用する(ユーザー確定 2026-07-26)。HTTPS-only 縮小案は不採用。したがって `org.eclipse.jgit.ssh.apache`(+ ssh-agent 用 `.agent`)を必須依存として追加する。
+- **SSH remote**: 上記 `SshdSessionFactory`(対象 Transport 限定)に委譲(トークンは使わない)。
 - **操作直列化(`GitOperationGuard`)**: **リポジトリ identity(`.git` ディレクトリの正規化パス)をキー**に、mutating git 操作(fetch+checkout、push)を直列化する in-memory レジストリ。処理中は同一 repo の該当 action を無効化し、重複要求は拒否(または同一 Job に合流)。並行実行テストを課す(§22)。
 - **実行文脈**: すべて `service<CoroutineScope>()`(Dispatchers.IO)上で実行し UI を塞がない。進捗は `IProgressService`/`Job` + 通知、キャンセル対応。本体は try/catch(共有スコープ汚染防止)。
 
@@ -205,7 +206,7 @@ sealed `SidebarNode` に PR-3 の受け入れ条件(MR 展開・変更ファイ�
 - **(e) 更新はオンデマンド**(30 秒ポーリングを採らない)。
 - **(f) git 認証 = GitLab トークン(oauth2:token)を HTTPS remote に、SSH は既存鍵**(§7.1)。
 - **(g) 操作リポジトリは起動時に一意確定**(§6.1)。曖昧時はピッカー/中止で、暗黙選択しない。ピッカー/解決は `RepositoryContext` を返す。
-- **(h) SSH remote 対応(rev3、要ユーザー確定 U-8)**: 第一案 = `org.eclipse.jgit.ssh.apache` を明示依存追加してパリティ確保。縮小案 = HTTPS-only + actionable 通知。
+- **(h) SSH remote 対応(U-8 確定 = 第一案、2026-07-26)**: `org.eclipse.jgit.ssh.apache`(+ ssh-agent 用 `.agent`)を明示依存追加し、対象 Transport 限定で `SshdSessionFactory` を設定してパリティ確保。HTTPS-only 縮小案は不採用。
 
 ## 10. インターフェース / API(REST・確定値)
 
@@ -285,7 +286,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - Phase 2 `navigation` の `BrowserLauncher` / `GitLabRemoteParser` / `GitLabProjectUrlResolver` / `PathSegmentEncoder` / `WorkspaceProjectPicker` を再利用(参照のみ、変更なし)。resolver から remote 名を取り出す薄い拡張が要る場合は追加(既存挙動不変)。
 - `GitLabApiClient` に単一オブジェクト取得メソッド追加(既存 `fetchListFromApi` に影響なし)。
 - git ネットワーク操作(§7.1)は新規。既存の read-only git 利用には影響しない。
-- **SSH transport 依存**(§7.1 第一案採用時): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証には `org.eclipse.jgit.ssh.apache.agent` とランタイム依存)を `build.gradle.kts` 依存 + `feature/feature.xml`(update-site 同梱)+ 必要な `Require-Bundle`/`Import-Package` に**明示追加**(CLAUDE.md「必須依存の追加は PR で明示」)。ビルドシステム構成自体は変更しない。HTTPS-only 縮小案(U-8)を採る場合は依存追加不要。
+- **SSH transport 依存**(§7.1、U-8 確定=採用): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証には `org.eclipse.jgit.ssh.apache.agent` とランタイム依存)を `build.gradle.kts` 依存 + `feature/feature.xml`(update-site 同梱)+ 必要な `Require-Bundle`/`Import-Package` に**明示追加**(CLAUDE.md「必須依存の追加は PR で明示」)。ビルドシステム構成自体は変更しない。
 
 ## 18. 移行方法
 
@@ -329,20 +330,19 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 
 - **PR-1**: サイドバー view が表示され、Issues assigned / MRs assigned 根が展開でき、項目ダブルクリックでブラウザが開く。**先頭根 API が失敗しても他根は表示され、失敗根のみメッセージ**(混在テスト)。`refreshSidebar` で再取得。list/tree トグルでフラット ⇄ プロジェクト別。`showMergeRequestsAssignedToMe` が §6.1 の選択 repo の assigned MR ページを開く(複数 repo/エディタ無し/resolver 失敗を含む)。`ChangedFile/DirectoryNode` 型と `GitOperationGuard` が宣言され単体テスト green。detekt 0 / suite 36 維持。
 - **PR-2**: 「For current branch」節に §6.1 選択 repo の現ブランチ MR と閉じる Issue が表示、クリックでブラウザ。MR lookup は global `/merge_requests` + `source_project_id` 照合で **fork のブランチからでも発見**、tracking 無しはローカル名フォールバック、detached は No MR。`openCurrentMergeRequest` は不在時に通知。`compareCurrentBranch`/新規 MR URL が §10.1 準拠で特殊文字ブランチでも正しい。`openCreateNewMR` は **upstream が解決 remote の `refs/heads/<branch>` に一致する時のみ直接 URL**、それ以外(別 remote/別ブランチ/無 upstream)は clean なら選択 remote へ push→URL、dirty は誘導通知(誤 remote に push しない)。push は `RemoteRefUpdate.Status` が OK/UP_TO_DATE の時のみ成功扱いし、REJECTED_*(non-ff/protected/hook)は upstream 不変の失敗として通知(URL を開かない)。
-- **PR-3**: MR ノード展開で変更ファイルが list/tree 表示。`openMrFile` は gitDir 重複排除のうえ対応 repo を一意特定し、**ChangedFileNode の head SHA が repo HEAD ObjectId と厳密一致する時のみ**、real-path 包含検査(symlink 脱出拒否)を通過したファイルを開く(SHA 不一致/多重一致/不在/real-path 解決失敗は通知)。`checkoutMrBranch`(同一プロジェクト MR)は MR 結合 remote から明示 refspec で fetch、既存同名ブランチは ff/一致で切替・diverge は警告、**最終 HEAD SHA が `mr.sha` と一致した時のみ成功通知**、段階別復旧に従い、重複起動を拒否。(第一案採用時)SSH remote でも fetch/checkout が動作(実機)。
+- **PR-3**: MR ノード展開で変更ファイルが list/tree 表示。`openMrFile` は gitDir 重複排除のうえ対応 repo を一意特定し、**ChangedFileNode の head SHA が repo HEAD ObjectId と厳密一致する時のみ**、real-path 包含検査(symlink 脱出拒否)を通過したファイルを開く(SHA 不一致/多重一致/不在/real-path 解決失敗は通知)。`checkoutMrBranch`(同一プロジェクト MR)は MR 結合 remote から明示 refspec で fetch、既存同名ブランチは ff/一致で切替・diverge は警告、**最終 HEAD SHA が `mr.sha` と一致した時のみ成功通知**、段階別復旧に従い、重複起動を拒否。SSH remote でも fetch/checkout/push が動作(実機、ssh-agent-only 含む)。
 
 ## 24. 未決事項(実装前に判断)
 
 - **U-1**: 単一サイドバー view の id とラベル。既存 `com.gitlab.eclipse.views.IssuesView` を改名/新設どちらか。既存 `LanguageServerBrowserView`(Duo)とは別 view 継続で良いか。
 - **U-6**: tree モードのグルーピングキー(プロジェクト `references.full` の namespace 部分か、`web_url` のプロジェクトパスか)。
 - **U-7**: 「For current branch」節と「Queries」節を単一 TreeViewer の疑似根として並置するか、`TreeViewer` の複数トップレベルノードにするか(描画・空状態表現の差)。
-- **U-8**: git SSH remote の扱い(§7.1)。第一案=`org.eclipse.jgit.ssh.apache` 追加で SSH 対応(パリティ)、縮小案=HTTPS-only + actionable 通知(依存追加なし、SSH は後続 issue)。実装計画時にユーザーが確定。
-
 > rev4 で解決済み: U-9(`source_project_id` 照合 = `GET /projects/:id` の数値 id 比較に確定、§8.3。namespace 照合案は fork で誤るため不採用)。
+> rev7 で解決済み: U-8(git SSH remote = 第一案採用に確定。`org.eclipse.jgit.ssh.apache`(+ `.agent`)を明示依存追加、対象 Transport 限定で `SshdSessionFactory`。HTTPS-only 縮小案は不採用。§7.1/§9-h/§17)。
 
 > rev2 で解決済み: U-2(openCurrentMergeRequest 不在時=通知, §20/FR-3)、U-3(checkout 多重実行=GitOperationGuard, §7.1/§12)、U-4(openMrFile 未取得/不在=通知, §8.6)、U-5(旧 IssuesView 削除の分離コミット + revert 手順, §19)。
 
 ## 25. 確定できた範囲 / 追加情報が必要な事項
 
 - 確定: REST エンドポイント/クエリ(§10、VSCode 実ソース根拠付き)、URL エンコード規則(§10.1)、PR 分割、サイドバー基盤方針、repo 選択規則 + `RepositoryContext`(§6.1)、git 認証/操作基盤 + SSH 依存方針(§7.1)、status の受け皿、GraphQL 不使用の代替、根ごと障害分離(§8.1)、ブランチ→MR の global lookup + fork 対応(§8.3)、checkout(最終 HEAD SHA 検証・既存ブランチ ff/diverge)/push(upstream-remote 一致)/openMrFile(revision 検証)の各契約。
-- 追加情報待ち: §24 の U-1/U-6/U-7(view/ツリー描画の詳細、PR-1 着手前に確定)、**U-8(SSH 対応 vs HTTPS-only)= ユーザー確定が必要**。self-managed 環境での git 認証・host-key・証明書挙動は実機検証で確定。(U-9 は rev4 で確定済み=数値 id 照合、追加情報待ちには含めない。)
+- 追加情報待ち: §24 の U-1/U-6/U-7(view/ツリー描画の詳細、PR-1 着手前に確定)。self-managed 環境での git 認証・host-key・証明書挙動は実機検証で確定。(U-8=SSH 第一案採用、U-9=数値 id 照合、いずれも確定済みで追加情報待ちには含めない。)
