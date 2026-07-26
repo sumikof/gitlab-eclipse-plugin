@@ -9,6 +9,7 @@
   - rev2 = Codex round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
   - rev3 = Codex round 2(P1×6)反映。主な追加: SSH transport 依存の明示(§7.1)、ピッカーが返す `RepositoryContext` 契約(§6.1/§11)、fork MR を global lookup + source_project_id 照合に変更(§8.3/§10)、checkout の最終 HEAD SHA 検証 + 既存ブランチ ff/reset/拒否(§8.4/§16)、push 直接 URL 経路の upstream-remote 一致検証(§8.5)、openMrFile の repo HEAD ↔ MR revision 検証(§8.6)。
   - rev4 = Codex round 3(P1×5)反映。主な確定: source_project_id は数値 id 照合に**確定**(U-9 解決、§8.3)、closes_issues は MR の target project_id を使用(§8.3)、tracking 名は `branch.<n>.remote` が解決 remote と一致時のみ採用(§8.3)、fetch SHA 不一致は再取得/中止で誤成功を排除(§8.4)、SSH factory は対象 Transport 限定(`TransportConfigCallback`/`SshTransport`、プロセス全体を置換しない、§7.1)。
+  - rev10 = Codex round 8(P1×1)反映。Tycho の p2 repositories は Gradle と別(root pom.xml:131-141 = 2024-09 + gitlab-maven のみ、EGit p2 は Gradle 専用)。SSH バンドルの Tycho 解決は 2024-09 の IU 有無次第で、無ければ pom.xml への p2 追加(要ユーザー承認)が SSH 出荷の必須前提。U-10/R-7 を精緻化(§7.1/§17/§21/§24)。
   - rev9 = Codex round 7(P1×1)反映(rev8 の自己訂正)。jgit core の供給機序を実コードで再確認し訂正: fat-jar 同梱は `kotlinLibraries` 名一致のみ(build.gradle.kts:214 の `.filter`、jgit/guava 非該当)。jgit core は `eclipseDependencies`→`Require-Bundle`+p2deps(既存 EGit p2 repo:188)で供給。SSH バンドルも同 OSGi 経路に確定(feature.xml でも fat-jar でもない)、素 jar 推移依存のみ kotlinLibraries fat-jar(§7.1/§17/§21/§24)。
   - rev8 = Codex round 6(P1×1)反映(供給機序を誤って fat-bundle と記載 → rev9 で訂正)。Tycho 出荷 update-site への供給・解決性を U-10 + R-7 として明記。
   - rev7 = U-8 をユーザー確定(2026-07-26、SSH 第一案採用)。SSH 対応を確定事項化し縮小案の分岐記述を整理(§7.1/§9-h/§17/§23/§24)。
@@ -142,7 +143,7 @@ Phase 3 で初めてネットワーク git 操作を行うため、共通基盤�
     - **OSGi バンドルとして提供されるもの(jgit core 等)= `Require-Bundle` + p2deps**。`eclipseDependencies`(build.gradle.kts:158-182、`org.eclipse.jgit` を含む:179)が manifest の `Require-Bundle`(:231-233)に入り、`p2deps`(:184-194)が **EGit の p2 repo(`https://download.eclipse.org/egit/updates/`、:188 に既存)** 等から解決する。jgit core は feature.xml 非掲載・fat-jar 非同梱で、この OSGi 経路で出荷される。
     - **非 OSGi の素 jar(kotlin/coroutines/koin/slf4j/log4j/scribejava/nanohttpd)= fat-jar 同梱**。jar タスクは `kotlinLibraries` 名一致の依存**だけ**を `runtimeClasspath` から `zipTree` して同梱(build.gradle.kts:200-216 の `.filter`)。**jgit/guava はこのリストに無い**。
   - **SSH バンドルの供給(確定)**: `org.eclipse.jgit.ssh.apache` と `org.eclipse.jgit.ssh.apache.agent` は **EGit が p2 で配布する OSGi バンドル**。したがって **jgit core と同一の Require-Bundle + p2deps 経路**で供給する(`eclipseDependencies` に追加 → `Require-Bundle`、既存の EGit p2 repo:188 から解決)。**feature.xml 追加でも kotlinLibraries fat-jar でもない**。Apache MINA sshd の推移依存(`org.apache.sshd.osgi` 等)も OSGi バンドルなら同経路、素 jar しか無いものがあれば `kotlinLibraries` リストへ追加して fat-jar 同梱、と依存ごとに振り分ける。
-  - **Tycho 出荷 update-site への供給**: 同じ OSGi バンドルを Tycho reactor(root/`feature`/`update-site` pom)の target platform でも解決する。既存 EGit p2 repo が JGit 7.5 の ssh バンドル + sshd スタックを提供するかを確認し、提供しない場合の p2 追加は**ビルド構成変更に当たり得るためユーザー明示承認が前提**(§21 R-7)。
+  - **Tycho 出荷 update-site への供給(repo は Gradle と別)**: **EGit p2 repo(build.gradle.kts:188)は Gradle `p2deps` 専用**で Tycho には効かない。Tycho reactor の repositories は **`2024-09`(`https://download.eclipse.org/releases/2024-09`)+ `gitlab-maven` のみ**(root pom.xml:131-141)。jgit core は現状 Tycho 側では 2024-09 が提供する 7.0 系を Require-Bundle 範囲 `[7.0.0,8.0.0)` で解決している(Gradle の Maven pin 7.5 とはバージョンスキューだが range で許容)。**SSH バンドルも同 range で Require-Bundle するが、`2024-09` が `org.eclipse.jgit.ssh.apache(.agent)` + `org.apache.sshd.osgi` の IU を含むか否かが分岐点**(含めば追加設定不要、含まなければ Tycho 解決が失敗)。含まない場合は **root `pom.xml` に p2 リポジトリ(EGit 等)を追加**する必要があり、これは**ビルド構成変更に当たるためユーザー明示承認が前提**(§21 R-7、U-10 で確認)。
   - **ssh-agent 認証の依存(JGit 7.5)**: 鍵を `ssh-agent` のみに登録した環境では `org.eclipse.jgit.ssh.apache` 単体では agent connector が無い。**`org.eclipse.jgit.ssh.apache.agent`(+ そのランタイム)**を上記機序で供給し、公開鍵ファイル + agent 双方をカバーする。
   - **決定(U-8 確定 = SSH 第一案 / パリティ確保)**: 上記 SSH 対応を採用する(ユーザー確定 2026-07-26)。HTTPS-only 縮小案は不採用。したがって `org.eclipse.jgit.ssh.apache`(+ ssh-agent 用 `.agent`)を必須依存として追加する。
 - **SSH remote**: 上記 `SshdSessionFactory`(対象 Transport 限定)に委譲(トークンは使わない)。
@@ -292,7 +293,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - Phase 2 `navigation` の `BrowserLauncher` / `GitLabRemoteParser` / `GitLabProjectUrlResolver` / `PathSegmentEncoder` / `WorkspaceProjectPicker` を再利用(参照のみ、変更なし)。resolver から remote 名を取り出す薄い拡張が要る場合は追加(既存挙動不変)。
 - `GitLabApiClient` に単一オブジェクト取得メソッド追加(既存 `fetchListFromApi` に影響なし)。
 - git ネットワーク操作(§7.1)は新規。既存の read-only git 利用には影響しない。
-- **SSH transport 依存**(§7.1、U-8 確定=採用): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証の `org.eclipse.jgit.ssh.apache.agent`)を **jgit core と同一機序 = `eclipseDependencies` 追加 → manifest `Require-Bundle` + p2deps(既存 EGit p2 repo:188 から解決)**で供給(feature.xml 追加でも fat-jar でもない)。MINA sshd 推移依存は OSGi バンドルなら同経路、素 jar なら `kotlinLibraries` fat-jar リストへ。PR で明示(CLAUDE.md「必須依存の追加は PR で明示」)。**Tycho reactor 側の解決性は U-10 で事前確認**(既存 EGit p2 で JGit 7.5 ssh + sshd が解決できない場合の p2 追加はビルド構成変更に当たり得るため要ユーザー承認、R-7)。
+- **SSH transport 依存**(§7.1、U-8 確定=採用): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証の `org.eclipse.jgit.ssh.apache.agent`)を **jgit core と同一機序 = `eclipseDependencies` 追加 → manifest `Require-Bundle` + p2deps(既存 EGit p2 repo:188 から解決)**で供給(feature.xml 追加でも fat-jar でもない)。MINA sshd 推移依存は OSGi バンドルなら同経路、素 jar なら `kotlinLibraries` fat-jar リストへ。PR で明示(CLAUDE.md「必須依存の追加は PR で明示」)。**Tycho reactor の repositories は Gradle と別(2024-09 + gitlab-maven のみ、EGit p2 は Gradle 専用)。U-10 で 2024-09 が ssh/sshd IU を含むか確認し、含まなければ pom.xml への p2 追加=ビルド構成変更=要ユーザー承認**(R-7)。
 
 ## 18. 移行方法
 
@@ -323,7 +324,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - **R-4(global assigned スコープ)**: 自分の全 MR が出る(VSCode プロジェクト別と結果集合が異なる)。§9-b の意図的差異として受容。repo 誤特定は §6.1/§8.6 で防止。
 - **R-5(旧 IssuesView 統合)**: view id 変更でユーザーレイアウト影響(プレリリースのため受容、§19 でロールバック明確化)。
 - **R-6(同名ブランチ/複数 remote)**: source_project_id 照合(§8.3)・remote 結合(§8.4)・repo 選択(§6.1)で誤対象を防止。多重 remote 一致時の順序は Phase 2 resolver 準拠(origin 優先)。
-- **R-7(SSH バンドルのビルド供給)**: JGit 7.5 の `org.eclipse.jgit.ssh.apache(.agent)` + Apache MINA sshd 推移依存を、jgit core と同じ **Require-Bundle + p2deps(EGit p2 repo)** 経路で Gradle と Tycho update-site の双方へ供給・OSGi 解決できるかは PR-3 着手前の確認事項(U-10)。既存 EGit p2 で解決不能なら p2 追加が要り、ビルド構成変更に当たるため要ユーザー承認。sshd スタックの OSGi クラスローディング・agent の native/JNA は実機検証。
+- **R-7(SSH バンドルのビルド供給)**: `org.eclipse.jgit.ssh.apache(.agent)` + MINA sshd を、Gradle は EGit p2 repo(:188)経由の Require-Bundle+p2deps で供給できる見込みだが、**Tycho の repositories は 2024-09 + gitlab-maven のみ**でありそこに ssh/sshd IU が無ければ **root pom.xml への p2 追加(ビルド構成変更・要ユーザー承認)が必須**。これは SSH 第一案(U-8)の実現に不可欠な前提であり、確認できなければ SSH 出荷不能。sshd スタックの OSGi クラスローディング・agent の native/JNA は実機検証。U-10 で PR-3 前に確定。
 
 ## 22. テスト方針
 
@@ -344,7 +345,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - **U-1**: 単一サイドバー view の id とラベル。既存 `com.gitlab.eclipse.views.IssuesView` を改名/新設どちらか。既存 `LanguageServerBrowserView`(Duo)とは別 view 継続で良いか。
 - **U-6**: tree モードのグルーピングキー(プロジェクト `references.full` の namespace 部分か、`web_url` のプロジェクトパスか)。
 - **U-7**: 「For current branch」節と「Queries」節を単一 TreeViewer の疑似根として並置するか、`TreeViewer` の複数トップレベルノードにするか(描画・空状態表現の差)。
-- **U-10**(ビルド供給・PR-3 着手前): 機序は確定(§7.1: OSGi バンドルは Require-Bundle+p2deps、素 jar は kotlinLibraries fat-jar)。残確認は、既存 EGit p2 repo(:188)が JGit 7.5 の `org.eclipse.jgit.ssh.apache(.agent)` + MINA sshd(`org.apache.sshd.osgi` 等)を実際に提供するか、Gradle と Tycho の両 target platform で解決するか。提供しない依存の p2 追加は要ユーザー承認(§21 R-7)。
+- **U-10**(ビルド供給・PR-3 着手前): 機序は確定(§7.1: OSGi バンドルは Require-Bundle+p2deps、素 jar は kotlinLibraries fat-jar)。残確認 2 点: (1) **Gradle** = EGit p2 repo(build.gradle.kts:188)が `org.eclipse.jgit.ssh.apache(.agent)` + `org.apache.sshd.osgi` を提供するか。(2) **Tycho** = root pom.xml の `2024-09` リポジトリがそれらの IU を含むか(EGit p2 は Tycho には効かない)。**(2) が否なら root pom.xml への p2 追加が必須=ビルド構成変更=要ユーザー承認**(§21 R-7)。SSH 第一案採用(U-8)は Tycho 側で pom.xml の p2 追加を要する可能性が高い点をユーザーに事前共有する。
 > rev4 で解決済み: U-9(`source_project_id` 照合 = `GET /projects/:id` の数値 id 比較に確定、§8.3。namespace 照合案は fork で誤るため不採用)。
 > rev7 で解決済み: U-8(git SSH remote = 第一案採用に確定。`org.eclipse.jgit.ssh.apache`(+ `.agent`)を明示依存追加、対象 Transport 限定で `SshdSessionFactory`。HTTPS-only 縮小案は不採用。§7.1/§9-h/§17)。
 
