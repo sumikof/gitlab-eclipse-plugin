@@ -11,4 +11,6 @@ val apiModule = module {
   single<GitLabHttpClient> { GitLabHttpClient(get()) }
   single<GitLabApiClient> { GitLabApiClient(get(), get(), get()) }
   single<IssueService> { IssueService(get()) }
+  single<CurrentUserService> { CurrentUserService(get()) }
+  single<MergeRequestService> { MergeRequestService(get()) }
 }
