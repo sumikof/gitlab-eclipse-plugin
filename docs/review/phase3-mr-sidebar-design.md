@@ -9,6 +9,7 @@
   - rev2 = Codex round 1(P1×11)反映。主な追加: リポジトリ選択規則(§6.1)、git 認証/操作基盤(§7.1)、URL エンコード規則(§10.1)、根ごとの障害分離 refresh(§8.1)、ブランチ→MR の tracking フォールバック + source project 照合(§8.3)、checkout の remote 結合・多重実行排除・段階別復旧(§8.4/§12/§16)、openMrFile の repo 限定(FR-8)、変更ファイルノード型(§7)。
   - rev3 = Codex round 2(P1×6)反映。主な追加: SSH transport 依存の明示(§7.1)、ピッカーが返す `RepositoryContext` 契約(§6.1/§11)、fork MR を global lookup + source_project_id 照合に変更(§8.3/§10)、checkout の最終 HEAD SHA 検証 + 既存ブランチ ff/reset/拒否(§8.4/§16)、push 直接 URL 経路の upstream-remote 一致検証(§8.5)、openMrFile の repo HEAD ↔ MR revision 検証(§8.6)。
   - rev4 = Codex round 3(P1×5)反映。主な確定: source_project_id は数値 id 照合に**確定**(U-9 解決、§8.3)、closes_issues は MR の target project_id を使用(§8.3)、tracking 名は `branch.<n>.remote` が解決 remote と一致時のみ採用(§8.3)、fetch SHA 不一致は再取得/中止で誤成功を排除(§8.4)、SSH factory は対象 Transport 限定(`TransportConfigCallback`/`SshTransport`、プロセス全体を置換しない、§7.1)。
+  - rev12 = Codex round 10(P1×1)反映。§17/R-7 に残っていた `.agent` の一律 Require-Bundle 表現を §7.1 のフラグメント経路(feature/p2 IU + JNA)と整合させ内部矛盾を解消。
   - rev11 = Codex round 9(P1×1)反映。`org.eclipse.jgit.ssh.apache.agent` は Fragment-Host のフラグメント(JNA 要求)で Require-Bundle 経路では供給不可 → feature/p2 IU で導入 + JNA 閉包 + 実インストール確認を U-10 に追加(§7.1/§24)。
   - rev10 = Codex round 8(P1×1)反映。Tycho の p2 repositories は Gradle と別(root pom.xml:131-141 = 2024-09 + gitlab-maven のみ、EGit p2 は Gradle 専用)。SSH バンドルの Tycho 解決は 2024-09 の IU 有無次第で、無ければ pom.xml への p2 追加(要ユーザー承認)が SSH 出荷の必須前提。U-10/R-7 を精緻化(§7.1/§17/§21/§24)。
   - rev9 = Codex round 7(P1×1)反映(rev8 の自己訂正)。jgit core の供給機序を実コードで再確認し訂正: fat-jar 同梱は `kotlinLibraries` 名一致のみ(build.gradle.kts:214 の `.filter`、jgit/guava 非該当)。jgit core は `eclipseDependencies`→`Require-Bundle`+p2deps(既存 EGit p2 repo:188)で供給。SSH バンドルも同 OSGi 経路に確定(feature.xml でも fat-jar でもない)、素 jar 推移依存のみ kotlinLibraries fat-jar(§7.1/§17/§21/§24)。
@@ -297,7 +298,11 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - Phase 2 `navigation` の `BrowserLauncher` / `GitLabRemoteParser` / `GitLabProjectUrlResolver` / `PathSegmentEncoder` / `WorkspaceProjectPicker` を再利用(参照のみ、変更なし)。resolver から remote 名を取り出す薄い拡張が要る場合は追加(既存挙動不変)。
 - `GitLabApiClient` に単一オブジェクト取得メソッド追加(既存 `fetchListFromApi` に影響なし)。
 - git ネットワーク操作(§7.1)は新規。既存の read-only git 利用には影響しない。
-- **SSH transport 依存**(§7.1、U-8 確定=採用): `org.eclipse.jgit.ssh.apache`(+ ssh-agent 認証の `org.eclipse.jgit.ssh.apache.agent`)を **jgit core と同一機序 = `eclipseDependencies` 追加 → manifest `Require-Bundle` + p2deps(既存 EGit p2 repo:188 から解決)**で供給(feature.xml 追加でも fat-jar でもない)。MINA sshd 推移依存は OSGi バンドルなら同経路、素 jar なら `kotlinLibraries` fat-jar リストへ。PR で明示(CLAUDE.md「必須依存の追加は PR で明示」)。**Tycho reactor の repositories は Gradle と別(2024-09 + gitlab-maven のみ、EGit p2 は Gradle 専用)。U-10 で 2024-09 が ssh/sshd IU を含むか確認し、含まなければ pom.xml への p2 追加=ビルド構成変更=要ユーザー承認**(R-7)。
+- **SSH transport 依存**(§7.1、U-8 確定=採用)。依存の種別で供給経路が異なる(§7.1 と整合):
+  - **host bundle `org.eclipse.jgit.ssh.apache`(通常バンドル)** = `eclipseDependencies` 追加 → manifest `Require-Bundle` + p2deps(EGit p2 repo:188 から解決)。feature.xml 追加でも fat-jar でもない。
+  - **`org.eclipse.jgit.ssh.apache.agent`(フラグメント、JNA 要求)** = **`Require-Bundle` 経路では供給不可**。**feature(feature.xml のプラグイン項目)または p2 IU requirement で導入**しホストに attach、`com.sun.jna`/`com.sun.jna.platform` を閉包に含める。
+  - **MINA sshd 推移依存** = OSGi バンドルなら Require-Bundle、素 jar なら `kotlinLibraries` fat-jar。
+  - PR で明示(CLAUDE.md「必須依存の追加は PR で明示」)。**Tycho reactor の repositories は Gradle と別(2024-09 + gitlab-maven のみ、EGit p2 は Gradle 専用)。U-10 で 2024-09 が host/フラグメント/sshd/JNA の IU を含むか確認し、含まなければ pom.xml への p2 追加=ビルド構成変更=要ユーザー承認**(R-7)。
 
 ## 18. 移行方法
 
@@ -328,7 +333,7 @@ REST の project id 以外に、**ブラウザ URL に埋め込む branch/ref �
 - **R-4(global assigned スコープ)**: 自分の全 MR が出る(VSCode プロジェクト別と結果集合が異なる)。§9-b の意図的差異として受容。repo 誤特定は §6.1/§8.6 で防止。
 - **R-5(旧 IssuesView 統合)**: view id 変更でユーザーレイアウト影響(プレリリースのため受容、§19 でロールバック明確化)。
 - **R-6(同名ブランチ/複数 remote)**: source_project_id 照合(§8.3)・remote 結合(§8.4)・repo 選択(§6.1)で誤対象を防止。多重 remote 一致時の順序は Phase 2 resolver 準拠(origin 優先)。
-- **R-7(SSH バンドルのビルド供給)**: `org.eclipse.jgit.ssh.apache(.agent)` + MINA sshd を、Gradle は EGit p2 repo(:188)経由の Require-Bundle+p2deps で供給できる見込みだが、**Tycho の repositories は 2024-09 + gitlab-maven のみ**でありそこに ssh/sshd IU が無ければ **root pom.xml への p2 追加(ビルド構成変更・要ユーザー承認)が必須**。これは SSH 第一案(U-8)の実現に不可欠な前提であり、確認できなければ SSH 出荷不能。sshd スタックの OSGi クラスローディング・agent の native/JNA は実機検証。U-10 で PR-3 前に確定。
+- **R-7(SSH バンドルのビルド供給)**: host bundle `org.eclipse.jgit.ssh.apache` は Require-Bundle+p2deps、**agent フラグメントは feature/p2 IU + JNA 閉包**、MINA sshd は種別に応じ Require-Bundle/fat-jar(§7.1/§17)。Gradle は EGit p2 repo(:188)で供給できる見込みだが、**Tycho の repositories は 2024-09 + gitlab-maven のみ**でそこに host/フラグメント/sshd/JNA の IU が無ければ **root pom.xml への p2 追加(ビルド構成変更・要ユーザー承認)が必須**。これは SSH 第一案(U-8)の実現に不可欠な前提であり、確認できなければ SSH 出荷不能。sshd スタックの OSGi クラスローディング・agent の native/JNA・フラグメント attach は実機検証。U-10 で PR-3 前に確定。
 
 ## 22. テスト方針
 
