@@ -47,11 +47,6 @@ class WorkspaceProjectPicker(
     }
   }
 
-  private fun workspaceRepoDirs(): List<File> =
-    ResourcesPlugin.getWorkspace().root.projects
-      .filter { it.isAccessible }
-      .mapNotNull { it.location?.toFile() }
-
   private fun promptForRepo(
     choices: List<Pair<File, String>>,
     onResult: (GitLabProjectUrlResolver.Resolution) -> Unit,
@@ -67,7 +62,13 @@ class WorkspaceProjectPicker(
     logger.info("Project picker closed.")
   }
 
-  private companion object {
-    const val NO_PROJECT_FOUND = "No GitLab project found in the workspace."
+  companion object {
+    private const val NO_PROJECT_FOUND = "No GitLab project found in the workspace."
+
+    /** Accessible workspace project locations — the repo-candidate dirs (shared with Phase 3 resolver). */
+    internal fun workspaceRepoDirs(): List<File> =
+      ResourcesPlugin.getWorkspace().root.projects
+        .filter { it.isAccessible }
+        .mapNotNull { it.location?.toFile() }
   }
 }
