@@ -72,6 +72,8 @@
             ws="win32"
             arch="aarch64"
             version="0.8.2.qualifier"/>
+    <!-- SSH transport bundles: version="0.0.0" (open) so p2 resolves them from the
+         EGit/JGit installed in the user's Eclipse at install time — no hard pin here. -->
     <plugin
             id="org.eclipse.jgit.ssh.apache.agent"
             version="0.0.0"

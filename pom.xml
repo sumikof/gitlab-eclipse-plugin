@@ -137,7 +137,8 @@
         <repository>
             <id>egit</id>
             <layout>p2</layout>
-            <url>https://download.eclipse.org/egit/updates/</url>
+            <!-- Pinned versioned EGit repo (matches the jgit core 7.5.0 Maven pin); rolling /egit/updates/ 404s when a release rolls -->
+            <url>https://download.eclipse.org/egit/updates-7.5/</url>
         </repository>
         <repository>
             <id>gitlab-maven</id>
