@@ -93,6 +93,30 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.ShowMergeRequestsAssignedToMe"
+                name="Show GitLab Merge Requests Assigned To Me"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.RefreshSidebar"
+                name="Refresh GitLab Sidebar"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.SidebarViewAsList"
+                name="View GitLab Sidebar as List"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.SidebarViewAsTree"
+                name="View GitLab Sidebar as Tree"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.OpenActiveFile"
                 name="Open Active File in GitLab"
                 categoryId="gitlab-eclipse-plugin">
@@ -234,6 +258,10 @@
             <variable name="duo_chat_available" priorityLevel="workbench"/>
         </sourceProvider>
 
+        <sourceProvider provider="com.gitlab.eclipse.views.sidebar.SidebarViewStateSourceProvider">
+            <variable name="gitlab.sidebarView" priorityLevel="workbench"/>
+        </sourceProvider>
+
         <sourceProvider provider="com.gitlab.eclipse.utils.theming.ThemeSourceProvider">
             <variable name="theme_tone" priorityLevel="workbench"/>
         </sourceProvider>
@@ -266,10 +294,10 @@
               inject="true"
         />
 
-        <view id="com.gitlab.eclipse.views.IssuesView"
+        <view id="com.gitlab.eclipse.views.GitLabSidebarView"
               category="gitlab-eclipse-plugin"
-              class="com.gitlab.eclipse.views.issues.IssuesView"
-              name="GitLab Issues"
+              class="com.gitlab.eclipse.views.sidebar.GitLabSidebarView"
+              name="GitLab"
               icon="icons/notification.png"
               inject="true"
         />
@@ -405,6 +433,26 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.ShowIssues"
                 class="com.gitlab.eclipse.handlers.ShowIssuesHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ShowMergeRequestsAssignedToMe"
+                class="com.gitlab.eclipse.mergerequests.ShowMergeRequestsAssignedToMeHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.RefreshSidebar"
+                class="com.gitlab.eclipse.handlers.RefreshSidebarHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.SidebarViewAsList"
+                class="com.gitlab.eclipse.handlers.SidebarViewAsListHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.SidebarViewAsTree"
+                class="com.gitlab.eclipse.handlers.SidebarViewAsTreeHandler"
         />
 
         <handler
@@ -702,6 +750,40 @@
                 <parameter
                         name="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
                         value="agentic-duo-chat"/>
+            </command>
+        </menuContribution>
+
+        <!-- GitLab sidebar view toolbar: refresh (always visible) plus a list⇄tree toggle
+             pair. Exactly one of the two mode buttons is visible at a time, driven by the
+             gitlab.sidebarView source variable (SidebarViewStateSourceProvider): in list
+             mode offer "View as Tree", in tree mode offer "View as List". -->
+        <menuContribution locationURI="toolbar:com.gitlab.eclipse.views.GitLabSidebarView">
+            <command
+                    commandId="com.gitlab.eclipse.commands.RefreshSidebar"
+                    icon="icons/notification.png"
+                    tooltip="Refresh GitLab Sidebar">
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.SidebarViewAsTree"
+                    icon="icons/notification.png"
+                    tooltip="View as Tree">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab.sidebarView">
+                        <equals value="list"/>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.SidebarViewAsList"
+                    icon="icons/notification.png"
+                    tooltip="View as List">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab.sidebarView">
+                        <equals value="tree"/>
+                    </with>
+                </visibleWhen>
             </command>
         </menuContribution>
 
