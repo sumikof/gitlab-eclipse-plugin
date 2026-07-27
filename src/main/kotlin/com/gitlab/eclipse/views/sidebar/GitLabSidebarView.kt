@@ -94,12 +94,13 @@ class GitLabSidebarView : ViewPart() {
 
   fun refresh() {
     val generation = refreshState.begin()
-    // Resolved here — refresh() always runs on the UI thread (createPartControl, the
-    // refresh handler, onModeChanged's asyncExec) — because RepositoryContextResolver
-    // reads the active editor through the workbench, which silently yields null off the
-    // UI thread. Non-interactive by design: never a picker during an auto-refresh; an
-    // ambiguous workspace resolves to null and renders as "Select a repository".
-    val currentBranchContext = repositoryContextResolver.activeOrSingleContext()
+    // Captured here — refresh() always runs on the UI thread (createPartControl, the
+    // refresh handler, onModeChanged's asyncExec) — because the active-editor read goes
+    // through the workbench, which silently yields null off the UI thread. Only this cheap
+    // workbench read stays on the UI thread; the blocking JGit resolution runs inside the
+    // fetch coroutine below. Non-interactive by design: never a picker during an
+    // auto-refresh; an ambiguous workspace resolves to null → "Select a repository".
+    val activeEditorFile = repositoryContextResolver.activeEditorFile()
     fetchJob?.cancel()
     fetchJob = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
@@ -108,12 +109,16 @@ class GitLabSidebarView : ViewPart() {
         supervisorScope {
           val issues = async { runCatching { issueService.getIssuesAssignedToMe() } }
           val mrs = async { runCatching { mergeRequestService.getMergeRequestsAssignedToMe() } }
-          val currentBranch = currentBranchContext?.let { context ->
-            async { runCatching { fetchCurrentBranchInfo(context) } }
+          val currentBranch = async {
+            // JGit enumeration/resolution (IO), then the branch read + REST lookup. A null
+            // context means "no repository resolved" and flows through as a null Result.
+            repositoryContextResolver.resolveNonInteractive(activeEditorFile)?.let { context ->
+              runCatching { fetchCurrentBranchInfo(context) }
+            }
           }
           val issuesResult = issues.await()
           val mrsResult = mrs.await()
-          val currentBranchResult = currentBranch?.await()
+          val currentBranchResult = currentBranch.await()
           // Log per-root failures here so the "see the Error Log" message the tree renders
           // actually has a matching Error Log entry; the failed Results still flow to
           // buildRoots so the other root stays populated.

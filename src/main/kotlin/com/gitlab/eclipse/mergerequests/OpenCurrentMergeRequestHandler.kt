@@ -26,8 +26,9 @@ class OpenCurrentMergeRequestHandler(
   private val coroutineScope by lazyService<CoroutineScope>()
 
   override fun execute(event: ExecutionEvent): Any? {
-    // selectActiveContext must run on the UI thread (it reads the active editor); a null
-    // context is a silent no-op because the resolver already notified the user.
+    // selectActiveContext must run on the UI thread (it captures the active editor at call
+    // time; JGit resolution then runs in the background); a null context is a silent no-op
+    // because the resolver already notified the user.
     resolver.selectActiveContext { context ->
       if (context != null) openCurrentMergeRequest(context)
     }
@@ -36,8 +37,8 @@ class OpenCurrentMergeRequestHandler(
   }
 
   private fun openCurrentMergeRequest(context: RepositoryContext) {
-    // The callback may fire on the UI thread (picker dialog case), and the lookup is
-    // blocking HTTP + JGit I/O — hop to a background coroutine before doing any of it.
+    // The callback fires on the UI thread, and the lookup is blocking HTTP + JGit I/O —
+    // hop to a background coroutine before doing any of it.
     coroutineScope.launch {
       try {
         val branch = reader.read(File(context.gitDir))
