@@ -135,6 +135,11 @@
             <url>https://download.eclipse.org/releases/2024-09</url>
         </repository>
         <repository>
+            <id>egit</id>
+            <layout>p2</layout>
+            <url>https://download.eclipse.org/egit/updates/</url>
+        </repository>
+        <repository>
             <id>gitlab-maven</id>
             <url>https://gitlab.com/api/v4/groups/${gitlabGroupId}/packages/maven</url>
         </repository>

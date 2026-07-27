@@ -72,4 +72,16 @@
             ws="win32"
             arch="aarch64"
             version="0.8.2.qualifier"/>
+    <plugin
+            id="org.eclipse.jgit.ssh.apache.agent"
+            version="0.0.0"
+            unpack="false"/>
+    <plugin
+            id="com.sun.jna"
+            version="0.0.0"
+            unpack="false"/>
+    <plugin
+            id="com.sun.jna.platform"
+            version="0.0.0"
+            unpack="false"/>
 </feature>
