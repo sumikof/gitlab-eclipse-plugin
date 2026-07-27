@@ -29,23 +29,23 @@ class SidebarViewModel {
     listOf(
       QueryRootNode(
         "Issues assigned to me",
-        issuesChildren(issuesResult, mode),
+        queryChildren(issuesResult, mode, NO_ISSUES_MESSAGE, { it.references?.full }, ::IssueNode),
       ),
       QueryRootNode(
         "Merge requests assigned to me",
-        mrsChildren(mrsResult, mode),
+        queryChildren(mrsResult, mode, NO_MRS_MESSAGE, { it.references?.full }, ::MergeRequestNode),
       ),
     )
 
-  private fun issuesChildren(result: Result<List<GitLabIssue>>, mode: SidebarViewMode): List<SidebarNode> =
+  private fun <T> queryChildren(
+    result: Result<List<T>>,
+    mode: SidebarViewMode,
+    emptyMessage: String,
+    fullReference: (T) -> String?,
+    toNode: (T) -> SidebarNode,
+  ): List<SidebarNode> =
     result.fold(
-      onSuccess = { issues -> successChildren(issues, mode, NO_ISSUES_MESSAGE, { it.references?.full }, ::IssueNode) },
-      onFailure = { error -> failureChildren(error) },
-    )
-
-  private fun mrsChildren(result: Result<List<GitLabMergeRequest>>, mode: SidebarViewMode): List<SidebarNode> =
-    result.fold(
-      onSuccess = { mrs -> successChildren(mrs, mode, NO_MRS_MESSAGE, { it.references?.full }, ::MergeRequestNode) },
+      onSuccess = { items -> successChildren(items, mode, emptyMessage, fullReference, toNode) },
       onFailure = { error -> failureChildren(error) },
     )
 
@@ -91,14 +91,32 @@ class SidebarViewModel {
   }
 
   /**
+   * Children of an expanded [MergeRequestNode]: an [OverviewNode] (activates to the MR's
+   * web page) followed by the changed files of its latest diff version, composed per
+   * [mode]. A failed [versionResult] renders the same config-aware error message as the
+   * query roots; a `null` version (MR with no diff versions) renders "No changed files".
+   */
+  fun buildMrChildren(
+    webUrl: String,
+    versionResult: Result<GitLabMrVersion?>,
+    mode: SidebarViewMode,
+  ): List<SidebarNode> =
+    listOf(OverviewNode(webUrl)) +
+      versionResult.fold(
+        onSuccess = { version -> buildChangedFileNodes(version, mode) },
+        onFailure = { error -> failureChildren(error) },
+      )
+
+  /**
    * Turns an MR version's diffs (design doc §7.2) into sidebar nodes: [SidebarViewMode.LIST]
    * is a flat, diff-order list of [ChangedFileNode]s; [SidebarViewMode.TREE] groups them into a
-   * [ChangedDirectoryNode] hierarchy via [buildChangedFileTree].
+   * [ChangedDirectoryNode] hierarchy via [buildChangedFileTree]. A `null` [version] (the MR
+   * has no diff versions at all) renders the same "No changed files" message as empty diffs.
    */
-  fun buildChangedFileNodes(version: GitLabMrVersion, mode: SidebarViewMode): List<SidebarNode> {
-    val diffs = nullSafeDiffs(version)
+  fun buildChangedFileNodes(version: GitLabMrVersion?, mode: SidebarViewMode): List<SidebarNode> {
+    val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
-    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version.headCommitSha) }
+    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha) }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
       SidebarViewMode.TREE -> buildChangedFileTree(fileNodes)

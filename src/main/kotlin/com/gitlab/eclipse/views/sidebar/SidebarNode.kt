@@ -39,12 +39,44 @@ class IssueNode(issue: GitLabIssue) : SidebarNode {
   override val activationUrl: String? = url
 }
 
-/** Leaf node representing a single GitLab merge request. */
-class MergeRequestNode(mr: GitLabMergeRequest) : SidebarNode {
+/** Shown under a [MergeRequestNode] until its changed files have been fetched. */
+private const val MR_LOADING_MESSAGE = "Loading…"
+
+/**
+ * Expandable node representing a single GitLab merge request. Its children — an
+ * [OverviewNode] plus the changed files of the MR's latest diff version — are fetched
+ * lazily by [GitLabSidebarView] on first expansion; until then a stable "Loading…"
+ * placeholder renders, which also makes [SidebarContentProvider.hasChildren] report
+ * `true` so the expander (twistie) shows before anything is loaded.
+ */
+class MergeRequestNode(val mr: GitLabMergeRequest) : SidebarNode {
   val url: String = mr.webUrl
   override val label: String = "${mr.references?.full ?: "!${mr.iid}"}  ${mr.title}"
-  override val children: List<SidebarNode> = emptyList()
   override val activationUrl: String? = url
+
+  /**
+   * Lazily-loaded children, written by the view on the SWT UI thread only (same
+   * discipline as the view's result caches). `null` = not loaded yet.
+   */
+  var loadedChildren: List<SidebarNode>? = null
+
+  // One stable instance: JFace tracks tree elements by identity, so returning a fresh
+  // MessageNode from every children read would churn the widget mapping.
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(MR_LOADING_MESSAGE))
+
+  override val children: List<SidebarNode>
+    get() = loadedChildren ?: loadingPlaceholder
+}
+
+/**
+ * First child of an expanded [MergeRequestNode] (VSCode parity: the "Overview" item):
+ * activating it opens the merge request's overview page in the browser. A dedicated type —
+ * rather than reusing [MessageNode] — keeps MessageNode's "never activatable" contract intact.
+ */
+class OverviewNode(webUrl: String) : SidebarNode {
+  override val label: String = "Overview"
+  override val children: List<SidebarNode> = emptyList()
+  override val activationUrl: String? = webUrl
 }
 
 /** Non-activatable informational leaf (loading / error / empty-state placeholder). */

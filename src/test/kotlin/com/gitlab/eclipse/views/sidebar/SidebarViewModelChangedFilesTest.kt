@@ -134,4 +134,49 @@ class SidebarViewModelChangedFilesTest : StringSpec({
     nodes shouldHaveSize 1
     (nodes[0] as MessageNode).label shouldBe "No changed files"
   }
+
+  "null version (MR without diff versions) shows 'No changed files' message node" {
+    val nodes = vm.buildChangedFileNodes(null, SidebarViewMode.LIST)
+
+    nodes shouldHaveSize 1
+    (nodes[0] as MessageNode).label shouldBe "No changed files"
+  }
+
+  "buildMrChildren: Overview node (activating the MR url) precedes the changed files" {
+    val v = version(listOf(diff(oldPath = "a.kt", newPath = "a.kt")))
+
+    val nodes =
+      vm.buildMrChildren(
+        "https://gitlab.example.com/g/p/-/merge_requests/5",
+        Result.success(v),
+        SidebarViewMode.LIST,
+      )
+
+    nodes shouldHaveSize 2
+    val overview = nodes[0] as OverviewNode
+    overview.label shouldBe "Overview"
+    overview.activationUrl shouldBe "https://gitlab.example.com/g/p/-/merge_requests/5"
+    (nodes[1] as ChangedFileNode).newPath shouldBe "a.kt"
+  }
+
+  "buildMrChildren: null version keeps Overview and shows 'No changed files'" {
+    val nodes = vm.buildMrChildren("https://example.com/mr", Result.success(null), SidebarViewMode.TREE)
+
+    nodes shouldHaveSize 2
+    (nodes[0] is OverviewNode) shouldBe true
+    (nodes[1] as MessageNode).label shouldBe "No changed files"
+  }
+
+  "buildMrChildren: failure keeps Overview and shows the generic error message" {
+    val nodes =
+      vm.buildMrChildren(
+        "https://example.com/mr",
+        Result.failure(RuntimeException("boom")),
+        SidebarViewMode.LIST,
+      )
+
+    nodes shouldHaveSize 2
+    (nodes[0] is OverviewNode) shouldBe true
+    (nodes[1] as MessageNode).label shouldBe "Failed to load — see the Error Log."
+  }
 })

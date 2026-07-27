@@ -4,6 +4,7 @@ import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
@@ -19,6 +20,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import org.eclipse.jface.viewers.IStructuredSelection
+import org.eclipse.jface.viewers.ITreeViewerListener
+import org.eclipse.jface.viewers.TreeExpansionEvent
 import org.eclipse.jface.viewers.TreeViewer
 import org.eclipse.swt.SWT
 import org.eclipse.swt.widgets.Composite
@@ -39,6 +42,10 @@ private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
  * thread via `asyncExec` and are dropped when stale ([ViewRefreshState] generation) or
  * when the widget is disposed. The last fetch results are cached (UI thread only) so a
  * [SidebarViewMode] toggle re-composes the tree without re-fetching.
+ *
+ * MR nodes expand lazily ([loadMrChildren]): first expansion fetches the MR's latest diff
+ * version and renders an "Overview" node plus its changed files (flat in LIST mode,
+ * folder hierarchy in TREE mode), under the same threading discipline.
  */
 class GitLabSidebarView : ViewPart() {
   companion object {
@@ -73,6 +80,16 @@ class GitLabSidebarView : ViewPart() {
   // Mode-independent, so a mode toggle reuses the node as-is (no re-fetch, no re-build).
   private var cachedCurrentBranchSection: SidebarNode? = null
 
+  // Latest MR diff version per (projectId, iid), UI thread only. Survives mode toggles —
+  // re-expanding an MR re-composes its children in the new mode without re-fetching — and
+  // is cleared when a full refresh applies, so refreshed sidebars pick up new diff versions.
+  private val mrVersionCache = mutableMapOf<Pair<Long, Long>, GitLabMrVersion?>()
+
+  // MR nodes with a version fetch in flight (UI thread only; identity-keyed since
+  // MergeRequestNode does not override equals), so collapse/re-expand while a fetch is
+  // running does not start a duplicate fetch.
+  private val mrLoadsInFlight = mutableSetOf<MergeRequestNode>()
+
   // Stored so dispose() can remove this exact instance from the shared SidebarViewState.
   private val modeListener: () -> Unit = { onModeChanged() }
 
@@ -87,6 +104,17 @@ class GitLabSidebarView : ViewPart() {
       val url = node?.activationUrl ?: return@addDoubleClickListener
       openInBrowser(url)
     }
+
+    viewer.addTreeListener(
+      object : ITreeViewerListener {
+        override fun treeExpanded(event: TreeExpansionEvent) {
+          val node = event.element as? MergeRequestNode ?: return
+          if (node.loadedChildren == null) loadMrChildren(node)
+        }
+
+        override fun treeCollapsed(event: TreeExpansionEvent) = Unit
+      },
+    )
 
     viewState.addListener(modeListener)
     refresh()
@@ -165,22 +193,21 @@ class GitLabSidebarView : ViewPart() {
   ) {
     if (!refreshState.isCurrent(generation)) return
     if (viewer.control.isDisposed) return
-    val currentBranchSection = buildCurrentBranchSection(currentBranchResult)
+    // A null result = no repository could be resolved non-interactively (none, or several
+    // and no active editor to disambiguate) — distinct from a resolved repository with no
+    // MR, which buildCurrentBranchSection renders as "No merge request found".
+    val currentBranchSection =
+      currentBranchResult?.let(viewModel::buildCurrentBranchSection)
+        ?: CurrentBranchSectionNode(listOf(MessageNode(SELECT_REPOSITORY_MESSAGE)))
     cachedIssues = issuesResult
     cachedMrs = mrsResult
     cachedCurrentBranchSection = currentBranchSection
+    // A full refresh rebuilds every MR node (loadedChildren = null again); drop the cached
+    // versions too so the next expansion re-fetches and picks up newly pushed diffs.
+    mrVersionCache.clear()
     viewer.input =
       viewModel.buildRoots(issuesResult, mrsResult, viewState.mode) + currentBranchSection
   }
-
-  /**
-   * `null` result = no repository could be resolved non-interactively (none, or several and
-   * no active editor to disambiguate) — distinct from a resolved repository with no MR,
-   * which [SidebarViewModel.buildCurrentBranchSection] renders as "No merge request found".
-   */
-  private fun buildCurrentBranchSection(result: Result<CurrentBranchInfo>?): SidebarNode =
-    result?.let(viewModel::buildCurrentBranchSection)
-      ?: CurrentBranchSectionNode(listOf(MessageNode(SELECT_REPOSITORY_MESSAGE)))
 
   /** Mode changed: re-compose from the cached results without re-fetching. */
   private fun onModeChanged() {
@@ -196,9 +223,77 @@ class GitLabSidebarView : ViewPart() {
         refresh() // Nothing fetched yet — the fetch will compose with the new mode.
         return@asyncExec
       }
-      // The current-branch section is mode-independent: reuse the cached node unchanged.
+      // The current-branch section itself is mode-independent and reused as-is, but its MR
+      // node may hold children composed for the old mode: clear them so the next expansion
+      // re-composes from mrVersionCache (no re-fetch). Query-root MR nodes need nothing —
+      // buildRoots creates fresh instances, and their expansion also hits the cache.
+      currentBranchSection.children
+        .filterIsInstance<MergeRequestNode>()
+        .forEach { it.loadedChildren = null }
       viewer.input = viewModel.buildRoots(issues, mrs, viewState.mode) + currentBranchSection
     }
+  }
+
+  /**
+   * UI thread (tree-expansion listener). Lazily populates [node] with an "Overview" node
+   * plus the changed files of the MR's latest diff version: straight from [mrVersionCache]
+   * when a full refresh or an earlier expansion already fetched it, otherwise via a fetch
+   * on the shared IO scope. Applies are deferred with `asyncExec` even on the cache-hit
+   * path so the tree is never mutated re-entrantly from inside the expand event.
+   */
+  private fun loadMrChildren(node: MergeRequestNode) {
+    val cacheKey = node.mr.projectId to node.mr.iid
+    val control = viewer.control
+    if (control.isDisposed) return
+    if (mrVersionCache.containsKey(cacheKey)) {
+      control.display.asyncExec {
+        if (control.isDisposed) return@asyncExec
+        applyMrChildren(node, Result.success(mrVersionCache[cacheKey]))
+      }
+      return
+    }
+    if (!mrLoadsInFlight.add(node)) return
+    val generation = refreshState.currentGeneration()
+    coroutineScope.launch {
+      // Shared scope with a plain Job: nothing may escape this launch (see refresh()).
+      try {
+        val versionResult = runCatching {
+          // REST accepts a numeric project id directly, so no URL encoding is needed.
+          mergeRequestService.getLatestMrVersion(node.mr.projectId.toString(), node.mr.iid)
+        }
+        // Logged here so the error message the node renders has a matching Error Log entry.
+        versionResult.exceptionOrNull()?.let {
+          logger.error("Failed to load changed files for merge request !${node.mr.iid}.", it)
+        }
+        if (!control.isDisposed) {
+          control.display.asyncExec {
+            if (control.isDisposed) return@asyncExec
+            mrLoadsInFlight.remove(node)
+            // A newer full refresh replaced the tree (and this node) while we fetched:
+            // drop the result rather than poisoning the fresh mrVersionCache with it.
+            if (!refreshState.isCurrent(generation)) return@asyncExec
+            versionResult.onSuccess { version -> mrVersionCache[cacheKey] = version }
+            applyMrChildren(node, versionResult)
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.error("Failed to load changed files for merge request !${node.mr.iid}.", e)
+      }
+    }
+  }
+
+  /**
+   * UI thread. Composes with the mode read here — at apply time — so a mode toggle that
+   * raced the fetch never paints children built for a stale mode (same rule as
+   * [applyResults]). A failed [versionResult] is applied but not cached, so a later full
+   * refresh (which rebuilds the node) retries the fetch.
+   */
+  private fun applyMrChildren(node: MergeRequestNode, versionResult: Result<GitLabMrVersion?>) {
+    node.loadedChildren = viewModel.buildMrChildren(node.url, versionResult, viewState.mode)
+    viewer.refresh(node)
+    viewer.expandToLevel(node, 1)
   }
 
   private fun openInBrowser(url: String) {
