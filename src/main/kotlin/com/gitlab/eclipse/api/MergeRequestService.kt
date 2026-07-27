@@ -4,7 +4,7 @@ import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.inject.service
 
-/** Fetches merge requests assigned to the authenticated user. */
+/** Fetches merge requests: assigned to the user, for a source branch, and a merge request's closing issues. */
 class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
   fun getMergeRequestsAssignedToMe(): List<GitLabMergeRequest> {
     val request = ApiRequest(
