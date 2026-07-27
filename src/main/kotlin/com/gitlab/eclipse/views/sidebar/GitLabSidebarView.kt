@@ -98,6 +98,9 @@ class GitLabSidebarView : ViewPart() {
     viewer.contentProvider = SidebarContentProvider()
     viewer.labelProvider = SidebarLabelProvider()
     viewer.tree.headerVisible = false
+    // Publish the tree selection to the workbench so selection-based command handlers
+    // (e.g. CheckoutMrBranchHandler via HandlerUtil.getCurrentSelection) can see it.
+    site.selectionProvider = viewer
 
     viewer.addDoubleClickListener { event ->
       val node = (event.selection as? IStructuredSelection)?.firstElement as? SidebarNode
