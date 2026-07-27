@@ -117,6 +117,18 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.CheckoutMrBranch"
+                name="Checkout Merge Request Branch"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.OpenMrFile"
+                name="Open Merge Request File"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RefreshSidebar"
                 name="Refresh GitLab Sidebar"
                 categoryId="gitlab-eclipse-plugin">
@@ -474,6 +486,16 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.CheckoutMrBranch"
+                class="com.gitlab.eclipse.mergerequests.CheckoutMrBranchHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenMrFile"
+                class="com.gitlab.eclipse.mergerequests.OpenMrFileHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.RefreshSidebar"
                 class="com.gitlab.eclipse.handlers.RefreshSidebarHandler"
         />
@@ -815,6 +837,37 @@
                 <visibleWhen checkEnabled="false">
                     <with variable="gitlab.sidebarView">
                         <equals value="tree"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+
+        <!-- GitLab sidebar tree context menu. The menu itself is registered in
+             GitLabSidebarView.createPartControl (registerContextMenu under the view id),
+             so this locationURI must stay in sync with the view id. The handlers also
+             validate the selection themselves (and notify on mismatch); the visibleWhen
+             expressions here only keep irrelevant items out of the menu. -->
+        <menuContribution locationURI="popup:com.gitlab.eclipse.views.GitLabSidebarView">
+            <command
+                    commandId="com.gitlab.eclipse.commands.CheckoutMrBranch"
+                    label="Checkout Merge Request Branch">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <instanceof value="com.gitlab.eclipse.views.sidebar.MergeRequestNode"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.OpenMrFile"
+                    label="Open Merge Request File">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <instanceof value="com.gitlab.eclipse.views.sidebar.ChangedFileNode"/>
+                        </iterate>
                     </with>
                 </visibleWhen>
             </command>

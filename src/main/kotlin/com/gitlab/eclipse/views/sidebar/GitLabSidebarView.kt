@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import org.eclipse.jface.action.MenuManager
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.jface.viewers.ITreeViewerListener
 import org.eclipse.jface.viewers.TreeExpansionEvent
@@ -101,6 +102,15 @@ class GitLabSidebarView : ViewPart() {
     // Publish the tree selection to the workbench so selection-based command handlers
     // (e.g. CheckoutMrBranchHandler via HandlerUtil.getCurrentSelection) can see it.
     site.selectionProvider = viewer
+
+    // Context menu: registered under the view id (registerContextMenu's one-arg form), so
+    // plugin.xml menuContributions with locationURI "popup:<view id>" populate it. The
+    // manager rebuilds on every open (removeAllWhenShown), which is what lets the
+    // contributions' visibleWhen expressions re-evaluate against the current selection.
+    val menuManager = MenuManager()
+    menuManager.setRemoveAllWhenShown(true)
+    viewer.control.menu = menuManager.createContextMenu(viewer.control)
+    site.registerContextMenu(menuManager, viewer)
 
     viewer.addDoubleClickListener { event ->
       val node = (event.selection as? IStructuredSelection)?.firstElement as? SidebarNode
