@@ -13,4 +13,5 @@ val apiModule = module {
   single<IssueService> { IssueService(get()) }
   single<CurrentUserService> { CurrentUserService(get()) }
   single<MergeRequestService> { MergeRequestService(get()) }
+  single<ProjectDetailService> { ProjectDetailService(get()) }
 }

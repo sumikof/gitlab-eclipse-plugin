@@ -52,6 +52,16 @@ class MessageNode(override val label: String) : SidebarNode {
   override val children: List<SidebarNode> = emptyList()
 }
 
+/**
+ * Top-level section (PR-2, design doc §8.3) for the merge request open on the currently
+ * checked-out branch and the issues it would close. Rendered as a third pseudo-root
+ * alongside [buildRoots]'s two [QueryRootNode]s (Task 7 wires it into the view).
+ */
+class CurrentBranchSectionNode(override val children: List<SidebarNode>) : SidebarNode {
+  override val label: String = "For current branch"
+  override val activationUrl: String? = null
+}
+
 /** Kind of change a [ChangedFileNode] represents, mirroring GitLab diff status. */
 enum class ChangeType { NEW, DELETED, RENAMED, MODIFIED }
 
