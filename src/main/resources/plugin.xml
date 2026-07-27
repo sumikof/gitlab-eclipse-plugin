@@ -99,6 +99,24 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.OpenCurrentMergeRequest"
+                name="Open Current Merge Request"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CompareCurrentBranch"
+                name="Compare Current Branch"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.OpenCreateNewMR"
+                name="Create New Merge Request"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RefreshSidebar"
                 name="Refresh GitLab Sidebar"
                 categoryId="gitlab-eclipse-plugin">
@@ -438,6 +456,21 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergeRequestsAssignedToMe"
                 class="com.gitlab.eclipse.mergerequests.ShowMergeRequestsAssignedToMeHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenCurrentMergeRequest"
+                class="com.gitlab.eclipse.mergerequests.OpenCurrentMergeRequestHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CompareCurrentBranch"
+                class="com.gitlab.eclipse.mergerequests.CompareCurrentBranchHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenCreateNewMR"
+                class="com.gitlab.eclipse.mergerequests.OpenCreateNewMrHandler"
         />
 
         <handler
