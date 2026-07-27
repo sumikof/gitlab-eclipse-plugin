@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.utils
 
+import com.gitlab.eclipse.mergerequests.GitOperationGuard
 import com.gitlab.eclipse.preferences.PreferenceInitializer
 import com.gitlab.eclipse.views.sidebar.SidebarViewState
 import kotlinx.coroutines.CoroutineScope
@@ -26,4 +27,8 @@ fun workspaceModule(bundleContext: BundleContext) = module {
   // Shared between GitLabSidebarView and the sidebar mode-toggle handlers: both must
   // observe/mutate the SAME view state, so it lives here as a singleton.
   single { SidebarViewState() }
+
+  // Shared between MrBranchCheckoutService (checkout) and BranchPushService (push): the guard
+  // only serializes git operations per repository if BOTH services see the SAME instance.
+  single { GitOperationGuard() }
 }

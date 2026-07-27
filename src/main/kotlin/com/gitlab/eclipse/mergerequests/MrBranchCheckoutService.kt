@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.mergerequests
 
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.resources.IResource
 import org.eclipse.core.resources.ResourcesPlugin
@@ -58,7 +59,7 @@ sealed interface CheckoutResult {
  * a background thread.
  */
 class MrBranchCheckoutService(
-  private val guard: GitOperationGuard = GitOperationGuard(),
+  private val guard: GitOperationGuard = service(),
   private val auth: GitAuthConfigurer = GitAuthConfigurer(),
 ) {
   private val logger by lazy { logger<MrBranchCheckoutService>() }
