@@ -159,6 +159,33 @@ class SidebarViewModelChangedFilesTest : StringSpec({
     (nodes[1] as ChangedFileNode).newPath shouldBe "a.kt"
   }
 
+  "buildMrChildren: stamps the MR web URL on every ChangedFileNode (flat and in tree)" {
+    val v =
+      version(
+        listOf(
+          diff(oldPath = "src/main/A.kt", newPath = "src/main/A.kt"),
+          diff(oldPath = "README.md", newPath = "README.md"),
+        ),
+      )
+    val mrUrl = "https://gitlab.example.com/g/p/-/merge_requests/5"
+
+    val flat = vm.buildMrChildren(mrUrl, Result.success(v), SidebarViewMode.LIST)
+    val tree = vm.buildMrChildren(mrUrl, Result.success(v), SidebarViewMode.TREE)
+
+    flat.filterIsInstance<ChangedFileNode>().map { it.mrWebUrl }.toSet() shouldBe setOf(mrUrl)
+    val dir = tree.filterIsInstance<ChangedDirectoryNode>().single()
+    (dir.children.single() as ChangedFileNode).mrWebUrl shouldBe mrUrl
+    tree.filterIsInstance<ChangedFileNode>().single().mrWebUrl shouldBe mrUrl
+  }
+
+  "buildChangedFileNodes without an MR web URL leaves mrWebUrl null" {
+    val v = version(listOf(diff(oldPath = "a.kt", newPath = "a.kt")))
+
+    val nodes = vm.buildChangedFileNodes(v, SidebarViewMode.LIST)
+
+    (nodes[0] as ChangedFileNode).mrWebUrl shouldBe null
+  }
+
   "buildMrChildren: null version keeps Overview and shows 'No changed files'" {
     val nodes = vm.buildMrChildren("https://example.com/mr", Result.success(null), SidebarViewMode.TREE)
 

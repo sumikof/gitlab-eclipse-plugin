@@ -103,7 +103,7 @@ class SidebarViewModel {
   ): List<SidebarNode> =
     listOf(OverviewNode(webUrl)) +
       versionResult.fold(
-        onSuccess = { version -> buildChangedFileNodes(version, mode) },
+        onSuccess = { version -> buildChangedFileNodes(version, mode, webUrl) },
         onFailure = { error -> failureChildren(error) },
       )
 
@@ -112,11 +112,17 @@ class SidebarViewModel {
    * is a flat, diff-order list of [ChangedFileNode]s; [SidebarViewMode.TREE] groups them into a
    * [ChangedDirectoryNode] hierarchy via [buildChangedFileTree]. A `null` [version] (the MR
    * has no diff versions at all) renders the same "No changed files" message as empty diffs.
+   * [mrWebUrl] is the enclosing MR's web URL, stamped on each [ChangedFileNode] so
+   * `OpenMrFileHandler` can match the node back to a workspace repository.
    */
-  fun buildChangedFileNodes(version: GitLabMrVersion?, mode: SidebarViewMode): List<SidebarNode> {
+  fun buildChangedFileNodes(
+    version: GitLabMrVersion?,
+    mode: SidebarViewMode,
+    mrWebUrl: String? = null,
+  ): List<SidebarNode> {
     val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
-    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha) }
+    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl) }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
       SidebarViewMode.TREE -> buildChangedFileTree(fileNodes)
@@ -133,7 +139,11 @@ class SidebarViewModel {
   private fun nullSafeDiffs(version: GitLabMrVersion): List<GitLabMrVersion.Diff> =
     if (version.diffs == null) emptyList() else version.diffs
 
-  private fun toChangedFileNode(diff: GitLabMrVersion.Diff, headCommitSha: String?): ChangedFileNode {
+  private fun toChangedFileNode(
+    diff: GitLabMrVersion.Diff,
+    headCommitSha: String?,
+    mrWebUrl: String?,
+  ): ChangedFileNode {
     val changeType =
       when {
         diff.deletedFile -> ChangeType.DELETED
@@ -141,7 +151,7 @@ class SidebarViewModel {
         diff.renamedFile -> ChangeType.RENAMED
         else -> ChangeType.MODIFIED
       }
-    return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha)
+    return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl)
   }
 }
 

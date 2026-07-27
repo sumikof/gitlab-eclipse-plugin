@@ -98,16 +98,21 @@ class CurrentBranchSectionNode(override val children: List<SidebarNode>) : Sideb
 enum class ChangeType { NEW, DELETED, RENAMED, MODIFIED }
 
 /**
- * PR-3 extension point (design doc §7.2): leaf node for a single changed file in a
- * merge-request diff view. Declared now — and included in the sealed hierarchy — so
- * `SidebarContentProvider` (which walks `node.children` generically) does not need to
- * change when PR-3 starts producing these. Unused in PR-1.
+ * Leaf node for a single changed file in a merge-request diff view (design doc §7.2).
+ *
+ * [mrWebUrl] is the enclosing merge request's web URL, carried on the node because JFace
+ * tree selections are flat (the PR-1 content provider's `getParent` returns null, so a
+ * handler cannot walk from a selected file back to its [MergeRequestNode]): it is what
+ * `OpenMrFileHandler` matches against a workspace repository's project web URL. [diffHeadSha]
+ * is the diff version's head commit — the handler refuses to open a file unless the matched
+ * repository's HEAD is exactly this commit.
  */
 class ChangedFileNode(
   val oldPath: String?,
   val newPath: String?,
   val changeType: ChangeType,
   val diffHeadSha: String?,
+  val mrWebUrl: String? = null,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()
