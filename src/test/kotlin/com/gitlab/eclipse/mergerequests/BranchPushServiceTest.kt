@@ -5,12 +5,16 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldStartWith
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.PushCommand
 import org.eclipse.jgit.api.ResetCommand
 import org.eclipse.jgit.revwalk.RevCommit
+import org.eclipse.jgit.transport.RefSpec
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import java.io.File
 import java.nio.file.Files
@@ -135,6 +139,58 @@ class BranchPushServiceTest : DescribeSpec({
 
       outcome shouldBe PushOutcome.Busy
       fixture.remoteGit.repository.resolve("refs/heads/master").shouldBeNull()
+    }
+
+    it("selects credentials from the push URL, not the fetch URL, when pushurl is set") {
+      val fixture = pushFixture()
+      // Fetch url is an unrelated SSH host; the actual push destination is the bare file remote.
+      // The service must key auth off the push destination — proven here by capturing the URI
+      // handed to applyAuth (a file: URI, never the ssh: fetch url).
+      val config = fixture.localGit.repository.config
+      config.setString("remote", "origin", "url", "ssh://git@ssh.gitlab.example.com/g/p.git")
+      config.setString("remote", "origin", "pushurl", fixture.remoteDir.toURI().toString())
+      config.save()
+
+      val capturedUri = slot<String>()
+      val auth = mockk<GitAuthConfigurer> {
+        every { applyAuth(any<PushCommand>(), capture(capturedUri), any()) } answers { firstArg() }
+      }
+      val outcome = BranchPushService(GitOperationGuard(), auth).push(fixture.context, "master")
+
+      outcome shouldBe PushOutcome.Ok
+      capturedUri.captured shouldStartWith "file:"
+    }
+
+    it("returns Rejected when a later push destination rejects even though the first accepts") {
+      val fixture = pushFixture()
+      // A second bare remote whose master already holds an UNRELATED commit, so pushing the local
+      // history to it is a non-fast-forward while the first (empty) remote accepts the same push.
+      val remoteBDir = tempDir("push-remote-b")
+      Git.init().setBare(true).setInitialBranch("master").setDirectory(remoteBDir).call()
+      val seedDir = tempDir("push-seed")
+      val seedGit = Git.init().setInitialBranch("master").setDirectory(seedDir).call()
+      seedGit.repository.config.apply {
+        setString("remote", "b", "url", remoteBDir.toURI().toString())
+        save()
+      }
+      commit(seedGit, seedDir, "unrelated.txt", "x")
+      seedGit.push().setRemote("b").setRefSpecs(RefSpec("refs/heads/master:refs/heads/master")).call()
+
+      // origin pushes to BOTH the empty remote (accepts) and the seeded remote (rejects).
+      val config = fixture.localGit.repository.config
+      config.setStringList(
+        "remote",
+        "origin",
+        "pushurl",
+        listOf(fixture.remoteDir.toURI().toString(), remoteBDir.toURI().toString()),
+      )
+      config.save()
+
+      val outcome = service().push(fixture.context, "master")
+
+      outcome.shouldBeInstanceOf<PushOutcome.Rejected>()
+      // Upstream config must NOT be written on a partial failure.
+      config.getString("branch", "master", "remote").shouldBeNull()
     }
 
     it("never throws: a bogus git directory maps to Failed") {

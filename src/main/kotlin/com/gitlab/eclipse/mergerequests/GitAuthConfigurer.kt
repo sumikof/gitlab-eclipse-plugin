@@ -31,16 +31,19 @@ class GitAuthConfigurer(private val tokenManager: GitLabTokenProviderManager = s
   private val sshSessionFactory: SshdSessionFactory by lazy { SshdSessionFactory() }
 
   /**
-   * True iff [remoteUri] is an http/https URL whose host equals the host of [instanceUrl]
-   * (case-insensitive). Scheme differences between remote and instance are ignored as long as
-   * the remote itself is http(s). SSH (`ssh://...`) and scp-like (`git@host:path`) remotes,
-   * blank input, and anything unparseable are never a match.
+   * True iff [remoteUri] and [instanceUrl] are http(s) URLs sharing the same secure origin —
+   * identical scheme, host (case-insensitive), and effective port (the scheme default, 443/80,
+   * when none is given). Requiring a scheme match means the `oauth2:<token>` credential is never
+   * attached to an `http://` remote when the instance is `https://` (no plaintext token leak on
+   * an HTTP downgrade), and requiring a port match keeps a different port on the same host in a
+   * separate credential scope. SSH (`ssh://...`) and scp-like (`git@host:path`) remotes, blank
+   * input, and anything unparseable are never a match.
    */
   internal fun hostMatchesInstance(remoteUri: String, instanceUrl: String): Boolean {
     if (remoteUri.isBlank() || instanceUrl.isBlank()) return false
-    val remoteHost = httpHostOf(remoteUri) ?: return false
-    val instanceHost = parseUri(instanceUrl)?.host ?: return false
-    return remoteHost.equals(instanceHost, ignoreCase = true)
+    val remoteOrigin = httpOriginOf(remoteUri) ?: return false
+    val instanceOrigin = httpOriginOf(instanceUrl) ?: return false
+    return remoteOrigin == instanceOrigin
   }
 
   /**
@@ -75,11 +78,16 @@ class GitAuthConfigurer(private val tokenManager: GitLabTokenProviderManager = s
     return command
   }
 
-  private fun httpHostOf(uri: String): String? {
+  /** Scheme/host/effective-port of an http(s) URI; null for non-http(s), host-less, or unparseable input. */
+  private data class HttpOrigin(val scheme: String, val host: String, val port: Int)
+
+  private fun httpOriginOf(uri: String): HttpOrigin? {
     val parsed = parseUri(uri) ?: return null
     val scheme = parsed.scheme?.lowercase() ?: return null
     if (scheme != "http" && scheme != "https") return null
-    return parsed.host
+    val host = parsed.host?.lowercase() ?: return null
+    val port = if (parsed.port != -1) parsed.port else if (scheme == "https") HTTPS_PORT else HTTP_PORT
+    return HttpOrigin(scheme, host, port)
   }
 
   private fun parseUri(value: String): URI? =
@@ -92,5 +100,7 @@ class GitAuthConfigurer(private val tokenManager: GitLabTokenProviderManager = s
   private companion object {
     /** GitLab's fixed username for token-over-HTTPS git auth (`oauth2:<token>`). */
     const val OAUTH2_USERNAME = "oauth2"
+    const val HTTPS_PORT = 443
+    const val HTTP_PORT = 80
   }
 }

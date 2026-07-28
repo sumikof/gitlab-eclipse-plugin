@@ -31,8 +31,20 @@ class GitAuthConfigurerTest : StringSpec({
     configurer().hostMatchesInstance("https://other.example.com/group/proj.git", instance) shouldBe false
   }
 
-  "hostMatchesInstance: http remote with same host matches (scheme difference ignored)" {
-    configurer().hostMatchesInstance("http://gitlab.example.com/group/proj.git", instance) shouldBe true
+  "hostMatchesInstance: http remote does NOT match an https instance (no plaintext token leak)" {
+    configurer().hostMatchesInstance("http://gitlab.example.com/group/proj.git", instance) shouldBe false
+  }
+
+  "hostMatchesInstance: http remote matches an http instance (schemes equal)" {
+    configurer().hostMatchesInstance("http://gitlab.example.com/g/p.git", "http://gitlab.example.com") shouldBe true
+  }
+
+  "hostMatchesInstance: explicit default port matches the implied default port" {
+    configurer().hostMatchesInstance("https://gitlab.example.com:443/g/p.git", instance) shouldBe true
+  }
+
+  "hostMatchesInstance: a different port on the same host does not match" {
+    configurer().hostMatchesInstance("https://gitlab.example.com:8443/g/p.git", instance) shouldBe false
   }
 
   "hostMatchesInstance: scp-like remote is not an HTTP remote" {

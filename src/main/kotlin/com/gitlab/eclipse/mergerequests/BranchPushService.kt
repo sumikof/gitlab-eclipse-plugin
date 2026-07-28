@@ -5,6 +5,7 @@ import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.StoredConfig
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.transport.RefSpec
+import org.eclipse.jgit.transport.RemoteConfig
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import java.io.File
 
@@ -58,25 +59,32 @@ class BranchPushService(
       PushOutcome.Failed(e)
     }
 
-  /** Runs inside the guard: open repo → push the one refspec → gate on the ref's status →
-   *  set upstream config only on success. */
+  /** Runs inside the guard: open repo → push the one refspec → gate on EVERY destination's ref
+   *  status → set upstream config only when all destinations succeed. */
   private fun doPush(context: RepositoryContext, branch: String): PushOutcome =
     FileRepositoryBuilder().setGitDir(File(context.gitDir)).setMustExist(true).build().use { repo ->
-      val remoteUrl = repo.config.getString("remote", context.remoteName, "url").orEmpty()
+      // Select credentials from the actual push destination: JGit pushes to `remote.<name>.pushurl`
+      // when set (falling back to `remote.<name>.url`), so keying auth off the fetch `url` would
+      // send no token to an HTTPS pushurl — or leak the GitLab token to an unrelated pushurl host.
+      val remoteConfig = RemoteConfig(repo.config, context.remoteName)
+      val pushUrl = (remoteConfig.getPushURIs().firstOrNull() ?: remoteConfig.getURIs().firstOrNull())?.toString().orEmpty()
       val refName = "$REFS_HEADS$branch"
       val push = Git(repo).push()
         .setRemote(context.remoteName)
         .setRefSpecs(RefSpec("$refName:$refName"))
-      val results = auth.applyAuth(push, remoteUrl, context.instanceUrl).call()
-      // A push can span several transport URIs (one PushResult each); the update for our ref
-      // is the first non-null across them.
-      val update = results.asSequence().mapNotNull { it.getRemoteUpdate(refName) }.firstOrNull()
-      when (update?.status) {
-        RemoteRefUpdate.Status.OK, RemoteRefUpdate.Status.UP_TO_DATE -> {
+      val results = auth.applyAuth(push, pushUrl, context.instanceUrl).call()
+      // A push can span several transport URIs (one PushResult each). Success requires the ref
+      // update to be OK/UP_TO_DATE at EVERY destination: one accepting URI must not mask a
+      // rejection from another (e.g. a protected mirror), which would wrongly open the MR page.
+      val updates = results.mapNotNull { it.getRemoteUpdate(refName) }
+      val rejected = updates.firstOrNull { !it.status.isAccepted() }
+      when {
+        updates.isEmpty() -> PushOutcome.Rejected(null)
+        rejected != null -> PushOutcome.Rejected(rejected.status)
+        else -> {
           setUpstream(repo.config, branch, context.remoteName, refName)
           PushOutcome.Ok
         }
-        else -> PushOutcome.Rejected(update?.status)
       }
     }
 
@@ -91,6 +99,10 @@ class BranchPushService(
     config.setString("branch", branch, "merge", refName)
     config.save()
   }
+
+  /** A ref update whose server-side result is a success (created/updated or already current). */
+  private fun RemoteRefUpdate.Status?.isAccepted(): Boolean =
+    this == RemoteRefUpdate.Status.OK || this == RemoteRefUpdate.Status.UP_TO_DATE
 
   private companion object {
     const val REFS_HEADS = "refs/heads/"
