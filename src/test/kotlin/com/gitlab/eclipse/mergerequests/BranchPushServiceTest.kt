@@ -5,13 +5,10 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.string.shouldStartWith
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.slot
 import org.eclipse.jgit.api.Git
-import org.eclipse.jgit.api.PushCommand
 import org.eclipse.jgit.api.ResetCommand
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.transport.RefSpec
@@ -141,24 +138,20 @@ class BranchPushServiceTest : DescribeSpec({
       fixture.remoteGit.repository.resolve("refs/heads/master").shouldBeNull()
     }
 
-    it("selects credentials from the push URL, not the fetch URL, when pushurl is set") {
+    it("pushes to remote.<name>.pushurl, not the fetch url (per-transport auth does not break it)") {
       val fixture = pushFixture()
-      // Fetch url is an unrelated SSH host; the actual push destination is the bare file remote.
-      // The service must key auth off the push destination — proven here by capturing the URI
-      // handed to applyAuth (a file: URI, never the ssh: fetch url).
+      // Fetch url points nowhere; the real bare remote is the pushurl. JGit pushes only to the
+      // pushurl, and a successful push proves the per-transport auth (GitAuthConfigurer scopes
+      // credentials off each transport's own URI) leaves this file: destination working.
       val config = fixture.localGit.repository.config
-      config.setString("remote", "origin", "url", "ssh://git@ssh.gitlab.example.com/g/p.git")
+      config.setString("remote", "origin", "url", "https://gitlab.invalid/nonexistent.git")
       config.setString("remote", "origin", "pushurl", fixture.remoteDir.toURI().toString())
       config.save()
 
-      val capturedUri = slot<String>()
-      val auth = mockk<GitAuthConfigurer> {
-        every { applyAuth(any<PushCommand>(), capture(capturedUri), any()) } answers { firstArg() }
-      }
-      val outcome = BranchPushService(GitOperationGuard(), auth).push(fixture.context, "master")
+      val outcome = service().push(fixture.context, "master")
 
       outcome shouldBe PushOutcome.Ok
-      capturedUri.captured shouldStartWith "file:"
+      fixture.remoteGit.repository.resolve("refs/heads/master")?.name shouldBe fixture.c1.name
     }
 
     it("returns Rejected when a later push destination rejects even though the first accepts") {

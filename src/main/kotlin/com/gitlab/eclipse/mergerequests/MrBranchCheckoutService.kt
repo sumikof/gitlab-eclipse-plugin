@@ -128,11 +128,11 @@ class MrBranchCheckoutService(
   /** Fetches ONLY the MR source branch, with a forced explicit refspec into the remote-tracking
    *  ref so [fetchAndCheckout] can verify exactly what arrived. */
   private fun fetchSourceBranch(repo: Repository, context: RepositoryContext, sourceBranch: String) {
-    val remoteUrl = repo.config.getString("remote", context.remoteName, "url").orEmpty()
     val refSpec =
       RefSpec("+refs/heads/$sourceBranch:refs/remotes/${context.remoteName}/$sourceBranch")
     val fetch = Git(repo).fetch().setRemote(context.remoteName).setRefSpecs(refSpec)
-    auth.applyAuth(fetch, remoteUrl, context.instanceUrl).call()
+    // Credentials are scoped per transport by GitAuthConfigurer against the fetch transport's URI.
+    auth.applyAuth(fetch, context.instanceUrl).call()
   }
 
   /**

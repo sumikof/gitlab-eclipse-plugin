@@ -59,22 +59,33 @@ class GitAuthConfigurer(private val tokenManager: GitLabTokenProviderManager = s
   }
 
   /**
-   * Callback that installs the plugin-owned [sshSessionFactory] on SSH transports only, leaving
-   * all other transports untouched. Never mutates JGit's process-wide static SSH factory.
+   * Per-transport configuration callback. JGit invokes it once for EACH transport a command
+   * opens, so credentials are scoped to that transport's own URI rather than applied blanket to
+   * the whole command:
+   *  - SSH transports get the plugin-owned [sshSessionFactory] (never JGit's process-wide static).
+   *  - A transport whose URI is the GitLab instance over HTTPS gets the `oauth2:<token>` provider.
+   *  - Every other transport is left untouched, so JGit keeps its default credentials provider —
+   *    the token is never handed to another host (even a second `pushurl`), and destinations with
+   *    the user's own stored credentials still authenticate.
    */
-  fun transportConfigCallback(): TransportConfigCallback = TransportConfigCallback { transport ->
+  fun transportConfigCallback(instanceUrl: String): TransportConfigCallback = TransportConfigCallback { transport ->
     if (transport is SshTransport) {
       transport.sshSessionFactory = sshSessionFactory
+    }
+    credentialsProviderFor(transport.uri.toString(), instanceUrl)?.let { provider ->
+      transport.setCredentialsProvider(provider)
     }
   }
 
   /**
-   * Single entry point for fetch/push/etc: applies [credentialsProviderFor] (possibly null) and
-   * [transportConfigCallback] to [command] and returns it for chaining.
+   * Single entry point for fetch/push/etc: wires the per-transport [transportConfigCallback] onto
+   * [command] and returns it for chaining. Deliberately does NOT set a command-level credentials
+   * provider — a single provider would be applied to every transport the command opens (leaking
+   * the token to other hosts on multi-URL remotes) and would replace JGit's default provider with
+   * null on non-matching destinations. Credentials are scoped per transport in the callback.
    */
-  fun <C : TransportCommand<C, *>> applyAuth(command: C, remoteUri: String, instanceUrl: String): C {
-    command.setCredentialsProvider(credentialsProviderFor(remoteUri, instanceUrl))
-    command.setTransportConfigCallback(transportConfigCallback())
+  fun <C : TransportCommand<C, *>> applyAuth(command: C, instanceUrl: String): C {
+    command.setTransportConfigCallback(transportConfigCallback(instanceUrl))
     return command
   }
 

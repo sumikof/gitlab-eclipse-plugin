@@ -5,7 +5,6 @@ import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.StoredConfig
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.transport.RefSpec
-import org.eclipse.jgit.transport.RemoteConfig
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import java.io.File
 
@@ -63,16 +62,15 @@ class BranchPushService(
    *  status → set upstream config only when all destinations succeed. */
   private fun doPush(context: RepositoryContext, branch: String): PushOutcome =
     FileRepositoryBuilder().setGitDir(File(context.gitDir)).setMustExist(true).build().use { repo ->
-      // Select credentials from the actual push destination: JGit pushes to `remote.<name>.pushurl`
-      // when set (falling back to `remote.<name>.url`), so keying auth off the fetch `url` would
-      // send no token to an HTTPS pushurl — or leak the GitLab token to an unrelated pushurl host.
-      val remoteConfig = RemoteConfig(repo.config, context.remoteName)
-      val pushUrl = (remoteConfig.getPushURIs().firstOrNull() ?: remoteConfig.getURIs().firstOrNull())?.toString().orEmpty()
+      // Credentials are scoped per transport by GitAuthConfigurer: JGit opens one transport per
+      // push URI (`remote.<name>.pushurl` when set, else `url`), and each is handed the token only
+      // if its own URI is the GitLab instance over HTTPS — so a second pushurl on another host is
+      // never handed the token and a GitLab pushurl always authenticates, regardless of order.
       val refName = "$REFS_HEADS$branch"
       val push = Git(repo).push()
         .setRemote(context.remoteName)
         .setRefSpecs(RefSpec("$refName:$refName"))
-      val results = auth.applyAuth(push, pushUrl, context.instanceUrl).call()
+      val results = auth.applyAuth(push, context.instanceUrl).call()
       // A push can span several transport URIs (one PushResult each). Success requires the ref
       // update to be OK/UP_TO_DATE at EVERY destination: one accepting URI must not mask a
       // rejection from another (e.g. a protected mirror), which would wrongly open the MR page.

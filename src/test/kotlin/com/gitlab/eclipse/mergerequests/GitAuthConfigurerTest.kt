@@ -5,13 +5,13 @@ import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
-import io.mockk.Called
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.eclipse.jgit.api.FetchCommand
 import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
+import org.eclipse.jgit.transport.URIish
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 
 class GitAuthConfigurerTest : StringSpec({
@@ -88,34 +88,56 @@ class GitAuthConfigurerTest : StringSpec({
     configurer(token = "").credentialsProviderFor("https://gitlab.example.com/g/p.git", instance).shouldBeNull()
   }
 
-  // --- transportConfigCallback ---
+  // --- transportConfigCallback (per-transport, keyed off each transport's own URI) ---
 
-  "transportConfigCallback: sets plugin-owned ssh session factory on SshTransport only" {
-    val ssh = mockk<SshTransport>(relaxed = true)
-    configurer().transportConfigCallback().configure(ssh)
+  "transportConfigCallback: sets plugin ssh factory on an SSH transport and no token (ssh URI)" {
+    val ssh = mockk<SshTransport>(relaxed = true) {
+      every { uri } returns URIish("ssh://git@gitlab.example.com/g/p.git")
+    }
+    configurer().transportConfigCallback(instance).configure(ssh)
     verify(exactly = 1) { ssh.setSshSessionFactory(any()) }
+    verify(exactly = 0) { ssh.setCredentialsProvider(any()) }
   }
 
-  "transportConfigCallback: leaves non-ssh transport untouched" {
-    val plain = mockk<Transport>()
-    configurer().transportConfigCallback().configure(plain)
-    verify { plain wasNot Called }
+  "transportConfigCallback: sets oauth2 credentials on a GitLab HTTPS transport, no ssh factory" {
+    val http = mockk<Transport>(relaxed = true) {
+      every { uri } returns URIish("https://gitlab.example.com/g/p.git")
+    }
+    configurer().transportConfigCallback(instance).configure(http)
+    verify(exactly = 1) { http.setCredentialsProvider(any<UsernamePasswordCredentialsProvider>()) }
+  }
+
+  "transportConfigCallback: leaves a non-GitLab HTTPS transport's default provider intact" {
+    val http = mockk<Transport>(relaxed = true) {
+      every { uri } returns URIish("https://other.example.com/g/p.git")
+    }
+    configurer().transportConfigCallback(instance).configure(http)
+    verify(exactly = 0) { http.setCredentialsProvider(any()) }
+  }
+
+  "transportConfigCallback: an http downgrade of an https instance gets no token" {
+    val http = mockk<Transport>(relaxed = true) {
+      every { uri } returns URIish("http://gitlab.example.com/g/p.git")
+    }
+    configurer().transportConfigCallback(instance).configure(http)
+    verify(exactly = 0) { http.setCredentialsProvider(any()) }
+  }
+
+  "transportConfigCallback: empty token yields no credentials even on the GitLab host" {
+    val http = mockk<Transport>(relaxed = true) {
+      every { uri } returns URIish("https://gitlab.example.com/g/p.git")
+    }
+    configurer(token = "").transportConfigCallback(instance).configure(http)
+    verify(exactly = 0) { http.setCredentialsProvider(any()) }
   }
 
   // --- applyAuth ---
 
-  "applyAuth: sets credentials provider and transport config callback, returns command" {
+  "applyAuth: wires the transport-config callback and never sets a command-level provider" {
     val command = mockk<FetchCommand>(relaxed = true)
-    val result = configurer().applyAuth(command, "https://gitlab.example.com/g/p.git", instance)
+    val result = configurer().applyAuth(command, instance)
     result shouldBe command
-    verify(exactly = 1) { command.setCredentialsProvider(any<UsernamePasswordCredentialsProvider>()) }
     verify(exactly = 1) { command.setTransportConfigCallback(any()) }
-  }
-
-  "applyAuth: sets null credentials provider for non-matching host but still sets callback" {
-    val command = mockk<FetchCommand>(relaxed = true)
-    configurer().applyAuth(command, "git@gitlab.example.com:g/p.git", instance)
-    verify(exactly = 1) { command.setCredentialsProvider(isNull()) }
-    verify(exactly = 1) { command.setTransportConfigCallback(any()) }
+    verify(exactly = 0) { command.setCredentialsProvider(any()) }
   }
 })
