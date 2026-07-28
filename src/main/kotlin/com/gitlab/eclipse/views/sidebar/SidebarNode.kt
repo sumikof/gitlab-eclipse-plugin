@@ -39,12 +39,49 @@ class IssueNode(issue: GitLabIssue) : SidebarNode {
   override val activationUrl: String? = url
 }
 
-/** Leaf node representing a single GitLab merge request. */
-class MergeRequestNode(mr: GitLabMergeRequest) : SidebarNode {
+/** Shown under a [MergeRequestNode] until its changed files have been fetched. */
+private const val MR_LOADING_MESSAGE = "Loading…"
+
+/**
+ * Expandable node representing a single GitLab merge request. Its children — an
+ * [OverviewNode] plus the changed files of the MR's latest diff version — are fetched
+ * lazily by [GitLabSidebarView] on first expansion; until then a stable "Loading…"
+ * placeholder renders, which also makes [SidebarContentProvider.hasChildren] report
+ * `true` so the expander (twistie) shows before anything is loaded.
+ */
+class MergeRequestNode(val mr: GitLabMergeRequest) : SidebarNode {
   val url: String = mr.webUrl
   override val label: String = "${mr.references?.full ?: "!${mr.iid}"}  ${mr.title}"
+
+  // Non-activatable: the node expands to show its "Overview" child (which opens the MR
+  // in the browser) + changed files. Keeping activationUrl null avoids a double-click
+  // both toggling expansion and opening a browser tab. `url` is still used to build the
+  // Overview node and to resolve the MR's repo (VSCode parity: MR node expands, Overview opens).
+  override val activationUrl: String? = null
+
+  /**
+   * Lazily-loaded children, written by the view on the SWT UI thread only (same
+   * discipline as the view's result caches). `null` = not loaded yet.
+   */
+  var loadedChildren: List<SidebarNode>? = null
+
+  // One stable instance: JFace tracks tree elements by identity, so returning a fresh
+  // MessageNode from every children read would churn the widget mapping.
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(MR_LOADING_MESSAGE))
+
+  override val children: List<SidebarNode>
+    get() = loadedChildren ?: loadingPlaceholder
+}
+
+/**
+ * First child of an expanded [MergeRequestNode] (VSCode parity: the "Overview" item):
+ * activating it opens the merge request's overview page in the browser. A dedicated type —
+ * rather than reusing [MessageNode] — keeps MessageNode's "never activatable" contract intact.
+ */
+class OverviewNode(webUrl: String) : SidebarNode {
+  override val label: String = "Overview"
   override val children: List<SidebarNode> = emptyList()
-  override val activationUrl: String? = url
+  override val activationUrl: String? = webUrl
 }
 
 /** Non-activatable informational leaf (loading / error / empty-state placeholder). */
@@ -66,16 +103,21 @@ class CurrentBranchSectionNode(override val children: List<SidebarNode>) : Sideb
 enum class ChangeType { NEW, DELETED, RENAMED, MODIFIED }
 
 /**
- * PR-3 extension point (design doc §7.2): leaf node for a single changed file in a
- * merge-request diff view. Declared now — and included in the sealed hierarchy — so
- * `SidebarContentProvider` (which walks `node.children` generically) does not need to
- * change when PR-3 starts producing these. Unused in PR-1.
+ * Leaf node for a single changed file in a merge-request diff view (design doc §7.2).
+ *
+ * [mrWebUrl] is the enclosing merge request's web URL, carried on the node because JFace
+ * tree selections are flat (the PR-1 content provider's `getParent` returns null, so a
+ * handler cannot walk from a selected file back to its [MergeRequestNode]): it is what
+ * `OpenMrFileHandler` matches against a workspace repository's project web URL. [diffHeadSha]
+ * is the diff version's head commit — the handler refuses to open a file unless the matched
+ * repository's HEAD is exactly this commit.
  */
 class ChangedFileNode(
   val oldPath: String?,
   val newPath: String?,
   val changeType: ChangeType,
   val diffHeadSha: String?,
+  val mrWebUrl: String? = null,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()

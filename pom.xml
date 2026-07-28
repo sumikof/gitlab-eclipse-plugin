@@ -135,6 +135,12 @@
             <url>https://download.eclipse.org/releases/2024-09</url>
         </repository>
         <repository>
+            <id>egit</id>
+            <layout>p2</layout>
+            <!-- Pinned versioned EGit repo (matches the jgit core 7.5.0 Maven pin); rolling /egit/updates/ 404s when a release rolls -->
+            <url>https://download.eclipse.org/egit/updates-7.5/</url>
+        </repository>
+        <repository>
             <id>gitlab-maven</id>
             <url>https://gitlab.com/api/v4/groups/${gitlabGroupId}/packages/maven</url>
         </repository>

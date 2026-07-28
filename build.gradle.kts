@@ -177,6 +177,9 @@ val eclipseDependencies = mapOf(
   "org.eclipse.jface.text" to "0.0.0",
   "org.eclipse.jface.notifications" to "0.0.0",
   "org.eclipse.jgit" to "[7.0.0,8.0.0)",
+  // SSH transport: open version so it resolves from the runtime EGit/JGit (same as jgit core); do NOT pin — see PR notes / U-10
+  "org.eclipse.jgit.ssh.apache" to "0.0.0",
+  "org.apache.sshd.osgi" to "0.0.0",
   "org.eclipse.jdt.core" to "0.0.0",
   "com.google.gson" to "2.11.0",
 )
@@ -185,7 +188,9 @@ p2deps {
   into(listOf("compileOnly", "testImplementation")) {
     p2repo("https://download.eclipse.org/eclipse/updates/$eclipseRelease/")
     p2repo("https://download.eclipse.org/lsp4e/releases/latest/")
-    p2repo("https://download.eclipse.org/egit/updates/")
+    // Pinned versioned EGit repo (build-time compile only; matches the Maven jgit core 7.5.0 pin).
+    // The rolling .../egit/updates/ URL 404s stale p2 caches when EGit rolls a release.
+    p2repo("https://download.eclipse.org/egit/updates-7.5/")
 
     eclipseDependencies.forEach {
       install(it.key)
