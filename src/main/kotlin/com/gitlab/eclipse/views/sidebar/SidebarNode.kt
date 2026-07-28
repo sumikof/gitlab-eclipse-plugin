@@ -52,7 +52,12 @@ private const val MR_LOADING_MESSAGE = "Loading…"
 class MergeRequestNode(val mr: GitLabMergeRequest) : SidebarNode {
   val url: String = mr.webUrl
   override val label: String = "${mr.references?.full ?: "!${mr.iid}"}  ${mr.title}"
-  override val activationUrl: String? = url
+
+  // Non-activatable: the node expands to show its "Overview" child (which opens the MR
+  // in the browser) + changed files. Keeping activationUrl null avoids a double-click
+  // both toggling expansion and opening a browser tab. `url` is still used to build the
+  // Overview node and to resolve the MR's repo (VSCode parity: MR node expands, Overview opens).
+  override val activationUrl: String? = null
 
   /**
    * Lazily-loaded children, written by the view on the SWT UI thread only (same
