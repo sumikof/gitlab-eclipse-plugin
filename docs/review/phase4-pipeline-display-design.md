@@ -170,12 +170,13 @@ VSCode `ci_status_metadata.ts` の忠実移植(name + priority のみ、icon/con
 
 **MR とパイプラインを独立した結果として合成(Codex #3 反映・確定)**: 現行 `buildCurrentBranchSection(result: Result<CurrentBranchInfo>)` は単一 Result で、MR が null だと即「No merge request found」を返す。ここにパイプラインを相乗りさせると (a) MR 無し=パイプラインも消える、(b) パイプライン/ジョブ失敗で MR・closing issues も失われ FR-1/NFR-2/AC-5 に違反する。したがって **MR とパイプラインを別タスク・別 `Result` として取得し、節ビルドで独立合成**する。
 
-**プリステップの終端状態を分離(Codex R5 反映・確定)**: 現行 `applyResults` は `currentBranchResult == null` を **「リポジトリ未解決 = Select a repository」**として扱う(`GitLabSidebarView:205-210`)。増分描画で `null` を「未完了(Loading)」に再利用すると衝突し、さらに**プリステップ自体が失敗/リポジトリ未解決だと sibling が起動されず永久に "Loading…"** になる。したがって節入力を sealed 型にし、「未解決」「プリステップ失敗」「解決済み(増分)」を区別する:
+**プリステップの終端状態を分離(Codex R5/R6 反映・確定)**: 現行 `applyResults` は `currentBranchResult == null` を **「リポジトリ未解決 = Select a repository」**として扱う(`GitLabSidebarView:205-210`)。増分描画で `null` を「未完了(Loading)」に再利用すると衝突し、さらに**プリステップが sibling を起動できないケースだと永久に "Loading…"** になる。したがって節入力を sealed 型にし、「未解決」と「解決済み(増分)」を区別する。
+
+**プリステップ API は never-throw(Codex R6 で確認・確定)**: `CurrentBranchGitReader.read` は `catch (e: Exception)` で全例外を握り潰し all-null の `CurrentBranch` を返す(`CurrentBranchGitReader:57-60`)。`RepositoryContextResolver.resolveNonInteractive`/`candidateContexts` は解決失敗を `mapNotNull`/`catch` で `null` に畳む(`RepositoryContextResolver:48-55,100-167`)。この never-throw は Phase 3 の意図的契約(共有 CoroutineScope 保護)。したがって **git dir 破損・remote 解決失敗は「例外」ではなく `null` context(→ 未解決)または all-null branch(→ detached=パイプライン無し)として現れる**。よって当初案の `PreStepFailure` 状態は**到達不能なので設けない**(返却値も detached と破損を区別できないため分類も不可能)。失敗を config-aware エラーとして明示表示するには never-throw 契約を変える失敗保持 API が必要で、**PR-1 対象外(後続候補)**。
 ```
 sealed interface CurrentBranchSectionInput
-object NoRepository : CurrentBranchSectionInput          // 非対話でリポジトリ未解決(現行踏襲)
-data class PreStepFailure(val error: Throwable) : ...    // context 解決 or branch 読取の失敗(R2-1 で前出し)
-data class Resolved(                                      // プリステップ成功 → 増分描画
+object NoRepository : CurrentBranchSectionInput          // context null(未解決。解決失敗も既存挙動でここに畳まれる)
+data class Resolved(                                      // context 解決 → 増分描画
   val mr: Result<CurrentBranchInfo>?,        // null = MR タスク未完了(Loading)
   val pipeline: Result<PipelineSnapshot?>?,  // null = パイプラインタスク未完了(Loading)
 ) : CurrentBranchSectionInput
@@ -183,15 +184,14 @@ data class Resolved(                                      // プリステップ�
 ```
 `buildCurrentBranchSection(input: CurrentBranchSectionInput): SidebarNode`:
 - `NoRepository` → `CurrentBranchSectionNode(listOf(MessageNode(SELECT_REPOSITORY_MESSAGE)))`(現行の "Select a repository" を保持)。
-- `PreStepFailure` → `CurrentBranchSectionNode(failureChildren(error))`(config-aware エラー文言。§8.1)。
 - `Resolved` → 増分合成(children = `pipelineChildren + mrChildren`、表示順は U-3):
   - `pipelineChildren`: `mr/pipeline` の `null`(未完了)→ `MessageNode("Loading…")` / 成功&値null → 行なし(FR-5) / 成功&非null → `buildPipelineNode(pipeline, jobsResult)`(ジョブ失敗はパイプライン行を残す §6.5)/ 失敗 → `MessageNode`(§8.1 分類)。
   - `mrChildren`: `null`(未完了)→ `MessageNode("Loading…")` / それ以外は現行 `currentBranchChildren(mr)` を不変で流用。
 
-**適用経路**: プリステップは (context 解決 + branch 読取 + effectiveRef 算出) を `runCatching` で包み、
-- 未解決(context null)→ 即 `asyncExec` で `NoRepository` を適用(siblings 起動せず・Loading にしない)。
-- 失敗 → 即 `asyncExec` で `PreStepFailure(e)` を適用。
-- 成功 → siblings 起動 + 初回 `asyncExec` で `Resolved(null, null)`(両 Loading)を適用し、各タスク完了ごとに `Resolved(latestMr, latestPipeline)` を適用。
+**適用経路**: プリステップ = context 解決 + branch 読取 + effectiveRef 算出(いずれも never-throw)。
+- context null(未解決)→ 即 `asyncExec` で `NoRepository` を適用(siblings 起動せず・Loading にしない)。破損 git dir は all-null branch(detached)として `Resolved` 側で「パイプライン無し」になり、これも Loading に留まらない。
+- context 解決 → siblings 起動 + 初回 `asyncExec` で `Resolved(null, null)`(両 Loading)を適用し、各タスク完了ごとに `Resolved(latestMr, latestPipeline)` を適用。
+- 防御的に、万一プリステップが将来例外を投げても(現契約では起きない)最上位 `try/catch` で捕捉しログして `NoRepository` に落とす(永久 Loading を作らない)。
 
 **ブランチ snapshot は sibling 起動前に一度だけ取得して共有(Codex R2-#1 反映・確定)**: 現行 `GitLabSidebarView.fetchCurrentBranchInfo(context)` は内部で `currentBranchGitReader.read(context.gitDir)` を呼ぶ(`GitLabSidebarView:192`)。ここへパイプラインタスクが**別途もう一度 branch を読む**と、refresh 中に checkout が切り替わった場合に **MR=旧ブランチ / パイプライン=新ブランチ** という不整合な節を合成しうる。したがって:
 
@@ -218,11 +218,11 @@ data class Resolved(                                      // プリステップ�
 サイドバー refresh / ビューオープン
   └─ (IO coroutine, 世代 g をキャプチャ)
        │
-       ├─[共有プリステップ・1回] runCatching { RepositoryContext(projectId, remoteName, gitDir)
-       │                          + CurrentBranch(name, trackingBranch, upstreamRemote, headSha) }
-       │        ・context 未解決 → 即 asyncExec: NoRepository ("Select a repository")  ←終端(siblings 起動せず)
-       │        ・例外          → 即 asyncExec: PreStepFailure (config-aware エラー)   ←終端
-       │        ・成功          → effectiveRef 算出 → 初回 asyncExec: Resolved(null,null)=両 Loading → siblings 起動
+       ├─[共有プリステップ・1回] RepositoryContext(projectId, remoteName, gitDir)  ※どちらも never-throw
+       │                          + CurrentBranch(name, trackingBranch, upstreamRemote, headSha)
+       │        ・context 未解決(null。解決失敗も畳まれる)→ 即 asyncExec: NoRepository ("Select a repository") ←終端
+       │        ・context 解決 → effectiveRef 算出 → 初回 asyncExec: Resolved(null,null)=両 Loading → siblings 起動
+       │             (破損 git dir は all-null branch=detached → Resolved 側で「パイプライン無し」。Loading に留まらない)
        │             effectiveRef = trackingBranch.takeIf{ upstreamRemote == remoteName } ?: name
        │                          (name==null → detached → パイプライン無し)
        │             ↓ (context, branch, effectiveRef) を両タスクに同一値で渡す
@@ -335,7 +335,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
 - AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
 - AC-11: 増分描画。パイプラインタスクが MR タスクより先に完了した場合、**パイプライン行が表示され MR 行は "Loading…"**(逆順も同様)になることを、fake scheduler で完了順を制御して検証する。パイプライン行の表示は MR 完了に律速されない。
-- AC-12: プリステップ終端状態。(a) リポジトリ未解決 → "Select a repository" が即時に出て "Loading…" にならない(現行挙動を保持)、(b) プリステップ失敗(context 解決/branch 読取の例外)→ config-aware エラーが即時に出る、いずれも sibling を起動せず永久 Loading にならないことを検証する。
+- AC-12: プリステップ終端状態(never-throw 前提)。(a) リポジトリ未解決(context null)→ "Select a repository" が即時に出て "Loading…" にならない(現行挙動を保持)、(b) 破損/読取不能 git dir → all-null branch(detached)として "パイプライン無し" になり永久 Loading にならない。いずれも sibling 未起動でも Loading に留まらないことを検証する(config-aware エラー表示は never-throw 契約変更を要するため PR-1 対象外)。
 
 ---
 
@@ -359,7 +359,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-6**: refresh 中の checkout 切替で MR とパイプラインがブランチ不整合(Codex R2-#1 反映)。ブランチ snapshot を sibling 起動前に 1 回だけ取得し両タスクで共有(§6.6・§7.1)。
 - **R-7**: jobs ページングの長時間化。jobs 専用期限(15s)+ ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3/R3 反映)。進行中 1 リクエストの非中断は受容済み制限。
 - **R-8**: refresh 全体の待ち時間が MR/パイプラインの遅い方に律速(Codex R4 反映)。**増分描画**で各パートを揃い次第表示し待ち時間を分離(§6.6・§7.1)。MR 既存ページングの遅延は MR 行のみに限局。
-- **R-9**: 増分描画の "Loading" とプリステップ未解決/失敗の混同で永久 Loading(Codex R5 反映)。節入力を sealed 型化し、未解決=Select a repository / 失敗=config-aware エラーを**即時終端描画**(§6.6・§7.1・AC-12)。
+- **R-9**: 増分描画の "Loading" とプリステップ未解決の混同で永久 Loading(Codex R5/R6 反映)。節入力を sealed 型(`NoRepository`/`Resolved`)化し、未解決=Select a repository を**即時終端描画**。プリステップ API は never-throw と確認済みで破損は未解決/detached に畳まれる(§6.6・§7.1・AC-12)。失敗の明示表示は never-throw 契約変更を要する後続。
 
 ---
 
@@ -402,7 +402,13 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 
 | # | severity | 指摘 | 反映(実コードで検証済み) |
 |---|---|---|---|
-| R5-1 | P2 | 共有プリステップ失敗の終端状態を定義 | §6.6/§7.1/AC-12: 現行は `currentBranchResult==null` を "Select a repository" として扱う(`GitLabSidebarView:205-210`)。増分の "Loading" と衝突し、プリステップ失敗/未解決で永久 Loading になる問題。節入力を **sealed 型(NoRepository / PreStepFailure / Resolved)** にし、未解決・失敗は siblings を起動せず**即時終端描画**。現行の "Select a repository" を保持 |
+| R5-1 | P2 | 共有プリステップ失敗の終端状態を定義 | §6.6/§7.1/AC-12: 現行は `currentBranchResult==null` を "Select a repository" として扱う(`GitLabSidebarView:205-210`)。増分の "Loading" と衝突し、プリステップが sibling を起動できないケースで永久 Loading になる問題。節入力を **sealed 型**にし、未解決は siblings を起動せず**即時終端描画**。現行の "Select a repository" を保持 |
+
+### ラウンド6(commit `cedff33` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R6-1 | P2 | 握り潰されたプリステップ失敗を終端エラーへ | §6.6/§7.1/AC-12: `CurrentBranchGitReader.read` は全例外を握り潰し all-null 返却(`:57-60`)、`RepositoryContextResolver` は失敗を null に畳む(`:48-55,100-167`)を確認 → **`PreStepFailure` は到達不能**。返却値も detached と破損を区別不能。当初案の `PreStepFailure` を**削除**し sealed を `NoRepository`/`Resolved` の2状態に。破損は未解決 or detached(パイプライン無し)として現れる(既存 never-throw 挙動)。config-aware 失敗表示は never-throw 契約変更を要するため PR-1 対象外(後続) |
 
 ---
 
