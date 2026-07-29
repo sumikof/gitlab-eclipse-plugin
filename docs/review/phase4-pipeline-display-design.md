@@ -200,9 +200,15 @@ data class Resolved(                                      // context 解決 → 
 - **MR タスク**: 共有 (context, branch) を用いて現行の MR/closes-issues 取得 → `Result<CurrentBranchInfo>`。
 - **パイプラインタスク**: `PipelineService.getLatestPipelineForRef(context.projectId, effectiveRef)`(null=No pipeline)→ 非 null なら `JobService.getJobsForPipeline(context.projectId, pipeline.id)` を **独立 `Result`** で取得 → `PipelineSnapshot(pipeline, jobsResult)`。
 
-**増分描画で待ち時間を分離(Codex R4 反映・確定)**: 「両 `Result` が揃うまで待って一度に描画」すると、refresh の描画が MR とパイプラインの**遅い方**に律速され、しかもパイプラインは latest(≤30s/req)→ jobs(§8.3 で ≤15s+進行中1req)の直列なので、refresh 開始からの待ち時間が有界にならない(最悪 ~75s + MR 既存ページング)。そこで **各タスクが完了した時点でその都度 `asyncExec` を発行し、`buildCurrentBranchSection(latestMrResult, latestPipelineResult)` を最新の到達分で再構築**する(未到達パートは `"Loading…"`)。これにより:
-- パイプライン行はパイプラインタスクの内部上限(§8.3)で表示され、**MR の遅延に律速されない**(逆も同様)。
-- MR 側の既存ページング遅延は **MR 行のみ**に影響し、PR-1 で MR fetch を縛る必要がない(既存 Phase 3 挙動を非回帰で温存)。
+> 注: 下記 §7.1 の図は current-branch 節(ユニット B)のフローを示す。assigned roots(ユニット A = Issues+MRs、既存 Phase 3 の fetch)は独立ユニットとして並走し、完了時に同じ増分 apply でスロット更新される。
+
+**増分描画で待ち時間を分離(Codex R4/R7 反映・確定)**: 「揃うまで待って一度に描画」すると、refresh の描画が遅い結果に律速される。現行 `refresh()` は **assigned Issues・assigned MRs・current-branch の3結果をすべて `await` してから単一の `applyResults` を1回だけ呼ぶ**(`GitLabSidebarView:150-186`)。したがって section 内で MR/pipeline を増分化するだけでは、**assigned Issues/MRs API が遅いとそこで律速**され AC-11 を満たせない(Codex R7)。そこで **apply を top-level ユニット単位の増分に一般化**する:
+- **ユニット分割**: (A) assigned roots(Issues + MRs の対)、(B) current-branch 節(プリステップ + MR/pipeline 増分)。A と B は独立に適用する。
+- **各ユニット完了時に `asyncExec`** を発行し、**既存のキャッシュスロット**(`cachedIssues` / `cachedMrs` / `cachedCurrentBranchSection`。onModeChanged 用に既存)を更新して `viewer.input` を全スロットから再構築する。未到達スロットは placeholder(assigned root は "Loading…" ルート、section は §6.6 の Loading)。
+- 結果として **パイプライン行(ユニット B 内)は、assigned Issues/MRs(ユニット A)にも current-branch の MR にも律速されず**、パイプラインタスクの内部上限(§8.3)で表示される。
+- MR 側の既存ページング遅延は **MR 行のみ**、assigned roots の遅延は **assigned root のみ**に限局(既存 Phase 3 の fetch 自体は非回帰で温存。変わるのは「揃うまで待つ単一 apply」→「ユニット単位の増分 apply」だけ)。
+
+この top-level 増分 apply(スロット更新 + 全体再構築 + 世代/dispose 判定)も §10 の注入可能コーディネータに含め、ユニット完了順を fake scheduler で制御して検証する。
 
 **並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。各完了時の `asyncExec` は **世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)を通す(Phase 3 実装を流用)。同一世代内で MR/パイプラインの結果を保持する小さな可変状態(UI スレッド上でのみ更新)を持ち、到達済み分で節を再構築する。失敗は `logger.error`(§8.1 のログ規則)。この結果保持・合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
 
@@ -334,7 +340,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-8: ステージ/ジョブ表示順が **id 昇順→ステージ初出順**で決定的(retry・並列・複数ページで安定)。
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
 - AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
-- AC-11: 増分描画。パイプラインタスクが MR タスクより先に完了した場合、**パイプライン行が表示され MR 行は "Loading…"**(逆順も同様)になることを、fake scheduler で完了順を制御して検証する。パイプライン行の表示は MR 完了に律速されない。
+- AC-11: 増分描画。パイプライン行の表示は **(a) current-branch の MR 完了にも (b) assigned Issues/MRs ルートの完了にも律速されない**。パイプラインが他ユニットより先に完了した場合、パイプライン行が表示され未完了ユニットは "Loading…" になることを、fake scheduler でユニット完了順を制御して検証する(A=assigned roots / B=current-branch 節、B 内で MR/pipeline)。
 - AC-12: プリステップ終端状態(never-throw 前提)。(a) リポジトリ未解決(context null)→ "Select a repository" が即時に出て "Loading…" にならない(現行挙動を保持)、(b) 破損/読取不能 git dir → all-null branch(detached)として "パイプライン無し" になり永久 Loading にならない。いずれも sibling 未起動でも Loading に留まらないことを検証する(config-aware エラー表示は never-throw 契約変更を要するため PR-1 対象外)。
 
 ---
@@ -358,7 +364,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-5**: 認可障害と 0 件の混同(§8.1・Codex #6 反映で分類を確定)。存在秘匿(private 404)を UI **にもログにも**漏らさない(Codex R2-#4 反映: 403/404 ではエンコード済みパスをログに残さない)。
 - **R-6**: refresh 中の checkout 切替で MR とパイプラインがブランチ不整合(Codex R2-#1 反映)。ブランチ snapshot を sibling 起動前に 1 回だけ取得し両タスクで共有(§6.6・§7.1)。
 - **R-7**: jobs ページングの長時間化。jobs 専用期限(15s)+ ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3/R3 反映)。進行中 1 リクエストの非中断は受容済み制限。
-- **R-8**: refresh 全体の待ち時間が MR/パイプラインの遅い方に律速(Codex R4 反映)。**増分描画**で各パートを揃い次第表示し待ち時間を分離(§6.6・§7.1)。MR 既存ページングの遅延は MR 行のみに限局。
+- **R-8**: refresh 全体の待ち時間が遅い結果に律速(Codex R4/R7 反映)。**top-level ユニット単位の増分描画**(A=assigned roots / B=current-branch 節)で各パートを揃い次第表示。パイプライン行は assigned Issues/MRs にも current-branch MR にも律速されない(§6.6・AC-11)。各 fetch 自体は非回帰。
 - **R-9**: 増分描画の "Loading" とプリステップ未解決の混同で永久 Loading(Codex R5/R6 反映)。節入力を sealed 型(`NoRepository`/`Resolved`)化し、未解決=Select a repository を**即時終端描画**。プリステップ API は never-throw と確認済みで破損は未解決/detached に畳まれる(§6.6・§7.1・AC-12)。失敗の明示表示は never-throw 契約変更を要する後続。
 
 ---
@@ -409,6 +415,12 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 | # | severity | 指摘 | 反映(実コードで検証済み) |
 |---|---|---|---|
 | R6-1 | P2 | 握り潰されたプリステップ失敗を終端エラーへ | §6.6/§7.1/AC-12: `CurrentBranchGitReader.read` は全例外を握り潰し all-null 返却(`:57-60`)、`RepositoryContextResolver` は失敗を null に畳む(`:48-55,100-167`)を確認 → **`PreStepFailure` は到達不能**。返却値も detached と破損を区別不能。当初案の `PreStepFailure` を**削除**し sealed を `NoRepository`/`Resolved` の2状態に。破損は未解決 or detached(パイプライン無し)として現れる(既存 never-throw 挙動)。config-aware 失敗表示は never-throw 契約変更を要するため PR-1 対象外(後続) |
+
+### ラウンド7(commit `1ecd895` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R7-1 | P2 | assigned Issue/MR の完了待ちから増分描画を分離 | §6.6/AC-11: 現行 `refresh()` は assigned Issues/MRs/current-branch の3結果を全 `await` してから単一 `applyResults`(`GitLabSidebarView:150-186`)→ section 内だけ増分化しても assigned が遅いと律速。apply を **top-level ユニット単位の増分**に一般化(A=assigned roots / B=current-branch 節)。既存キャッシュスロットを使い各ユニット完了時に再構築。パイプライン行は assigned にも MR にも律速されない |
 
 ---
 
