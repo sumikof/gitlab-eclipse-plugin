@@ -185,14 +185,14 @@ buildCurrentBranchSection(
 - `mrChildren`: 現行 `currentBranchChildren(mrResult)` のロジックを不変で流用。
 - 節の children = `pipelineChildren + mrChildren`(表示順は下記 U-3)。
 
-**現ブランチ project/ref の解決(Codex #1/#2 反映・確定)**:
-1. `RepositoryContextResolver` → `RepositoryContext`(`projectId: String` = エンコード済みパス、`remoteName`)。
-2. `CurrentBranchGitReader.read(gitDir)` → `CurrentBranch(name, trackingBranch, upstreamRemote, headSha)`。
-3. **effective ref を Phase 3 と同一規則で算出**(`CurrentBranchMrLookup` 準拠): `effectiveRef = trackingBranch?.takeIf { upstreamRemote == context.remoteName } ?: name`。`name == null`(detached)→ **パイプライン無し**(No pipeline)。この remote 一致判定を純関数に切り出し(または既存ロジックを共用)、remote 一致/不一致/tracking 無し/detached をテストする(AC・§10)。
-4. `PipelineService.getLatestPipelineForRef(context.projectId, effectiveRef)` → null なら No pipeline。
-5. 非 null → `JobService.getJobsForPipeline(context.projectId, pipeline.id)` を **独立 `Result`** で取得し `PipelineSnapshot` を構成。
+**ブランチ snapshot は sibling 起動前に一度だけ取得して共有(Codex R2-#1 反映・確定)**: 現行 `GitLabSidebarView.fetchCurrentBranchInfo(context)` は内部で `currentBranchGitReader.read(context.gitDir)` を呼ぶ(`GitLabSidebarView:192`)。ここへパイプラインタスクが**別途もう一度 branch を読む**と、refresh 中に checkout が切り替わった場合に **MR=旧ブランチ / パイプライン=新ブランチ** という不整合な節を合成しうる。したがって:
 
-**並行・世代・dispose**: MR タスクとパイプラインタスクは `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。両 `Result` が揃ったら `asyncExec` で節を再構築。**世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)は Phase 3 実装を流用。失敗は `logger.error`(§8.1 のログ規則)。この合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
+- **共有プリステップ(sibling 起動前・1回)**: `RepositoryContextResolver` で `RepositoryContext`(`projectId: String` = エンコード済みパス、`remoteName`、`gitDir`)を解決し、`CurrentBranchGitReader.read(gitDir)` で `CurrentBranch(name, trackingBranch, upstreamRemote, headSha)` を読む。**この (context, branch) の組を両タスクに同じ値として渡す**。MR 経路は branch を再読しないよう、`fetchCurrentBranchInfo` を「渡された branch/context を使う」形にリファクタする(内部再読の除去)。
+- **effective ref**(共有プリステップで算出、`CurrentBranchMrLookup` 準拠): `effectiveRef = trackingBranch?.takeIf { upstreamRemote == context.remoteName } ?: name`。`name == null`(detached)→ **パイプライン無し**。remote 一致判定は純関数に切り出し(または既存ロジック共用)、remote 一致/不一致/tracking 無し/detached をテスト(AC-4・§10)。
+- **MR タスク**: 共有 (context, branch) を用いて現行の MR/closes-issues 取得 → `Result<CurrentBranchInfo>`。
+- **パイプラインタスク**: `PipelineService.getLatestPipelineForRef(context.projectId, effectiveRef)`(null=No pipeline)→ 非 null なら `JobService.getJobsForPipeline(context.projectId, pipeline.id)` を **独立 `Result`** で取得 → `PipelineSnapshot(pipeline, jobsResult)`。
+
+**並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。両 `Result` が揃ったら `asyncExec` で節を再構築。**世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)は Phase 3 実装を流用。失敗は `logger.error`(§8.1 のログ規則)。この合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
 
 **表示順(U-3・暫定確定)**: 節内は **パイプライン行 → MR 行 → 閉じる Issue 行**(CI 状態を最上部に。VSCode のステータスバー相当を節頭に置く意図)。レビューで異論あれば MR 先頭へ変更可。
 
@@ -204,19 +204,21 @@ buildCurrentBranchSection(
 
 ```
 サイドバー refresh / ビューオープン
-  └─ (IO coroutine, 世代 g をキャプチャ; supervisorScope で MR と PIPELINE を並走)
+  └─ (IO coroutine, 世代 g をキャプチャ)
        │
-       ├─[MR タスク] 現行の CurrentBranchInfo 取得 → Result<CurrentBranchInfo>   (不変)
+       ├─[共有プリステップ・1回] RepositoryContext(projectId:String, remoteName, gitDir)
+       │                          + CurrentBranch(name, trackingBranch, upstreamRemote, headSha)
+       │        effectiveRef = trackingBranch.takeIf{ upstreamRemote == remoteName } ?: name
+       │                          (name==null → detached → パイプライン無し)
+       │        ↓ この (context, branch, effectiveRef) を両タスクに同一値で渡す
+       │
+       ├─[MR タスク]  共有 snapshot で MR/closes-issues → Result<CurrentBranchInfo>  (branch 再読しない)
        │
        └─[PIPELINE タスク] → Result<PipelineSnapshot?>
-             ├─ RepositoryContext(projectId: String エンコードパス, remoteName)
-             ├─ CurrentBranch(name, trackingBranch, upstreamRemote)
-             ├─ effectiveRef = trackingBranch.takeIf{ upstreamRemote == remoteName } ?: name
-             │     ・name == null (detached) → null (No pipeline)
              ├─ PipelineService.getLatestPipelineForRef(projectId, effectiveRef)
              │     ・0 件 → null (No pipeline) / 403・404 → 失敗(§8.1)
-             └─ JobService.getJobsForPipeline(projectId, pipeline.id) を独立 Result で
-       ↓ (両 Result 揃う)
+             └─ 非null → JobService.getJobsForPipeline(projectId, pipeline.id) を独立 Result・独立期限で
+       ↓ (supervisorScope: 両 Result 揃う。片方失敗は他方を巻き込まない)
        asyncExec:
          ・世代 g が最新でない / control.isDisposed → 破棄
          ・そうでなければ buildCurrentBranchSection(mrResult, pipelineResult) を描画
@@ -243,7 +245,9 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
   - **200・空配列**(パイプライン 0 件)= 正常の「No pipeline」→ **パイプライン行を出さない**。
   - **403 / 404**(token scope 不足・membership 不足・private・存在秘匿の 404)= 失敗。**存在を推測させない共通の利用者向け文言**(例 `"Unable to load pipeline"`)の `MessageNode` を出す(private project の存在有無を UI に露出しない)。
   - **その他エラー**(5xx・ネットワーク・パース)= 同じく `MessageNode` の一般的失敗文言。
-- **ログ規則**: `logger.error` に **HTTP status・endpoint 種別(`pipelines`/`jobs`)・project 識別子(エンコード済みパス)** のみ記録。**response body とトークンは記録しない**(NFR-3)。
+- **ログ規則(Codex R2-#4 反映・確定)**: `logger.error` に **HTTP status・endpoint 種別(`pipelines`/`jobs`)** を記録。**response body とトークンは記録しない**(NFR-3)。
+  - **403/404(存在秘匿対象)では project 識別子(エンコード済みパス)をログに残さない**。private project の存在を秘匿する 404 でパスを記録すると R-5 と矛盾するため。必要なら**非可逆な相関 ID**(パスから復元不能なハッシュ等)に留める。
+  - 具体的な project パスをログに残してよいのは **存在秘匿の対象外と確認できるエラー**(5xx・ネットワーク・パース失敗など)に限定する。
 - 0件・403/404・その他の**区別を純ロジックテストで固定**(§10・AC-7)。API 呼び出し側で status を判別できるよう、REST 経路は status を保った失敗(例外種別 or 分類済み結果)を上位へ渡す。
 
 ### 8.2 エラー処理・並行処理・障害分離
@@ -258,8 +262,9 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **リクエスト単位タイムアウト**: `GitLabApiClient` 既存の HTTP タイムアウト(30s/リクエスト)に従う(本 PR で変更しない)。
 - **総所要時間の上限**: `fetchListFromApi` は `MAX_PAGES=20` × 30s = 最悪約 10 分になりうる。PR-1 では:
   - `getLatestPipelineForRef` は **単一ページ(1件)取得に限定**(§6.4)→ ページングによる長時間化を回避。
-  - `getJobsForPipeline` は現状ページングだが、**パイプライン節取得全体に coroutine レベルの soft deadline(`withTimeout`)を掛ける**。タイムアウト時はパイプライン節を失敗扱い(§8.1)にし、MR/Issue は不変。
-- **キャンセルの限界(明示)**: `GitLabApiClient` は同期 `httpClient.send` で、coroutine キャンセル/`withTimeout`/dispose は**実行中の同期 send を中断しない**。したがって古い世代の fetch は完走し、**その結果は asyncExec の世代判定で破棄されるだけ**(Phase 3 と同じ挙動)。これは **PR-1 の受容済み制限**とし、(a) refresh 連打時の重複取得、(b) 取得の直列化/共有(`GitOperationGuard` 相当)、(c) REST 層のキャンセル対応は**後続候補**として記録する。単一ページ化により最悪影響は縮小している。
+  - **jobs の期限は「jobs 取得だけ」に掛ける(Codex R2-#2 反映)**: パイプライン取得成功後の `getJobsForPipeline` のみを期限付き独立 `Result` にする。**節取得全体を `withTimeout` で包まない**(包むと jobs タイムアウトで取得済みパイプライン行まで失われ、§6.5/AC-5「ジョブ単独失敗はパイプライン行を残す」に反する)。jobs のタイムアウト/失敗は `jobsResult` の失敗となり、`buildPipelineNode` がパイプライン行を残して子に "Failed to load jobs" を出す。
+  - **ページ間 deadline 検査(Codex R2-#3 反映)**: `fetchListFromApi` は非 suspend の `while` ループ内で同期 `sendPage` を連続実行し、**ページ間に cancellation check も suspension point も無い**(`GitLabApiClient:33-48` で確認)。そのため coroutine の `withTimeout` は実行中ループを止められない。jobs のページングには **REST ループ自体に deadline 検査を持つ経路**を用いる(ページ取得ごとに経過時間を確認し超過で打ち切る、`fetchListFromApi` に deadline 付きの派生を足すか jobs 専用の有界取得を新設)。これによりページング総時間を実効的に制限する。
+- **キャンセルの限界(明示)**: 個々の `httpClient.send` は同期で、coroutine キャンセル/`withTimeout`/dispose は**実行中の 1 リクエストは中断しない**。したがって「進行中の 1 ページ」は最後まで走り、その結果は asyncExec の世代判定で破棄される(Phase 3 と同じ)。ページ間 deadline 検査で**次ページ以降**は止められる。残る (a) refresh 連打時の重複取得、(b) 取得の直列化/共有(`GitOperationGuard` 相当)、(c) REST 層の完全なキャンセル対応(キャンセル可能な非同期 HTTP 経路)は**後続候補**。
 - **リトライ**: なし(GET・read-only。失敗時は次の手動 refresh)。
 - **冪等性**: すべて GET のため自明に冪等。副作用なし。
 
@@ -315,7 +320,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 ## 12. 未決事項(Codex レビュー反映後の残件)
 
 - **U-1(方針確定済み)**: PR-1 は **effective-ref による ref 解決のみ**(MR パイプライン優先 + higher-iid は後続)。ただし ref は Phase 3 の effective-ref 規則を適用(§6.6・§7.1・Codex #2 反映)。
-- **U-2(実装時確定)**: `getLatestPipelineForRef` の単一ページ取得経路(`GitLabApiClient` に単ページ配列取得を足すか `fetchObject` に配列型を通すか)を、既存 `sendGet`/`fetchObject` の実装を見て確定。`fetchListFromApi`(20ページ同期ループ)は使わない(Codex #8 反映)。GitLab jobs API の実際の返却順も実装時に実 API/docs で確認(表示は返却順に非依存=§6.5)。
+- **U-2(実装時確定)**: (a) `getLatestPipelineForRef` の単一ページ取得経路(`GitLabApiClient` に単ページ配列取得を足すか `fetchObject` に配列型を通すか)、(b) jobs のページ間 deadline 検査付き有界取得経路(`fetchListFromApi` の deadline 付き派生 or jobs 専用メソッド)を、既存 `sendGet`/`fetchObject`/`fetchListFromApi` の実装を見て確定(Codex #8/R2-#3 反映)。GitLab jobs API の実際の返却順も実装時に実 API/docs で確認(表示は返却順に非依存=§6.5)。
 - **U-3(暫定確定)**: 節内表示順 = **パイプライン → MR → Issue**(§6.6)。レビューで異論あれば MR 先頭に変更可。
 - **U-4**: `com.gitlab.eclipse.ci` サブパッケージ新設の可否(CLAUDE.md「ディレクトリ構成変更禁止」= 既存 `com.gitlab.eclipse.*` 配下への追加は許容と理解。確認)。
 - **U-5(暫定確定)**: ステージノードのラベルは**ステージ名のみ**(集約 status は出さない)。集約用 priority はモデルに保持のみ(将来利用)。
@@ -328,7 +333,9 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-2**: 長時間ページング。`getLatestPipelineForRef` を単一ページ化、節取得に soft deadline(§8.3・Codex #8 反映)。同期 send の非中断は受容済み制限として明記。
 - **R-3**: ステージ順の解釈違い。**API 返却順に依存しない決定的順序(id 昇順→ステージ初出順)**をクライアントで確定(§6.5・Codex #4 反映)。
 - **R-4**: ref 簡約(U-1)による VSCode との微差(MR パイプライン優先の非実装)。effective-ref 規則は適用済み(Codex #2 反映)。higher-iid は後続として台帳・PR 説明に明記。
-- **R-5**: 認可障害と 0 件の混同(§8.1・Codex #6 反映で分類を確定)。存在秘匿(private 404)を UI/ログに漏らさない。
+- **R-5**: 認可障害と 0 件の混同(§8.1・Codex #6 反映で分類を確定)。存在秘匿(private 404)を UI **にもログにも**漏らさない(Codex R2-#4 反映: 403/404 ではエンコード済みパスをログに残さない)。
+- **R-6**: refresh 中の checkout 切替で MR とパイプラインがブランチ不整合(Codex R2-#1 反映)。ブランチ snapshot を sibling 起動前に 1 回だけ取得し両タスクで共有(§6.6・§7.1)。
+- **R-7**: jobs ページングの長時間化。jobs 専用期限 + ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3 反映)。進行中 1 リクエストの非中断は受容済み制限。
 
 ---
 
@@ -345,6 +352,15 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 | 7 | P2 | Enter activation を過信しない | §7.2/FR-4: 現行 view は double-click listener のみ。PR-1 は **double-click に限定**、Enter は全ノード共通の後続 |
 | 8 | P2 | ページング総期限・キャンセル | §8.3: latest は単一ページ化、節取得に soft deadline。同期 send 非中断は受容済み制限として明記、直列化/REST キャンセルは後続 |
 | 9 | P1 | 障害分離/競合の自動検証 | §10: 世代/dispose/合成を**注入可能な純コーディネータ**に切り出し、完了順逆転・片側失敗・stale・dispose を自動テスト |
+
+### ラウンド2(commit `d129f0d` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R2-1 | P1 | MR とパイプラインで同じブランチ snapshot を共有 | §6.6/§7.1: 現行 `fetchCurrentBranchInfo` が内部で branch を再読(`GitLabSidebarView:192`)。**sibling 起動前に (context, branch) を 1 回取得して両タスクへ同一値で渡す**(checkout 切替中の MR=旧/パイプライン=新 不整合を防止) |
+| R2-2 | P2 | jobs timeout でもパイプライン行を保持 | §8.3: 期限を**節全体でなく jobs 取得だけ**に掛ける。jobs 失敗は `jobsResult` 失敗 → §6.5 でパイプライン行を残す |
+| R2-3 | P2 | ページ間でも deadline を検査 | §8.3: `fetchListFromApi` は非 suspend 同期ループでページ間に停止点が無い(`GitLabApiClient:33-48`)→ `withTimeout` で止まらない。**REST ループ自体に deadline 検査**を持つ有界取得経路を用いる(U-2) |
+| R2-4 | P2 | 存在秘匿エラーで project path をログに残さない | §8.1: **403/404 ではエンコード済みパスをログに記録しない**(非可逆な相関 ID に留める)。具体パスは存在秘匿対象外のエラーに限定。R-5 更新 |
 
 ---
 
