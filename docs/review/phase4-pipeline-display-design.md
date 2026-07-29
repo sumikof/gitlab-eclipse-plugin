@@ -263,8 +263,9 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **総所要時間の上限**: `fetchListFromApi` は `MAX_PAGES=20` × 30s = 最悪約 10 分になりうる。PR-1 では:
   - `getLatestPipelineForRef` は **単一ページ(1件)取得に限定**(§6.4)→ ページングによる長時間化を回避。
   - **jobs の期限は「jobs 取得だけ」に掛ける(Codex R2-#2 反映)**: パイプライン取得成功後の `getJobsForPipeline` のみを期限付き独立 `Result` にする。**節取得全体を `withTimeout` で包まない**(包むと jobs タイムアウトで取得済みパイプライン行まで失われ、§6.5/AC-5「ジョブ単独失敗はパイプライン行を残す」に反する)。jobs のタイムアウト/失敗は `jobsResult` の失敗となり、`buildPipelineNode` がパイプライン行を残して子に "Failed to load jobs" を出す。
-  - **ページ間 deadline 検査(Codex R2-#3 反映)**: `fetchListFromApi` は非 suspend の `while` ループ内で同期 `sendPage` を連続実行し、**ページ間に cancellation check も suspension point も無い**(`GitLabApiClient:33-48` で確認)。そのため coroutine の `withTimeout` は実行中ループを止められない。jobs のページングには **REST ループ自体に deadline 検査を持つ経路**を用いる(ページ取得ごとに経過時間を確認し超過で打ち切る、`fetchListFromApi` に deadline 付きの派生を足すか jobs 専用の有界取得を新設)。これによりページング総時間を実効的に制限する。
-- **キャンセルの限界(明示)**: 個々の `httpClient.send` は同期で、coroutine キャンセル/`withTimeout`/dispose は**実行中の 1 リクエストは中断しない**。したがって「進行中の 1 ページ」は最後まで走り、その結果は asyncExec の世代判定で破棄される(Phase 3 と同じ)。ページ間 deadline 検査で**次ページ以降**は止められる。残る (a) refresh 連打時の重複取得、(b) 取得の直列化/共有(`GitOperationGuard` 相当)、(c) REST 層の完全なキャンセル対応(キャンセル可能な非同期 HTTP 経路)は**後続候補**。
+  - **ページ間 deadline 検査(Codex R2-#3 反映)**: `fetchListFromApi` は非 suspend の `while` ループ内で同期 `sendPage` を連続実行し、**ページ間に cancellation check も suspension point も無い**(`GitLabApiClient:33-48` で確認)。そのため coroutine の `withTimeout` は実行中ループを止められない。jobs のページングには **REST ループ自体に deadline 検査を持つ経路**を用いる(ページ取得ごとに経過時間を確認し超過で打ち切る、`fetchListFromApi` に deadline 付きの派生を足すか jobs 専用の有界取得を新設)。
+  - **具体的な期限値(Codex R3 反映・確定)**: **jobs 取得全体の soft deadline = 15 秒**(ページ取得の合間に経過時間を検査し、15 秒を超えたら以降のページ取得を打ち切って `jobsResult` を失敗扱いにする)。個々のリクエストは既存の 30 秒/リクエスト HTTP タイムアウトに従う。**ユーザーがパイプライン行の jobs 結果を見るまでの最大待ち時間 = 15 秒(deadline)+ 進行中 1 リクエスト分の超過(最大 30 秒)≒ 45 秒**(この時点で jobs は失敗表示になりパイプライン行は残る=§6.5)。この 15 秒はチューナブル定数として実装し、deadline テストの期待値に用いる(AC-10)。`getLatestPipelineForRef` は単一リクエストのため 30 秒/リクエストで有界。
+- **キャンセルの限界(明示)**: 個々の `httpClient.send` は同期で、coroutine キャンセル/`withTimeout`/dispose は**実行中の 1 リクエストは中断しない**。したがって「進行中の 1 ページ」は最後まで走り(上記 max 待ち時間に反映)、その結果は asyncExec の世代判定で破棄される(Phase 3 と同じ)。ページ間 deadline 検査で**次ページ以降**は止められる。残る (a) refresh 連打時の重複取得、(b) 取得の直列化/共有(`GitOperationGuard` 相当)、(c) REST 層の完全なキャンセル対応(キャンセル可能な非同期 HTTP 経路)は**後続候補**。
 - **リトライ**: なし(GET・read-only。失敗時は次の手動 refresh)。
 - **冪等性**: すべて GET のため自明に冪等。副作用なし。
 
@@ -314,6 +315,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-7: 200空(0件)=パイプライン行なし、403/404=存在を漏らさない共通失敗文言、が区別される(純ロジックテストで固定)。
 - AC-8: ステージ/ジョブ表示順が **id 昇順→ステージ初出順**で決定的(retry・並列・複数ページで安定)。
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
+- AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
 
 ---
 
@@ -361,6 +363,12 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 | R2-2 | P2 | jobs timeout でもパイプライン行を保持 | §8.3: 期限を**節全体でなく jobs 取得だけ**に掛ける。jobs 失敗は `jobsResult` 失敗 → §6.5 でパイプライン行を残す |
 | R2-3 | P2 | ページ間でも deadline を検査 | §8.3: `fetchListFromApi` は非 suspend 同期ループでページ間に停止点が無い(`GitLabApiClient:33-48`)→ `withTimeout` で止まらない。**REST ループ自体に deadline 検査**を持つ有界取得経路を用いる(U-2) |
 | R2-4 | P2 | 存在秘匿エラーで project path をログに残さない | §8.1: **403/404 ではエンコード済みパスをログに記録しない**(非可逆な相関 ID に留める)。具体パスは存在秘匿対象外のエラーに限定。R-5 更新 |
+
+### ラウンド3(commit `f6f229d` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R3-1 | P2 | jobs の総期限値を確定する | §8.3/AC-10: **jobs 総 soft deadline = 15 秒**(チューナブル定数)を明記。最大待ち時間 ≒ 15s + 進行中1リクエスト(最大30s)≒ 45s。deadline テストの期待値に使用 |
 
 ---
 
