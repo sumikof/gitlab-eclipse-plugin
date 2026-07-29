@@ -170,19 +170,23 @@ VSCode `ci_status_metadata.ts` の忠実移植(name + priority のみ、icon/con
 
 **MR とパイプラインを独立した結果として合成(Codex #3 反映・確定)**: 現行 `buildCurrentBranchSection(result: Result<CurrentBranchInfo>)` は単一 Result で、MR が null だと即「No merge request found」を返す。ここにパイプラインを相乗りさせると (a) MR 無し=パイプラインも消える、(b) パイプライン/ジョブ失敗で MR・closing issues も失われ FR-1/NFR-2/AC-5 に違反する。したがって **MR とパイプラインを別タスク・別 `Result` として取得し、節ビルドで独立合成**する。
 
-シグネチャ変更:
+シグネチャ変更(**pending を許容 = 増分描画対応・Codex R4 反映**):
 ```
 buildCurrentBranchSection(
-  mrResult: Result<CurrentBranchInfo>,
-  pipelineResult: Result<PipelineSnapshot?>,   // null = パイプライン無し
+  mrResult: Result<CurrentBranchInfo>?,        // null = MR タスク未完了(Loading)
+  pipelineResult: Result<PipelineSnapshot?>?,  // null = パイプラインタスク未完了(Loading)
 ): SidebarNode
 // PipelineSnapshot = (pipeline: GitLabPipeline, jobsResult: Result<List<GitLabJob>>)
+// 内側の Result<..?> の値 null = パイプライン無し(0件)
 ```
 - `pipelineChildren`:
-  - 成功 & null → 行なし(FR-5。0件・No pipeline)。
+  - `null`(未完了)→ `listOf(MessageNode("Loading…"))`。
+  - 成功 & 値null → 行なし(FR-5。0件・No pipeline)。
   - 成功 & 非null → `listOf(buildPipelineNode(pipeline, jobsResult))`(ジョブ失敗は §6.5 でパイプライン行を残す)。
-  - 失敗 → `listOf(MessageNode(pipeline 用エラー文言))`(§8.1 の 403/404 分類に従う)。**MR/Issue 側は不変**。
-- `mrChildren`: 現行 `currentBranchChildren(mrResult)` のロジックを不変で流用。
+  - 失敗 → `listOf(MessageNode(pipeline 用エラー文言))`(§8.1 の 403/404 分類)。**MR/Issue 側は不変**。
+- `mrChildren`:
+  - `null`(未完了)→ `listOf(MessageNode("Loading…"))`。
+  - それ以外は現行 `currentBranchChildren(mrResult)` を不変で流用。
 - 節の children = `pipelineChildren + mrChildren`(表示順は下記 U-3)。
 
 **ブランチ snapshot は sibling 起動前に一度だけ取得して共有(Codex R2-#1 反映・確定)**: 現行 `GitLabSidebarView.fetchCurrentBranchInfo(context)` は内部で `currentBranchGitReader.read(context.gitDir)` を呼ぶ(`GitLabSidebarView:192`)。ここへパイプラインタスクが**別途もう一度 branch を読む**と、refresh 中に checkout が切り替わった場合に **MR=旧ブランチ / パイプライン=新ブランチ** という不整合な節を合成しうる。したがって:
@@ -192,7 +196,11 @@ buildCurrentBranchSection(
 - **MR タスク**: 共有 (context, branch) を用いて現行の MR/closes-issues 取得 → `Result<CurrentBranchInfo>`。
 - **パイプラインタスク**: `PipelineService.getLatestPipelineForRef(context.projectId, effectiveRef)`(null=No pipeline)→ 非 null なら `JobService.getJobsForPipeline(context.projectId, pipeline.id)` を **独立 `Result`** で取得 → `PipelineSnapshot(pipeline, jobsResult)`。
 
-**並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。両 `Result` が揃ったら `asyncExec` で節を再構築。**世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)は Phase 3 実装を流用。失敗は `logger.error`(§8.1 のログ規則)。この合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
+**増分描画で待ち時間を分離(Codex R4 反映・確定)**: 「両 `Result` が揃うまで待って一度に描画」すると、refresh の描画が MR とパイプラインの**遅い方**に律速され、しかもパイプラインは latest(≤30s/req)→ jobs(§8.3 で ≤15s+進行中1req)の直列なので、refresh 開始からの待ち時間が有界にならない(最悪 ~75s + MR 既存ページング)。そこで **各タスクが完了した時点でその都度 `asyncExec` を発行し、`buildCurrentBranchSection(latestMrResult, latestPipelineResult)` を最新の到達分で再構築**する(未到達パートは `"Loading…"`)。これにより:
+- パイプライン行はパイプラインタスクの内部上限(§8.3)で表示され、**MR の遅延に律速されない**(逆も同様)。
+- MR 側の既存ページング遅延は **MR 行のみ**に影響し、PR-1 で MR fetch を縛る必要がない(既存 Phase 3 挙動を非回帰で温存)。
+
+**並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。各完了時の `asyncExec` は **世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)を通す(Phase 3 実装を流用)。同一世代内で MR/パイプラインの結果を保持する小さな可変状態(UI スレッド上でのみ更新)を持ち、到達済み分で節を再構築する。失敗は `logger.error`(§8.1 のログ規則)。この結果保持・合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
 
 **表示順(U-3・暫定確定)**: 節内は **パイプライン行 → MR 行 → 閉じる Issue 行**(CI 状態を最上部に。VSCode のステータスバー相当を節頭に置く意図)。レビューで異論あれば MR 先頭へ変更可。
 
@@ -217,11 +225,14 @@ buildCurrentBranchSection(
        └─[PIPELINE タスク] → Result<PipelineSnapshot?>
              ├─ PipelineService.getLatestPipelineForRef(projectId, effectiveRef)
              │     ・0 件 → null (No pipeline) / 403・404 → 失敗(§8.1)
-             └─ 非null → JobService.getJobsForPipeline(projectId, pipeline.id) を独立 Result・独立期限で
-       ↓ (supervisorScope: 両 Result 揃う。片方失敗は他方を巻き込まない)
-       asyncExec:
+             └─ 非null → JobService.getJobsForPipeline(projectId, pipeline.id) を独立 Result・独立期限(≤15s)で
+       │
+       │  (supervisorScope: 片方失敗は他方を巻き込まない。★各タスクは完了ごとに個別に asyncExec)
+       ↓
+       各タスク完了時に asyncExec(増分描画):
          ・世代 g が最新でない / control.isDisposed → 破棄
-         ・そうでなければ buildCurrentBranchSection(mrResult, pipelineResult) を描画
+         ・そうでなければ 到達済み分で buildCurrentBranchSection(latestMr?, latestPipeline?) を再構築
+           (未到達パートは "Loading…"。パイプライン行は MR の遅延に律速されない/逆も同様)
 ```
 
 VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パイプライン、無ければ ref パイプライン、iid の大きい方」を採る(`get_pipeline_and_mr_for_branch.ts`)。PR-1 は **effective-ref による ref 解決のみ**に簡約(§3・U-1)。ただし ref は naive な tracking 名ではなく、**Phase 3 の effective-ref 規則(remote 一致時のみ tracking、他はローカル名、detached は無し)を必ず適用**する。MR パイプライン優先(higher-iid)は後続。
@@ -316,6 +327,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-8: ステージ/ジョブ表示順が **id 昇順→ステージ初出順**で決定的(retry・並列・複数ページで安定)。
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
 - AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
+- AC-11: 増分描画。パイプラインタスクが MR タスクより先に完了した場合、**パイプライン行が表示され MR 行は "Loading…"**(逆順も同様)になることを、fake scheduler で完了順を制御して検証する。パイプライン行の表示は MR 完了に律速されない。
 
 ---
 
@@ -337,7 +349,8 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-4**: ref 簡約(U-1)による VSCode との微差(MR パイプライン優先の非実装)。effective-ref 規則は適用済み(Codex #2 反映)。higher-iid は後続として台帳・PR 説明に明記。
 - **R-5**: 認可障害と 0 件の混同(§8.1・Codex #6 反映で分類を確定)。存在秘匿(private 404)を UI **にもログにも**漏らさない(Codex R2-#4 反映: 403/404 ではエンコード済みパスをログに残さない)。
 - **R-6**: refresh 中の checkout 切替で MR とパイプラインがブランチ不整合(Codex R2-#1 反映)。ブランチ snapshot を sibling 起動前に 1 回だけ取得し両タスクで共有(§6.6・§7.1)。
-- **R-7**: jobs ページングの長時間化。jobs 専用期限 + ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3 反映)。進行中 1 リクエストの非中断は受容済み制限。
+- **R-7**: jobs ページングの長時間化。jobs 専用期限(15s)+ ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3/R3 反映)。進行中 1 リクエストの非中断は受容済み制限。
+- **R-8**: refresh 全体の待ち時間が MR/パイプラインの遅い方に律速(Codex R4 反映)。**増分描画**で各パートを揃い次第表示し待ち時間を分離(§6.6・§7.1)。MR 既存ページングの遅延は MR 行のみに限局。
 
 ---
 
@@ -369,6 +382,12 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 | # | severity | 指摘 | 反映(実コードで検証済み) |
 |---|---|---|---|
 | R3-1 | P2 | jobs の総期限値を確定する | §8.3/AC-10: **jobs 総 soft deadline = 15 秒**(チューナブル定数)を明記。最大待ち時間 ≒ 15s + 進行中1リクエスト(最大30s)≒ 45s。deadline テストの期待値に使用 |
+
+### ラウンド4(commit `de042a4` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R4-1 | P2 | refresh 全体の待ち時間も有界化 | §6.6/§7.1/AC-11: 45s は jobs のみで、両 Result 待ち + パイプライン直列(latest→jobs)だと refresh 全体が有界でない。**増分描画**に変更(各タスク完了ごとに asyncExec、未到達は "Loading…")→ パイプライン行は MR に律速されず内部上限で表示。MR 遅延は MR 行のみに影響(既存挙動温存) |
 
 ---
 
