@@ -216,7 +216,12 @@ data class Resolved(                                      // context 解決 → 
 - **Pending と「未取得」の区別(onModeChanged 対策)**: 単純な `null` 化は現行 `onModeChanged` が「null → 追加 refresh 起動」してしまう。そこで **`RefreshSlots` 自体の有無**で「一度も fetch していない」を表し、`onModeChanged` は「`RefreshSlots` が無ければ refresh 起動、あれば現世代スロットから再構築(Pending は Loading)」に改める。Pending(取得中)は追加 refresh を起こさない。「最後に完全適用した値」を保持する既存キャッシュはモード再構成のため各 `Settled` で更新してよいが、増分再構築の真実源は**現世代スロット**とする。
 - 結果として **パイプライン行(ユニット B 内)は、assigned Issues/MRs(ユニット A)にも current-branch の MR にも律速されず**、パイプラインタスクの内部上限(§8.3)で表示される。MR 側の既存ページング遅延は **MR 行のみ**、assigned roots の遅延は **assigned root のみ**に限局(既存 Phase 3 の fetch 自体は非回帰。変わるのは apply の粒度)。
 
-この top-level 増分 apply(世代別スロット更新 + 全体再構築 + 世代/dispose 判定)も §10 の注入可能コーディネータに含め、ユニット完了順・**再 refresh(スロット既埋まり状態からの新世代)**を fake scheduler で制御して検証する(AC-13)。
+**未変更スロットのノード identity 維持(Codex R9 反映・確定)**: JFace は tree 要素を identity で追跡し(`SidebarNode.kt:68-73`)、遅延取得結果は捕捉済みの旧 `MergeRequestNode` へ `viewer.refresh(node)` で適用される(`GitLabSidebarView.kt:282-309`)。ユニット完了ごとに `viewer.input` 全体を新インスタンスで作り直すと、**表示中・展開中の MR ノードが置換され、展開状態・`loadedChildren`・進行中の遅延取得ターゲットが失われる**(取得結果はツリーから外れた旧ノードに適用され、表示中の新ノードは再取得が必要になる)。したがって増分 apply は:
+- **未変更スロットのノードインスタンスを再利用**する(あるユニット完了時、他スロットの既存ノードは同一インスタンスのまま新 input リストに載せる)。可能なら `viewer.input` の総入れ替えでなく**変更 root/section のみ更新**(`viewer.refresh(changedContainer)`)。
+- current-branch 節内でも、パイプライン部の更新で **MR 部が不変なら既存 `MergeRequestNode` インスタンスを保持**(展開・`loadedChildren`・進行中の遅延取得を壊さない)。
+- これにより「MR を展開中に pipeline/assigned が遅れて完了」しても、展開状態と取得中の MR 子が維持される(AC-14)。
+
+この top-level 増分 apply(世代別スロット更新 + identity 維持の部分再構築 + 世代/dispose 判定)も §10 の注入可能コーディネータに含め、ユニット完了順・**再 refresh(スロット既埋まり状態からの新世代)**・**展開中の他ユニット遅延完了**を fake scheduler で制御して検証する(AC-13/AC-14)。
 
 **並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。各完了時の `asyncExec` は **世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)を通す(Phase 3 実装を流用)。同一世代内で MR/パイプラインの結果を保持する小さな可変状態(UI スレッド上でのみ更新)を持ち、到達済み分で節を再構築する。失敗は `logger.error`(§8.1 のログ規則)。この結果保持・合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
 
@@ -349,6 +354,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
 - AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
 - AC-11: 増分描画。パイプライン行の表示は **(a) current-branch の MR 完了にも (b) assigned Issues/MRs ルートの完了にも律速されない**。パイプラインが他ユニットより先に完了した場合、パイプライン行が表示され未完了ユニットは "Loading…" になることを、fake scheduler でユニット完了順を制御して検証する(A=assigned roots / B=current-branch 節、B 内で MR/pipeline)。
+- AC-14: ノード identity 維持。MR ノードを展開中に別ユニット(pipeline / assigned)が遅れて完了しても、その MR ノードの**展開状態が維持され、進行中の遅延 MR 子取得の結果が表示中のノードに適用される**(再取得不要)ことを検証する。
 - AC-13: 再 refresh の世代分離。キャッシュが前世代値で埋まった状態から新 refresh を開始し、片ユニット(例: assigned)が先に完了しても、**新 assigned + 旧 current-branch の混在は起きず、未完了ユニットは "Loading…"** になることを fake scheduler で検証する(Pending スロットは前世代値を露出しない)。モード変更が in-flight(Pending あり)中は追加 refresh を起動しないことも検証する。
 - AC-12: プリステップ終端状態(never-throw 前提)。(a) リポジトリ未解決(context null)→ "Select a repository" が即時に出て "Loading…" にならない(現行挙動を保持)、(b) 破損/読取不能 git dir → all-null branch(detached)として "パイプライン無し" になり永久 Loading にならない。いずれも sibling 未起動でも Loading に留まらないことを検証する(config-aware エラー表示は never-throw 契約変更を要するため PR-1 対象外)。
 
@@ -376,6 +382,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-8**: refresh 全体の待ち時間が遅い結果に律速(Codex R4/R7 反映)。**top-level ユニット単位の増分描画**(A=assigned roots / B=current-branch 節)で各パートを揃い次第表示。パイプライン行は assigned Issues/MRs にも current-branch MR にも律速されない(§6.6・AC-11)。各 fetch 自体は非回帰。
 - **R-9**: 増分描画の "Loading" とプリステップ未解決の混同で永久 Loading(Codex R5/R6 反映)。節入力を sealed 型(`NoRepository`/`Resolved`)化し、未解決=Select a repository を**即時終端描画**。プリステップ API は never-throw と確認済みで破損は未解決/detached に畳まれる(§6.6・§7.1・AC-12)。失敗の明示表示は never-throw 契約変更を要する後続。
 - **R-10**: 再 refresh 時の新旧結果混在(Codex R8 反映)。**世代別 `RefreshSlots`(Pending|Settled)** で現世代スロットのみから再構築し前世代値を露出しない。Pending と「未取得」を区別して `onModeChanged` の追加 refresh を誤起動しない(§6.6・AC-13)。
+- **R-11**: 増分再構築で展開中ノードの identity 喪失(Codex R9 反映)。未変更スロット/未変更 MR 部の**ノードインスタンス再利用**(変更 container のみ更新)で展開状態・`loadedChildren`・進行中の遅延取得を保持(§6.6・AC-14)。**この JFace identity/遅延取得の相互作用は headless で検証不能な代表例**であり、§10 コーディネータの自動テスト + 実機手動検証で担保(R-1 と同類)。
 
 ---
 
@@ -436,7 +443,13 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 
 | # | severity | 指摘 | 反映(実コードで検証済み) |
 |---|---|---|---|
-| R8-1 | P2 | refresh 開始時に世代別スロットを初期化 | §6.6/AC-13: 既存キャッシュ(`cachedIssues`等、`:78-82`)を増分再利用すると 2 回目以降の refresh で前世代値を保持 → 片ユニット先行完了で新旧混在。**世代別 `RefreshSlots`(Pending\|Settled)を begin() で全 Pending 初期化**し現世代スロットのみから再構築。`onModeChanged`(`:225-236` の null→refresh)対策として **Pending と「未取得(RefreshSlots 無し)」を区別**(Pending 中はモード変更で追加 refresh を起こさない) |
+| R8-1 | P2 | refresh 開始時に世代別スロットを初期化 | §6.6/AC-13: 既存キャッシュ(`cachedIssues`等、`:78-82`)を増分再利用すると 2 回目以降の refresh で前世代値を保持 → 片ユニット先行完了で新旧混在。**世代別 `RefreshSlots`(Pending\|Settled)を begin() で全 Pending 初期化**し現世代スロットのみから再構築。`onModeChanged`(`:225-236` の null→refresh)対策として **Pending と「未取得(RefreshSlots 無し)」を区別** |
+
+### ラウンド9(commit `e3789d2` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R9-1 | P2 | 増分適用時にノード identity を維持 | §6.6/AC-14: JFace は identity 追跡(`SidebarNode.kt:68-73`)、遅延取得は捕捉済み旧ノードへ `viewer.refresh`(`GitLabSidebarView.kt:282-309`)。`viewer.input` 全体再構築だと展開中 MR ノードが置換され展開状態・`loadedChildren`・進行中取得が失われる。**未変更スロット/未変更 MR 部のノードインスタンスを再利用**(変更 container のみ更新)し展開・遅延取得を保持 |
 
 ---
 
