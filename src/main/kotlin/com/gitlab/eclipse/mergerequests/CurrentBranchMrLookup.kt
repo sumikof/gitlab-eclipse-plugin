@@ -24,11 +24,7 @@ class CurrentBranchMrLookup(
   fun lookup(context: RepositoryContext, branch: CurrentBranch): CurrentBranchInfo {
     val localName = branch.name ?: return empty
 
-    // trackingBranch is only trustworthy when it points at the SAME remote as the selected
-    // repository context; a tracking branch on a different remote (or no tracking at all)
-    // means the local short name is the right thing to search for.
-    val effectiveBranch =
-      branch.trackingBranch?.takeIf { branch.upstreamRemote == context.remoteName } ?: localName
+    val effectiveBranch = EffectiveRef.resolve(branch, context.remoteName) ?: localName
 
     val repoProjectId = projectDetail.getProject(context.projectId).id
     val candidates = mrService.findOpenMrsForBranch(effectiveBranch)
