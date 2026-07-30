@@ -24,6 +24,7 @@ import org.eclipse.jface.viewers.ITreeViewerListener
 import org.eclipse.jface.viewers.TreeExpansionEvent
 import org.eclipse.jface.viewers.TreeViewer
 import org.eclipse.swt.SWT
+import org.eclipse.swt.SWTException
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
@@ -290,17 +291,29 @@ class GitLabSidebarView : ViewPart() {
   private fun applyCompose(slots: RefreshSlots, update: () -> Unit = {}) {
     val control = viewer.control
     if (control.isDisposed) return
-    control.display.asyncExec {
-      if (control.isDisposed) return@asyncExec
-      if (!refreshState.isCurrent(slots.generation)) return@asyncExec
-      update()
-      val input = coordinator.compose(slots, viewState.mode)
-      // Pre-order capture: restoring in the same order expands parents first, so nested
-      // entries' widgets exist (materialized by the parent's expansion) when their turn
-      // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
-      val expanded = viewer.expandedElements.toList()
-      viewer.input = input
-      remapExpandedElements(expanded, input).forEach { viewer.setExpandedState(it, true) }
+    // Dispose race: the check above runs off-thread, so the widget (or the whole Display at
+    // workbench shutdown) may be disposed before/while we schedule — both throw SWTException.
+    // A dispose at any point here just means there is nothing left to paint.
+    val display = try {
+      control.display
+    } catch (@Suppress("SwallowedException") e: SWTException) {
+      return
+    }
+    try {
+      display.asyncExec {
+        if (control.isDisposed) return@asyncExec
+        if (!refreshState.isCurrent(slots.generation)) return@asyncExec
+        update()
+        val input = coordinator.compose(slots, viewState.mode)
+        // Pre-order capture: restoring in the same order expands parents first, so nested
+        // entries' widgets exist (materialized by the parent's expansion) when their turn
+        // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
+        val expanded = viewer.expandedElements.toList()
+        viewer.input = input
+        remapExpandedElements(expanded, input).forEach { viewer.setExpandedState(it, true) }
+      }
+    } catch (@Suppress("SwallowedException") e: SWTException) {
+      // Display disposed between acquisition and scheduling — nothing to paint.
     }
   }
 
