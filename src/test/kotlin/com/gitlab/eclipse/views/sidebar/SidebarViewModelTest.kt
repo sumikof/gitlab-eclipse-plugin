@@ -1,9 +1,11 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -137,5 +139,68 @@ class SidebarViewModelTest : StringSpec({
   "PipelineNode activationUrl is null when pipeline webUrl is null" {
     val node = SidebarViewModel().buildPipelineNode(pipeline(7, webUrl = null), Result.success(emptyList()))
     node.activationUrl.shouldBeNull()
+  }
+
+  "buildCurrentBranchSection(input): NoRepository shows Select a repository" {
+    val node = vm.buildCurrentBranchSection(NoRepository)
+    (node is CurrentBranchSectionNode) shouldBe true
+    node.children shouldHaveSize 1
+    (node.children[0] as MessageNode).label shouldBe "Select a repository"
+  }
+
+  "buildCurrentBranchSection(input): Resolved with both null shows two Loading… placeholders" {
+    val node = vm.buildCurrentBranchSection(Resolved(mr = null, pipeline = null))
+    node.children shouldHaveSize 2
+    (node.children[0] as MessageNode).label shouldBe "Loading…"
+    (node.children[1] as MessageNode).label shouldBe "Loading…"
+  }
+
+  "buildCurrentBranchSection(input): mr success no-MR + pipeline success null -> no pipeline row, MR shown" {
+    val node = vm.buildCurrentBranchSection(
+      Resolved(
+        mr = Result.success(CurrentBranchInfo(null, emptyList())),
+        pipeline = Result.success(null),
+      ),
+    )
+    node.children shouldHaveSize 1
+    (node.children[0] as MessageNode).label shouldBe "No merge request found"
+  }
+
+  "buildCurrentBranchSection(input): pipeline failure 403 -> access-denied message, MR side unaffected" {
+    val theMr = mr(2, "g/p!2")
+    val node = vm.buildCurrentBranchSection(
+      Resolved(
+        mr = Result.success(CurrentBranchInfo(theMr, emptyList())),
+        pipeline = Result.failure(GitLabApiException(403, "forbidden")),
+      ),
+    )
+    node.children shouldHaveSize 3
+    (node.children[0] as MessageNode).label shouldBe "Unable to load pipeline"
+    (node.children[1] is MergeRequestNode) shouldBe true
+    (node.children[2] as MessageNode).label shouldBe "No closing issue found"
+  }
+
+  "buildCurrentBranchSection(input): pipeline failure 500 -> generic load-failed message" {
+    val node = vm.buildCurrentBranchSection(
+      Resolved(
+        mr = Result.success(CurrentBranchInfo(null, emptyList())),
+        pipeline = Result.failure(GitLabApiException(500, "boom")),
+      ),
+    )
+    node.children shouldHaveSize 2
+    (node.children[0] as MessageNode).label shouldBe "Failed to load — see the Error Log."
+    (node.children[1] as MessageNode).label shouldBe "No merge request found"
+  }
+
+  "buildCurrentBranchSection(input): mr still loading + pipeline resolved shows pipeline node and MR Loading…" {
+    val node = vm.buildCurrentBranchSection(
+      Resolved(
+        mr = null,
+        pipeline = Result.success(PipelineSnapshot(pipeline(9), Result.success(emptyList()))),
+      ),
+    )
+    node.children shouldHaveSize 2
+    (node.children[0] is PipelineNode) shouldBe true
+    (node.children[1] as MessageNode).label shouldBe "Loading…"
   }
 })
