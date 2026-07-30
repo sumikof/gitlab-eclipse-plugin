@@ -18,11 +18,8 @@ private const val NO_CHANGED_FILES_MESSAGE = "No changed files"
 private const val NO_STAGE = "(no stage)"
 private const val JOBS_LOAD_FAILED_MESSAGE = "Failed to load jobs"
 
-// TODO(Task 9): consolidate with GitLabSidebarView's identical private const once the view
-// migrates to the CurrentBranchSectionInput overload and the old Result-based overload is
-// deleted (see SidebarViewModel.buildCurrentBranchSection(input:) KDoc).
+/** Shown in the "For current branch" section when no single repository can be resolved. */
 private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
-private const val LOADING_MESSAGE = "Loading…"
 private const val PIPELINE_UNAVAILABLE_MESSAGE = "Unable to load pipeline"
 
 /**
@@ -79,29 +76,12 @@ class SidebarViewModel {
   }
 
   /**
-   * Builds the "For current branch" section (design doc §8.3): the open merge request for the
-   * currently checked-out branch (if any) and the issues it would close.
-   */
-  fun buildCurrentBranchSection(result: Result<CurrentBranchInfo>): SidebarNode =
-    CurrentBranchSectionNode(
-      result.fold(
-        onSuccess = { info -> currentBranchChildren(info) },
-        onFailure = { error -> failureChildren(error) },
-      ),
-    )
-
-  /**
-   * Builds the "For current branch" section (design doc §6.6) from a [CurrentBranchSectionInput]
-   * whose MR and pipeline lookups are independent async tasks: each side renders its own
-   * "Loading…" placeholder while unsettled and its own failure message when it fails, so a slow
-   * or failing pipeline fetch never hides an already-resolved MR/issues list, and vice versa.
-   * The pipeline side is listed first per the design's §U-3 ordering; the MR side reuses
-   * [currentBranchChildren] (via [Result.fold]) so its rendering stays byte-identical to the
-   * [buildCurrentBranchSection] overload above.
-   *
-   * Temporary duplicate: [SELECT_REPOSITORY_MESSAGE] mirrors the identical private const in
-   * `GitLabSidebarView` (Task 9 will delete the view's copy once it migrates to this overload
-   * and the old Result-based one is removed).
+   * Builds the "For current branch" section (design doc §6.6/§8.3) from a
+   * [CurrentBranchSectionInput] whose MR and pipeline lookups are independent async tasks: each
+   * side renders its own "Loading…" placeholder while unsettled and its own failure message when
+   * it fails, so a slow or failing pipeline fetch never hides an already-resolved MR/issues
+   * list, and vice versa. The pipeline side is listed first per the design's §U-3 ordering; the
+   * MR side renders via [currentBranchChildren]/[failureChildren] (through [Result.fold]).
    */
   fun buildCurrentBranchSection(input: CurrentBranchSectionInput): SidebarNode =
     when (input) {
@@ -196,8 +176,7 @@ private fun failureChildren(error: Throwable): List<SidebarNode> =
 /**
  * Children of the "For current branch" section's MR side (design doc §8.3): the open merge
  * request for the currently checked-out branch (if any) and the issues it would close. Moved
- * top-level for the same [TooManyFunctions] reason as [failureChildren]; still used unqualified
- * from [SidebarViewModel.buildCurrentBranchSection] (the `Result`-based overload) and from
+ * top-level for the same [TooManyFunctions] reason as [failureChildren]; used unqualified from
  * [currentBranchResolvedChildren] below.
  */
 private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
@@ -220,10 +199,9 @@ private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
  *   this helper does not — see the [TooManyFunctions] note on [failureChildren]); a failure
  *   renders [PIPELINE_UNAVAILABLE_MESSAGE] for an access-denied response (403/404) or the
  *   generic [LOAD_FAILED_MESSAGE] otherwise, so a 403 never leaks GitLab-side error detail.
- * - MR: `null` means the lookup hasn't settled yet ("Loading…" placeholder); otherwise renders
- *   exactly what the `Result`-based [SidebarViewModel.buildCurrentBranchSection] overload renders
- *   for the same [Result] — [currentBranchChildren] on success, [failureChildren] on failure —
- *   so the two overloads never diverge in how they describe the MR side.
+ * - MR: `null` means the lookup hasn't settled yet ("Loading…" placeholder); otherwise
+ *   [currentBranchChildren] on success, [failureChildren] on failure — the same rendering the
+ *   pre-Task-9 `Result`-based overload produced, so PR-2's manually-verified behavior is kept.
  *
  * Kept as one function (rather than a pipeline-only and an MR-only helper) to stay under the
  * file's top-level [TooManyFunctions] threshold alongside [failureChildren] and

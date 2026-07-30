@@ -52,7 +52,10 @@ sealed interface Slot<out T> {
  * slots on the UI thread as each unit's fetch settles, and re-composes via
  * [SidebarRefreshCoordinator.compose] after each mutation. A superseded generation's instance
  * is simply abandoned — the coordinator resets its memo when [generation] changes, so a stale
- * generation's values can never leak into a newer compose.
+ * generation's values can never leak into a newer compose. Each settled value must carry a
+ * freshly constructed payload (CurrentBranchInfo/PipelineSnapshot/Throwable): the coordinator
+ * memo keys by payload identity, so reusing a prior fetch's instance is treated as unchanged
+ * and skips a rebuild.
  */
 class RefreshSlots(val generation: Long) {
   var assigned: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>> = Slot.Pending

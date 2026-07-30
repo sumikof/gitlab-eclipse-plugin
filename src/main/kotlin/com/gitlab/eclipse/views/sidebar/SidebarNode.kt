@@ -42,8 +42,13 @@ class IssueNode(issue: GitLabIssue) : SidebarNode {
   override val activationUrl: String? = url
 }
 
-/** Shown under a [MergeRequestNode] until its changed files have been fetched. */
-private const val MR_LOADING_MESSAGE = "Loading…"
+/**
+ * Shared loading placeholder text (U+2026 ellipsis): under a [MergeRequestNode] until its
+ * changed files have been fetched, and — same glyph, one constant (Task 9 consolidation) —
+ * for the pending query roots / section sides that [SidebarRefreshCoordinator] and
+ * [SidebarViewModel] render while a fetch is still in flight.
+ */
+internal const val LOADING_MESSAGE = "Loading…"
 
 /**
  * Expandable node representing a single GitLab merge request. Its children — an
@@ -70,7 +75,7 @@ class MergeRequestNode(val mr: GitLabMergeRequest) : SidebarNode {
 
   // One stable instance: JFace tracks tree elements by identity, so returning a fresh
   // MessageNode from every children read would churn the widget mapping.
-  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(MR_LOADING_MESSAGE))
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
 
   override val children: List<SidebarNode>
     get() = loadedChildren ?: loadingPlaceholder

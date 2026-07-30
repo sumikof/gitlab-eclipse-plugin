@@ -4,8 +4,6 @@ import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 
-// Same glyph (U+2026) as SidebarViewModel's private LOADING_MESSAGE — Task 9 may consolidate.
-private const val LOADING_MESSAGE = "Loading…"
 private const val ISSUES_ROOT_TITLE = "Issues assigned to me"
 private const val MRS_ROOT_TITLE = "Merge requests assigned to me"
 

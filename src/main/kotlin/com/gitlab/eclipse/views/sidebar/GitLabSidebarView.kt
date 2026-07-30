@@ -1,15 +1,14 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.IssueService
+import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
-import com.gitlab.eclipse.api.model.GitLabIssue
-import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
-import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
-import com.gitlab.eclipse.mergerequests.RepositoryContext
+import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
@@ -31,18 +30,19 @@ import org.eclipse.ui.part.ViewPart
 import java.io.File
 import java.net.URI
 
-/** Shown in the "For current branch" section when no single repository can be resolved. */
-private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
-
 /**
  * GitLab sidebar: a [TreeViewer] over the two query roots produced by [SidebarViewModel]
  * ("Issues assigned to me" / "Merge requests assigned to me") plus the "For current
- * branch" section (open MR for the checked-out branch and the issues it would close).
+ * branch" section (open MR for the checked-out branch, the issues it would close, and the
+ * branch's latest pipeline as a Pipeline→Stage→Job subtree).
  *
- * Threading: fetches run on the shared IO [CoroutineScope]; results hop to the SWT UI
- * thread via `asyncExec` and are dropped when stale ([ViewRefreshState] generation) or
- * when the widget is disposed. The last fetch results are cached (UI thread only) so a
- * [SidebarViewMode] toggle re-composes the tree without re-fetching.
+ * Threading: each refresh runs two independent fetch units on the shared IO
+ * [CoroutineScope] (design doc §6.6) — the assigned roots and the current-branch section —
+ * and each unit settles its slot in the generation's [RefreshSlots] then re-composes the
+ * whole tree incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread
+ * with `asyncExec`. Stale generations ([ViewRefreshState]) and disposed widgets are
+ * dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
+ * re-composes without re-fetching (R8), even while some slots are still Pending.
  *
  * MR nodes expand lazily ([loadMrChildren]): first expansion fetches the MR's latest diff
  * version and renders an "Overview" node plus its changed files (flat in LIST mode,
@@ -63,27 +63,31 @@ class GitLabSidebarView : ViewPart() {
   private val viewModel = SidebarViewModel()
   private val refreshState = ViewRefreshState()
 
+  // Composes viewer input from one generation's RefreshSlots. UI thread only: its memo
+  // state is unsynchronized, and compose() is only ever called inside asyncExec.
+  private val coordinator by lazy { SidebarRefreshCoordinator(viewModel) }
+
   // Deliberately not Koin singles (see RepositoryContextResolver KDoc); lazy so that
   // their `service()` default arguments resolve only once the workbench is up.
   private val repositoryContextResolver by lazy { RepositoryContextResolver() }
   private val currentBranchGitReader by lazy { CurrentBranchGitReader() }
   private val currentBranchMrLookup by lazy { CurrentBranchMrLookup() }
+  private val pipelineService by lazy { PipelineService() }
+  private val jobService by lazy { JobService() }
 
   private lateinit var viewer: TreeViewer
 
   @Volatile private var fetchJob: Job? = null
 
-  // Last fetch results, read/written on the UI thread only (inside asyncExec / listeners),
-  // so a mode toggle can re-compose without re-fetching and without torn reads.
-  private var cachedIssues: Result<List<GitLabIssue>>? = null
-  private var cachedMrs: Result<List<GitLabMergeRequest>>? = null
-
-  // Mode-independent, so a mode toggle reuses the node as-is (no re-fetch, no re-build).
-  private var cachedCurrentBranchSection: SidebarNode? = null
+  // The live refresh generation's slots, written on the UI thread in refresh() and mutated
+  // on the UI thread inside applyCompose (RefreshSlots' contract). `null` = nothing was
+  // ever fetched — onModeChanged then starts the first refresh instead of recomposing.
+  private var currentSlots: RefreshSlots? = null
 
   // Latest MR diff version per (projectId, iid), UI thread only. Survives mode toggles —
   // re-expanding an MR re-composes its children in the new mode without re-fetching — and
-  // is cleared when a full refresh applies, so refreshed sidebars pick up new diff versions.
+  // is cleared at the start of a full refresh, so refreshed sidebars pick up new diff
+  // versions while the several incremental composes of one refresh keep sharing it.
   private val mrVersionCache = mutableMapOf<Pair<Long, Long>, GitLabMrVersion?>()
 
   // MR nodes with a version fetch in flight (UI thread only; identity-keyed since
@@ -115,7 +119,12 @@ class GitLabSidebarView : ViewPart() {
     viewer.addDoubleClickListener { event ->
       val node = (event.selection as? IStructuredSelection)?.firstElement as? SidebarNode
       val url = node?.activationUrl ?: return@addDoubleClickListener
-      openInBrowser(url)
+      // Inline rather than a member (keeps the class under the TooManyFunctions threshold).
+      try {
+        PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
+      } catch (e: Exception) {
+        logger.error("Failed to open URL: $url", e)
+      }
     }
 
     viewer.addTreeListener(
@@ -142,42 +151,27 @@ class GitLabSidebarView : ViewPart() {
     // fetch coroutine below. Non-interactive by design: never a picker during an
     // auto-refresh; an ambiguous workspace resolves to null → "Select a repository".
     val activeEditorFile = repositoryContextResolver.activeEditorFile()
+    val slots = RefreshSlots(generation)
+    currentSlots = slots
+    // A full refresh eventually rebuilds every MR node (the new generation resets the
+    // coordinator's memo); drop the cached diff versions once at refresh START — not per
+    // compose — so the next expansion re-fetches new diffs while this one refresh's
+    // several incremental composes keep sharing the cache.
+    mrVersionCache.clear()
     fetchJob?.cancel()
     fetchJob = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
       // consumer of the scope loses its coroutines.
       try {
         supervisorScope {
-          val issues = async { runCatching { issueService.getIssuesAssignedToMe() } }
-          val mrs = async { runCatching { mergeRequestService.getMergeRequestsAssignedToMe() } }
-          val currentBranch = async {
-            // JGit enumeration/resolution (IO), then the branch read + REST lookup. A null
-            // context means "no repository resolved" and flows through as a null Result.
-            repositoryContextResolver.resolveNonInteractive(activeEditorFile)?.let { context ->
-              runCatching { fetchCurrentBranchInfo(context) }
-            }
-          }
-          val issuesResult = issues.await()
-          val mrsResult = mrs.await()
-          val currentBranchResult = currentBranch.await()
-          // Log per-root failures here so the "see the Error Log" message the tree renders
-          // actually has a matching Error Log entry; the failed Results still flow to
-          // buildRoots so the other root stays populated.
-          issuesResult.exceptionOrNull()?.let {
-            logger.error("Failed to load issues assigned to you.", it)
-          }
-          mrsResult.exceptionOrNull()?.let {
-            logger.error("Failed to load merge requests assigned to you.", it)
-          }
-          currentBranchResult?.exceptionOrNull()?.let {
-            logger.error("Failed to load current-branch merge request.", it)
-          }
-          val control = viewer.control
-          if (!control.isDisposed) {
-            control.display.asyncExec {
-              applyResults(generation, issuesResult, mrsResult, currentBranchResult)
-            }
-          }
+          // Two independent units (design doc §6.6): each settles its own slot and
+          // re-composes, so a slow or failed assigned fetch never blanks the
+          // current-branch section and vice versa. Fetch failures are runCatching'd
+          // inside the units; only unexpected errors (bugs) surface to the catch below.
+          val assigned = async { fetchAssigned(slots) }
+          val currentBranch = async { fetchCurrentBranch(slots, activeEditorFile) }
+          assigned.await()
+          currentBranch.await()
         }
       } catch (e: CancellationException) {
         throw e
@@ -187,63 +181,162 @@ class GitLabSidebarView : ViewPart() {
     }
   }
 
-  /** Runs in the fetch coroutine: local JGit read, then the REST lookup. */
-  private fun fetchCurrentBranchInfo(context: RepositoryContext): CurrentBranchInfo {
-    val branch = currentBranchGitReader.read(File(context.gitDir))
-    return currentBranchMrLookup.lookup(context, branch)
+  /**
+   * Unit A: the two assigned query roots, fetched concurrently and settled as ONE slot
+   * (they always applied as one unit; per-root failures stay isolated by their [Result]s
+   * flowing into `buildRoots`, not by separate slots).
+   */
+  private suspend fun fetchAssigned(slots: RefreshSlots) {
+    supervisorScope {
+      val issues = async { runCatching { issueService.getIssuesAssignedToMe() } }
+      val mrs = async { runCatching { mergeRequestService.getMergeRequestsAssignedToMe() } }
+      val issuesResult = issues.await()
+      val mrsResult = mrs.await()
+      // Log per-root failures here so the "see the Error Log" message the tree renders
+      // actually has a matching Error Log entry; the failed Results still flow to
+      // buildRoots so the other root stays populated.
+      issuesResult.exceptionOrNull()?.let {
+        logger.error("Failed to load issues assigned to you.", it)
+      }
+      mrsResult.exceptionOrNull()?.let {
+        logger.error("Failed to load merge requests assigned to you.", it)
+      }
+      applyCompose(slots) { slots.assigned = Slot.Settled(issuesResult to mrsResult) }
+    }
   }
 
   /**
-   * UI thread. Composes the roots here — with the mode read on the UI thread — rather
-   * than in the fetch coroutine, so a mode toggle that races an in-flight fetch can
-   * never paint nodes composed for a stale mode. `buildRoots` is pure list mapping.
+   * Unit B: the "For current branch" section. Shared pre-step, ONCE per refresh: resolve
+   * the repository, then read the branch snapshot and its effective ref, so the MR lookup
+   * and the pipeline ref work from the SAME branch state — a checkout switch mid-refresh
+   * cannot make them diverge (R2-1). No repository settles the slot as [NoRepository]
+   * without starting sub-tasks. Otherwise the MR and pipeline fetches run as independent
+   * sub-tasks, each settling its own side of the [Resolved] payload; the other side is
+   * preserved by re-reading the slot inside [applyCompose]'s UI-thread update step, so the
+   * two sub-tasks never race each other's halves.
    */
-  private fun applyResults(
-    generation: Long,
-    issuesResult: Result<List<GitLabIssue>>,
-    mrsResult: Result<List<GitLabMergeRequest>>,
-    currentBranchResult: Result<CurrentBranchInfo>?,
-  ) {
-    if (!refreshState.isCurrent(generation)) return
-    if (viewer.control.isDisposed) return
-    // A null result = no repository could be resolved non-interactively (none, or several
-    // and no active editor to disambiguate) — distinct from a resolved repository with no
-    // MR, which buildCurrentBranchSection renders as "No merge request found".
-    val currentBranchSection =
-      currentBranchResult?.let(viewModel::buildCurrentBranchSection)
-        ?: CurrentBranchSectionNode(listOf(MessageNode(SELECT_REPOSITORY_MESSAGE)))
-    cachedIssues = issuesResult
-    cachedMrs = mrsResult
-    cachedCurrentBranchSection = currentBranchSection
-    // A full refresh rebuilds every MR node (loadedChildren = null again); drop the cached
-    // versions too so the next expansion re-fetches and picks up newly pushed diffs.
-    mrVersionCache.clear()
-    viewer.input =
-      viewModel.buildRoots(issuesResult, mrsResult, viewState.mode) + currentBranchSection
+  private suspend fun fetchCurrentBranch(slots: RefreshSlots, activeEditorFile: File?) {
+    // JGit enumeration/resolution (IO). resolveNonInteractive and read never throw by
+    // contract; a null context means no repository resolved non-interactively (none, or
+    // several and no active editor to disambiguate) — distinct from a resolved repository
+    // with no MR, which renders as "No merge request found".
+    val context = repositoryContextResolver.resolveNonInteractive(activeEditorFile)
+    if (context == null) {
+      applyCompose(slots) { slots.currentBranch = Slot.Settled(NoRepository) }
+      return
+    }
+    val branch = currentBranchGitReader.read(File(context.gitDir))
+    val effectiveRef = EffectiveRef.resolve(branch, context.remoteName)
+    // Repository resolved, both sides still loading: paint the two placeholders now.
+    applyCompose(slots) { slots.currentBranch = Slot.Settled(Resolved(mr = null, pipeline = null)) }
+
+    // Fresh-payload invariant (RefreshSlots KDoc): each sub-task's payload below is freshly
+    // constructed by its own fetch — never a cached/reused instance — so the coordinator's
+    // identity-keyed memo sees every settle as a change.
+    fun fetchSnapshot(ref: String): PipelineSnapshot? {
+      val pipeline = pipelineService.getLatestPipelineForRef(context.projectId, ref) ?: return null
+      val jobsResult = runCatching { jobService.getJobsForPipeline(context.projectId, pipeline.id) }
+      // Logged so the "Failed to load jobs" child has a matching Error Log entry; the
+      // pipeline row itself still renders from the successfully fetched pipeline.
+      jobsResult.exceptionOrNull()?.let {
+        logger.error("Failed to load jobs for pipeline #${pipeline.id}.", it)
+      }
+      return PipelineSnapshot(pipeline, jobsResult)
+    }
+
+    supervisorScope {
+      launch {
+        val mrResult = runCatching { currentBranchMrLookup.lookup(context, branch) }
+        mrResult.exceptionOrNull()?.let {
+          logger.error("Failed to load current-branch merge request.", it)
+        }
+        applyCompose(slots) {
+          slots.currentBranch = Slot.Settled(resolvedOf(slots).copy(mr = mrResult))
+        }
+      }
+      launch {
+        // A detached HEAD has no ref to query pipelines for: a settled "no pipeline"
+        // (success(null) → no row at all), not an error.
+        val pipelineResult: Result<PipelineSnapshot?> =
+          if (effectiveRef == null) {
+            Result.success(null)
+          } else {
+            runCatching { fetchSnapshot(effectiveRef) }
+          }
+        pipelineResult.exceptionOrNull()?.let {
+          logger.error("Failed to load current-branch pipeline.", it)
+        }
+        applyCompose(slots) {
+          slots.currentBranch = Slot.Settled(resolvedOf(slots).copy(pipeline = pipelineResult))
+        }
+      }
+    }
   }
 
-  /** Mode changed: re-compose from the cached results without re-fetching. */
+  /**
+   * Schedules one incremental apply on the UI thread: run [update] (the settling unit's
+   * slot mutation — [RefreshSlots] is mutated on the UI thread only, which is what keeps
+   * the two current-branch sub-tasks from tearing each other's [Resolved] halves), then
+   * re-compose via the coordinator and swap `viewer.input`. Stale generations and disposed
+   * widgets are dropped, [update] included — a superseded refresh must never touch a newer
+   * generation's tree. Also composes with the mode read here, on the UI thread at apply
+   * time, so a mode toggle racing a fetch never paints nodes composed for a stale mode.
+   *
+   * Expansion (R9): the coordinator's memo keeps unchanged INNER nodes identity-stable
+   * (an expanded [MergeRequestNode] and its in-flight lazy fetch survive by themselves),
+   * so only the rebuilt top-level nodes need remapping by stable key
+   * ([remapExpandedElements]); re-applying the remapped list is best-effort.
+   */
+  private fun applyCompose(slots: RefreshSlots, update: () -> Unit = {}) {
+    val control = viewer.control
+    if (control.isDisposed) return
+    control.display.asyncExec {
+      if (control.isDisposed) return@asyncExec
+      if (!refreshState.isCurrent(slots.generation)) return@asyncExec
+      update()
+      val input = coordinator.compose(slots, viewState.mode)
+      // Pre-order capture: restoring in the same order expands parents first, so nested
+      // entries' widgets exist (materialized by the parent's expansion) when their turn
+      // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
+      val expanded = viewer.expandedElements.toList()
+      viewer.input = input
+      remapExpandedElements(expanded, input).forEach { viewer.setExpandedState(it, true) }
+    }
+  }
+
+  /**
+   * Mode changed: re-compose the current generation's slots with the new mode — never a
+   * re-fetch (R8: a Pending slot keeps its Loading placeholder; only a never-fetched view,
+   * `currentSlots == null`, starts its first refresh). The assigned roots rebuild by
+   * themselves (the coordinator keys them on the mode); the current-branch section node is
+   * mode-independent and reused as-is, so its MR node may hold children composed for the
+   * old mode — clear them and re-trigger the still-expanded ones, which re-compose from
+   * [mrVersionCache] without re-fetching.
+   */
   private fun onModeChanged() {
     if (!::viewer.isInitialized) return
     val control = viewer.control
     if (control.isDisposed) return
     control.display.asyncExec {
       if (control.isDisposed) return@asyncExec
-      val issues = cachedIssues
-      val mrs = cachedMrs
-      val currentBranchSection = cachedCurrentBranchSection
-      if (issues == null || mrs == null || currentBranchSection == null) {
+      val slots = currentSlots
+      if (slots == null) {
         refresh() // Nothing fetched yet — the fetch will compose with the new mode.
         return@asyncExec
       }
-      // The current-branch section itself is mode-independent and reused as-is, but its MR
-      // node may hold children composed for the old mode: clear them so the next expansion
-      // re-composes from mrVersionCache (no re-fetch). Query-root MR nodes need nothing —
-      // buildRoots creates fresh instances, and their expansion also hits the cache.
-      currentBranchSection.children
+      (viewer.input as? List<*>)
+        ?.filterIsInstance<CurrentBranchSectionNode>()
+        ?.flatMap { it.children }
+        ?.filterIsInstance<MergeRequestNode>()
+        ?.forEach { it.loadedChildren = null }
+      applyCompose(slots)
+      // Expanded MR nodes whose children were just cleared would otherwise show "Loading…"
+      // forever (programmatic expansion restore fires no treeExpanded event). Query-root MR
+      // nodes still in flight are deduped by loadMrChildren's in-flight guard.
+      viewer.expandedElements
         .filterIsInstance<MergeRequestNode>()
-        .forEach { it.loadedChildren = null }
-      viewer.input = viewModel.buildRoots(issues, mrs, viewState.mode) + currentBranchSection
+        .filter { it.loadedChildren == null }
+        .forEach { loadMrChildren(it) }
     }
   }
 
@@ -300,21 +393,13 @@ class GitLabSidebarView : ViewPart() {
   /**
    * UI thread. Composes with the mode read here — at apply time — so a mode toggle that
    * raced the fetch never paints children built for a stale mode (same rule as
-   * [applyResults]). A failed [versionResult] is applied but not cached, so a later full
+   * [applyCompose]). A failed [versionResult] is applied but not cached, so a later full
    * refresh (which rebuilds the node) retries the fetch.
    */
   private fun applyMrChildren(node: MergeRequestNode, versionResult: Result<GitLabMrVersion?>) {
     node.loadedChildren = viewModel.buildMrChildren(node.url, versionResult, viewState.mode)
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
-  }
-
-  private fun openInBrowser(url: String) {
-    try {
-      PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
-    } catch (e: Exception) {
-      logger.error("Failed to open URL: $url", e)
-    }
   }
 
   override fun setFocus() {
@@ -327,3 +412,29 @@ class GitLabSidebarView : ViewPart() {
     super.dispose()
   }
 }
+
+/**
+ * The [Resolved] payload currently settled in [slots]' current-branch slot, or an
+ * all-pending one when the slot is still Pending (or holds [NoRepository], which cannot
+ * happen once the resolved pre-step has run). Read on the UI thread only, inside
+ * `applyCompose`'s update step.
+ */
+private fun resolvedOf(slots: RefreshSlots): Resolved =
+  (slots.currentBranch as? Slot.Settled)?.value as? Resolved ?: Resolved(mr = null, pipeline = null)
+
+/**
+ * Remaps a captured expanded-elements list onto a freshly composed [newInput] (R9): the
+ * top-level node INSTANCES change per compose — [QueryRootNode]s and the
+ * [CurrentBranchSectionNode] are rebuilt — so they are matched by stable key instead: a
+ * query root by its label, the current-branch section by its type. Everything else (the
+ * coordinator's identity-preserved inner nodes) passes through unchanged. Best-effort:
+ * an unmatched stale element passes through too and is simply not found by the viewer.
+ */
+internal fun remapExpandedElements(expanded: List<Any>, newInput: List<SidebarNode>): List<Any> =
+  expanded.map { element ->
+    when (element) {
+      is QueryRootNode -> newInput.firstOrNull { it is QueryRootNode && it.label == element.label } ?: element
+      is CurrentBranchSectionNode -> newInput.firstOrNull { it is CurrentBranchSectionNode } ?: element
+      else -> element
+    }
+  }
