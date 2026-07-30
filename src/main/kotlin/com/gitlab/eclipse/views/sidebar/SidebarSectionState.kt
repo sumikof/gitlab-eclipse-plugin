@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
+import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 
@@ -31,3 +33,28 @@ data class Resolved(
   val mr: Result<CurrentBranchInfo>?,
   val pipeline: Result<PipelineSnapshot?>?,
 ) : CurrentBranchSectionInput
+
+/**
+ * One async fetch's outcome slot within a refresh generation (design doc §6.6/§9): [Pending]
+ * until the fetch settles, then [Settled] with whatever value it produced. Distinct from
+ * `Result` — a settled slot may well hold a failed `Result`; the slot only says "this unit
+ * has reported in", so [SidebarRefreshCoordinator] can compose the units that have settled
+ * without gating on the ones that haven't.
+ */
+sealed interface Slot<out T> {
+  object Pending : Slot<Nothing>
+  data class Settled<T>(val value: T) : Slot<T>
+}
+
+/**
+ * All top-level fetch slots of one refresh generation (design doc §9/R7-R9). Task 9's view
+ * creates a fresh instance per refresh with a strictly increasing [generation], mutates the
+ * slots on the UI thread as each unit's fetch settles, and re-composes via
+ * [SidebarRefreshCoordinator.compose] after each mutation. A superseded generation's instance
+ * is simply abandoned — the coordinator resets its memo when [generation] changes, so a stale
+ * generation's values can never leak into a newer compose.
+ */
+class RefreshSlots(val generation: Long) {
+  var assigned: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>> = Slot.Pending
+  var currentBranch: Slot<CurrentBranchSectionInput> = Slot.Pending
+}
