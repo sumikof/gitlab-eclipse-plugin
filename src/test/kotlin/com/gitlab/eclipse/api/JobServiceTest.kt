@@ -21,7 +21,7 @@ class JobServiceTest : DescribeSpec({
       val capturedRequest = slot<ApiRequest<GitLabJob>>()
       val capturedDeadline = slot<Duration>()
       every {
-        apiClient.fetchListWithinDeadline(capture(capturedRequest), capture(capturedDeadline))
+        apiClient.fetchListWithinDeadline(capture(capturedRequest), capture(capturedDeadline), any(), any())
       } returns jobs
 
       val result = service.getJobsForPipeline("42", 99L)
@@ -30,6 +30,20 @@ class JobServiceTest : DescribeSpec({
       capturedRequest.captured.path shouldBe "/projects/42/pipelines/99/jobs"
       capturedRequest.captured.elementType shouldBe GitLabJob::class.java
       capturedDeadline.captured shouldBe Duration.ofSeconds(15)
+    }
+
+    it("threads the caller's isActive through to fetchListWithinDeadline") {
+      val capturedIsActive = slot<() -> Boolean>()
+      every {
+        apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), capture(capturedIsActive))
+      } returns emptyList()
+
+      var active = true
+      service.getJobsForPipeline("42", 99L) { active }
+
+      capturedIsActive.captured() shouldBe true
+      active = false
+      capturedIsActive.captured() shouldBe false
     }
   }
 })

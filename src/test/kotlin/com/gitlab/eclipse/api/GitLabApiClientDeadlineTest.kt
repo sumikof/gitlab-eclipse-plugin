@@ -14,6 +14,7 @@ import io.mockk.verify
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.net.http.HttpResponse
 import java.time.Duration
+import kotlin.coroutines.cancellation.CancellationException
 
 class GitLabApiClientDeadlineTest : DescribeSpec({
   val http = mockk<GitLabHttpClient>()
@@ -102,6 +103,27 @@ class GitLabApiClientDeadlineTest : DescribeSpec({
       // page 1 fetched at t=0 (0 <= 15s), page 2 fetched at t=10s (10s <= 15s);
       // the check before page 3 sees t=20s > 15s and throws without a third HTTP call.
       verify(exactly = 2) { http.send(any()) }
+    }
+
+    it("throws CancellationException before fetching the next page once isActive returns false") {
+      var call = 0
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+        response("""[{"id":2}]""", nextPage = ""),
+      )
+      every { http.send(any()) } answers {
+        val page = pages[call]
+        call++
+        page
+      }
+
+      shouldThrow<CancellationException> {
+        client.fetchListWithinDeadline(req(), deadline, { 0L }, isActive = { call == 0 })
+      }
+
+      // page 1 fetched while isActive was still true; the check before page 2 sees
+      // isActive == false and throws without a second HTTP call.
+      verify(exactly = 1) { http.send(any()) }
     }
   }
 })

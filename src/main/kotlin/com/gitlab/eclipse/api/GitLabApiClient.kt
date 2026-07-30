@@ -13,6 +13,7 @@ import java.net.URLEncoder
 import java.net.http.HttpRequest
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * REST endpoint abstraction over [GitLabHttpClient]. Builds URLs from `gitlab.url`,
@@ -57,16 +58,24 @@ class GitLabApiClient(
    * [GitLabApiTimeoutException] instead of fetching a further page once it is exceeded. This
    * bounds the total time of a multi-page fetch in a way a coroutine `withTimeout` cannot, since
    * the paging loop itself is synchronous and non-suspending.
+   *
+   * [isActive] is checked at the same point (between pages) and throws [CancellationException]
+   * once it returns false, so a caller running on a cancelled coroutine can abort the paging
+   * instead of issuing further requests — again something a suspension-based cancel cannot do
+   * here. The check is a plain function (kotlin-stdlib exception, no kotlinx dependency); the
+   * default `{ true }` keeps existing callers non-cancellable as before.
    */
   fun <T> fetchListWithinDeadline(
     request: ApiRequest<T>,
     deadline: Duration,
     clock: () -> Long = { System.nanoTime() },
+    isActive: () -> Boolean = { true },
   ): List<T> {
     val start = clock()
     val all = mutableListOf<T>()
     var page = 1
     while (true) {
+      if (!isActive()) throw CancellationException("Cancelled during paginated fetch")
       if (clock() - start > deadline.toNanos()) throw GitLabApiTimeoutException(page)
 
       val response = sendPage(request, page)

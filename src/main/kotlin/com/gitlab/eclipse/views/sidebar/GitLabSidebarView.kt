@@ -16,6 +16,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import org.eclipse.jface.action.MenuManager
@@ -233,10 +235,24 @@ class GitLabSidebarView : ViewPart() {
 
     // Fresh-payload invariant (RefreshSlots KDoc): each sub-task's payload below is freshly
     // constructed by its own fetch — never a cached/reused instance — so the coordinator's
-    // identity-keyed memo sees every settle as a change.
-    fun fetchSnapshot(ref: String): PipelineSnapshot? {
+    // identity-keyed memo sees every settle as a change. The blocking fetches inside have no
+    // suspension points, so cancellation (a newer refresh() or dispose() cancelling fetchJob)
+    // is observed explicitly: ensureActive between the two GETs, isActive between jobs pages.
+    // The resulting CancellationException must propagate (never be runCatching'd into a
+    // rendered failure) — it cancels this child cleanly and paints nothing.
+    suspend fun fetchSnapshot(ref: String): PipelineSnapshot? {
       val pipeline = pipelineService.getLatestPipelineForRef(context.projectId, ref) ?: return null
-      val jobsResult = runCatching { jobService.getJobsForPipeline(context.projectId, pipeline.id) }
+      // Cancelled during the synchronous pipeline GET: stop here instead of starting the
+      // jobs fetch (which would otherwise run to its 15s paging deadline for nothing).
+      currentCoroutineContext().ensureActive()
+      val job = currentCoroutineContext()[Job]
+      val jobsResult = try {
+        Result.success(jobService.getJobsForPipeline(context.projectId, pipeline.id) { job?.isActive != false })
+      } catch (e: CancellationException) {
+        throw e // Cancelled between jobs pages: cancel the coroutine, don't render a failure.
+      } catch (e: Exception) {
+        Result.failure(e)
+      }
       // Logged so the "Failed to load jobs" child has a matching Error Log entry; the
       // pipeline row itself still renders from the successfully fetched pipeline.
       jobsResult.exceptionOrNull()?.let {
@@ -262,7 +278,13 @@ class GitLabSidebarView : ViewPart() {
           if (effectiveRef == null) {
             Result.success(null)
           } else {
-            runCatching { fetchSnapshot(effectiveRef) }
+            try {
+              Result.success(fetchSnapshot(effectiveRef))
+            } catch (e: CancellationException) {
+              throw e // Propagate: a cancelled refresh paints nothing (not a failure row).
+            } catch (e: Exception) {
+              Result.failure(e)
+            }
           }
         pipelineResult.exceptionOrNull()?.let {
           logger.error("Failed to load current-branch pipeline.", it)
