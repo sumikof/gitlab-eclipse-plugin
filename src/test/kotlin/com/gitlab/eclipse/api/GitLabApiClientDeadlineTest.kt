@@ -1,0 +1,107 @@
+package com.gitlab.eclipse.api
+
+import com.gitlab.eclipse.api.http.GitLabHttpClient
+import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.preferences.PreferenceConstants
+import io.kotest.assertions.throwables.shouldThrow
+import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.net.http.HttpResponse
+import java.time.Duration
+
+class GitLabApiClientDeadlineTest : DescribeSpec({
+  val http = mockk<GitLabHttpClient>()
+  val tokens = mockk<GitLabTokenProviderManager>()
+  val prefs = mockk<ScopedPreferenceStore>(relaxed = true)
+  val client = GitLabApiClient(http, tokens, prefs)
+
+  extensions(LoggingKotestExtension)
+
+  data class Item(val id: Long)
+  fun req() = ApiRequest("/jobs", emptyMap(), Item::class.java)
+
+  fun response(body: String, status: Int = 200, nextPage: String = ""): HttpResponse<String> {
+    val resp = mockk<HttpResponse<String>>()
+    every { resp.statusCode() } returns status
+    every { resp.body() } returns body
+    val headers = java.net.http.HttpHeaders.of(
+      mapOf("x-next-page" to listOf(nextPage)),
+    ) { _, _ -> true }
+    every { resp.headers() } returns headers
+    return resp
+  }
+
+  beforeEach {
+    clearMocks(http)
+    every { tokens.getToken() } returns "tok-123"
+    every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com/"
+  }
+
+  val deadline = Duration.ofSeconds(15)
+  val fiveSecondsNanos = Duration.ofSeconds(5).toNanos()
+  val tenSecondsNanos = Duration.ofSeconds(10).toNanos()
+
+  describe("fetchListWithinDeadline") {
+    it("returns in a single call when there is no x-next-page") {
+      every { http.send(any()) } returns response("""[{"id":1},{"id":2}]""")
+      val clock = { 0L }
+
+      val result = client.fetchListWithinDeadline(req(), deadline, clock)
+
+      result shouldBe listOf(Item(1), Item(2))
+      verify(exactly = 1) { http.send(any()) }
+    }
+
+    it("aggregates all pages when the elapsed time between pages stays under the deadline") {
+      var nanos = 0L
+      val clock = { nanos }
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+        response("""[{"id":2}]""", nextPage = ""),
+      )
+      var call = 0
+      every { http.send(any()) } answers {
+        val page = pages[call]
+        call++
+        nanos += fiveSecondsNanos
+        page
+      }
+
+      val result = client.fetchListWithinDeadline(req(), deadline, clock)
+
+      result shouldBe listOf(Item(1), Item(2))
+      verify(exactly = 2) { http.send(any()) }
+    }
+
+    it("throws GitLabApiTimeoutException when the clock exceeds the deadline before fetching the next page") {
+      var nanos = 0L
+      val clock = { nanos }
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+        response("""[{"id":2}]""", nextPage = "3"),
+      )
+      var call = 0
+      every { http.send(any()) } answers {
+        val page = pages[call]
+        call++
+        nanos += tenSecondsNanos
+        page
+      }
+
+      val exception = shouldThrow<GitLabApiTimeoutException> {
+        client.fetchListWithinDeadline(req(), deadline, clock)
+      }
+
+      exception.page shouldBe 3
+      // page 1 fetched at t=0 (0 <= 15s), page 2 fetched at t=10s (10s <= 15s);
+      // the check before page 3 sees t=20s > 15s and throws without a third HTTP call.
+      verify(exactly = 2) { http.send(any()) }
+    }
+  }
+})

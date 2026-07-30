@@ -51,6 +51,40 @@ class GitLabApiClient(
     return gson.fromJson(sendGet(path, query).body(), type)
   }
 
+  /**
+   * Like [fetchListFromApi], but checks [deadline] (elapsed since the call started, measured via
+   * [clock]) at the top of every loop iteration — i.e. between pages — and throws
+   * [GitLabApiTimeoutException] instead of fetching a further page once it is exceeded. This
+   * bounds the total time of a multi-page fetch in a way a coroutine `withTimeout` cannot, since
+   * the paging loop itself is synchronous and non-suspending.
+   */
+  fun <T> fetchListWithinDeadline(
+    request: ApiRequest<T>,
+    deadline: Duration,
+    clock: () -> Long = { System.nanoTime() },
+  ): List<T> {
+    val start = clock()
+    val all = mutableListOf<T>()
+    var page = 1
+    while (true) {
+      if (clock() - start > deadline.toNanos()) throw GitLabApiTimeoutException(page)
+
+      val response = sendPage(request, page)
+      val arrayType = TypeToken.getArray(request.elementType).type
+      val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
+      all.addAll(pageItems)
+
+      val next = response.headers().firstValue("x-next-page").orElse("").trim()
+      if (next.isEmpty()) return all
+      val nextPage = next.toIntOrNull()
+      if (nextPage == null || nextPage <= page || nextPage > MAX_PAGES) {
+        logger.warn("Pagination stopped at page $page (next='$next', cap=$MAX_PAGES); results may be truncated.")
+        return all
+      }
+      page = nextPage
+    }
+  }
+
   private fun <T> sendPage(request: ApiRequest<T>, page: Int): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
       put("per_page", PER_PAGE.toString())
