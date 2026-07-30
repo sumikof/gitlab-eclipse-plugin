@@ -1,8 +1,10 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.model.GitLabIssue
+import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.issues.configErrorMessage
 
@@ -12,6 +14,8 @@ private const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
 private const val NO_CURRENT_BRANCH_MR_MESSAGE = "No merge request found"
 private const val NO_CLOSING_ISSUE_MESSAGE = "No closing issue found"
 private const val NO_CHANGED_FILES_MESSAGE = "No changed files"
+private const val NO_STAGE = "(no stage)"
+private const val JOBS_LOAD_FAILED_MESSAGE = "Failed to load jobs"
 
 /**
  * Pure composition logic for the sidebar's two query roots ("Issues assigned to me",
@@ -91,6 +95,22 @@ class SidebarViewModel {
   }
 
   /**
+   * Builds a [PipelineNode] for [pipeline], grouping its jobs into a Pipeline→Stage→Job
+   * subtree with a deterministic order: jobs are sorted by id ascending, then grouped by
+   * stage in first-appearance order (stable regardless of the GitLab API's return order —
+   * e.g. a retried job with a larger id still sorts into its stage's original position). A
+   * failed [jobsResult] keeps the pipeline row and renders a single "Failed to load jobs"
+   * child instead of the stage subtree.
+   */
+  fun buildPipelineNode(pipeline: GitLabPipeline, jobsResult: Result<List<GitLabJob>>): PipelineNode {
+    val children = jobsResult.fold(
+      onSuccess = ::buildStageNodes,
+      onFailure = { listOf(MessageNode(JOBS_LOAD_FAILED_MESSAGE)) },
+    )
+    return PipelineNode(pipeline, children)
+  }
+
+  /**
    * Children of an expanded [MergeRequestNode]: an [OverviewNode] (activates to the MR's
    * web page) followed by the changed files of its latest diff version, composed per
    * [mode]. A failed [versionResult] renders the same config-aware error message as the
@@ -129,16 +149,6 @@ class SidebarViewModel {
     }
   }
 
-  /**
-   * [GitLabMrVersion.diffs]'s `= emptyList()` default is decorative: Gson populates fields via
-   * unsafe object construction and ignores Kotlin defaults, so a version built from raw JSON
-   * lacking a `diffs` key ends up with a `null` field despite the non-nullable declared type
-   * (Task 3 review). Guard against that here rather than trusting the compile-time type.
-   */
-  @Suppress("SENSELESS_COMPARISON")
-  private fun nullSafeDiffs(version: GitLabMrVersion): List<GitLabMrVersion.Diff> =
-    if (version.diffs == null) emptyList() else version.diffs
-
   private fun toChangedFileNode(
     diff: GitLabMrVersion.Diff,
     headCommitSha: String?,
@@ -154,6 +164,26 @@ class SidebarViewModel {
     return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl)
   }
 }
+
+/**
+ * [GitLabMrVersion.diffs]'s `= emptyList()` default is decorative: Gson populates fields via
+ * unsafe object construction and ignores Kotlin defaults, so a version built from raw JSON
+ * lacking a `diffs` key ends up with a `null` field despite the non-nullable declared type
+ * (Task 3 review). Guard against that here rather than trusting the compile-time type.
+ */
+@Suppress("SENSELESS_COMPARISON")
+private fun nullSafeDiffs(version: GitLabMrVersion): List<GitLabMrVersion.Diff> =
+  if (version.diffs == null) emptyList() else version.diffs
+
+/**
+ * Groups a pipeline's jobs into [StageNode]s with a deterministic order: sorted by id
+ * ascending, then grouped by stage in first-appearance order (a [LinkedHashMap] via
+ * [groupBy], so a retried job with a larger id still lands in its stage's original slot).
+ */
+private fun buildStageNodes(jobs: List<GitLabJob>): List<SidebarNode> =
+  jobs.sortedBy { it.id }
+    .groupBy { it.stage ?: NO_STAGE }
+    .map { (stage, stageJobs) -> StageNode(stage, stageJobs.map(::JobNode)) }
 
 /** Groups items by project, keyed off the `namespace/path#iid` or `namespace/path!iid` reference. */
 internal fun projectKey(full: String?): String =

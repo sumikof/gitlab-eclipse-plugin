@@ -1,7 +1,10 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.model.GitLabIssue
+import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.CiStatus
 
 /**
  * Node in the sidebar tree (query roots, project groups, issues, merge requests,
@@ -131,3 +134,22 @@ class ChangedDirectoryNode(
   override val label: String,
   override val children: List<SidebarNode>,
 ) : SidebarNode
+
+/**
+ * Root node for a single GitLab pipeline (design doc §6.5/§7.2): expands into a
+ * Pipeline→Stage→Job subtree built by [SidebarViewModel.buildPipelineNode].
+ */
+class PipelineNode(pipeline: GitLabPipeline, override val children: List<SidebarNode>) : SidebarNode {
+  override val label: String = "Pipeline #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
+  override val activationUrl: String? = pipeline.webUrl
+}
+
+/** Groups a pipeline's [JobNode]s under their CI stage name (or `NO_STAGE` when absent). */
+class StageNode(override val label: String, override val children: List<SidebarNode>) : SidebarNode
+
+/** Leaf node for a single job within a pipeline stage. */
+class JobNode(val job: GitLabJob) : SidebarNode {
+  override val label: String = "${job.name ?: "(job)"} · ${CiStatus.displayName(job.status, job.allowFailure ?: false)}"
+  override val children: List<SidebarNode> = emptyList()
+  override val activationUrl: String? = job.webUrl
+}
