@@ -204,11 +204,19 @@ data class Resolved(                                      // context 解決 → 
 
 **増分描画で待ち時間を分離(Codex R4/R7 反映・確定)**: 「揃うまで待って一度に描画」すると、refresh の描画が遅い結果に律速される。現行 `refresh()` は **assigned Issues・assigned MRs・current-branch の3結果をすべて `await` してから単一の `applyResults` を1回だけ呼ぶ**(`GitLabSidebarView:150-186`)。したがって section 内で MR/pipeline を増分化するだけでは、**assigned Issues/MRs API が遅いとそこで律速**され AC-11 を満たせない(Codex R7)。そこで **apply を top-level ユニット単位の増分に一般化**する:
 - **ユニット分割**: (A) assigned roots(Issues + MRs の対)、(B) current-branch 節(プリステップ + MR/pipeline 増分)。A と B は独立に適用する。
-- **各ユニット完了時に `asyncExec`** を発行し、**既存のキャッシュスロット**(`cachedIssues` / `cachedMrs` / `cachedCurrentBranchSection`。onModeChanged 用に既存)を更新して `viewer.input` を全スロットから再構築する。未到達スロットは placeholder(assigned root は "Loading…" ルート、section は §6.6 の Loading)。
-- 結果として **パイプライン行(ユニット B 内)は、assigned Issues/MRs(ユニット A)にも current-branch の MR にも律速されず**、パイプラインタスクの内部上限(§8.3)で表示される。
-- MR 側の既存ページング遅延は **MR 行のみ**、assigned roots の遅延は **assigned root のみ**に限局(既存 Phase 3 の fetch 自体は非回帰で温存。変わるのは「揃うまで待つ単一 apply」→「ユニット単位の増分 apply」だけ)。
+- **世代別スロット状態(Codex R8 反映・確定)**: 既存の `cachedIssues`/`cachedMrs`/`cachedCurrentBranchSection`(= 最後に完全適用した値。`onModeChanged` は「いずれか null なら未取得 → refresh 起動」に使う)を増分再利用すると、**2 回目以降の refresh 開始時にこれらが前世代の非 null 値を保持**しているため、片ユニット先行完了時に「新パイプライン + 旧 assigned」等の**新旧混在**が一瞬生じ AC-11(未到達=Loading)に反する。したがって **refresh の世代ごとにスロット holder を新規作成**する:
+  ```
+  class RefreshSlots(generation)                       // refresh() の begin() 時に生成
+    var assigned:      Slot<Pair<Result<Issues>,Result<Mrs>>> = Pending
+    var currentBranch: Slot<CurrentBranchSectionInput>        = Pending
+  // Slot = Pending | Settled(value)
+  ```
+  - `refresh()` の `begin()`(新世代)で両スロット = **Pending** に初期化。
+  - 各ユニット完了時の `asyncExec` は `refreshState.isCurrent(gen)` を確認後、**その世代の** `RefreshSlots` の該当スロットを `Settled` にし、`viewer.input` を**その世代のスロットのみ**から再構築(前世代値は決して混ぜない)。Pending → placeholder(assigned=「Loading…」ルート、section=§6.6 の Loading)。
+- **Pending と「未取得」の区別(onModeChanged 対策)**: 単純な `null` 化は現行 `onModeChanged` が「null → 追加 refresh 起動」してしまう。そこで **`RefreshSlots` 自体の有無**で「一度も fetch していない」を表し、`onModeChanged` は「`RefreshSlots` が無ければ refresh 起動、あれば現世代スロットから再構築(Pending は Loading)」に改める。Pending(取得中)は追加 refresh を起こさない。「最後に完全適用した値」を保持する既存キャッシュはモード再構成のため各 `Settled` で更新してよいが、増分再構築の真実源は**現世代スロット**とする。
+- 結果として **パイプライン行(ユニット B 内)は、assigned Issues/MRs(ユニット A)にも current-branch の MR にも律速されず**、パイプラインタスクの内部上限(§8.3)で表示される。MR 側の既存ページング遅延は **MR 行のみ**、assigned roots の遅延は **assigned root のみ**に限局(既存 Phase 3 の fetch 自体は非回帰。変わるのは apply の粒度)。
 
-この top-level 増分 apply(スロット更新 + 全体再構築 + 世代/dispose 判定)も §10 の注入可能コーディネータに含め、ユニット完了順を fake scheduler で制御して検証する。
+この top-level 増分 apply(世代別スロット更新 + 全体再構築 + 世代/dispose 判定)も §10 の注入可能コーディネータに含め、ユニット完了順・**再 refresh(スロット既埋まり状態からの新世代)**を fake scheduler で制御して検証する(AC-13)。
 
 **並行・世代・dispose**: MR タスクとパイプラインタスクは共有 snapshot を入力に `supervisorScope` の sibling として並走(片方の失敗が他方をキャンセルしない)。各完了時の `asyncExec` は **世代 latest-wins + dispose ガード**(asyncExec 内で世代・`control.isDisposed` 再チェック)を通す(Phase 3 実装を流用)。同一世代内で MR/パイプラインの結果を保持する小さな可変状態(UI スレッド上でのみ更新)を持ち、到達済み分で節を再構築する。失敗は `logger.error`(§8.1 のログ規則)。この結果保持・合成・世代判定ロジックは §10 のとおり注入可能な純コーディネータに切り出して自動検証する。
 
@@ -341,6 +349,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - AC-9: 世代逆転・片側失敗・dispose・stale 破棄が注入可能コーディネータの自動テストで再現・検証される。
 - AC-10: jobs 取得の soft deadline = 15 秒。fake client で 15 秒超過時にページングが打ち切られ `jobsResult` が失敗となり、**パイプライン行は残り**子に "Failed to load jobs" が出ることを自動テストで検証する(最大待ち時間 ≒ 15s + 進行中1リクエスト分)。
 - AC-11: 増分描画。パイプライン行の表示は **(a) current-branch の MR 完了にも (b) assigned Issues/MRs ルートの完了にも律速されない**。パイプラインが他ユニットより先に完了した場合、パイプライン行が表示され未完了ユニットは "Loading…" になることを、fake scheduler でユニット完了順を制御して検証する(A=assigned roots / B=current-branch 節、B 内で MR/pipeline)。
+- AC-13: 再 refresh の世代分離。キャッシュが前世代値で埋まった状態から新 refresh を開始し、片ユニット(例: assigned)が先に完了しても、**新 assigned + 旧 current-branch の混在は起きず、未完了ユニットは "Loading…"** になることを fake scheduler で検証する(Pending スロットは前世代値を露出しない)。モード変更が in-flight(Pending あり)中は追加 refresh を起動しないことも検証する。
 - AC-12: プリステップ終端状態(never-throw 前提)。(a) リポジトリ未解決(context null)→ "Select a repository" が即時に出て "Loading…" にならない(現行挙動を保持)、(b) 破損/読取不能 git dir → all-null branch(detached)として "パイプライン無し" になり永久 Loading にならない。いずれも sibling 未起動でも Loading に留まらないことを検証する(config-aware エラー表示は never-throw 契約変更を要するため PR-1 対象外)。
 
 ---
@@ -366,6 +375,7 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 - **R-7**: jobs ページングの長時間化。jobs 専用期限(15s)+ ページ間 deadline 検査で総時間を有界化(§8.3・Codex R2-#2/#3/R3 反映)。進行中 1 リクエストの非中断は受容済み制限。
 - **R-8**: refresh 全体の待ち時間が遅い結果に律速(Codex R4/R7 反映)。**top-level ユニット単位の増分描画**(A=assigned roots / B=current-branch 節)で各パートを揃い次第表示。パイプライン行は assigned Issues/MRs にも current-branch MR にも律速されない(§6.6・AC-11)。各 fetch 自体は非回帰。
 - **R-9**: 増分描画の "Loading" とプリステップ未解決の混同で永久 Loading(Codex R5/R6 反映)。節入力を sealed 型(`NoRepository`/`Resolved`)化し、未解決=Select a repository を**即時終端描画**。プリステップ API は never-throw と確認済みで破損は未解決/detached に畳まれる(§6.6・§7.1・AC-12)。失敗の明示表示は never-throw 契約変更を要する後続。
+- **R-10**: 再 refresh 時の新旧結果混在(Codex R8 反映)。**世代別 `RefreshSlots`(Pending|Settled)** で現世代スロットのみから再構築し前世代値を露出しない。Pending と「未取得」を区別して `onModeChanged` の追加 refresh を誤起動しない(§6.6・AC-13)。
 
 ---
 
@@ -420,7 +430,13 @@ VSCode パリティ注記(Codex #2 反映): VSCode は「MR があれば MR パ�
 
 | # | severity | 指摘 | 反映(実コードで検証済み) |
 |---|---|---|---|
-| R7-1 | P2 | assigned Issue/MR の完了待ちから増分描画を分離 | §6.6/AC-11: 現行 `refresh()` は assigned Issues/MRs/current-branch の3結果を全 `await` してから単一 `applyResults`(`GitLabSidebarView:150-186`)→ section 内だけ増分化しても assigned が遅いと律速。apply を **top-level ユニット単位の増分**に一般化(A=assigned roots / B=current-branch 節)。既存キャッシュスロットを使い各ユニット完了時に再構築。パイプライン行は assigned にも MR にも律速されない |
+| R7-1 | P2 | assigned Issue/MR の完了待ちから増分描画を分離 | §6.6/AC-11: 現行 `refresh()` は assigned Issues/MRs/current-branch の3結果を全 `await` してから単一 `applyResults`(`GitLabSidebarView:150-186`)→ section 内だけ増分化しても assigned が遅いと律速。apply を **top-level ユニット単位の増分**に一般化(A=assigned roots / B=current-branch 節)。各ユニット完了時に再構築。パイプライン行は assigned にも MR にも律速されない |
+
+### ラウンド8(commit `fc7c9c4` に対する追加指摘)
+
+| # | severity | 指摘 | 反映(実コードで検証済み) |
+|---|---|---|---|
+| R8-1 | P2 | refresh 開始時に世代別スロットを初期化 | §6.6/AC-13: 既存キャッシュ(`cachedIssues`等、`:78-82`)を増分再利用すると 2 回目以降の refresh で前世代値を保持 → 片ユニット先行完了で新旧混在。**世代別 `RefreshSlots`(Pending\|Settled)を begin() で全 Pending 初期化**し現世代スロットのみから再構築。`onModeChanged`(`:225-236` の null→refresh)対策として **Pending と「未取得(RefreshSlots 無し)」を区別**(Pending 中はモード変更で追加 refresh を起こさない) |
 
 ---
 
