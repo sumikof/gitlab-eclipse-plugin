@@ -127,6 +127,38 @@ class GitLabApiClientDeadlineTest : DescribeSpec({
       verify(exactly = 1) { http.send(any()) }
     }
 
+    it(
+      "throws GitLabApiTimeoutException (not IllegalArgumentException) when elapsed lands exactly " +
+        "on the deadline at the top of an iteration",
+    ) {
+      var nanos = 0L
+      val clock = { nanos }
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+      )
+      var call = 0
+      every { http.send(any()) } answers {
+        val page = pages[call]
+        call++
+        // After fetching page 1, the clock jumps to exactly the deadline. A
+        // two-read implementation (elapsed check, then remaining computation)
+        // would read this same value twice, compute remainingNanos == 0, and
+        // blow up with IllegalArgumentException from HttpRequest.timeout()
+        // instead of the intended GitLabApiTimeoutException.
+        nanos = deadline.toNanos()
+        page
+      }
+
+      val exception = shouldThrow<GitLabApiTimeoutException> {
+        client.fetchListWithinDeadline(req(), deadline, clock)
+      }
+
+      exception.page shouldBe 2
+      // only page 1 was fetched; the deadline check before page 2 throws
+      // without issuing a second HTTP call.
+      verify(exactly = 1) { http.send(any()) }
+    }
+
     it("caps each page's request timeout to the remaining deadline budget") {
       val bigDeadline = Duration.ofSeconds(60)
       var nanos = 0L

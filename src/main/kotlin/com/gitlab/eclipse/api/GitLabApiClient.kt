@@ -76,9 +76,10 @@ class GitLabApiClient(
     var page = 1
     while (true) {
       if (!isActive()) throw CancellationException("Cancelled during paginated fetch")
-      if (clock() - start > deadline.toNanos()) throw GitLabApiTimeoutException(page)
+      val elapsed = clock() - start
+      if (elapsed >= deadline.toNanos()) throw GitLabApiTimeoutException(page)
 
-      val remainingNanos = deadline.toNanos() - (clock() - start)
+      val remainingNanos = deadline.toNanos() - elapsed
       val timeout = minOf(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS), Duration.ofNanos(remainingNanos))
       val response = sendPage(request, page, timeout)
       val arrayType = TypeToken.getArray(request.elementType).type
