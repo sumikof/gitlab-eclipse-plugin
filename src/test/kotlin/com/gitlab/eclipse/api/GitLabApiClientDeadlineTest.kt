@@ -12,6 +12,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import kotlin.coroutines.cancellation.CancellationException
@@ -124,6 +125,34 @@ class GitLabApiClientDeadlineTest : DescribeSpec({
       // page 1 fetched while isActive was still true; the check before page 2 sees
       // isActive == false and throws without a second HTTP call.
       verify(exactly = 1) { http.send(any()) }
+    }
+
+    it("caps each page's request timeout to the remaining deadline budget") {
+      val bigDeadline = Duration.ofSeconds(60)
+      var nanos = 0L
+      val clock = { nanos }
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+        response("""[{"id":2}]""", nextPage = ""),
+      )
+      var call = 0
+      val requests = mutableListOf<HttpRequest>()
+      every { http.send(capture(requests)) } answers {
+        val page = pages[call]
+        call++
+        nanos += Duration.ofSeconds(40).toNanos()
+        page
+      }
+
+      val result = client.fetchListWithinDeadline(req(), bigDeadline, clock)
+
+      result shouldBe listOf(Item(1), Item(2))
+      // page 1 fetched at t=0: remaining budget is the full 60s deadline, so the
+      // request timeout is capped at the 30s default (min(30s, 60s) == 30s).
+      requests[0].timeout().get() shouldBe Duration.ofSeconds(30)
+      // page 2 fetched at t=40s: remaining budget is 60s - 40s = 20s, which is
+      // less than the 30s default, so the request timeout is capped to 20s.
+      requests[1].timeout().get() shouldBe Duration.ofSeconds(20)
     }
   }
 })

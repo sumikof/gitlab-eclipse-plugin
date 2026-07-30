@@ -78,7 +78,9 @@ class GitLabApiClient(
       if (!isActive()) throw CancellationException("Cancelled during paginated fetch")
       if (clock() - start > deadline.toNanos()) throw GitLabApiTimeoutException(page)
 
-      val response = sendPage(request, page)
+      val remainingNanos = deadline.toNanos() - (clock() - start)
+      val timeout = minOf(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS), Duration.ofNanos(remainingNanos))
+      val response = sendPage(request, page, timeout)
       val arrayType = TypeToken.getArray(request.elementType).type
       val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
       all.addAll(pageItems)
@@ -94,19 +96,27 @@ class GitLabApiClient(
     }
   }
 
-  private fun <T> sendPage(request: ApiRequest<T>, page: Int): java.net.http.HttpResponse<String> {
+  private fun <T> sendPage(
+    request: ApiRequest<T>,
+    page: Int,
+    timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+  ): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
       put("per_page", PER_PAGE.toString())
       put("page", page.toString())
     }
-    return sendGet(request.path, query)
+    return sendGet(request.path, query, timeout)
   }
 
-  private fun sendGet(path: String, query: Map<String, String>): java.net.http.HttpResponse<String> {
+  private fun sendGet(
+    path: String,
+    query: Map<String, String>,
+    timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+  ): java.net.http.HttpResponse<String> {
     val httpRequest = HttpRequest.newBuilder(buildUri(path, query))
       .header("Authorization", "Bearer ${tokenManager.getToken()}")
       .header("Accept", "application/json")
-      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .timeout(timeout)
       .GET()
       .build()
 
