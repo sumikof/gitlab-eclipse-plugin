@@ -1,7 +1,10 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.model.GitLabIssue
+import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.CiStatus
 
 /**
  * Node in the sidebar tree (query roots, project groups, issues, merge requests,
@@ -39,8 +42,13 @@ class IssueNode(issue: GitLabIssue) : SidebarNode {
   override val activationUrl: String? = url
 }
 
-/** Shown under a [MergeRequestNode] until its changed files have been fetched. */
-private const val MR_LOADING_MESSAGE = "Loading…"
+/**
+ * Shared loading placeholder text (U+2026 ellipsis): under a [MergeRequestNode] until its
+ * changed files have been fetched, and — same glyph, one constant (Task 9 consolidation) —
+ * for the pending query roots / section sides that [SidebarRefreshCoordinator] and
+ * [SidebarViewModel] render while a fetch is still in flight.
+ */
+internal const val LOADING_MESSAGE = "Loading…"
 
 /**
  * Expandable node representing a single GitLab merge request. Its children — an
@@ -67,7 +75,7 @@ class MergeRequestNode(val mr: GitLabMergeRequest) : SidebarNode {
 
   // One stable instance: JFace tracks tree elements by identity, so returning a fresh
   // MessageNode from every children read would churn the widget mapping.
-  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(MR_LOADING_MESSAGE))
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
 
   override val children: List<SidebarNode>
     get() = loadedChildren ?: loadingPlaceholder
@@ -131,3 +139,22 @@ class ChangedDirectoryNode(
   override val label: String,
   override val children: List<SidebarNode>,
 ) : SidebarNode
+
+/**
+ * Root node for a single GitLab pipeline (design doc §6.5/§7.2): expands into a
+ * Pipeline→Stage→Job subtree built by [SidebarViewModel.buildPipelineNode].
+ */
+class PipelineNode(pipeline: GitLabPipeline, override val children: List<SidebarNode>) : SidebarNode {
+  override val label: String = "Pipeline #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
+  override val activationUrl: String? = pipeline.webUrl
+}
+
+/** Groups a pipeline's [JobNode]s under their CI stage name (or `NO_STAGE` when absent). */
+class StageNode(override val label: String, override val children: List<SidebarNode>) : SidebarNode
+
+/** Leaf node for a single job within a pipeline stage. */
+class JobNode(val job: GitLabJob) : SidebarNode {
+  override val label: String = "${job.name ?: "(job)"} · ${CiStatus.displayName(job.status, job.allowFailure ?: false)}"
+  override val children: List<SidebarNode> = emptyList()
+  override val activationUrl: String? = job.webUrl
+}

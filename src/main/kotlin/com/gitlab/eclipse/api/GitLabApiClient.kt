@@ -13,6 +13,7 @@ import java.net.URLEncoder
 import java.net.http.HttpRequest
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * REST endpoint abstraction over [GitLabHttpClient]. Builds URLs from `gitlab.url`,
@@ -51,19 +52,72 @@ class GitLabApiClient(
     return gson.fromJson(sendGet(path, query).body(), type)
   }
 
-  private fun <T> sendPage(request: ApiRequest<T>, page: Int): java.net.http.HttpResponse<String> {
+  /**
+   * Like [fetchListFromApi], but checks [deadline] (elapsed since the call started, measured via
+   * [clock]) at the top of every loop iteration — i.e. between pages — and throws
+   * [GitLabApiTimeoutException] instead of fetching a further page once it is exceeded. This
+   * bounds the total time of a multi-page fetch in a way a coroutine `withTimeout` cannot, since
+   * the paging loop itself is synchronous and non-suspending.
+   *
+   * [isActive] is checked at the same point (between pages) and throws [CancellationException]
+   * once it returns false, so a caller running on a cancelled coroutine can abort the paging
+   * instead of issuing further requests — again something a suspension-based cancel cannot do
+   * here. The check is a plain function (kotlin-stdlib exception, no kotlinx dependency); the
+   * default `{ true }` keeps existing callers non-cancellable as before.
+   */
+  fun <T> fetchListWithinDeadline(
+    request: ApiRequest<T>,
+    deadline: Duration,
+    clock: () -> Long = { System.nanoTime() },
+    isActive: () -> Boolean = { true },
+  ): List<T> {
+    val start = clock()
+    val all = mutableListOf<T>()
+    var page = 1
+    while (true) {
+      if (!isActive()) throw CancellationException("Cancelled during paginated fetch")
+      val elapsed = clock() - start
+      if (elapsed >= deadline.toNanos()) throw GitLabApiTimeoutException(page)
+
+      val remainingNanos = deadline.toNanos() - elapsed
+      val timeout = minOf(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS), Duration.ofNanos(remainingNanos))
+      val response = sendPage(request, page, timeout)
+      val arrayType = TypeToken.getArray(request.elementType).type
+      val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
+      all.addAll(pageItems)
+
+      val next = response.headers().firstValue("x-next-page").orElse("").trim()
+      if (next.isEmpty()) return all
+      val nextPage = next.toIntOrNull()
+      if (nextPage == null || nextPage <= page || nextPage > MAX_PAGES) {
+        logger.warn("Pagination stopped at page $page (next='$next', cap=$MAX_PAGES); results may be truncated.")
+        return all
+      }
+      page = nextPage
+    }
+  }
+
+  private fun <T> sendPage(
+    request: ApiRequest<T>,
+    page: Int,
+    timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+  ): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
       put("per_page", PER_PAGE.toString())
       put("page", page.toString())
     }
-    return sendGet(request.path, query)
+    return sendGet(request.path, query, timeout)
   }
 
-  private fun sendGet(path: String, query: Map<String, String>): java.net.http.HttpResponse<String> {
+  private fun sendGet(
+    path: String,
+    query: Map<String, String>,
+    timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+  ): java.net.http.HttpResponse<String> {
     val httpRequest = HttpRequest.newBuilder(buildUri(path, query))
       .header("Authorization", "Bearer ${tokenManager.getToken()}")
       .header("Accept", "application/json")
-      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .timeout(timeout)
       .GET()
       .build()
 
