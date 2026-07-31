@@ -77,6 +77,12 @@ VSCode の該当実装:
 - FR-3: メニュー選択で該当 REST POST を発行し、**2xx を成功**として扱い、サイドバーを refresh する。
 - FR-4: 失敗(非 2xx / 通信例外)時はユーザー通知 + Error Log 出力を行い、サイドバーは変更しない。
 - FR-5: 確認ダイアログは出さない(即実行)。
+- FR-6: 同一ノードに対する同一操作が実行中(POST 応答待ち)の間は、再入(2 回目の同一操作)を抑止する
+  **非可視の in-flight ガード**を設ける(busy 表示は出さない)。retry / play は API 契約上冪等でない
+  (§12)ため、二重発火によるジョブ二重生成をクライアント側で防ぐ。
+- FR-7: POST の結果を **success(2xx)/ failure(非 2xx = `GitLabApiException`)/ unknown(タイムアウト・IO 例外)**
+  の 3 値で扱う。unknown は「サーバ適用済みで応答のみ欠落」の可能性があるため、definite failure と区別し、
+  盲目的な再実行を促さない通知を行い、サイドバーを refresh してサーバ状態と照合する(§9・§12)。
 
 ### 5.2 非機能要件
 
@@ -138,8 +144,11 @@ VSCode の該当実装:
 - 新規 `private fun sendPost(path, query, timeout): HttpResponse<String>`:
   `buildUri` / `Authorization: Bearer` / `Accept: application/json` / `timeout` を GET と共通化し、
   `.POST(HttpRequest.BodyPublishers.noBody())` を発行。非 2xx は既存 `GitLabApiException(status, body)` を投げる。
-- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap())`(成功時 Unit、失敗時 throw)。
+- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap())`(成功時 Unit)。
   本文は解析しない(refresh で最新化するため)。既存 GET 系メソッドは一切変更しない。
+- 例外の区別(呼び出し側の 3 値分類=FR-7 の根拠):非 2xx は既存 `GitLabApiException(status, body)`
+  (= definite failure)。送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` は
+  そのまま伝播させ(= unknown。サーバ適用済み・応答欠落を含み得る)、ハンドラで区別して扱う。
 
 ### 8.2 `PipelineActionService` / `JobActionService`(新規)
 - `PipelineActionService`: `retry(projectId: Long, pipelineId: Long)` / `cancel(projectId: Long, pipelineId: Long)`。
@@ -177,12 +186,20 @@ VSCode の該当実装:
 - `PipelineActionHandler`(command `RetryPipeline` / `CancelPipeline` の双方に登録):
   `event.command.id` で action を分岐。
 - `JobActionHandler`(command `RetryJob` / `CancelJob` / `PlayJob` に登録):同様に分岐。
+- **in-flight ガード**(FR-6): 実行中の (action, targetId) を保持する共有 `Set`(スレッドセーフな実装)。
+  起動前に判定し、既に実行中なら再入を抑止(no-op)。開始時に追加し、完了/失敗/unknown いずれでも
+  `finally` で除去。busy 表示は出さない。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
   2. `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
-  3. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼ぶ。
-  4. 成功 → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`。
-  5. 失敗 → `CancellationException` は再送、その他は `logger.error` + `NotificationUtils.show`。
+  3. in-flight ガードで (action, targetId) を確認・登録。既に実行中なら終了。
+  4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼び、結果を FR-7 の 3 値に分類:
+     - **success(2xx)** → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`(+ 監査ログ §15)。
+     - **failure(`GitLabApiException`)** → `NotificationUtils.show`(操作失敗)+ `logger.error`。サイドバーは変更しない。
+     - **unknown(`HttpTimeoutException`/`IOException`)** → refresh でサーバ状態と照合 + `NotificationUtils.show`
+       (「結果を確認できません。更新後の状態をご確認ください」= 盲目再実行を促さない)+ `logger.warn`。
+     - `CancellationException` は再送。
+  5. 成否によらず `finally` で in-flight ガードから (action, targetId) を除去。
 
 ### 8.8 `plugin.xml`(配線)
 - `<propertyTester>`(`type` = `SidebarNode`、namespace 例 `com.gitlab.eclipse.node`、
@@ -195,16 +212,20 @@ VSCode の該当実装:
 
 ## 9. 処理フロー(正常系 / 異常系 / 境界)
 
-- 正常系: メニュー選択 → 背景 POST → 2xx → UI スレッドで refresh → 最新ツリー描画。
-- 異常系(権限なし 403 / 見つからない 404 / 状態遷移不可 400 など): `GitLabApiException` を捕捉し通知 + ログ。
-  サイドバーは変更しない。
-- 異常系(通信例外・タイムアウト): 同上(通知 + ログ)。
+- 正常系(success): メニュー選択 → in-flight 登録 → 背景 POST → 2xx → UI スレッドで refresh → 最新ツリー描画。
+- 異常系(failure = definite): 権限なし 403 / 見つからない 404 / 状態遷移不可 400 など。
+  `GitLabApiException` を捕捉し通知 + ログ。サイドバーは変更しない。
+- 結果不明(unknown): タイムアウト(`HttpTimeoutException`)・通信断(`IOException`)。
+  **サーバ適用済みで応答のみ欠落**の可能性があるため definite failure と区別する。refresh で状態を照合し、
+  「結果を確認できません。更新後の状態をご確認ください」と通知(盲目再実行を促さない)+ `logger.warn`。
 - 境界:
   - jobs が 0 件のパイプライン: canRetry/canCancel とも false(メニュー非表示)。
   - `projectId == null`: 全アクション非表示。
   - 選択が対象ノードでない/複数選択: `visibleWhen` の `<iterate>` により非表示。ハンドラ側でも null チェック。
   - 操作対象が操作発行時点で既に状態遷移済み(例: cancel 済みを再 cancel): サーバが 4xx を返す →
-    異常系として通知(ローカルの楽観更新はしない)。
+    failure として通知(ローカルの楽観更新はしない)。
+  - 同一ノード同一操作の連打: in-flight ガードにより 2 回目以降は抑止(FR-6)。
+  - 二重発火が起きた後の収束: 楽観更新をしないため、最終的に refresh がサーバ状態でツリーを上書きする。
 
 ## 10. API / インターフェース
 
@@ -223,11 +244,19 @@ VSCode の該当実装:
 ## 12. トランザクション境界 / 冪等性
 
 - 各操作は単一 REST POST であり、複合トランザクションは無い。
-- 冪等性: retry / cancel は GitLab 側で概ね冪等または安全(既遷移状態への再操作はサーバが 4xx を返し、
-  本実装は異常系として扱う)。play を既起動ジョブへ再発行した場合もサーバが拒否し異常系となる。
-  ローカルでの楽観更新を行わないため、二重発火してもクライアント状態の不整合は生じない
-  (最終的に refresh がサーバ状態で上書きする)。
-- create は本 PR 対象外のため、二重生成の懸念は本 PR には無い。
+- **冪等性(正確な整理)**:
+  - `cancel`(pipeline / job): 概ね冪等・安全。既 cancel 状態への再 cancel はサーバが 4xx を返し failure 扱い。
+  - `retry`(pipeline / job)・`play`(job): **API 契約として冪等ではない**。retry は失敗/キャンセル済みジョブの
+    新しい実行を生成し、play は手動ジョブを起動する。同一操作を 2 回サーバが受理すると、実行が二重生成され得る。
+- **二重処理の防止(2 系統)**:
+  1. クライアント連打: in-flight ガード(FR-6)で同一 (action, targetId) の再入を抑止。
+  2. サーバ適用済み・応答欠落(unknown, §9): これはローカルの楽観更新の有無とは無関係にサーバ側で起こり得る。
+     本実装は unknown を definite failure と区別し、**盲目的な再実行を促さず** refresh でサーバ状態を照合させる
+     (FR-7)。これによりユーザーが「失敗した」と誤認して手動再実行し二重生成する導線を断つ。
+- クライアント状態の不整合は生じない(refresh が最終的にサーバ状態でツリーを上書きする)。ただし
+  **サーバ側の二重実行そのものを本 PR が完全に防ぐわけではない**(retry/play が非冪等な API のため)。
+  この残存性質は §17・§22 に明記する。
+- create は本 PR 対象外のため、二重「生成」の懸念は本 PR には無い。
 
 ## 13. 並行処理 / 競合
 
@@ -246,9 +275,16 @@ VSCode の該当実装:
 
 ## 15. ログ / 監視 / 監査
 
-- 成功: `logger.info`(操作種別のみ。id 等は必要最小限、トークンは出さない)。
-- 失敗: `logger.error`(例外 + メッセージ)。ユーザーには `NotificationUtils.show` で簡潔に通知し、
-  詳細は Error Log 参照とする(既存パターン)。
+- **構造化した相関情報**を、書き込み操作の監査記録として共通形式で残す。応答欠落・タイムアウトや
+  複数プロジェクト/同一ノードへの並行操作でも「どの POST がどの対象へ到達したか」を追跡できるようにする。
+- 記録項目(1 操作 1 レコード):`action`(retry/cancel/play + pipeline/job 種別)、`projectId`、
+  `pipelineId` または `jobId`、開始・終了時刻(または所要時間)、HTTP status(取得できた場合)、
+  `outcome`(`success` / `failure` / `unknown`)、GitLab が返す request/correlation ID(`x-request-id` 等、
+  取得可能なら)。
+- **除外・マスキング**: アクセストークンおよび未加工のレスポンス本文はログに出さない(NFR-2)。
+- レベル: success = `info`、failure = `error`、unknown = `warn`。ユーザーには `NotificationUtils.show` で
+  簡潔に通知し、詳細は Error Log を参照とする(既存パターン)。保持先は Eclipse Error Log。
+  障害調査は「対象 id と outcome、correlation ID を Error Log で突き合わせ、GitLab 側の実状態と照合」する。
 
 ## 16. 既存機能への影響
 
@@ -261,23 +297,64 @@ VSCode の該当実装:
 ## 17. 移行方法 / ロールバック
 
 - 移行: 追加のみで既存挙動を変えないため、特別な移行手順は不要。
-- ロールバック: 本 PR をリバートすれば PR-1 の read-only 表示に戻る(データ移行なし)。
+- **ロールバックは 2 層に分けて定義する(混同禁止)**:
+  1. **コード(配布物)のロールバック**: 本 PR をリバートすれば UI から操作メニューが消え、PR-1 の read-only
+     表示に戻る。プラグイン側のデータ移行はない。
+  2. **業務操作(GitLab 側状態)の補償**: 上記リバートは、**リバート前に実行された cancel / retry / play の
+     GitLab 側結果を元に戻さない**。各操作は外部システム(GitLab)への確定操作であり、本プラグインからの
+     自動ロールバック/補償は行わない。
+     - `cancel`: **取消不能**(キャンセルされたジョブ/パイプラインを本プラグインからは復元しない)。復旧が必要な
+       場合の補償は「ユーザーが対象を retry / play で再実行」する(実施主体=ユーザー、判断条件=業務都合、
+       確認方法=refresh 後の状態表示)。
+     - `retry` / `play`: 生成された実行の取消が必要なら、ユーザーが当該ジョブ/パイプラインを cancel する。
+  - 運用担当者はこの記述を「配布物のロールバック手順」として読み、業務データ復旧手順と解釈しないこと。
 
 ## 18. タイムアウトとリトライ
 
 - POST の request timeout は既存 GET と同一(30s)を既定とする。
-- 自動リトライは行わない(書き込み操作。二重発火を避ける)。失敗はユーザーに通知し、
-  ユーザーが再実行できる。
+- **タイムアウトは「結果不明(unknown)」として扱う**(§9・§12)。サーバが既に受理している可能性があるため
+  definite failure と区別する。
+- 自動リトライは行わない(書き込み操作・非冪等な retry/play で二重発火を避けるため)。
+- 失敗(definite failure)時のみ、ユーザーが明示的に再実行できる。unknown 時は refresh で状態照合を促し、
+  盲目的な再実行は誘導しない(FR-7)。
 
 ## 19. テスト方針
 
-- REST POST(`sendPost` / `post` / 2 サービス): モック HTTP クライアントで path・メソッド・認証ヘッダ・
-  成功/失敗分岐を検証(TDD、headless 可)。
-- `CiStatus.contextAction`: §5.3 の全 status を網羅(TDD、純ロジック)。
-- ノード算出(`buildPipelineNode` の canRetry/canCancel、JobNode への projectId carry): TDD。
-- PropertyTester / ハンドラ / plugin.xml 配線: headless では実行不能な SWT/DI/UI スレッド依存のため、
-  **手動検証手順を実装 PR 説明文に記載**しユーザー実機で確認。
-- 検証3点: 対象テスト PASS / 全体失敗数 36 維持 / 変更ファイル detekt 0。
+### 19.1 自動テスト(headless 可・TDD)
+
+- REST POST(`sendPost` / `post` / 2 サービス): モック HTTP クライアントで path・メソッド(POST)・認証ヘッダ・
+  body なし・**成功(2xx)/ failure(非 2xx → `GitLabApiException`)/ unknown(`HttpTimeoutException`・`IOException` の伝播)**
+  の 3 分岐を検証。
+- `CiStatus.contextAction`: §5.3 の全 status(null・unknown・`failed`+`allow_failure` 含む)を網羅。
+- ノード算出(`buildPipelineNode` の canRetry/canCancel、jobs 0 件・jobsResult failure、JobNode への projectId carry)。
+- in-flight ガード(FR-6): 同一 (action, targetId) の再入抑止と、完了/失敗/unknown 後の解放(`finally`)を検証。
+
+### 19.2 既知失敗のベースライン(件数ではなく ID で固定)
+
+- headless の既知失敗は SWT ネイティブ未ロード由来の env 失敗であり、**テストの完全修飾名の集合**を
+  ベースラインとして固定する(実装計画=#12 に、`develop@d60f2e8` 実行時の失敗テスト FQN 一覧を貼付)。
+- 合格条件は「**ベースライン集合の外に新規失敗がゼロ**」とする(単なる合計件数の一致では、既知失敗の解消と
+  新規回帰の相殺を検出できないため)。ベースライン集合内の失敗はスキップ相当として扱う。
+
+### 19.3 手動検証チェックリスト(実機・PR 説明文に記載)
+
+PropertyTester / 各 command・handler / 選択境界は headless で実行不能なため、下記を実機で確認する
+(実装 PR 説明文に、環境・入力 status・期待メニュー・送信 endpoint・通知/refresh の期待結果を列挙):
+
+| # | 入力(node と status) | 期待メニュー | 送信 endpoint | 期待結果(通知 / refresh) |
+|---|---|---|---|---|
+| 1 | PipelineNode(retryable ジョブ有) | Retry Pipeline 表示 | `POST /pipelines/{id}/retry` | 無通知(成功)/ refresh で更新 |
+| 2 | PipelineNode(cancellable ジョブ有) | Cancel Pipeline 表示 | `POST /pipelines/{id}/cancel` | 同上 |
+| 3 | PipelineNode(jobs 0 / 全 skipped) | 操作メニューなし | — | — |
+| 4 | JobNode(status=failed) | Retry Job | `POST /jobs/{id}/retry` | 同上 |
+| 5 | JobNode(status=running) | Cancel Job | `POST /jobs/{id}/cancel` | 同上 |
+| 6 | JobNode(status=manual) | Play Job | `POST /jobs/{id}/play` | 同上 |
+| 7 | JobNode(status=skipped/unknown) | 操作メニューなし | — | — |
+| 8 | 権限なしユーザーで retry | 表示はされる | POST → 403 | failure 通知 + Error Log / refresh なし |
+| 9 | 同一操作を連打 | — | 2 回目は抑止 | 2 回目は POST が飛ばない(FR-6) |
+| 10 | ネットワーク切断/タイムアウト | — | POST → timeout | unknown 通知(再実行を促さない)+ refresh で照合 |
+
+- 検証3点(自動側): 対象テスト PASS / **ベースライン外の新規失敗ゼロ**(§19.2) / 変更ファイル detekt 0。
 
 ## 20. 受け入れ条件
 
@@ -287,9 +364,13 @@ VSCode の該当実装:
   パイプラインがキャンセルされる。
 - AC-3: `JobNode` は status に応じて Retry / Cancel / Play のいずれか(該当時)を表示し、実行が反映される。
 - AC-4: 操作可能でない status のノードには該当メニューが表示されない。
-- AC-5: 権限不足や状態不整合で失敗した場合、ユーザーに通知され Error Log に記録され、
+- AC-5: 権限不足や状態不整合(definite failure)で失敗した場合、ユーザーに通知され Error Log に記録され、
   サイドバー表示は破壊されない。
-- AC-6: トークンがログに出力されない。detekt 0・全体テスト失敗 36 維持。
+- AC-6: タイムアウト/通信断(unknown)の場合、definite failure と区別した通知(盲目再実行を促さない)が出て、
+  サイドバーが refresh でサーバ状態と照合される。
+- AC-7: 同一ノードへの同一操作の連打時、2 回目以降の POST が抑止される(FR-6)。
+- AC-8: 監査ログに action / projectId / pipelineId or jobId / outcome(success/failure/unknown)が記録され、
+  トークン・生レスポンス本文は出力されない。detekt 0・**ベースライン外の新規テスト失敗ゼロ**(§19.2)。
 
 ## 21. 未決事項
 
@@ -309,5 +390,11 @@ VSCode の該当実装:
   → 手動検証で status 別に確認。fable で実装・レビュー。
 - R-3: 背景コルーチンからの UI スレッドホップ漏れ(refresh を UI 外で呼ぶ)。
   → 既存 `Display.asyncExec` 規律を踏襲。fable で実装・レビュー。
-- R-4: 二重操作(busy 表示なし)による混乱。→ 楽観更新をせず refresh でサーバ状態に収束させるため
-  永続的不整合は無い。create を対象外としたため二重生成リスクも無い。
+- R-4: 二重操作による**サーバ側のジョブ二重生成**(retry/play が非冪等)。
+  → (a) クライアント連打は in-flight ガード(FR-6)で抑止。(b) サーバ適用済み・応答欠落(unknown)は
+  definite failure と区別し盲目再実行を誘導しない(FR-7)+ refresh で照合。
+  ただし **API が非冪等である以上、サーバ側の二重実行そのものを本 PR が完全排除するわけではない**
+  (残存性質として §12・§17 に明記)。create を対象外としたため二重「生成(新規パイプライン)」リスクは無い。
+- R-5: unknown(タイムアウト)を definite failure と誤分類すると、ユーザーに再実行を促し二重生成を誘発する。
+  → 例外型で厳密に分類(`GitLabApiException`=failure、`HttpTimeoutException`/`IOException`=unknown)し、
+  自動テスト(§19.1)で 3 分岐を固定。
