@@ -12,9 +12,11 @@ import org.eclipse.core.commands.ExecutionEvent
 
 /**
  * Retries, cancels, or plays the job selected in the GitLab sidebar (design §8.5). Same thin
- * SWT shell as [PipelineActionHandler]: command id → action, connection validation + pinning
- * (null → notify, NO write), per-target in-flight serialization, background POST via
- * [launchCiWrite] — refresh only on success (UI thread), notify + audit on failure.
+ * SWT shell as [PipelineActionHandler]: command id → action and per-target in-flight
+ * serialization on the UI thread, then connection validation + pinning (null → notify, NO
+ * write) and the POST in the background via [launchCiWrite] — the pin runs off the UI thread
+ * because capturing it may trigger a synchronous OAuth token refresh. Refresh only on success
+ * (UI thread), notify + audit on failure.
  */
 @Suppress("unused")
 class JobActionHandler(
@@ -25,7 +27,8 @@ class JobActionHandler(
   private val coroutineScope by lazyService<CoroutineScope>()
 
   override fun execute(event: ExecutionEvent): Any? {
-    // UI thread: resolve action + selection + connection synchronously before hopping.
+    // UI thread: resolve action + selection synchronously before hopping. The connection pin
+    // happens in the background — capturing it can block on an OAuth token refresh.
     val action = when (event.command.id) {
       "com.gitlab.eclipse.commands.RetryJob" -> "retry"
       "com.gitlab.eclipse.commands.CancelJob" -> "cancel"
@@ -46,17 +49,24 @@ class JobActionHandler(
       return null
     }
     val jobId = node.job.id
-    val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
-    if (connection == null) {
-      NotificationUtils.show(CONNECTION_CHANGED_MESSAGE)
-      return null
-    }
-    val key = WriteKey(normalizeInstanceUrl(connection.instanceUrl), "job", jobId)
+    // Keyed by the NODE's instance tag: equal to the snapshot-derived key whenever the pin
+    // would succeed (the pin requires the normalized urls to match), so serialization
+    // semantics are unchanged.
+    val key = WriteKey(normalizeInstanceUrl(node.sourceInstanceUrl), "job", jobId)
     if (!InFlightWriteGuard.tryAcquire(key)) {
       logger.info("A write to job #$jobId is already in flight; ignoring.")
       return null
     }
-    launchCiWrite(coroutineScope, logger, key, action, projectId) {
+    launchCiWrite(
+      coroutineScope,
+      logger,
+      key,
+      action,
+      projectId,
+      apiClient,
+      node.sourceInstanceUrl,
+      node.sourceAuthFingerprint,
+    ) { connection ->
       when (action) {
         "retry" -> actionService.retry(connection, projectId, jobId)
         "cancel" -> actionService.cancel(connection, projectId, jobId)
