@@ -51,4 +51,56 @@ class CiStatusTest : StringSpec({
   "priority reports the allow-to-fail special case for failed+allowFailure" {
     CiStatus.priority("failed", allowFailure = true) shouldBe 2
   }
+
+  "contextAction maps manual to EXECUTABLE" {
+    CiStatus.contextAction("manual") shouldBe CiAction.EXECUTABLE
+  }
+  "contextAction maps success to RETRYABLE" {
+    CiStatus.contextAction("success") shouldBe CiAction.RETRYABLE
+  }
+  "contextAction maps created to CANCELLABLE" {
+    CiStatus.contextAction("created") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction maps waiting_for_resource to CANCELLABLE" {
+    CiStatus.contextAction("waiting_for_resource") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction maps preparing to CANCELLABLE" {
+    CiStatus.contextAction("preparing") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction maps pending to CANCELLABLE" {
+    CiStatus.contextAction("pending") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction maps scheduled to CANCELLABLE" {
+    CiStatus.contextAction("scheduled") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction maps skipped to null" {
+    CiStatus.contextAction("skipped") shouldBe null
+  }
+  "contextAction maps canceled to RETRYABLE" {
+    CiStatus.contextAction("canceled") shouldBe CiAction.RETRYABLE
+  }
+  "contextAction maps canceling to RETRYABLE" {
+    CiStatus.contextAction("canceling") shouldBe CiAction.RETRYABLE
+  }
+  "contextAction maps failed to RETRYABLE" {
+    CiStatus.contextAction("failed") shouldBe CiAction.RETRYABLE
+  }
+  "contextAction maps running to CANCELLABLE" {
+    CiStatus.contextAction("running") shouldBe CiAction.CANCELLABLE
+  }
+  "contextAction falls back to null for an unrecognized status" {
+    CiStatus.contextAction("not_a_real_status") shouldBe null
+  }
+  "contextAction falls back to null for null status (never-throw)" {
+    CiStatus.contextAction(null) shouldBe null
+  }
+  "contextAction keeps failed+allowFailure=true as RETRYABLE" {
+    CiStatus.contextAction("failed", allowFailure = true) shouldBe CiAction.RETRYABLE
+  }
+  "contextAction keeps failed+allowFailure=false as RETRYABLE" {
+    CiStatus.contextAction("failed", allowFailure = false) shouldBe CiAction.RETRYABLE
+  }
+  "contextAction ignores allowFailure for a non-failed status" {
+    CiStatus.contextAction("success", allowFailure = true) shouldBe CiAction.RETRYABLE
+  }
 })
