@@ -159,6 +159,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.CreatePipeline"
+                name="Create Pipeline from Current Branch"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RefreshSidebar"
                 name="Refresh GitLab Sidebar"
                 categoryId="gitlab-eclipse-plugin">
@@ -551,6 +557,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.CreatePipeline"
+                class="com.gitlab.eclipse.ci.actions.CreatePipelineHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.RefreshSidebar"
                 class="com.gitlab.eclipse.handlers.RefreshSidebarHandler"
         />
@@ -882,6 +893,12 @@
                     commandId="com.gitlab.eclipse.commands.RefreshSidebar"
                     icon="icons/notification.png"
                     tooltip="Refresh GitLab Sidebar">
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.CreatePipeline"
+                    icon="icons/notification.png"
+                    tooltip="Create Pipeline from Current Branch">
             </command>
 
             <command
