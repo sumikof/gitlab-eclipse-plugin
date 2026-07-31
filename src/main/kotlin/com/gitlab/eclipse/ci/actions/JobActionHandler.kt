@@ -9,6 +9,7 @@ import com.gitlab.eclipse.views.sidebar.JobNode
 import kotlinx.coroutines.CoroutineScope
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
+import org.eclipse.ui.handlers.HandlerUtil
 
 /**
  * Retries, cancels, or plays the job selected in the GitLab sidebar (design §8.5). Same thin
@@ -66,6 +67,7 @@ class JobActionHandler(
       apiClient,
       node.sourceInstanceUrl,
       node.sourceAuthFingerprint,
+      HandlerUtil.getActiveWorkbenchWindow(event),
     ) { connection ->
       when (action) {
         "retry" -> actionService.retry(connection, projectId, jobId)

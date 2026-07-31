@@ -17,7 +17,7 @@ import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.core.runtime.ILog
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.swt.widgets.Display
-import org.eclipse.ui.PlatformUI
+import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.handlers.HandlerUtil
 
 /**
@@ -75,6 +75,7 @@ class PipelineActionHandler(
       apiClient,
       node.sourceInstanceUrl,
       node.sourceAuthFingerprint,
+      HandlerUtil.getActiveWorkbenchWindow(event),
     ) { connection ->
       when (action) {
         "retry" -> actionService.retry(connection, projectId, node.pipelineId)
@@ -105,7 +106,9 @@ internal inline fun <reified T> selectedSidebarNode(event: ExecutionEvent): T? {
  * cancellation free the target. CancellationException is rethrown so cancellation propagates
  * out of the launch cleanly; any other unclassified throwable (including one thrown by the
  * token refresh during the pin) is caught here — it must never escape and cancel the shared
- * scope.
+ * scope. [window] is the workbench window the command was invoked from (captured on the UI
+ * thread in `execute()`): the success refresh targets THAT window's sidebar, not whichever
+ * window happens to be active when the POST completes.
  */
 internal fun launchCiWrite(
   scope: CoroutineScope,
@@ -116,6 +119,7 @@ internal fun launchCiWrite(
   apiClient: GitLabApiClient,
   nodeInstanceUrl: String,
   nodeAuthFingerprint: String,
+  window: IWorkbenchWindow?,
   call: (ConnectionSnapshot) -> PostResult,
 ) {
   scope.launch {
@@ -130,7 +134,7 @@ internal fun launchCiWrite(
       when (val outcome = classifyWrite { call(connection) }) {
         is WriteOutcome.Success -> {
           log.info(writeAuditMessage(action, key.instanceUrl, projectId, key.targetKind, key.targetId, outcome))
-          Display.getDefault().asyncExec { findSidebarView()?.refresh() }
+          Display.getDefault().asyncExec { findSidebarViewIn(window)?.refresh() }
         }
         is WriteOutcome.Failure -> {
           log.error(writeAuditMessage(action, key.instanceUrl, projectId, key.targetKind, key.targetId, outcome))
@@ -141,8 +145,20 @@ internal fun launchCiWrite(
       throw e
     } catch (e: Exception) {
       // Unclassified escape (e.g. InterruptedException, client-rebuild RuntimeException):
-      // must not cancel the shared scope. No refresh — state is unknown.
-      log.error("CI $action write to ${key.targetKind} #${key.targetId} failed unexpectedly.", e)
+      // must not cancel the shared scope. No refresh — state is unknown. Same structured
+      // token-free audit line as the classified path (synthetic "unexpected" kind) so the
+      // failure stays correlatable to the target instance; the exception rides along.
+      log.error(
+        writeAuditMessage(
+          action,
+          key.instanceUrl,
+          projectId,
+          key.targetKind,
+          key.targetId,
+          WriteOutcome.Failure(httpStatus = null, correlationId = null, failureKind = "unexpected"),
+        ),
+        e,
+      )
       NotificationUtils.show("The action failed. Refresh the sidebar to check the current state.")
     } finally {
       InFlightWriteGuard.release(key)
@@ -150,7 +166,9 @@ internal fun launchCiWrite(
   }
 }
 
-/** UI-thread-only lookup of the sidebar view; null when the view is not open (nothing to refresh). */
-internal fun findSidebarView(): GitLabSidebarView? =
-  PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
-    ?.findView(GitLabSidebarView.VIEW_ID) as? GitLabSidebarView
+/**
+ * UI-thread-only lookup of the sidebar view in the GIVEN window (the one the action was invoked
+ * from); null when the window or view is gone (nothing to refresh — `findView` handles both).
+ */
+private fun findSidebarViewIn(window: IWorkbenchWindow?): GitLabSidebarView? =
+  window?.activePage?.findView(GitLabSidebarView.VIEW_ID) as? GitLabSidebarView
