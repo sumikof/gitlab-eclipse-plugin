@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.preferences
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.api.ConnectionConfigGeneration
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
@@ -273,7 +274,15 @@ class GitLabPreferencePage(
   }
 
   override fun performOk(): Boolean {
-    super.performOk()
+    // super.performOk() stores the URL field editor (preference store) AND the token field editor
+    // (secure storage) as separate writes; bracketing them marks the whole window as
+    // update-in-progress so GitLabApiClient.captureConnection never accepts the torn intermediate.
+    ConnectionConfigGeneration.beginUpdate()
+    try {
+      super.performOk()
+    } finally {
+      ConnectionConfigGeneration.endUpdate()
+    }
     languageServiceConfigurationService.sendConfiguration()
     authenticationStateService.resetAuthenticatedState()
 

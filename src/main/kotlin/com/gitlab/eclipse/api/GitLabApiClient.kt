@@ -17,15 +17,14 @@ import java.time.Duration
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Thrown by [GitLabApiClient.captureConnection] when the url/token pair keeps changing across
- * reads and never converges within the bounded retry budget, so no self-consistent snapshot
- * can be returned.
+ * Thrown by [GitLabApiClient.captureConnection] when the connection config generation keeps
+ * changing (or stays in the update-in-progress state) across reads and never settles within the
+ * bounded retry budget, so no self-consistent snapshot can be returned.
  */
 class UnstableConnectionException : RuntimeException("GitLab connection settings changed during capture")
 
 /** Hex chars kept from the SHA-256 of a token in [authFingerprint]. */
 private const val FINGERPRINT_HEX_LENGTH = 16
-private const val BYTE_MASK = 0xFFL
 
 private fun correlationId(response: java.net.http.HttpResponse<String>): String? =
   response.headers().firstValue("x-request-id").orElse(null)
@@ -37,19 +36,6 @@ private fun correlationId(response: java.net.http.HttpResponse<String>): String?
 private fun authFingerprint(token: String): String {
   if (token.isBlank()) return ""
   return sha256(token).joinToString("") { "%02x".format(it) }.take(FINGERPRINT_HEX_LENGTH)
-}
-
-/**
- * A cheap generation token folded from the SHA-256 of `"$url $token"`: equal generation ⟺ equal
- * (url, token) pair. Not security-bearing on its own.
- */
-private fun configGeneration(url: String, token: String): Long {
-  val digest = sha256("$url $token")
-  var value = 0L
-  for (i in 0 until Long.SIZE_BYTES) {
-    value = (value shl Byte.SIZE_BITS) or (digest[i].toLong() and BYTE_MASK)
-  }
-  return value
 }
 
 private fun sha256(value: String): ByteArray =
@@ -66,6 +52,7 @@ class GitLabApiClient(
   private val httpClient: GitLabHttpClient = service(),
   private val tokenManager: GitLabTokenProviderManager = service(),
   private val preferenceStore: ScopedPreferenceStore = service(),
+  private val readGeneration: () -> Long = { ConnectionConfigGeneration.generation },
 ) {
   private val gson = Gson()
   private val logger by lazy { logger<GitLabApiClient>() }
@@ -165,26 +152,29 @@ class GitLabApiClient(
   }
 
   /**
-   * Atomically captures the current (gitlab.url, token) pair. A bounded double-read loop guards
-   * against a torn read across the two settings sources: each candidate pair is confirmed by a
-   * fresh re-read, and only a pair observed identically twice in a row is returned — so the
-   * snapshot's url and token always come from the same settings generation. If the values keep
-   * changing and never converge within [MAX_CAPTURE_ATTEMPTS], throws [UnstableConnectionException].
+   * Atomically captures the current (gitlab.url, token) pair via a seqlock read over
+   * [ConnectionConfigGeneration]: a `(url, token)` pair is accepted only when the generation was
+   * EVEN (no settings update in progress) and UNCHANGED across the two reads bracketing the value
+   * reads. Because the settings save brackets its two-store write with beginUpdate/endUpdate, the
+   * stable-but-torn `(new url, old token)` intermediate that exists while the URL (preference
+   * store) and token (secure storage) are persisted separately is always observed under an odd or
+   * changed generation and never returned — a plain value-double-read cannot detect it. No lock is
+   * held during the token read, so a slow OAuth refresh cannot block writers or the UI. If the
+   * generation never settles within [MAX_CAPTURE_ATTEMPTS], throws [UnstableConnectionException].
    *
    * Both the READ and WRITE paths obtain their pinned connection through this method; the raw
    * (untrimmed) url is kept — trailing-slash trimming happens in [buildUri].
    */
   fun captureConnection(): ConnectionSnapshot {
-    var url = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
-    var token = tokenManager.getToken()
     repeat(MAX_CAPTURE_ATTEMPTS) {
-      val urlCheck = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
-      val tokenCheck = tokenManager.getToken()
-      if (url == urlCheck && token == tokenCheck) {
-        return ConnectionSnapshot(url, token, authFingerprint(token), configGeneration(url, token))
+      val g1 = readGeneration()
+      if (g1 % 2 != 0L) return@repeat // update in progress -> retry
+      val url = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+      val token = tokenManager.getToken()
+      val g2 = readGeneration()
+      if (g1 == g2) { // even and unchanged -> consistent pair
+        return ConnectionSnapshot(url, token, authFingerprint(token), g1)
       }
-      url = urlCheck
-      token = tokenCheck
     }
     throw UnstableConnectionException()
   }
@@ -267,7 +257,7 @@ class GitLabApiClient(
     private const val SUCCESS_STATUS_MIN = 200
     private const val SUCCESS_STATUS_MAX = 299
 
-    /** Bounded retry budget of the double-read convergence loop in [captureConnection]. */
+    /** Bounded retry budget of the seqlock read loop in [captureConnection]. */
     private const val MAX_CAPTURE_ATTEMPTS = 8
   }
 }
