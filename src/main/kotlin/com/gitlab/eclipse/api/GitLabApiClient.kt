@@ -90,8 +90,13 @@ class GitLabApiClient(
     }
   }
 
-  fun <T> fetchObject(path: String, query: Map<String, String> = emptyMap(), type: Class<T>): T {
-    return gson.fromJson(sendGet(path, query).body(), type)
+  fun <T> fetchObject(
+    path: String,
+    query: Map<String, String> = emptyMap(),
+    type: Class<T>,
+    connection: ConnectionSnapshot? = null,
+  ): T {
+    return gson.fromJson(sendGet(path, query, connection = connection).body(), type)
   }
 
   /**
@@ -106,12 +111,19 @@ class GitLabApiClient(
    * instead of issuing further requests — again something a suspension-based cancel cannot do
    * here. The check is a plain function (kotlin-stdlib exception, no kotlinx dependency); the
    * default `{ true }` keeps existing callers non-cancellable as before.
+   *
+   * When [connection] is non-null, EVERY page of the fetch is pinned to that same snapshot
+   * (URI base + Bearer credential), never re-reading the live preference store / token manager
+   * between pages — so a settings change mid-fetch cannot make a later page hit a different
+   * instance or leak the current credential to a newly-configured one. `connection = null` keeps
+   * the current global-reading behavior for every page, unchanged.
    */
   fun <T> fetchListWithinDeadline(
     request: ApiRequest<T>,
     deadline: Duration,
     clock: () -> Long = { System.nanoTime() },
     isActive: () -> Boolean = { true },
+    connection: ConnectionSnapshot? = null,
   ): List<T> {
     val start = clock()
     val all = mutableListOf<T>()
@@ -123,7 +135,7 @@ class GitLabApiClient(
 
       val remainingNanos = deadline.toNanos() - elapsed
       val timeout = minOf(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS), Duration.ofNanos(remainingNanos))
-      val response = sendPage(request, page, timeout)
+      val response = sendPage(request, page, timeout, connection)
       val arrayType = TypeToken.getArray(request.elementType).type
       val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
       all.addAll(pageItems)
@@ -143,12 +155,13 @@ class GitLabApiClient(
     request: ApiRequest<T>,
     page: Int,
     timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+    connection: ConnectionSnapshot? = null,
   ): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
       put("per_page", PER_PAGE.toString())
       put("page", page.toString())
     }
-    return sendGet(request.path, query, timeout)
+    return sendGet(request.path, query, timeout, connection)
   }
 
   /**
@@ -207,13 +220,21 @@ class GitLabApiClient(
     return response
   }
 
+  /**
+   * Sends a GET request. When [connection] is non-null, the URI base and the Bearer credential
+   * both come from the snapshot instead of the live preference store / token manager, mirroring
+   * the pinning [sendPost] already does for writes. `connection = null` (the default) preserves
+   * the pre-existing global-reading behavior exactly, so every existing call site is unaffected.
+   */
   private fun sendGet(
     path: String,
     query: Map<String, String>,
     timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+    connection: ConnectionSnapshot? = null,
   ): java.net.http.HttpResponse<String> {
-    val httpRequest = HttpRequest.newBuilder(buildUri(path, query))
-      .header("Authorization", "Bearer ${tokenManager.getToken()}")
+    val token = connection?.token ?: tokenManager.getToken()
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, query, baseOverride = connection?.instanceUrl))
+      .header("Authorization", "Bearer $token")
       .header("Accept", "application/json")
       .timeout(timeout)
       .GET()

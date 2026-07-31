@@ -247,7 +247,9 @@ class GitLabSidebarView : ViewPart() {
       currentCoroutineContext().ensureActive()
       val job = currentCoroutineContext()[Job]
       val jobsResult = try {
-        Result.success(jobService.getJobsForPipeline(context.projectId, pipeline.id) { job?.isActive != false })
+        Result.success(
+          jobService.getJobsForPipeline(context.projectId, pipeline.id, isActive = { job?.isActive != false }),
+        )
       } catch (e: CancellationException) {
         throw e // Cancelled between jobs pages: cancel the coroutine, don't render a failure.
       } catch (e: Exception) {
