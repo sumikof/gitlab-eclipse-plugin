@@ -48,6 +48,33 @@ class PipelineActionServiceTest : DescribeSpec({
     }
   }
 
+  describe("create") {
+    it("POSTs the pipeline path with ref as a query param and returns the PostResult") {
+      every {
+        apiClient.post("/projects/group%2Fproject/pipeline", query = mapOf("ref" to "main"), connection = connection)
+      } returns PostResult(201, "cid-create")
+
+      val result = service.create(connection, "group%2Fproject", "main")
+
+      result shouldBe PostResult(201, "cid-create")
+      verify(exactly = 1) {
+        apiClient.post("/projects/group%2Fproject/pipeline", query = mapOf("ref" to "main"), connection = connection)
+      }
+    }
+
+    it("passes the already-encoded projectId through without re-encoding") {
+      val recordedPaths = mutableListOf<String>()
+      every { apiClient.post(any(), query = any(), connection = connection) } answers {
+        recordedPaths.add(firstArg())
+        PostResult(201, null)
+      }
+
+      service.create(connection, "group%2Fsub%2Fproject", "feature/x")
+
+      recordedPaths shouldBe listOf("/projects/group%2Fsub%2Fproject/pipeline")
+    }
+  }
+
   describe("path assembly") {
     it("produces different last path segments for retry vs cancel (guards a copy-paste typo)") {
       val recordedPaths = mutableListOf<String>()

@@ -170,5 +170,5 @@ internal fun launchCiWrite(
  * UI-thread-only lookup of the sidebar view in the GIVEN window (the one the action was invoked
  * from); null when the window or view is gone (nothing to refresh — `findView` handles both).
  */
-private fun findSidebarViewIn(window: IWorkbenchWindow?): GitLabSidebarView? =
+internal fun findSidebarViewIn(window: IWorkbenchWindow?): GitLabSidebarView? =
   window?.activePage?.findView(GitLabSidebarView.VIEW_ID) as? GitLabSidebarView
