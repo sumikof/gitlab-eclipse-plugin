@@ -150,8 +150,11 @@ VSCode の該当実装:
   (correlationId = `x-request-id` 等のヘッダ、無ければ null)。既存 GET 系メソッドは一切変更しない。
 - 例外の区別(呼び出し側の 3 値分類=FR-7 の根拠):
   - 非 2xx = **failure**。既存 `GitLabApiException` に **correlationId(nullable)を追加**して伝播させる
-    (既存フィールド status/body は不変・GET 呼び出し側は既定 null で影響なし)。これにより失敗経路でも §15 の
-    correlation ID を監査ログに残せる。
+    (既存フィールド status/body は不変・GET 呼び出し側は既定 null で影響なし)。
+    **`sendPost` は非 2xx 時にレスポンスヘッダから correlation ID(`x-request-id` 等)を抽出し、
+    3 引数 `GitLabApiException(status, body, correlationId)` で構築する**(2 引数構築だと既定 null になり
+    ヘッダが失われるため。既存 GET の `sendGet` は従来どおり 2 引数のままで無影響)。これにより failure 経路でも
+    §15 の correlation ID を監査ログに残せる。非 2xx での correlation ID 伝播は §19.1 のテスト対象とする。
   - 送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` = **unknown**。そのまま伝播させ
     (サーバ適用済み・応答欠落を含み得る。correlation ID は取得不能)ハンドラで区別して扱う。
 
@@ -198,10 +201,19 @@ VSCode の該当実装:
   - **success / failure(definite)**: 起動時に追加し `finally` で除去(通常経路)。failure はサーバ状態が
     確定している(4xx で未適用が判明)ため、解除して再操作を許可してよい。
   - **unknown(タイムアウト/IO)**: **`finally` では解除しない**。サーバ適用済み・応答欠落の可能性があり、
-    照合前に解除すると refresh 完了までの窓で非冪等な retry/play を二重発行し得る(§12)。
-    ガードは **照合用 refresh の完了(ツリー再構築)まで保持**し、refresh 完了コールバック内で除去する。
-    refresh 自体が失敗して照合不能な場合も、恒久ロックを避けるため当該コールバックの `finally` で除去し、
-    「状態を確認できませんでした」と通知する(= 再操作の可否はユーザーが更新後の表示で判断)。
+    照合前に解除すると非冪等な retry/play を二重発行し得る(§12)。
+    - **完了の観測方法(重要)**: 既存 `GitLabSidebarView.refresh()`(`GitLabSidebarView.kt:148-185`)は
+      `Unit` を即時返却して非同期処理を起動し例外も内部捕捉するため、ハンドラからツリー再構築の完了・失敗・
+      新世代 supersede を**観測できない**。したがってガード解除を view の refresh 完了に依存させない。
+    - 代わりに、**ハンドラ自身が自分の背景コルーチン内で照合用 GET を `await`(blocking 待機)する**:
+      unknown を受けたら、対象パイプライン/ジョブの最新状態を既存 GET(`PipelineService.getLatestPipelineForRef`
+      / `JobService.getJobsForPipeline`)で **1 回だけ再取得して待機**する。この GET は awaited 呼び出しなので
+      完了・失敗がハンドラ内で観測可能。
+    - **解除タイミング**: 照合 GET の完了後(成功/失敗どちらでも)に、その `finally` でガードを除去する。
+      照合 GET も失敗して状態確認不能なら、恒久ロックを避けるため同じく除去し「状態を確認できませんでした」と
+      通知する(再操作可否はユーザーが更新後表示で判断)。
+    - 表示用の `GitLabSidebarView.refresh()` は従来どおり fire-and-forget で別途起動する(表示更新のみ。
+      ガード解除の判定には用いない)。**view の refresh 契約は変更しない**。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
   2. `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
@@ -209,11 +221,12 @@ VSCode の該当実装:
   4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼び、結果を FR-7 の 3 値に分類:
      - **success(2xx)** → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`(+ 監査ログ §15)。
      - **failure(`GitLabApiException`)** → `NotificationUtils.show`(操作失敗)+ `logger.error`。サイドバーは変更しない。
-     - **unknown(`HttpTimeoutException`/`IOException`)** → 照合用 refresh を予約 + `NotificationUtils.show`
-       (「結果を確認できません。更新後の状態をご確認ください」= 盲目再実行を促さない)+ `logger.warn`。
-       **ガードは解除せず**、refresh 完了(または照合失敗)コールバックで除去する(上記解除ポリシー)。
+     - **unknown(`HttpTimeoutException`/`IOException`)** → 同じ背景コルーチン内で照合用 GET を await(§8.7 上記)
+       + `NotificationUtils.show`(「結果を確認できません。更新後の状態をご確認ください」= 盲目再実行を促さない)
+       + `logger.warn`。表示更新用に `Display.getDefault().asyncExec { findSidebarView()?.refresh() }` を別途起動。
      - `CancellationException` は再送。
-  5. 解除: success / failure は `finally` で (action, targetId) を除去。unknown は照合 refresh の完了コールバックで除去。
+  5. 解除: success / failure は POST の `finally` で (action, targetId) を除去。
+     unknown は**照合 GET の `finally`**(await 完了後)で除去する(view refresh の完了には依存しない)。
 
 ### 8.8 `plugin.xml`(配線)
 - `<propertyTester>`(`type` = `SidebarNode`、namespace 例 `com.gitlab.eclipse.node`、
@@ -343,10 +356,15 @@ VSCode の該当実装:
 
 - REST POST(`sendPost` / `post` / 2 サービス): モック HTTP クライアントで path・メソッド(POST)・認証ヘッダ・
   body なし・**成功(2xx)/ failure(非 2xx → `GitLabApiException`)/ unknown(`HttpTimeoutException`・`IOException` の伝播)**
-  の 3 分岐を検証。
+  の 3 分岐を検証。加えて **success 時 `PostResult` に httpStatus/correlationId が入ること**、
+  **非 2xx 時に `GitLabApiException.correlationId` へ `x-request-id` が伝播すること**(3 引数構築)を検証。
 - `CiStatus.contextAction`: §5.3 の全 status(null・unknown・`failed`+`allow_failure` 含む)を網羅。
 - ノード算出(`buildPipelineNode` の canRetry/canCancel、jobs 0 件・jobsResult failure、JobNode への projectId carry)。
-- in-flight ガード(FR-6): 同一 (action, targetId) の再入抑止と、完了/失敗/unknown 後の解放(`finally`)を検証。
+- in-flight ガード(FR-6): 同一 (action, targetId) の再入抑止を検証。**解除条件は結果種別で分離して検証**:
+  - success / failure: POST の `finally` で解除される。
+  - **unknown: POST の `finally` では解除されず、照合用 GET の await 完了(その `finally`)でのみ解除される**
+    ことを検証(即時 finally 解除だと二重発行を再導入するため、この点を明示的にテストする)。
+  - 照合用 GET も失敗した場合でも(恒久ロック回避のため)解除されることを検証。
 
 ### 19.2 既知失敗のベースライン(件数ではなく ID で固定)
 
