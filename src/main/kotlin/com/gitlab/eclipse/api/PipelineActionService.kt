@@ -14,4 +14,7 @@ class PipelineActionService(private val apiClient: GitLabApiClient = service()) 
 
   fun cancel(connection: ConnectionSnapshot, projectId: Long, pipelineId: Long): PostResult =
     apiClient.post("/projects/$projectId/pipelines/$pipelineId/cancel", connection = connection)
+
+  fun create(connection: ConnectionSnapshot, projectId: String, ref: String): PostResult =
+    apiClient.post("/projects/$projectId/pipeline", query = mapOf("ref" to ref), connection = connection)
 }
