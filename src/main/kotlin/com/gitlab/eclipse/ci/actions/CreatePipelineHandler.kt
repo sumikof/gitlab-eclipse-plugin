@@ -103,18 +103,16 @@ class CreatePipelineHandler(
         when (result) {
           is CreateResult.Created -> {
             logger.info(audit)
-            Display.getDefault().asyncExec {
-              findSidebarViewIn(window)?.refresh()
-              NotificationUtils.show("Pipeline created.")
-            }
+            Display.getDefault().asyncExec { findSidebarViewIn(window)?.refresh() }
+            NotificationUtils.show("Pipeline created.")
           }
           is CreateResult.Failed -> {
             logger.error(audit)
-            Display.getDefault().asyncExec { NotificationUtils.show(CREATE_FAILED) }
+            NotificationUtils.show(CREATE_FAILED)
           }
           CreateResult.InstanceMismatch, CreateResult.ConnectionUnstable -> {
             logger.warn(audit)
-            Display.getDefault().asyncExec { NotificationUtils.show(CONNECTION_CHANGED_MESSAGE) }
+            NotificationUtils.show(CONNECTION_CHANGED_MESSAGE)
           }
         }
       } catch (e: CancellationException) {
@@ -135,7 +133,7 @@ class CreatePipelineHandler(
           ),
           e,
         )
-        Display.getDefault().asyncExec { NotificationUtils.show(CREATE_FAILED) }
+        NotificationUtils.show(CREATE_FAILED)
       } finally {
         InFlightWriteGuard.release(key)
       }

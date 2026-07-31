@@ -104,5 +104,17 @@ class CreatePipelineTest : DescribeSpec({
     it("records the abort reason for InstanceMismatch") {
       buildCreateAuditMessage("https://gl", "p", "main", CreateResult.InstanceMismatch) shouldContain "reason=instance-mismatch"
     }
+    it("records outcome/status/correlationId and never the token for Created") {
+      val msg = buildCreateAuditMessage(
+        "https://gl.example.com/",
+        "group%2Fp",
+        "main",
+        CreateResult.Created(PostResult(201, "cid-ok")),
+      )
+      msg shouldContain "outcome=success"
+      msg shouldContain "httpStatus=201"
+      msg shouldContain "correlationId=cid-ok"
+      msg shouldNotContain "tok-secret"
+    }
   }
 })
