@@ -79,10 +79,12 @@ VSCode の該当実装:
   IO 例外)= 失敗 → ユーザー通知 + Error Log 出力を行い、サイドバーは変更しない(refresh しない)。
   失敗の細分類(4xx/5xx/timeout 等)は**監査ログ用のメタデータとしてのみ記録**し、UI 挙動は分けない(§15)。
 - FR-5: 確認ダイアログは出さない(即実行)。
-- FR-6: 同一ノードに対する同一操作が **POST 応答待ちの間**、再入(2 回目の同一操作)を抑止する
-  **非可視の in-flight ガード**を設ける(busy 表示は出さない)。起動時に (action, targetId) を登録し、
-  **成否によらず `finally` で除去**する(POST がタイムアウトするまで=最大 30s は保持されるため、その間の
-  連打による二重発火を防ぐ)。unknown/HELD のような照合待ちの保持状態は持たない(下記「スコープ判断」)。
+- FR-6: **同一対象への全 write を直列化する** in-flight ガード(非可視・busy 表示なし)。キーは
+  **(instanceUrl, 対象種別[pipeline/job], 対象ID)**(action は含めない)。VSCode の
+  `withMarkedAsBusy('pipeline'|'job', id)`(type+id キー)と同じ粒度で、同一パイプライン/ジョブに対する
+  retry と cancel(や連打)が応答待ち中に混在するのを防ぐ(到着順次第で「retry 直後に cancel」等の意図しない
+  結果を回避)。起動時に登録し **成否によらず `finally` で除去**(POST 完了/タイムアウト=最大 30s まで保持)。
+  unknown/HELD のような照合待ちの保持状態は持たない(下記「スコープ判断」)。
 - **スコープ判断(timeout の二重発火)**: retry/play は API 契約上冪等でない(§12)が、「POST がサーバ適用後に
   タイムアウトし、応答だけ失われた」ケースをクライアントで exactly-once 保証することは、GitLab API が
   idempotency key を持たない以上できない。**パリティ元の VSCode 拡張もこの保護を実装していない**ため、本 PR は
@@ -156,10 +158,14 @@ VSCode の該当実装:
   `.POST(HttpRequest.BodyPublishers.noBody())` を発行。**非 2xx はレスポンスヘッダから correlation ID を抽出し
   3 引数 `GitLabApiException(status, body, correlationId)` を投げる**(status 種別によらず一律 3 引数構築。
   UI 挙動は失敗一律で、status は監査ログ用メタデータ=§15)。
-- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap()): PostResult`。
-  本文(業務データ)は解析しない(refresh で最新化するため)が、**監査に必要なレスポンスメタデータは呼び出し元へ返す**
-  (§15 の根拠)。`data class PostResult(val httpStatus: Int, val correlationId: String?)`
-  (correlationId = `x-request-id` 等のヘッダ、無ければ null)。既存 GET 系メソッドは一切変更しない。
+- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap(), instanceUrl: String): PostResult`。
+  **`instanceUrl`(呼び出し側が固定した送信先ベース URL)を必須引数で受け取り、`buildUri` はこの値から URI を
+  構築する**(グローバル設定を再読しない)。これは FR-8 の TOCTOU を塞ぐため:ハンドラの検証(§8.7 2b)〜URI 構築の
+  間に `gitlab.url` が変わっても、検証済みインスタンスへ送る。POST 用に `buildUri(path, query, baseOverride)` を
+  追加し、既存 GET は従来どおりグローバル設定を読む(GET 系メソッドのシグネチャは不変)。
+  本文(業務データ)は解析しないが、**監査に必要なレスポンスメタデータは呼び出し元へ返す**(§15 の根拠)。
+  `data class PostResult(val httpStatus: Int, val correlationId: String?)`(correlationId = `x-request-id` 等の
+  ヘッダ、無ければ null)。
 - 呼び出し側の分類(FR-4 = 成功/失敗の 2 値):
   - 2xx = **成功**(`PostResult` を返す)。
   - 非 2xx = **失敗**。`GitLabApiException`(status, body, correlationId)として伝播。`correlationId` は nullable の
@@ -171,10 +177,10 @@ VSCode の該当実装:
     メタデータとしてのみ用い、挙動は分けない。非 2xx での correlation ID 伝播は §19.1 のテスト対象とする。
 
 ### 8.2 `PipelineActionService` / `JobActionService`(新規)
-- `PipelineActionService`: `retry(projectId: Long, pipelineId: Long): PostResult` / `cancel(...): PostResult`。
-- `JobActionService`: `retry/cancel/play(projectId: Long, jobId: Long): PostResult`。
-- いずれも path を組み立てて `apiClient.post(path)` を呼び、その `PostResult` をそのまま返す薄いラッパ
-  (監査メタデータをハンドラへ橋渡し)。DI は既存 `service()` 既定引数。
+- `PipelineActionService`: `retry(instanceUrl: String, projectId: Long, pipelineId: Long): PostResult` / `cancel(...)`。
+- `JobActionService`: `retry/cancel/play(instanceUrl: String, projectId: Long, jobId: Long): PostResult`。
+- いずれも path を組み立てて `apiClient.post(path, instanceUrl = instanceUrl)` を呼び、その `PostResult` を返す薄い
+  ラッパ(検証済み送信先の固定=FR-8/6A + 監査メタデータをハンドラへ橋渡し)。DI は既存 `service()` 既定引数。
 
 ### 8.3 `CiStatus.contextAction`(追加)
 - `enum class CiAction { RETRYABLE, CANCELLABLE, EXECUTABLE }` を導入。
@@ -210,23 +216,27 @@ VSCode の該当実装:
 - `PipelineActionHandler`(command `RetryPipeline` / `CancelPipeline` の双方に登録):
   `event.command.id` で action を分岐。
 - `JobActionHandler`(command `RetryJob` / `CancelJob` / `PlayJob` に登録):同様に分岐。
-- **in-flight ガード**(FR-6): 実行中の (action, targetId) を保持する共有・スレッドセーフな `Set`。起動前に判定し、
-  既に実行中なら再入を抑止(no-op)。busy 表示は出さない。**成否によらず `finally` で除去**する。POST は最大 30s
-  (request timeout)まで実行中扱いのため、その間の連打による二重発火を防ぐ。unknown/HELD のような照合待ちの
-  保持状態は持たない(§5.1 スコープ判断・VSCode パリティ)。
+- **in-flight ガード**(FR-6): 実行中の **(instanceUrl, 対象種別, 対象ID)** を保持する共有・スレッドセーフな `Set`
+  (action は含めない=同一対象への retry/cancel を直列化)。起動前に判定し、既に実行中なら再入を抑止(no-op)。
+  busy 表示は出さない。**成否によらず `finally` で除去**する。POST は最大 30s(request timeout)まで実行中扱いの
+  ため、その間の連打・並行 write を防ぐ。unknown/HELD のような照合待ちの保持状態は持たない(§5.1 スコープ判断・
+  VSCode パリティ)。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
-  2. `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
+  2. ノードから `sourceInstanceUrl` / `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
   2b. **送信先インスタンス検証(FR-8)**: ノードの `sourceInstanceUrl` と現在のグローバル `GITLAB_INSTANCE_URL`
       を正規化比較。不一致なら **write を発行せず**「接続先が変わっています。サイドバーを更新してください」と通知して終了。
-  3. in-flight ガードで (action, targetId) を確認・登録。既に実行中なら終了。
-  4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼び、結果を FR-4 の 2 値で扱う:
+      **一致した `sourceInstanceUrl` をこの操作の送信先として以降固定**(サービス→`post(instanceUrl=…)` に渡し、
+      URI 構築までグローバル再読しない=6A の TOCTOU 回避)。
+  3. in-flight ガードで (instanceUrl, 対象種別, 対象ID) を確認・登録。既に実行中なら終了。
+  4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを **固定した instanceUrl 付きで**呼び、
+     結果を FR-4 の 2 値で扱う:
      - **成功(2xx)** → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`(+ 監査ログ §15)。
      - **失敗(`GitLabApiException`〈非 2xx〉/ `HttpTimeoutException` / `IOException`)** → `NotificationUtils.show`
        (「操作に失敗しました。サイドバーを更新して状態をご確認ください」= 盲目的な再試行は促さない文言)+
-       監査ログ(§15、status/correlation ID/例外種別)。サイドバーは変更しない(refresh しない)。
+       監査ログ(§15、instanceUrl / status / correlation ID / 例外種別)。サイドバーは変更しない(refresh しない)。
      - `CancellationException` は再送。
-  5. 解除: 成否によらず POST の `finally` で (action, targetId) を除去する。
+  5. 解除: 成否によらず POST の `finally` で (instanceUrl, 対象種別, 対象ID) を除去する。
 
 ### 8.8 `plugin.xml`(配線)
 - `<propertyTester>`(`type` = `SidebarNode`、namespace 例 `com.gitlab.eclipse.node`、
@@ -255,11 +265,11 @@ VSCode の該当実装:
 
 ## 10. API / インターフェース
 
-- `GitLabApiClient.post(path: String, query: Map<String, String> = emptyMap()): PostResult`
+- `GitLabApiClient.post(path: String, query: Map<String, String> = emptyMap(), instanceUrl: String): PostResult`
 - `data class PostResult(val httpStatus: Int, val correlationId: String?)`
 - `GitLabApiException`(既存)に `correlationId: String? = null` を追加(status/body は不変)
-- `PipelineActionService.retry(projectId: Long, pipelineId: Long): PostResult` / `.cancel(...): PostResult`
-- `JobActionService.retry(projectId: Long, jobId: Long): PostResult` / `.cancel(...)` / `.play(...)`
+- `PipelineActionService.retry(instanceUrl: String, projectId: Long, pipelineId: Long): PostResult` / `.cancel(...)`
+- `JobActionService.retry(instanceUrl: String, projectId: Long, jobId: Long): PostResult` / `.cancel(...)` / `.play(...)`
 - `CiStatus.contextAction(status: String?, allowFailure: Boolean = false): CiAction?`
 
 ## 11. データモデル
@@ -277,7 +287,7 @@ VSCode の該当実装:
   - `retry`(pipeline / job)・`play`(job): **API 契約として冪等ではない**。retry は失敗/キャンセル済みジョブの
     新しい実行を生成し、play は手動ジョブを起動する。同一操作を 2 回サーバが受理すると、実行が二重生成され得る。
 - **二重処理の防止(本 PR の範囲=VSCode パリティ)**:
-  - クライアント連打: in-flight ガード(FR-6)で POST 実行中の同一 (action, targetId) の再入を抑止(最大 30s)。
+  - クライアント連打・同一対象への並行 write: in-flight ガード(FR-6、キー=instanceUrl+対象種別+対象ID)で直列化(最大 30s)。
   - **タイムアウト後のサーバ二重実行**(POST 適用後に応答欠落): GitLab API は idempotency key を持たず、
     クライアントで exactly-once を保証できない。VSCode 拡張も保護しないため、本 PR は同等とし、この残存リスクを
     **受容する制限**とする(§5.1 スコープ判断・§22 R-4)。緩和は「失敗時に盲目的な再試行を促さない通知文」で行う。
@@ -304,9 +314,11 @@ VSCode の該当実装:
 
 - **構造化した相関情報**を、書き込み操作の監査記録として共通形式で残す。応答欠落・タイムアウトや
   複数プロジェクト/同一ノードへの並行操作でも「どの POST がどの対象へ到達したか」を追跡できるようにする。
-- 記録項目(1 操作 1 レコード):`action`(retry/cancel/play + pipeline/job 種別)、`projectId`、
+- 記録項目(1 操作 1 レコード):`action`(retry/cancel/play + pipeline/job 種別)、**`instanceUrl`(正規化済み
+  送信先=複数インスタンス間で projectId/ID が衝突しても判別可能にするため必須)**、`projectId`、
   `pipelineId` または `jobId`、開始・終了時刻(または所要時間)、HTTP status(取得できた場合)、
   `outcome`(`success` / `failure`)、GitLab が返す request/correlation ID(`x-request-id` 等、取得可能なら)。
+  correlation ID が null(timeout/IO)でも `instanceUrl` があれば「どちらの GitLab へ送ったか」を追跡できる。
 - `outcome` は **success / failure の 2 値**(UI 挙動は 2 値=FR-4)。failure レコードには、追跡のために
   以下の細分メタデータを可能な範囲で残す:
   - **HTTP 応答を伴う失敗(4xx/5xx/3xx)**: `GitLabApiException`(status, correlationId)から HTTP status と
@@ -366,8 +378,10 @@ VSCode の該当実装:
 - `CiStatus.contextAction`: §5.3 の全 status(null・unknown・`failed`+`allow_failure` 含む)を網羅。
 - ノード算出(`buildPipelineNode` の canRetry/canCancel、jobs 0 件・jobsResult failure、JobNode への projectId /
   sourceInstanceUrl carry)。
-- in-flight ガード(FR-6): 同一 (action, targetId) の POST 実行中は 2 回目が no-op で抑止され、**成否によらず
-  `finally` で除去**されて以後は再操作可能になることを検証。
+- in-flight ガード(FR-6): キーが **(instanceUrl, 対象種別, 対象ID)** で、同一対象への **retry と cancel の並行/
+  連打が直列化(2 回目 no-op)**されること、**成否によらず `finally` で除去**され以後は再操作可能になることを検証。
+- 送信先固定(6A): サービス/`post` に渡した `instanceUrl` から URI が構築され、検証後にグローバル設定を変えても
+  送信先が変わらないことを検証(TOCTOU 回避)。
 
 ### 19.2 既知失敗のベースライン(件数ではなく ID で固定)
 
@@ -397,7 +411,7 @@ PropertyTester / 各 command・handler / 選択境界は headless で実行不�
 | 6 | JobNode(status=manual) | Play Job | `POST /jobs/{id}/play` | 同上 |
 | 7 | JobNode(status=skipped/unknown) | 操作メニューなし | — | — |
 | 8 | 権限なしユーザーで retry | 表示はされる | POST → 403 | failure 通知 + Error Log / refresh なし |
-| 9 | 同一操作を連打 | — | 2 回目は抑止 | 2 回目は POST が飛ばない(FR-6) |
+| 9 | 同一対象へ Retry と Cancel を連続実行 | — | 直列化 | 実行中は 2 つ目の POST が飛ばない(FR-6) |
 | 10 | ネットワーク切断/タイムアウト | — | POST → timeout | 失敗通知(再試行を促さない)+ Error Log / refresh なし |
 | 11 | 表示中に接続先を別インスタンスへ変更 | — | write 拒否 | 「接続先が変わっています」通知 / POST 発行なし(FR-8) |
 
@@ -414,7 +428,7 @@ PropertyTester / 各 command・handler / 選択境界は headless で実行不�
 - AC-5: 失敗(非 2xx / タイムアウト / 通信断)時は、盲目的な再試行を促さない通知が出て Error Log(監査ログ)に
   記録され、サイドバー表示は破壊されない(refresh しない)。
 - AC-6: 接続先(`gitlab.url`/認証先)が表示時点から変わっている場合、write が発行されず更新を促す通知が出る(FR-8)。
-- AC-7: 同一ノードへの同一操作の連打時、POST 実行中の 2 回目以降が抑止され、完了後(成否問わず)は再操作可能になる(FR-6)。
+- AC-7: 同一対象(instance+種別+ID)への retry/cancel の並行/連打が POST 実行中は直列化され、完了後(成否問わず)は再操作可能になる(FR-6)。
 - AC-8: 監査ログに action / projectId / pipelineId or jobId / outcome(success/failure)/ HTTP status(取得時)/
   correlation ID(取得時)が記録され、トークン・生レスポンス本文は出力されない。detekt 0・
   **ベースライン外の新規テスト失敗ゼロ**(§19.2)。
