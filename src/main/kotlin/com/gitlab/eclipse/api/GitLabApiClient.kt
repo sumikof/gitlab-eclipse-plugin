@@ -12,8 +12,50 @@ import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpRequest
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
 import kotlin.coroutines.cancellation.CancellationException
+
+/**
+ * Thrown by [GitLabApiClient.captureConnection] when the url/token pair keeps changing across
+ * reads and never converges within the bounded retry budget, so no self-consistent snapshot
+ * can be returned.
+ */
+class UnstableConnectionException : RuntimeException("GitLab connection settings changed during capture")
+
+/** Hex chars kept from the SHA-256 of a token in [authFingerprint]. */
+private const val FINGERPRINT_HEX_LENGTH = 16
+private const val BYTE_MASK = 0xFFL
+
+private fun correlationId(response: java.net.http.HttpResponse<String>): String? =
+  response.headers().firstValue("x-request-id").orElse(null)
+
+/**
+ * Non-secret, non-reversible, stable identifier of a credential: lowercase-hex SHA-256 of the
+ * token truncated to [FINGERPRINT_HEX_LENGTH] chars; blank token → empty string.
+ */
+private fun authFingerprint(token: String): String {
+  if (token.isBlank()) return ""
+  return sha256(token).joinToString("") { "%02x".format(it) }.take(FINGERPRINT_HEX_LENGTH)
+}
+
+/**
+ * A cheap generation token folded from the SHA-256 of `"$url $token"`: equal generation ⟺ equal
+ * (url, token) pair. Not security-bearing on its own.
+ */
+private fun configGeneration(url: String, token: String): Long {
+  val digest = sha256("$url $token")
+  var value = 0L
+  for (i in 0 until Long.SIZE_BYTES) {
+    value = (value shl Byte.SIZE_BITS) or (digest[i].toLong() and BYTE_MASK)
+  }
+  return value
+}
+
+private fun sha256(value: String): ByteArray =
+  MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8))
+
+private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 
 /**
  * REST endpoint abstraction over [GitLabHttpClient]. Builds URLs from `gitlab.url`,
@@ -109,6 +151,62 @@ class GitLabApiClient(
     return sendGet(request.path, query, timeout)
   }
 
+  /**
+   * Atomically captures the current (gitlab.url, token) pair. A bounded double-read loop guards
+   * against a torn read across the two settings sources: each candidate pair is confirmed by a
+   * fresh re-read, and only a pair observed identically twice in a row is returned — so the
+   * snapshot's url and token always come from the same settings generation. If the values keep
+   * changing and never converge within [MAX_CAPTURE_ATTEMPTS], throws [UnstableConnectionException].
+   *
+   * Both the READ and WRITE paths obtain their pinned connection through this method; the raw
+   * (untrimmed) url is kept — trailing-slash trimming happens in [buildUri].
+   */
+  fun captureConnection(): ConnectionSnapshot {
+    var url = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+    var token = tokenManager.getToken()
+    repeat(MAX_CAPTURE_ATTEMPTS) {
+      val urlCheck = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+      val tokenCheck = tokenManager.getToken()
+      if (url == urlCheck && token == tokenCheck) {
+        return ConnectionSnapshot(url, token, authFingerprint(token), configGeneration(url, token))
+      }
+      url = urlCheck
+      token = tokenCheck
+    }
+    throw UnstableConnectionException()
+  }
+
+  /**
+   * Sends a body-less POST pinned to [connection]: the URI base and the Bearer credential both
+   * come from the snapshot, never from the live preference store / token manager, so a concurrent
+   * settings change cannot misroute the write or leak the credential to a different instance.
+   * Non-2xx → [GitLabApiException] (with correlation id); timeouts and I/O errors propagate as-is.
+   */
+  fun post(path: String, query: Map<String, String> = emptyMap(), connection: ConnectionSnapshot): PostResult {
+    val response = sendPost(path, query, connection)
+    return PostResult(response.statusCode(), correlationId(response))
+  }
+
+  private fun sendPost(
+    path: String,
+    query: Map<String, String>,
+    connection: ConnectionSnapshot,
+    timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
+  ): java.net.http.HttpResponse<String> {
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, query, baseOverride = connection.instanceUrl))
+      .header("Authorization", "Bearer ${connection.token}")
+      .header("Accept", "application/json")
+      .timeout(timeout)
+      .POST(HttpRequest.BodyPublishers.noBody())
+      .build()
+
+    val response = httpClient.send(httpRequest)
+    if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
+      throw GitLabApiException(response.statusCode(), response.body(), correlationId(response))
+    }
+    return response
+  }
+
   private fun sendGet(
     path: String,
     query: Map<String, String>,
@@ -128,15 +226,13 @@ class GitLabApiClient(
     return response
   }
 
-  private fun buildUri(path: String, query: Map<String, String>): URI {
-    val base = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL).trimEnd('/')
+  private fun buildUri(path: String, query: Map<String, String>, baseOverride: String? = null): URI {
+    val base = (baseOverride ?: preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)).trimEnd('/')
     val queryString = query.entries.joinToString("&") { (k, v) ->
       "${encode(k)}=${encode(v)}"
     }
     return URI.create("$base/api/v4$path?$queryString")
   }
-
-  private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 
   @Suppress("UNCHECKED_CAST")
   private fun <T> emptyArrayOf(): Array<T> = arrayOfNulls<Any?>(0) as Array<T>
@@ -149,5 +245,8 @@ class GitLabApiClient(
     /** Inclusive bounds of the HTTP 2xx (successful) status class. */
     private const val SUCCESS_STATUS_MIN = 200
     private const val SUCCESS_STATUS_MAX = 299
+
+    /** Bounded retry budget of the double-read convergence loop in [captureConnection]. */
+    private const val MAX_CAPTURE_ATTEMPTS = 8
   }
 }
