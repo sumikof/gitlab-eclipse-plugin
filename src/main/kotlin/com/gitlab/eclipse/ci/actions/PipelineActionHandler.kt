@@ -8,6 +8,7 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.sidebar.GitLabSidebarView
 import com.gitlab.eclipse.views.sidebar.PipelineNode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
@@ -87,8 +88,8 @@ internal inline fun <reified T> selectedSidebarNode(event: ExecutionEvent): T? {
  * Runs one pinned CI write in the background (shared shell of both handlers; top-level function
  * on purpose — no AbstractHandler base-class hierarchy). The caller must already hold [key];
  * it is released in `finally` so success, failure, AND cancellation free the target.
- * [classifyWrite] rethrows CancellationException, and nothing here catches it, so cancellation
- * propagates out of the launch cleanly.
+ * CancellationException is rethrown so cancellation propagates out of the launch cleanly; any
+ * other unclassified throwable is caught here — it must never escape and cancel the shared scope.
  */
 internal fun launchCiWrite(
   scope: CoroutineScope,
@@ -112,6 +113,13 @@ internal fun launchCiWrite(
           NotificationUtils.show("The action failed. Refresh the sidebar to check the current state.")
         }
       }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      // Unclassified escape (e.g. InterruptedException, client-rebuild RuntimeException):
+      // must not cancel the shared scope. No refresh — state is unknown.
+      log.error("CI $action write to ${key.targetKind} #${key.targetId} failed unexpectedly.", e)
+      NotificationUtils.show("The action failed. Refresh the sidebar to check the current state.")
     } finally {
       InFlightWriteGuard.release(key)
     }
