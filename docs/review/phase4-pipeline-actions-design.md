@@ -90,11 +90,12 @@ VSCode の該当実装:
   idempotency key を持たない以上できない。**パリティ元の VSCode 拡張もこの保護を実装していない**ため、本 PR は
   VSCode と同等とし、この残存リスクを**受容する制限**として §22 に明記する。in-flight ガード(連打抑止)と、
   失敗時に盲目的な再試行を促さない通知文で緩和するに留める。
-- FR-8: **操作の送信先インスタンスをノードに固定する**。サイドバー表示中に `gitlab.url` / 認証先を別インスタンスへ
-  変更しても、ノードには表示時点(取得元)のインスタンスの数値 ID しか残らない一方 `GitLabApiClient.buildUri` は
-  POST 時点のグローバル設定を読む。両者が食い違うと、旧表示の cancel/retry/play が**新インスタンス上の同一数値 ID を
-  持つ無関係な対象へ送られ得る**。よってノードに取得元インスタンス識別(instance URL または設定世代)を保持し、
-  POST 直前に現在のグローバル設定と一致しなければ **write を拒否し、refresh を促す**(§8.4・§8.7・§22 R-5)。
+- FR-8: **操作の送信先(インスタンス URL + 認証)をノードに固定する**。サイドバー表示中に `gitlab.url` や認証先
+  (アカウント/PAT)を変更しても、ノードには取得時点の数値 ID しか残らない一方 `GitLabApiClient` は送信時のグローバル
+  設定/`getToken()` を読む。食い違うと、旧表示の cancel/retry/play が**別インスタンスの同一数値 ID を持つ無関係な
+  対象へ送られる**、あるいは**別アカウント名義で実行される**(9A: 同一 URL でアカウント/PAT だけ変わった場合)。
+  よってノードに `sourceInstanceUrl` と非機密の `sourceAuthFingerprint` を保持し、POST 直前に **URL と認証の両方**が
+  現在の設定と一致しなければ **write を拒否し、refresh を促す**(§8.4・§8.7・§22 R-5)。
 
 ### 5.2 非機能要件
 
@@ -167,8 +168,10 @@ VSCode の該当実装:
   - (7B)URL 固定後に認証先だけ B へ変わり、A の URI に B のトークンを送って**別インスタンスへ資格情報を漏洩**する
     事態を防ぐ(URL と token を同一スナップショットで束ねる)。
   POST 用に `buildUri(path, query, baseOverride)` を追加する。
-- **READ 側にも同じ固定を適用(7A/8A/8B)**: `sendGet` / `buildUri` / `fetchObject` / `fetchListWithinDeadline` に
-  **省略可能な `connection: ConnectionSnapshot? = null` を追加**する。`null` の既存 GET 呼び出しは従来どおり
+- **READ 側にも同じ固定を適用(7A/8A/8B/9B)**: `sendGet` / **`sendPage`** / `buildUri` / `fetchObject` /
+  `fetchListWithinDeadline` に **省略可能な `connection: ConnectionSnapshot? = null` を追加**する
+  (`fetchListWithinDeadline` は各ページを `sendGet` ではなく **`sendPage` 経由**で取得するため、`sendPage` まで
+  同一スナップショットを引き回さないと jobs の各ページが旧グローバル設定を読む=9B)。`null` の既存 GET 呼び出しは従来どおり
   グローバル URL と `getToken()` を読む(**後方互換=既存呼び出し側は無改修**)。`connection` が渡された場合は URI を
   `connection.instanceUrl`、Bearer を `connection.token` から構築する。current-branch セクションの CI GET
   (下記 §8.5)はこの引数経由で refresh 開始時に捕捉したスナップショットを使い、READ 経路でも「A で取得中に認証が
@@ -204,11 +207,14 @@ VSCode の該当実装:
   `canRetry: Boolean`、`canCancel: Boolean`。後者2つは構築時にジョブ一覧から算出。
 - `JobNode`: 追加フィールド `projectId: Long?`(= 所属パイプラインの `pipeline.projectId`)。
   retryable / cancellable / executable は `job.status` + `allowFailure` から `CiStatus.contextAction` で都度算出。
-- **送信先固定(FR-8/7A)**: `PipelineNode` / `JobNode` に `sourceInstanceUrl: String` を保持する。値は
-  **「その pipeline/jobs を実際に取得したインスタンス URL」**でなければならない(構築時点のグローバル設定を読むと、
-  取得後・UI 合流前に設定が変わった場合に実取得元と食い違うため)。よって **refresh 開始時に URL を 1 回捕捉**し、
-  GET の URI 構築(read 側の pinning)→ `PipelineSnapshot` → `buildPipelineNode` まで**同一の URL を引き回して**
-  ノードへ付与する。正規化して比較する。
+- **送信先固定(FR-8/7A/9A)**: `PipelineNode` / `JobNode` に **`sourceInstanceUrl: String` と
+  `sourceAuthFingerprint: String`** を保持する。両者は **「その pipeline/jobs を実際に取得した接続」**を表さねば
+  ならない(構築時点のグローバル設定を読むと、取得後・UI 合流前に設定が変わった場合に実取得元と食い違うため)。
+  よって **refresh 開始時に URL と認証識別子を 1 回捕捉**し、GET の URI 構築(read 側 pinning)→ `PipelineSnapshot`
+  → `buildPipelineNode` まで**同一値を引き回して**ノードへ付与する。
+  - `sourceAuthFingerprint` は **非機密の認証識別子**(例: アクティブ資格情報の安定ハッシュ、または認証世代カウンタ、
+    もしくはアカウント識別子)。**生トークンはノードに保持しない**(ノードはツリーに常駐するため)。同一 URL のまま
+    アカウント/PAT だけ変わったケース(9A)を検出するために URL とは別に持つ。正規化して比較する。
 
 ### 8.5 `SidebarViewModel.buildPipelineNode`(改修)
 - シグネチャを `buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)` に拡張(7A: 実取得元 URL を受け取り
@@ -218,11 +224,12 @@ VSCode の該当実装:
 - `buildStageNodes` 経由で各 `JobNode` に `pipeline.projectId` と `sourceInstanceUrl` を carry する。
 - jobs 取得が失敗した場合(`jobsResult` failure)は従来どおり "Failed to load jobs" 行を出し、
   `canRetry = canCancel = false`(操作不可)とする。
-- **read 側の pinning(7A/8A/8B)**: current-branch ユニットは **refresh 開始時に read 用 `ConnectionSnapshot`
-  (instanceUrl + token)を 1 回捕捉**し、pipeline/jobs GET(`getLatestPipelineForRef` / `getJobsForPipeline` →
-  `fetchObject` / `fetchListWithinDeadline` → `sendGet`/`buildUri`)へ `connection` として引き渡す。URI もトークンも
-  この捕捉値から構築するため、取得中に設定が変わっても「取得元とノードタグの不一致」「A の URI に B のトークン」を
-  排除する。ノードタグ `sourceInstanceUrl` は同じスナップショットの `instanceUrl`。
+- **read 側の pinning(7A/8A/8B/9B)**: current-branch ユニットは **refresh 開始時に read 用 `ConnectionSnapshot`
+  (instanceUrl + token)と認証識別子を 1 回捕捉**し、pipeline/jobs GET(`getLatestPipelineForRef` /
+  `getJobsForPipeline` → `fetchObject` / `fetchListWithinDeadline` → `sendGet`/**`sendPage`**/`buildUri`)へ
+  `connection` として引き渡す(ページング=`sendPage` 経由も含む=9B)。URI もトークンもこの捕捉値から構築するため、
+  取得中に設定が変わっても「取得元とノードタグの不一致」「A の URI に B のトークン」を排除する。ノードタグ
+  `sourceInstanceUrl` は同スナップショットの `instanceUrl`、`sourceAuthFingerprint` は捕捉時の認証識別子(9A)。
 - **影響範囲(8C・実配線を正確に記載)**: 本改修は以下の既存配線の変更を伴う(「View 配線不変」ではない):
   - `PipelineService.getLatestPipelineForRef` / `JobService.getJobsForPipeline` に `connection: ConnectionSnapshot`
     引数を追加。
@@ -250,12 +257,14 @@ VSCode の該当実装:
   VSCode パリティ)。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
-  2. ノードから `sourceInstanceUrl` / `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
-  2b. **送信先インスタンス検証 + 接続スナップショット固定(FR-8/6A/7A/7B)**: ノードの `sourceInstanceUrl` と現在の
-      グローバル `GITLAB_INSTANCE_URL` を正規化比較。不一致なら **write を発行せず**「接続先が変わっています。
-      サイドバーを更新してください」と通知して終了。一致したら、**その場で URL と token を一体で読み取り
-      `ConnectionSnapshot(instanceUrl, token)` を構築**して以降の送信先として固定する(サービス→`post(connection=…)`
-      に渡す)。URI もトークンも送信時にグローバル/`getToken()` を再取得しないため、検証後に URL・認証が変わっても
+  2. ノードから `sourceInstanceUrl` / `sourceAuthFingerprint` / `projectId` / `pipelineId` or `jobId` を抽出。
+     null なら通知して終了。
+  2b. **接続検証(URL + 認証)+ スナップショット固定(FR-8/6A/7A/7B/9A)**: ノードの `sourceInstanceUrl` と
+      現在のグローバル `GITLAB_INSTANCE_URL`、**かつ** ノードの `sourceAuthFingerprint` と現在の認証識別子を比較。
+      **いずれか不一致なら write を発行せず**「接続先/認証が変わっています。サイドバーを更新してください」と通知して終了
+      (同一 URL のままアカウント/PAT だけ変わった場合=9A も拒否)。両方一致したら、**その場で URL と token を一体で
+      読み取り `ConnectionSnapshot(instanceUrl, token)` を構築**して以降の送信先として固定する
+      (サービス→`post(connection=…)` に渡す)。URI もトークンも送信時にグローバル/`getToken()` を再取得しないため、検証後に URL・認証が変わっても
       検証済み A へ A のトークンで送る(6A の URL-TOCTOU と 7B の資格情報漏洩を同時に回避)。
   3. in-flight ガードで (instanceUrl, 対象種別, 対象ID) を確認・登録。既に実行中なら終了。
   4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを **固定した `ConnectionSnapshot` 付きで**呼び、
@@ -301,7 +310,7 @@ VSCode の該当実装:
 - `PipelineActionService.retry(connection: ConnectionSnapshot, projectId: Long, pipelineId: Long): PostResult` / `.cancel(...)`
 - `JobActionService.retry(connection: ConnectionSnapshot, projectId: Long, jobId: Long): PostResult` / `.cancel(...)` / `.play(...)`
 - 既存 GET 系に省略可能 `connection: ConnectionSnapshot? = null` を追加(read 側 pinning・後方互換):
-  `sendGet` / `buildUri` / `fetchObject` / `fetchListWithinDeadline`、および
+  `sendGet` / `sendPage` / `buildUri` / `fetchObject` / `fetchListWithinDeadline`、および
   `PipelineService.getLatestPipelineForRef(projectId, ref, connection?)` /
   `JobService.getJobsForPipeline(projectId, pipelineId, isActive, connection?)`。
 - `SidebarViewModel.buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)`(拡張)。`PipelineSnapshot` に `instanceUrl` 追加。
@@ -372,7 +381,7 @@ VSCode の該当実装:
 
 ## 16. 既存機能への影響
 
-- `GitLabApiClient`: POST を独立追加。GET 系(`sendGet`/`buildUri`/`fetchObject`/`fetchListWithinDeadline`)には
+- `GitLabApiClient`: POST を独立追加。GET 系(`sendGet`/`sendPage`/`buildUri`/`fetchObject`/`fetchListWithinDeadline`)には
   **省略可能な `connection: ConnectionSnapshot? = null` を追加**(既存呼び出しは既定 null でグローバル動作=挙動不変)。
 - `CiStatus.displayName` / `priority` は不変(`contextAction` は追加のみ)。
 - `PipelineNode` / `JobNode` はフィールド追加(projectId/pipelineId/canRetry/canCancel/`sourceInstanceUrl`)。
@@ -423,13 +432,16 @@ VSCode の該当実装:
   sourceInstanceUrl carry。7A: 渡した `sourceInstanceUrl` がそのままノードへ付与されること)。
 - in-flight ガード(FR-6): キーが **(instanceUrl, 対象種別, 対象ID)** で、同一対象への **retry と cancel の並行/
   連打が直列化(2 回目 no-op)**されること、**成否によらず `finally` で除去**され以後は再操作可能になることを検証。
+- 接続検証(FR-8/9A): write 直前に **URL と認証識別子の両方**を比較し、URL 変更時・**同一 URL でアカウント/PAT だけ
+  変更時**のいずれも write が発行されず通知されることを検証。
 - 接続スナップショット固定(6A/7A/7B): `post` に渡した `ConnectionSnapshot` の `instanceUrl` から URI が構築され、
   Bearer に `connection.token` が使われること。検証後にグローバル URL / token を変えても**送信先 URL もトークンも
   変わらない**ことを検証(URL-TOCTOU + 資格情報漏洩の回避)。
-- READ 側 pinning(8A/8B): GET 系に `connection` を渡したとき URI が `connection.instanceUrl`、Bearer が
+- READ 側 pinning(8A/8B/9B): GET 系に `connection` を渡したとき URI が `connection.instanceUrl`、Bearer が
   `connection.token` から構築されること。`connection = null`(既存呼び出し)ではグローバル URL / `getToken()` を読む
   こと(後方互換)。`getLatestPipelineForRef` / `getJobsForPipeline` が捕捉スナップショット経由で fetch し、
-  ノードタグ `sourceInstanceUrl` が fetch 元と一致することを検証。
+  ノードタグ `sourceInstanceUrl` / `sourceAuthFingerprint` が fetch 元と一致すること、**ページ間でグローバル設定を
+  変更しても各ページが捕捉スナップショット(`sendPage` 経由)で取得される**ことを検証(9B)。
 - 監査ログ(§15/AC-8): 1 操作 1 レコードに **`instanceUrl`(正規化済み・必須)** / action / projectId /
   pipelineId or jobId / outcome / (取得時)status・correlation ID が入り、**トークンが出力されない**ことを検証。
   timeout/IO(correlation ID = null)でも instanceUrl が記録されることを検証。
@@ -478,7 +490,8 @@ PropertyTester / 各 command・handler / 選択境界は headless で実行不�
 - AC-4: 操作可能でない status のノードには該当メニューが表示されない。
 - AC-5: 失敗(非 2xx / タイムアウト / 通信断)時は、盲目的な再試行を促さない通知が出て Error Log(監査ログ)に
   記録され、サイドバー表示は破壊されない(refresh しない)。
-- AC-6: 接続先(`gitlab.url`/認証先)が表示時点から変わっている場合、write が発行されず更新を促す通知が出る(FR-8)。
+- AC-6: 接続先(`gitlab.url`)**または認証(アカウント/PAT。同一 URL でも)**が表示時点から変わっている場合、
+  write が発行されず更新を促す通知が出る(FR-8/9A)。
 - AC-7: 同一対象(instance+種別+ID)への retry/cancel の並行/連打が POST 実行中は直列化され、完了後(成否問わず)は再操作可能になる(FR-6)。
 - AC-8: 監査ログに action / **`instanceUrl`(正規化済み・必須)** / projectId / pipelineId or jobId /
   outcome(success/failure)/ HTTP status(取得時)/ correlation ID(取得時)が記録され、トークン・生レスポンス
