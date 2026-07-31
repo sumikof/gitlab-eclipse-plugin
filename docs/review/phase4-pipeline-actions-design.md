@@ -144,16 +144,22 @@ VSCode の該当実装:
 - 新規 `private fun sendPost(path, query, timeout): HttpResponse<String>`:
   `buildUri` / `Authorization: Bearer` / `Accept: application/json` / `timeout` を GET と共通化し、
   `.POST(HttpRequest.BodyPublishers.noBody())` を発行。非 2xx は既存 `GitLabApiException(status, body)` を投げる。
-- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap())`(成功時 Unit)。
-  本文は解析しない(refresh で最新化するため)。既存 GET 系メソッドは一切変更しない。
-- 例外の区別(呼び出し側の 3 値分類=FR-7 の根拠):非 2xx は既存 `GitLabApiException(status, body)`
-  (= definite failure)。送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` は
-  そのまま伝播させ(= unknown。サーバ適用済み・応答欠落を含み得る)、ハンドラで区別して扱う。
+- 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap()): PostResult`。
+  本文(業務データ)は解析しない(refresh で最新化するため)が、**監査に必要なレスポンスメタデータは呼び出し元へ返す**
+  (§15 の根拠)。`data class PostResult(val httpStatus: Int, val correlationId: String?)`
+  (correlationId = `x-request-id` 等のヘッダ、無ければ null)。既存 GET 系メソッドは一切変更しない。
+- 例外の区別(呼び出し側の 3 値分類=FR-7 の根拠):
+  - 非 2xx = **failure**。既存 `GitLabApiException` に **correlationId(nullable)を追加**して伝播させる
+    (既存フィールド status/body は不変・GET 呼び出し側は既定 null で影響なし)。これにより失敗経路でも §15 の
+    correlation ID を監査ログに残せる。
+  - 送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` = **unknown**。そのまま伝播させ
+    (サーバ適用済み・応答欠落を含み得る。correlation ID は取得不能)ハンドラで区別して扱う。
 
 ### 8.2 `PipelineActionService` / `JobActionService`(新規)
-- `PipelineActionService`: `retry(projectId: Long, pipelineId: Long)` / `cancel(projectId: Long, pipelineId: Long)`。
-- `JobActionService`: `retry/cancel/play(projectId: Long, jobId: Long)`。
-- いずれも path を組み立てて `apiClient.post(path)` を呼ぶだけの薄いラッパ。DI は既存 `service()` 既定引数。
+- `PipelineActionService`: `retry(projectId: Long, pipelineId: Long): PostResult` / `cancel(...): PostResult`。
+- `JobActionService`: `retry/cancel/play(projectId: Long, jobId: Long): PostResult`。
+- いずれも path を組み立てて `apiClient.post(path)` を呼び、その `PostResult` をそのまま返す薄いラッパ
+  (監査メタデータをハンドラへ橋渡し)。DI は既存 `service()` 既定引数。
 
 ### 8.3 `CiStatus.contextAction`(追加)
 - `enum class CiAction { RETRYABLE, CANCELLABLE, EXECUTABLE }` を導入。
@@ -187,8 +193,15 @@ VSCode の該当実装:
   `event.command.id` で action を分岐。
 - `JobActionHandler`(command `RetryJob` / `CancelJob` / `PlayJob` に登録):同様に分岐。
 - **in-flight ガード**(FR-6): 実行中の (action, targetId) を保持する共有 `Set`(スレッドセーフな実装)。
-  起動前に判定し、既に実行中なら再入を抑止(no-op)。開始時に追加し、完了/失敗/unknown いずれでも
-  `finally` で除去。busy 表示は出さない。
+  起動前に判定し、既に実行中なら再入を抑止(no-op)。busy 表示は出さない。
+  **解除ポリシー(結果種別で分岐)**:
+  - **success / failure(definite)**: 起動時に追加し `finally` で除去(通常経路)。failure はサーバ状態が
+    確定している(4xx で未適用が判明)ため、解除して再操作を許可してよい。
+  - **unknown(タイムアウト/IO)**: **`finally` では解除しない**。サーバ適用済み・応答欠落の可能性があり、
+    照合前に解除すると refresh 完了までの窓で非冪等な retry/play を二重発行し得る(§12)。
+    ガードは **照合用 refresh の完了(ツリー再構築)まで保持**し、refresh 完了コールバック内で除去する。
+    refresh 自体が失敗して照合不能な場合も、恒久ロックを避けるため当該コールバックの `finally` で除去し、
+    「状態を確認できませんでした」と通知する(= 再操作の可否はユーザーが更新後の表示で判断)。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
   2. `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
@@ -196,10 +209,11 @@ VSCode の該当実装:
   4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼び、結果を FR-7 の 3 値に分類:
      - **success(2xx)** → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`(+ 監査ログ §15)。
      - **failure(`GitLabApiException`)** → `NotificationUtils.show`(操作失敗)+ `logger.error`。サイドバーは変更しない。
-     - **unknown(`HttpTimeoutException`/`IOException`)** → refresh でサーバ状態と照合 + `NotificationUtils.show`
+     - **unknown(`HttpTimeoutException`/`IOException`)** → 照合用 refresh を予約 + `NotificationUtils.show`
        (「結果を確認できません。更新後の状態をご確認ください」= 盲目再実行を促さない)+ `logger.warn`。
+       **ガードは解除せず**、refresh 完了(または照合失敗)コールバックで除去する(上記解除ポリシー)。
      - `CancellationException` は再送。
-  5. 成否によらず `finally` で in-flight ガードから (action, targetId) を除去。
+  5. 解除: success / failure は `finally` で (action, targetId) を除去。unknown は照合 refresh の完了コールバックで除去。
 
 ### 8.8 `plugin.xml`(配線)
 - `<propertyTester>`(`type` = `SidebarNode`、namespace 例 `com.gitlab.eclipse.node`、
@@ -229,9 +243,11 @@ VSCode の該当実装:
 
 ## 10. API / インターフェース
 
-- `GitLabApiClient.post(path: String, query: Map<String, String> = emptyMap())`
-- `PipelineActionService.retry(projectId: Long, pipelineId: Long)` / `.cancel(...)`
-- `JobActionService.retry(projectId: Long, jobId: Long)` / `.cancel(...)` / `.play(...)`
+- `GitLabApiClient.post(path: String, query: Map<String, String> = emptyMap()): PostResult`
+- `data class PostResult(val httpStatus: Int, val correlationId: String?)`
+- `GitLabApiException`(既存)に `correlationId: String? = null` を追加(status/body は不変)
+- `PipelineActionService.retry(projectId: Long, pipelineId: Long): PostResult` / `.cancel(...): PostResult`
+- `JobActionService.retry(projectId: Long, jobId: Long): PostResult` / `.cancel(...)` / `.play(...)`
 - `CiStatus.contextAction(status: String?, allowFailure: Boolean = false): CiAction?`
 
 ## 11. データモデル
@@ -281,6 +297,9 @@ VSCode の該当実装:
   `pipelineId` または `jobId`、開始・終了時刻(または所要時間)、HTTP status(取得できた場合)、
   `outcome`(`success` / `failure` / `unknown`)、GitLab が返す request/correlation ID(`x-request-id` 等、
   取得可能なら)。
+- **メタデータの伝播経路**(§8.1・§8.2):HTTP status と correlation ID は、success 時は `PostResult`、
+  failure 時は `GitLabApiException.correlationId` でハンドラ(監査レコード作成地点)まで届く。
+  unknown 時は status/correlation ID を取得できないため、outcome=unknown と例外種別のみ記録する。
 - **除外・マスキング**: アクセストークンおよび未加工のレスポンス本文はログに出さない(NFR-2)。
 - レベル: success = `info`、failure = `error`、unknown = `warn`。ユーザーには `NotificationUtils.show` で
   簡潔に通知し、詳細は Error Log を参照とする(既存パターン)。保持先は Eclipse Error Log。
@@ -331,10 +350,16 @@ VSCode の該当実装:
 
 ### 19.2 既知失敗のベースライン(件数ではなく ID で固定)
 
-- headless の既知失敗は SWT ネイティブ未ロード由来の env 失敗であり、**テストの完全修飾名の集合**を
-  ベースラインとして固定する(実装計画=#12 に、`develop@d60f2e8` 実行時の失敗テスト FQN 一覧を貼付)。
-- 合格条件は「**ベースライン集合の外に新規失敗がゼロ**」とする(単なる合計件数の一致では、既知失敗の解消と
-  新規回帰の相殺を検出できないため)。ベースライン集合内の失敗はスキップ相当として扱う。
+- headless の既知失敗は SWT ネイティブ未ロード由来の env 失敗であり、**テストの完全修飾名 + 失敗シグネチャの対**
+  をベースラインとして固定する(実装計画=#12 に、`develop@d60f2e8` 実行時の {FQN, 期待例外型, 安定した
+  メッセージ断片} 一覧を貼付)。SWT 未ロード由来の代表シグネチャ(例: `UnsatisfiedLinkError` /
+  `SWTError` / no-more-handles 等)を各 FQN に対応付ける。
+- 合格条件(2 段):
+  1. **ベースライン集合の外に新規失敗がゼロ**(単なる合計件数一致では、既知失敗の解消と新規回帰の相殺を
+     検出できないため)。
+  2. **ベースライン集合内の失敗も、失敗理由がベースラインのシグネチャと一致すること**。既知テストが SWT 未ロード
+     ではなく本変更起因の別例外/assertion failure で落ちるようになった場合は、FQN が集合内でも**新規回帰**として
+     扱い不合格とする(FQN 一致だけの無条件スキップはしない)。
 
 ### 19.3 手動検証チェックリスト(実機・PR 説明文に記載)
 
