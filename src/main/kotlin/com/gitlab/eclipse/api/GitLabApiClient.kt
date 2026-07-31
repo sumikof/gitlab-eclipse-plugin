@@ -213,8 +213,11 @@ class GitLabApiClient(
   /**
    * Sends a GET request. When [connection] is non-null, the URI base and the Bearer credential
    * both come from the snapshot instead of the live preference store / token manager, mirroring
-   * the pinning [sendPost] already does for writes. `connection = null` (the default) preserves
-   * the pre-existing global-reading behavior exactly, so every existing call site is unaffected.
+   * the pinning [sendPost] already does for writes. When [connection] is null, a
+   * generation-consistent snapshot is obtained via [captureConnection] for this single request,
+   * so even an unpinned GET can never send a torn `(new url, old token)` pair while a settings
+   * save is writing the two stores; at a stable generation the request is identical to a plain
+   * global read. May throw [UnstableConnectionException] if the settings never settle.
    */
   private fun sendGet(
     path: String,
@@ -222,9 +225,9 @@ class GitLabApiClient(
     timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
     connection: ConnectionSnapshot? = null,
   ): java.net.http.HttpResponse<String> {
-    val token = connection?.token ?: tokenManager.getToken()
-    val httpRequest = HttpRequest.newBuilder(buildUri(path, query, baseOverride = connection?.instanceUrl))
-      .header("Authorization", "Bearer $token")
+    val conn = connection ?: captureConnection()
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, query, baseOverride = conn.instanceUrl))
+      .header("Authorization", "Bearer ${conn.token}")
       .header("Accept", "application/json")
       .timeout(timeout)
       .GET()

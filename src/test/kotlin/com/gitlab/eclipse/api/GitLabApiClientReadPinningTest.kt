@@ -4,6 +4,7 @@ import com.gitlab.eclipse.api.http.GitLabHttpClient
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
@@ -125,6 +126,73 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
 
       result shouldBe listOf(Item(1))
       verify(exactly = 1) { tokens.getToken() }
+    }
+  }
+
+  describe("unpinned GET generation consistency (Codex round-2 P1)") {
+    // The unpinned path must go through the same generation-consistent capture as the pinned
+    // path: while a settings save is writing the two stores (odd generation), the globals hold
+    // the STABLE torn pair (NEW url, OLD token); a plain global read would send the old
+    // instance's bearer to the new instance.
+
+    it("unpinned fetchObject never sends the torn (new url, old token) pair while a settings save is in progress") {
+      var generationReads = 0
+      val genClient = GitLabApiClient(http, tokens, prefs) {
+        generationReads++
+        if (generationReads <= 3) 1L else 2L // write in progress, then settles
+      }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://new.example.com"
+      every { tokens.getToken() } answers { if (generationReads <= 3) "old-token" else "new-token" }
+      val captured = slot<HttpRequest>()
+      every { http.send(capture(captured)) } returns response("""{"id":1}""")
+
+      genClient.fetchObject("/user", type = Item::class.java)
+
+      captured.captured.uri().toString() shouldBe "https://new.example.com/api/v4/user?"
+      // The old instance's credential must never reach the new instance.
+      captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer new-token"
+      verify(exactly = 1) { http.send(any()) }
+    }
+
+    it(
+      "unpinned fetchObject throws UnstableConnectionException without sending anything " +
+        "when the generation stays odd",
+    ) {
+      val genClient = GitLabApiClient(http, tokens, prefs) { 1L }
+
+      shouldThrow<UnstableConnectionException> {
+        genClient.fetchObject("/user", type = Item::class.java)
+      }
+
+      verify(exactly = 0) { http.send(any()) }
+      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { prefs.getString(any()) }
+    }
+
+    it(
+      "unpinned fetchListFromApi throws UnstableConnectionException without sending anything " +
+        "when the generation stays odd",
+    ) {
+      val genClient = GitLabApiClient(http, tokens, prefs) { 1L }
+
+      shouldThrow<UnstableConnectionException> {
+        genClient.fetchListFromApi(req())
+      }
+
+      verify(exactly = 0) { http.send(any()) }
+    }
+
+    it("a pinned fetchObject is unaffected by an odd generation (never consults the capture)") {
+      val genClient = GitLabApiClient(http, tokens, prefs) { 1L }
+      val captured = slot<HttpRequest>()
+      every { http.send(capture(captured)) } returns response("""{"id":1}""")
+
+      genClient.fetchObject("/user", type = Item::class.java, connection = connection)
+
+      captured.captured.uri().toString() shouldBe "https://pinned.example.com/api/v4/user?"
+      captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
+      verify(exactly = 0) { prefs.getString(any()) }
+      verify(exactly = 0) { tokens.getToken() }
     }
   }
 })
