@@ -75,14 +75,20 @@ VSCode の該当実装:
 - FR-2: `JobNode` を右クリックしたとき、そのジョブの `contextAction` に応じて
   retryable → 「Retry Job」、cancellable → 「Cancel Job」、executable → 「Play Job」を表示する。
 - FR-3: メニュー選択で該当 REST POST を発行し、**2xx を成功**として扱い、サイドバーを refresh する。
-- FR-4: 失敗(非 2xx / 通信例外)時はユーザー通知 + Error Log 出力を行い、サイドバーは変更しない。
+- FR-4: definite failure(4xx)時はユーザー通知 + Error Log 出力を行い、サイドバーは変更しない
+  (5xx / 通信例外は unknown 扱い=FR-7)。
 - FR-5: 確認ダイアログは出さない(即実行)。
 - FR-6: 同一ノードに対する同一操作が実行中(POST 応答待ち)の間は、再入(2 回目の同一操作)を抑止する
   **非可視の in-flight ガード**を設ける(busy 表示は出さない)。retry / play は API 契約上冪等でない
   (§12)ため、二重発火によるジョブ二重生成をクライアント側で防ぐ。
-- FR-7: POST の結果を **success(2xx)/ failure(非 2xx = `GitLabApiException`)/ unknown(タイムアウト・IO 例外)**
-  の 3 値で扱う。unknown は「サーバ適用済みで応答のみ欠落」の可能性があるため、definite failure と区別し、
-  盲目的な再実行を促さない通知を行い、サイドバーを refresh してサーバ状態と照合する(§9・§12)。
+- FR-7: POST の結果を **success(2xx)/ failure(definite = **4xx**)/ unknown(**5xx**・タイムアウト・IO 例外)**
+  の 3 値で扱う。
+  - **4xx** は要求がサーバに拒否され**未適用が確定**するため definite failure。
+  - **5xx**(502/504 等のプロキシ応答、受理後の GitLab 内部エラー)は**適用有無が不明**なため unknown に分類する
+    (definite failure にしない)。タイムアウト・IO 例外も unknown。
+  - unknown は「サーバ適用済みで応答のみ欠落」の可能性があるため、definite failure と区別し、盲目的な再実行を
+    促さない通知を行う。unknown ではガードを HELD にし(§8.7)、ユーザーの手動 refresh(全状態再取得・目視確認)で
+    初めて再操作を許可する(§9・§12)。
 
 ### 5.2 非機能要件
 
@@ -143,20 +149,20 @@ VSCode の該当実装:
 ### 8.1 `GitLabApiClient`(POST 追加)
 - 新規 `private fun sendPost(path, query, timeout): HttpResponse<String>`:
   `buildUri` / `Authorization: Bearer` / `Accept: application/json` / `timeout` を GET と共通化し、
-  `.POST(HttpRequest.BodyPublishers.noBody())` を発行。非 2xx は既存 `GitLabApiException(status, body)` を投げる。
+  `.POST(HttpRequest.BodyPublishers.noBody())` を発行。**非 2xx はレスポンスヘッダから correlation ID を抽出し
+  3 引数 `GitLabApiException(status, body, correlationId)` を投げる**(4xx / 5xx とも同じ 3 引数構築。
+  種別=definite failure か unknown かは status を持つ例外を受けたハンドラ側で判定する)。
 - 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap()): PostResult`。
   本文(業務データ)は解析しない(refresh で最新化するため)が、**監査に必要なレスポンスメタデータは呼び出し元へ返す**
   (§15 の根拠)。`data class PostResult(val httpStatus: Int, val correlationId: String?)`
   (correlationId = `x-request-id` 等のヘッダ、無ければ null)。既存 GET 系メソッドは一切変更しない。
 - 例外の区別(呼び出し側の 3 値分類=FR-7 の根拠):
-  - 非 2xx = **failure**。既存 `GitLabApiException` に **correlationId(nullable)を追加**して伝播させる
-    (既存フィールド status/body は不変・GET 呼び出し側は既定 null で影響なし)。
-    **`sendPost` は非 2xx 時にレスポンスヘッダから correlation ID(`x-request-id` 等)を抽出し、
-    3 引数 `GitLabApiException(status, body, correlationId)` で構築する**(2 引数構築だと既定 null になり
-    ヘッダが失われるため。既存 GET の `sendGet` は従来どおり 2 引数のままで無影響)。これにより failure 経路でも
-    §15 の correlation ID を監査ログに残せる。非 2xx での correlation ID 伝播は §19.1 のテスト対象とする。
-  - 送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` = **unknown**。そのまま伝播させ
-    (サーバ適用済み・応答欠落を含み得る。correlation ID は取得不能)ハンドラで区別して扱う。
+  - 非 2xx は `GitLabApiException`(status, body, correlationId)として伝播。`correlationId` は nullable の追加
+    フィールド(既存 status/body は不変・既存 GET の `sendGet` は 2 引数のままで無影響)。ハンドラは
+    **`status` が 4xx なら failure、5xx なら unknown** と判定する。これにより failure/unknown どちらの経路でも
+    §15 の correlation ID を監査ログに残せる。非 2xx(4xx/5xx)での correlation ID 伝播は §19.1 のテスト対象とする。
+  - 送信のタイムアウト(`HttpTimeoutException`)・接続断等の `IOException` = **unknown**。そのまま伝播させる
+    (サーバ適用済み・応答欠落を含み得る。correlation ID は取得不能)。
 
 ### 8.2 `PipelineActionService` / `JobActionService`(新規)
 - `PipelineActionService`: `retry(projectId: Long, pipelineId: Long): PostResult` / `cancel(...): PostResult`。
@@ -195,38 +201,38 @@ VSCode の該当実装:
 - `PipelineActionHandler`(command `RetryPipeline` / `CancelPipeline` の双方に登録):
   `event.command.id` で action を分岐。
 - `JobActionHandler`(command `RetryJob` / `CancelJob` / `PlayJob` に登録):同様に分岐。
-- **in-flight ガード**(FR-6): 実行中の (action, targetId) を保持する共有 `Set`(スレッドセーフな実装)。
-  起動前に判定し、既に実行中なら再入を抑止(no-op)。busy 表示は出さない。
+- **in-flight ガード**(FR-6): (action, targetId) を保持する共有・スレッドセーフなガード。エントリは 2 状態を持つ:
+  - **ACTIVE**: POST 実行中。起動前に判定し、既に ACTIVE なら再入を抑止(no-op)。busy 表示は出さない。
+  - **HELD**: 結果 unknown で、適用有無が未確定のため再操作を抑止し続ける状態。
   **解除ポリシー(結果種別で分岐)**:
-  - **success / failure(definite)**: 起動時に追加し `finally` で除去(通常経路)。failure はサーバ状態が
-    確定している(4xx で未適用が判明)ため、解除して再操作を許可してよい。
-  - **unknown(タイムアウト/IO)**: **`finally` では解除しない**。サーバ適用済み・応答欠落の可能性があり、
-    照合前に解除すると非冪等な retry/play を二重発行し得る(§12)。
-    - **完了の観測方法(重要)**: 既存 `GitLabSidebarView.refresh()`(`GitLabSidebarView.kt:148-185`)は
-      `Unit` を即時返却して非同期処理を起動し例外も内部捕捉するため、ハンドラからツリー再構築の完了・失敗・
-      新世代 supersede を**観測できない**。したがってガード解除を view の refresh 完了に依存させない。
-    - 代わりに、**ハンドラ自身が自分の背景コルーチン内で照合用 GET を `await`(blocking 待機)する**:
-      unknown を受けたら、対象パイプライン/ジョブの最新状態を既存 GET(`PipelineService.getLatestPipelineForRef`
-      / `JobService.getJobsForPipeline`)で **1 回だけ再取得して待機**する。この GET は awaited 呼び出しなので
-      完了・失敗がハンドラ内で観測可能。
-    - **解除タイミング**: 照合 GET の完了後(成功/失敗どちらでも)に、その `finally` でガードを除去する。
-      照合 GET も失敗して状態確認不能なら、恒久ロックを避けるため同じく除去し「状態を確認できませんでした」と
-      通知する(再操作可否はユーザーが更新後表示で判断)。
-    - 表示用の `GitLabSidebarView.refresh()` は従来どおり fire-and-forget で別途起動する(表示更新のみ。
-      ガード解除の判定には用いない)。**view の refresh 契約は変更しない**。
+  - **success / failure(4xx)**: `finally` で ACTIVE エントリを除去(通常経路)。4xx は未適用が確定するため
+    解除して再操作を許可してよい。
+  - **unknown(5xx / タイムアウト / IO)**: `finally` では**除去せず ACTIVE→HELD に遷移**させる。ハンドラ内で
+    自動照合(GET で適用済みか判定)は**行わない**。理由: (a) 既存 `GitLabSidebarView.refresh()`
+    (`GitLabSidebarView.kt:148-185`)は Unit 即時返却・例外内部捕捉・世代キャンセルで完了/成否をハンドラから
+    観測できない。(b) POST タイムアウト直後は状態反映が遅延し、単発 GET が操作前の値を返す競合があるため、
+    「1 回 GET 完了」や単純比較では適用済みかを確定できない(= racy)。よって自動判定に依存しない。
+  - **HELD の解除条件**: **ユーザーが明示的に全体 refresh を行ったとき**にのみ HELD を一括クリアする。全体 refresh は
+    全状態をサーバから再取得してツリーを再構築し、ユーザーが最新状態を目視確認する契機であるため、ここで初めて
+    再操作を許可するのが安全かつ観測可能。具体的には `GitLabSidebarView.refresh()` の開始時に**HELD エントリのみ**を
+    クリアする(ACTIVE は各自の `finally` が管理するため触れない)。これは Set のクリアのみで、refresh の非同期契約
+    (Unit 返却・fire-and-forget)は変更しない。
+  - unknown 時、ハンドラは自動 refresh を**起動しない**(起動すると設定直後の HELD を消してしまうため)。代わりに
+    「結果を確認できません。サイドバーを更新して状態を確認してください」と通知し、更新はユーザーに委ねる。
 - 流れ(`CheckoutMrBranchHandler` 準拠):
   1. UI スレッドで `HandlerUtil.getActiveMenuSelection`(fallback `getCurrentSelection`)から対象ノードを取得。
   2. `projectId` / `pipelineId` or `jobId` を抽出。null なら通知して終了。
   3. in-flight ガードで (action, targetId) を確認・登録。既に実行中なら終了。
   4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを呼び、結果を FR-7 の 3 値に分類:
      - **success(2xx)** → `Display.getDefault().asyncExec { findSidebarView()?.refresh() }`(+ 監査ログ §15)。
-     - **failure(`GitLabApiException`)** → `NotificationUtils.show`(操作失敗)+ `logger.error`。サイドバーは変更しない。
-     - **unknown(`HttpTimeoutException`/`IOException`)** → 同じ背景コルーチン内で照合用 GET を await(§8.7 上記)
-       + `NotificationUtils.show`(「結果を確認できません。更新後の状態をご確認ください」= 盲目再実行を促さない)
-       + `logger.warn`。表示更新用に `Display.getDefault().asyncExec { findSidebarView()?.refresh() }` を別途起動。
+     - **failure(`GitLabApiException` かつ status が 4xx)** → `NotificationUtils.show`(操作失敗)+ `logger.error`。
+       サイドバーは変更しない。
+     - **unknown(`GitLabApiException` かつ status が 5xx / `HttpTimeoutException` / `IOException`)** →
+       ガードを HELD に遷移(§8.7)+ `NotificationUtils.show`(「結果を確認できません。サイドバーを更新して状態を
+       確認してください」= 盲目再実行を促さない)+ `logger.warn`。**自動 refresh は起動しない**。
      - `CancellationException` は再送。
-  5. 解除: success / failure は POST の `finally` で (action, targetId) を除去。
-     unknown は**照合 GET の `finally`**(await 完了後)で除去する(view refresh の完了には依存しない)。
+  5. 解除: success / failure(4xx)は POST の `finally` で ACTIVE エントリを除去。
+     unknown(5xx/timeout/IO)は除去せず HELD に遷移し、**次回のユーザー全体 refresh 開始時**にクリアされる。
 
 ### 8.8 `plugin.xml`(配線)
 - `<propertyTester>`(`type` = `SidebarNode`、namespace 例 `com.gitlab.eclipse.node`、
@@ -242,16 +248,18 @@ VSCode の該当実装:
 - 正常系(success): メニュー選択 → in-flight 登録 → 背景 POST → 2xx → UI スレッドで refresh → 最新ツリー描画。
 - 異常系(failure = definite): 権限なし 403 / 見つからない 404 / 状態遷移不可 400 など。
   `GitLabApiException` を捕捉し通知 + ログ。サイドバーは変更しない。
-- 結果不明(unknown): タイムアウト(`HttpTimeoutException`)・通信断(`IOException`)。
-  **サーバ適用済みで応答のみ欠落**の可能性があるため definite failure と区別する。refresh で状態を照合し、
-  「結果を確認できません。更新後の状態をご確認ください」と通知(盲目再実行を促さない)+ `logger.warn`。
+- 結果不明(unknown): **5xx 応答**(502/504・受理後の内部エラー)/ タイムアウト(`HttpTimeoutException`)/
+  通信断(`IOException`)。**サーバ適用済みで応答のみ欠落**の可能性があるため definite failure と区別する。
+  ガードを HELD にして再操作を抑止し続け、「結果を確認できません。サイドバーを更新して状態を確認してください」と
+  通知(盲目再実行を促さない)+ `logger.warn`。自動 refresh は起動せず、ユーザーの手動 refresh 時に HELD を解除。
 - 境界:
   - jobs が 0 件のパイプライン: canRetry/canCancel とも false(メニュー非表示)。
   - `projectId == null`: 全アクション非表示。
   - 選択が対象ノードでない/複数選択: `visibleWhen` の `<iterate>` により非表示。ハンドラ側でも null チェック。
   - 操作対象が操作発行時点で既に状態遷移済み(例: cancel 済みを再 cancel): サーバが 4xx を返す →
     failure として通知(ローカルの楽観更新はしない)。
-  - 同一ノード同一操作の連打: in-flight ガードにより 2 回目以降は抑止(FR-6)。
+  - 同一ノード同一操作の連打: in-flight ガード(ACTIVE)により 2 回目以降は抑止(FR-6)。
+  - unknown 後の再操作: HELD により、ユーザーが手動 refresh するまで同一操作を抑止。
   - 二重発火が起きた後の収束: 楽観更新をしないため、最終的に refresh がサーバ状態でツリーを上書きする。
 
 ## 10. API / インターフェース
@@ -278,10 +286,11 @@ VSCode の該当実装:
   - `retry`(pipeline / job)・`play`(job): **API 契約として冪等ではない**。retry は失敗/キャンセル済みジョブの
     新しい実行を生成し、play は手動ジョブを起動する。同一操作を 2 回サーバが受理すると、実行が二重生成され得る。
 - **二重処理の防止(2 系統)**:
-  1. クライアント連打: in-flight ガード(FR-6)で同一 (action, targetId) の再入を抑止。
-  2. サーバ適用済み・応答欠落(unknown, §9): これはローカルの楽観更新の有無とは無関係にサーバ側で起こり得る。
-     本実装は unknown を definite failure と区別し、**盲目的な再実行を促さず** refresh でサーバ状態を照合させる
-     (FR-7)。これによりユーザーが「失敗した」と誤認して手動再実行し二重生成する導線を断つ。
+  1. クライアント連打: in-flight ガード ACTIVE(FR-6)で同一 (action, targetId) の再入を抑止。
+  2. サーバ適用済み・応答欠落/5xx(unknown, §9): これはローカルの楽観更新の有無とは無関係にサーバ側で起こり得る。
+     本実装は unknown(5xx/timeout/IO)を definite failure(4xx)と区別し、ガードを HELD にして
+     **ユーザーが手動 refresh で最新状態を目視確認するまで同一操作を抑止**する(FR-7)。これによりユーザーが
+     「失敗した」と誤認して手動再実行し二重生成する導線を断つ(racy な自動適用判定には依存しない)。
 - クライアント状態の不整合は生じない(refresh が最終的にサーバ状態でツリーを上書きする)。ただし
   **サーバ側の二重実行そのものを本 PR が完全に防ぐわけではない**(retry/play が非冪等な API のため)。
   この残存性質は §17・§22 に明記する。
@@ -355,16 +364,20 @@ VSCode の該当実装:
 ### 19.1 自動テスト(headless 可・TDD)
 
 - REST POST(`sendPost` / `post` / 2 サービス): モック HTTP クライアントで path・メソッド(POST)・認証ヘッダ・
-  body なし・**成功(2xx)/ failure(非 2xx → `GitLabApiException`)/ unknown(`HttpTimeoutException`・`IOException` の伝播)**
-  の 3 分岐を検証。加えて **success 時 `PostResult` に httpStatus/correlationId が入ること**、
-  **非 2xx 時に `GitLabApiException.correlationId` へ `x-request-id` が伝播すること**(3 引数構築)を検証。
+  body なし・**成功(2xx)/ 4xx / 5xx / タイムアウト・IO** の分岐を検証。加えて **success 時 `PostResult` に
+  httpStatus/correlationId が入ること**、**非 2xx(4xx/5xx)時に `GitLabApiException.correlationId` へ
+  `x-request-id` が伝播すること**(3 引数構築)を検証。
+- ハンドラの結果分類(FR-7): **2xx=success / 4xx=failure / 5xx=unknown / timeout・IO=unknown** に
+  正しく振り分けられることを検証。
 - `CiStatus.contextAction`: §5.3 の全 status(null・unknown・`failed`+`allow_failure` 含む)を網羅。
 - ノード算出(`buildPipelineNode` の canRetry/canCancel、jobs 0 件・jobsResult failure、JobNode への projectId carry)。
-- in-flight ガード(FR-6): 同一 (action, targetId) の再入抑止を検証。**解除条件は結果種別で分離して検証**:
-  - success / failure: POST の `finally` で解除される。
-  - **unknown: POST の `finally` では解除されず、照合用 GET の await 完了(その `finally`)でのみ解除される**
-    ことを検証(即時 finally 解除だと二重発行を再導入するため、この点を明示的にテストする)。
-  - 照合用 GET も失敗した場合でも(恒久ロック回避のため)解除されることを検証。
+- in-flight ガード(FR-6): 同一 (action, targetId) の再入抑止(ACTIVE 中は 2 回目が no-op)を検証。
+  **解除条件を結果種別で分離して検証**:
+  - success / failure(4xx): POST の `finally` で ACTIVE エントリが除去される。
+  - **unknown(5xx/timeout/IO): POST の `finally` では除去されず HELD に遷移し、同一操作が引き続き抑止される**
+    ことを検証(即時解除だと二重発行を再導入するため明示的にテスト)。ハンドラは自動 refresh を起動しない。
+  - **HELD は全体 refresh 開始時にクリアされ、その後は同一操作が再度可能**になることを検証(ACTIVE は refresh で
+    触れられないことも確認)。
 
 ### 19.2 既知失敗のベースライン(件数ではなく ID で固定)
 
@@ -409,9 +422,10 @@ PropertyTester / 各 command・handler / 選択境界は headless で実行不�
 - AC-4: 操作可能でない status のノードには該当メニューが表示されない。
 - AC-5: 権限不足や状態不整合(definite failure)で失敗した場合、ユーザーに通知され Error Log に記録され、
   サイドバー表示は破壊されない。
-- AC-6: タイムアウト/通信断(unknown)の場合、definite failure と区別した通知(盲目再実行を促さない)が出て、
-  サイドバーが refresh でサーバ状態と照合される。
-- AC-7: 同一ノードへの同一操作の連打時、2 回目以降の POST が抑止される(FR-6)。
+- AC-6: 5xx / タイムアウト / 通信断(unknown)の場合、definite failure(4xx)と区別した通知(盲目再実行を
+  促さない・手動更新を案内)が出て、ガードが HELD になり、ユーザーが手動 refresh するまで同一操作が抑止される。
+- AC-7: 同一ノードへの同一操作の連打時、2 回目以降の POST が抑止され(ACTIVE)、unknown 後も手動 refresh まで
+  抑止が継続する(HELD)。手動 refresh 後は再操作が可能になる(FR-6)。
 - AC-8: 監査ログに action / projectId / pipelineId or jobId / outcome(success/failure/unknown)が記録され、
   トークン・生レスポンス本文は出力されない。detekt 0・**ベースライン外の新規テスト失敗ゼロ**(§19.2)。
 
@@ -434,10 +448,12 @@ PropertyTester / 各 command・handler / 選択境界は headless で実行不�
 - R-3: 背景コルーチンからの UI スレッドホップ漏れ(refresh を UI 外で呼ぶ)。
   → 既存 `Display.asyncExec` 規律を踏襲。fable で実装・レビュー。
 - R-4: 二重操作による**サーバ側のジョブ二重生成**(retry/play が非冪等)。
-  → (a) クライアント連打は in-flight ガード(FR-6)で抑止。(b) サーバ適用済み・応答欠落(unknown)は
-  definite failure と区別し盲目再実行を誘導しない(FR-7)+ refresh で照合。
+  → (a) クライアント連打は in-flight ガード ACTIVE(FR-6)で抑止。(b) サーバ適用済み・応答欠落/5xx(unknown)は
+  definite failure(4xx)と区別し、ガードを HELD にしてユーザーの手動 refresh(目視確認)まで再操作を抑止(FR-7)。
   ただし **API が非冪等である以上、サーバ側の二重実行そのものを本 PR が完全排除するわけではない**
   (残存性質として §12・§17 に明記)。create を対象外としたため二重「生成(新規パイプライン)」リスクは無い。
-- R-5: unknown(タイムアウト)を definite failure と誤分類すると、ユーザーに再実行を促し二重生成を誘発する。
-  → 例外型で厳密に分類(`GitLabApiException`=failure、`HttpTimeoutException`/`IOException`=unknown)し、
-  自動テスト(§19.1)で 3 分岐を固定。
+- R-5: unknown を definite failure と誤分類すると、ユーザーに再実行を促し二重生成を誘発する。
+  → status と例外型で厳密に分類(**4xx**=failure、**5xx**/`HttpTimeoutException`/`IOException`=unknown)し、
+  自動テスト(§19.1)で分岐を固定。
+- R-6: HELD が解除されず操作が恒久ロックされる懸念 → HELD はユーザーの全体 refresh で必ずクリアされる
+  (refresh はいつでも手動起動でき、成功操作後にも自動起動されるため、実質的な恒久ロックは生じない)。
