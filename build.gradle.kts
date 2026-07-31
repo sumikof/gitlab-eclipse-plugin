@@ -163,6 +163,12 @@ val eclipseDependencies = mapOf(
   "org.eclipse.core.resources" to "0.0.0",
   "org.eclipse.core.net" to "0.0.0",
   "org.eclipse.core.filesystem" to "0.0.0",
+  // Required at runtime because CiActionPropertyTester subclasses
+  // org.eclipse.core.expressions.PropertyTester: org.eclipse.ui requires this bundle WITHOUT
+  // visibility:=reexport and no other required bundle re-exports it, so our bundle needs its own
+  // Require-Bundle wire or the tester fails to load (NoClassDefFoundError) and the sidebar
+  // pipeline/job context-menu items silently never appear (Phase 4 PR-2).
+  "org.eclipse.core.expressions" to "0.0.0",
   "org.eclipse.equinox.security" to "0.0.0",
   "org.eclipse.lsp4j.jsonrpc" to "0.23.1",
   "org.eclipse.lsp4j" to "0.23.1",

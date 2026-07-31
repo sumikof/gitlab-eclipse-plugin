@@ -8,9 +8,18 @@ import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 
 /**
  * A pipeline paired with its (possibly still-failed) jobs fetch, mirroring the
- * `(pipeline, jobsResult)` pair [SidebarViewModel.buildPipelineNode] already consumes.
+ * `(pipeline, jobsResult)` pair [SidebarViewModel.buildPipelineNode] already consumes,
+ * plus the non-secret tags of the connection both GETs were pinned to (design doc
+ * §8.4/§8.5): [sourceInstanceUrl] and [sourceAuthFingerprint] are captured atomically at
+ * refresh start and flow onto the nodes so write handlers can verify the connection has
+ * not changed since the data was fetched. Never the token itself.
  */
-data class PipelineSnapshot(val pipeline: GitLabPipeline, val jobsResult: Result<List<GitLabJob>>)
+data class PipelineSnapshot(
+  val pipeline: GitLabPipeline,
+  val jobsResult: Result<List<GitLabJob>>,
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+)
 
 /**
  * Input to [SidebarViewModel.buildCurrentBranchSection]'s new overload (design doc §6.6):

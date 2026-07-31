@@ -6,6 +6,8 @@ import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.CiAction
+import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.issues.configErrorMessage
 
@@ -96,14 +98,31 @@ class SidebarViewModel {
    * stage in first-appearance order (stable regardless of the GitLab API's return order —
    * e.g. a retried job with a larger id still sorts into its stage's original position). A
    * failed [jobsResult] keeps the pipeline row and renders a single "Failed to load jobs"
-   * child instead of the stage subtree.
+   * child instead of the stage subtree (with retry/cancel eligibility off — no job
+   * statuses to derive it from). [sourceInstanceUrl]/[sourceAuthFingerprint] are the
+   * non-secret tags of the pinned connection the pipeline+jobs were fetched over
+   * ([PipelineSnapshot]); they are stamped on the [PipelineNode] and every [JobNode] so
+   * the write handlers can verify the connection has not changed underneath them.
    */
-  fun buildPipelineNode(pipeline: GitLabPipeline, jobsResult: Result<List<GitLabJob>>): PipelineNode {
+  fun buildPipelineNode(
+    pipeline: GitLabPipeline,
+    jobsResult: Result<List<GitLabJob>>,
+    sourceInstanceUrl: String,
+    sourceAuthFingerprint: String,
+  ): PipelineNode {
     val children = jobsResult.fold(
-      onSuccess = ::buildStageNodes,
+      onSuccess = { jobs -> buildStageNodes(jobs, pipeline.projectId, sourceInstanceUrl, sourceAuthFingerprint) },
       onFailure = { listOf(MessageNode(JOBS_LOAD_FAILED_MESSAGE)) },
     )
-    return PipelineNode(pipeline, children)
+    val jobs = jobsResult.getOrNull().orEmpty()
+    return PipelineNode(
+      pipeline,
+      children,
+      canRetry = jobs.any { CiStatus.contextAction(it.status, it.allowFailure ?: false) == CiAction.RETRYABLE },
+      canCancel = jobs.any { CiStatus.contextAction(it.status, it.allowFailure ?: false) == CiAction.CANCELLABLE },
+      sourceInstanceUrl = sourceInstanceUrl,
+      sourceAuthFingerprint = sourceAuthFingerprint,
+    )
   }
 
   /**
@@ -210,7 +229,7 @@ private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
 private fun currentBranchResolvedChildren(
   pipeline: Result<PipelineSnapshot?>?,
   mr: Result<CurrentBranchInfo>?,
-  buildPipelineNode: (GitLabPipeline, Result<List<GitLabJob>>) -> PipelineNode,
+  buildPipelineNode: (GitLabPipeline, Result<List<GitLabJob>>, String, String) -> PipelineNode,
 ): List<SidebarNode> {
   val pipelineChildren =
     when {
@@ -218,7 +237,11 @@ private fun currentBranchResolvedChildren(
       else ->
         pipeline.fold(
           onSuccess = { snapshot ->
-            snapshot?.let { listOf(buildPipelineNode(it.pipeline, it.jobsResult)) } ?: emptyList()
+            snapshot
+              ?.let {
+                listOf(buildPipelineNode(it.pipeline, it.jobsResult, it.sourceInstanceUrl, it.sourceAuthFingerprint))
+              }
+              ?: emptyList()
           },
           onFailure = { error ->
             val message = if (CiHttpStatus.isAccessDenied(error)) PIPELINE_UNAVAILABLE_MESSAGE else LOAD_FAILED_MESSAGE
@@ -252,11 +275,20 @@ private fun nullSafeDiffs(version: GitLabMrVersion): List<GitLabMrVersion.Diff> 
  * Groups a pipeline's jobs into [StageNode]s with a deterministic order: sorted by id
  * ascending, then grouped by stage in first-appearance order (a [LinkedHashMap] via
  * [groupBy], so a retried job with a larger id still lands in its stage's original slot).
+ * Each [JobNode] carries the enclosing pipeline's [projectId] and the source-connection
+ * tags the jobs were fetched with (see [PipelineNode]'s KDoc).
  */
-private fun buildStageNodes(jobs: List<GitLabJob>): List<SidebarNode> =
+private fun buildStageNodes(
+  jobs: List<GitLabJob>,
+  projectId: Long?,
+  sourceInstanceUrl: String,
+  sourceAuthFingerprint: String,
+): List<SidebarNode> =
   jobs.sortedBy { it.id }
     .groupBy { it.stage ?: NO_STAGE }
-    .map { (stage, stageJobs) -> StageNode(stage, stageJobs.map(::JobNode)) }
+    .map { (stage, stageJobs) ->
+      StageNode(stage, stageJobs.map { JobNode(it, projectId, sourceInstanceUrl, sourceAuthFingerprint) })
+    }
 
 /** Groups items by project, keyed off the `namespace/path#iid` or `namespace/path!iid` reference. */
 internal fun projectKey(full: String?): String =

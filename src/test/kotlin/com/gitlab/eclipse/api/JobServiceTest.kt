@@ -3,14 +3,20 @@ package com.gitlab.eclipse.api
 import com.gitlab.eclipse.api.model.GitLabJob
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
 import java.time.Duration
 
 class JobServiceTest : DescribeSpec({
   val apiClient = mockk<GitLabApiClient>()
   val service = JobService(apiClient)
+
+  // Calls accumulate on the shared mock across tests; verify(exactly = N) below needs each
+  // test to start from a clean call history.
+  beforeEach { clearMocks(apiClient) }
 
   describe("getJobsForPipeline") {
     it("returns the jobs fetched via fetchListWithinDeadline for the pipeline's jobs path") {
@@ -39,11 +45,40 @@ class JobServiceTest : DescribeSpec({
       } returns emptyList()
 
       var active = true
-      service.getJobsForPipeline("42", 99L) { active }
+      service.getJobsForPipeline("42", 99L, isActive = { active })
 
       capturedIsActive.captured() shouldBe true
       active = false
       capturedIsActive.captured() shouldBe false
+    }
+
+    it("forwards a given connection to fetchListWithinDeadline so every page is pinned to it") {
+      val connection = ConnectionSnapshot(
+        instanceUrl = "https://pinned.example.com/",
+        token = "pinned-token",
+        authFingerprint = "0123456789abcdef",
+        configGeneration = 42L,
+      )
+      val capturedConnection = slot<ConnectionSnapshot>()
+      every {
+        apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), any(), capture(capturedConnection))
+      } returns emptyList()
+
+      service.getJobsForPipeline("42", 99L, connection = connection)
+
+      capturedConnection.captured shouldBe connection
+    }
+
+    it("passes no connection (null) to fetchListWithinDeadline when none is given (backward compat)") {
+      every {
+        apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), any(), null)
+      } returns emptyList()
+
+      service.getJobsForPipeline("42", 99L, isActive = { true })
+
+      verify(exactly = 1) {
+        apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), any(), null)
+      }
     }
   }
 })

@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
@@ -58,6 +59,7 @@ class GitLabSidebarView : ViewPart() {
   }
 
   private val logger = logger<GitLabSidebarView>()
+  private val apiClient by lazyService<GitLabApiClient>()
   private val issueService by lazyService<IssueService>()
   private val mergeRequestService by lazyService<MergeRequestService>()
   private val coroutineScope by lazyService<CoroutineScope>()
@@ -241,13 +243,27 @@ class GitLabSidebarView : ViewPart() {
     // The resulting CancellationException must propagate (never be runCatching'd into a
     // rendered failure) — it cancels this child cleanly and paints nothing.
     suspend fun fetchSnapshot(ref: String): PipelineSnapshot? {
-      val pipeline = pipelineService.getLatestPipelineForRef(context.projectId, ref) ?: return null
+      // Captured ONCE per snapshot fetch (design doc §8.5): both GETs below are pinned to
+      // this connection, and its non-secret tags ride the snapshot onto the nodes, so a
+      // concurrent gitlab.url/token change can neither split the two GETs across instances
+      // nor leave the nodes tagged with a connection they were not fetched over. May throw
+      // UnstableConnectionException, which settles as a pipeline-load failure in the
+      // enclosing launch's catch — acceptable, no special handling.
+      val connection = apiClient.captureConnection()
+      val pipeline = pipelineService.getLatestPipelineForRef(context.projectId, ref, connection) ?: return null
       // Cancelled during the synchronous pipeline GET: stop here instead of starting the
       // jobs fetch (which would otherwise run to its 15s paging deadline for nothing).
       currentCoroutineContext().ensureActive()
       val job = currentCoroutineContext()[Job]
       val jobsResult = try {
-        Result.success(jobService.getJobsForPipeline(context.projectId, pipeline.id) { job?.isActive != false })
+        Result.success(
+          jobService.getJobsForPipeline(
+            context.projectId,
+            pipeline.id,
+            isActive = { job?.isActive != false },
+            connection = connection,
+          ),
+        )
       } catch (e: CancellationException) {
         throw e // Cancelled between jobs pages: cancel the coroutine, don't render a failure.
       } catch (e: Exception) {
@@ -258,7 +274,7 @@ class GitLabSidebarView : ViewPart() {
       jobsResult.exceptionOrNull()?.let {
         logger.error("Failed to load jobs for pipeline #${pipeline.id}.", it)
       }
-      return PipelineSnapshot(pipeline, jobsResult)
+      return PipelineSnapshot(pipeline, jobsResult, connection.instanceUrl, connection.authFingerprint)
     }
 
     supervisorScope {

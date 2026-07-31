@@ -129,6 +129,36 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.RetryPipeline"
+                name="Retry Pipeline"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CancelPipeline"
+                name="Cancel Pipeline"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.RetryJob"
+                name="Retry Job"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CancelJob"
+                name="Cancel Job"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.PlayJob"
+                name="Play Job"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RefreshSidebar"
                 name="Refresh GitLab Sidebar"
                 categoryId="gitlab-eclipse-plugin">
@@ -496,6 +526,31 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.RetryPipeline"
+                class="com.gitlab.eclipse.ci.actions.PipelineActionHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CancelPipeline"
+                class="com.gitlab.eclipse.ci.actions.PipelineActionHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.RetryJob"
+                class="com.gitlab.eclipse.ci.actions.JobActionHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CancelJob"
+                class="com.gitlab.eclipse.ci.actions.JobActionHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.PlayJob"
+                class="com.gitlab.eclipse.ci.actions.JobActionHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.RefreshSidebar"
                 class="com.gitlab.eclipse.handlers.RefreshSidebarHandler"
         />
@@ -564,6 +619,16 @@
                 commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
                 class="com.gitlab.eclipse.handlers.RestartLanguageServerHandler"
         />
+    </extension>
+
+    <extension point="org.eclipse.core.expressions.propertyTesters">
+        <propertyTester
+                id="com.gitlab.eclipse.node.ciActionPropertyTester"
+                type="com.gitlab.eclipse.views.sidebar.SidebarNode"
+                namespace="com.gitlab.eclipse.node"
+                properties="canRetry,canCancel,canPlay"
+                class="com.gitlab.eclipse.views.sidebar.CiActionPropertyTester">
+        </propertyTester>
     </extension>
 
     <extension point="org.eclipse.ui.menus">
@@ -867,6 +932,81 @@
                     <with variable="activeMenuSelection">
                         <iterate ifEmpty="false">
                             <instanceof value="com.gitlab.eclipse.views.sidebar.ChangedFileNode"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.RetryPipeline"
+                    label="Retry Pipeline">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.PipelineNode"/>
+                                <test property="com.gitlab.eclipse.node.canRetry"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.CancelPipeline"
+                    label="Cancel Pipeline">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.PipelineNode"/>
+                                <test property="com.gitlab.eclipse.node.canCancel"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.RetryJob"
+                    label="Retry Job">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                <test property="com.gitlab.eclipse.node.canRetry"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.CancelJob"
+                    label="Cancel Job">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                <test property="com.gitlab.eclipse.node.canCancel"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.PlayJob"
+                    label="Play Job">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                <test property="com.gitlab.eclipse.node.canPlay"/>
+                            </and>
                         </iterate>
                     </with>
                 </visibleWhen>

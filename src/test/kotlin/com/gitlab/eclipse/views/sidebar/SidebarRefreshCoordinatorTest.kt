@@ -37,7 +37,12 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     (node.children[0] as MessageNode).label shouldBe LOADING
   }
   fun snapshot() =
-    PipelineSnapshot(GitLabPipeline(id = 10, status = "success"), Result.success(emptyList()))
+    PipelineSnapshot(
+      GitLabPipeline(id = 10, status = "success"),
+      Result.success(emptyList()),
+      "https://gitlab.example.com",
+      "fp0",
+    )
 
   "all-pending slots render two Loading roots and a Loading current-branch section" {
     val out = coordinator().compose(RefreshSlots(1L), SidebarViewMode.LIST)

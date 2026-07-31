@@ -143,8 +143,23 @@ class ChangedDirectoryNode(
 /**
  * Root node for a single GitLab pipeline (design doc §6.5/§7.2): expands into a
  * Pipeline→Stage→Job subtree built by [SidebarViewModel.buildPipelineNode].
+ *
+ * Carries what the context-menu handlers need (design doc §8.4/§8.5): the numeric ids to
+ * address the REST retry/cancel endpoints, [canRetry]/[canCancel] eligibility derived from
+ * the jobs' statuses, and the non-secret source-connection tags ([sourceInstanceUrl] +
+ * [sourceAuthFingerprint]) identifying the connection the pipeline was actually fetched
+ * over, so a write can refuse to run against a different instance/account.
  */
-class PipelineNode(pipeline: GitLabPipeline, override val children: List<SidebarNode>) : SidebarNode {
+class PipelineNode(
+  pipeline: GitLabPipeline,
+  override val children: List<SidebarNode>,
+  val canRetry: Boolean,
+  val canCancel: Boolean,
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+) : SidebarNode {
+  val pipelineId: Long = pipeline.id
+  val projectId: Long? = pipeline.projectId
   override val label: String = "Pipeline #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
   override val activationUrl: String? = pipeline.webUrl
 }
@@ -152,8 +167,17 @@ class PipelineNode(pipeline: GitLabPipeline, override val children: List<Sidebar
 /** Groups a pipeline's [JobNode]s under their CI stage name (or `NO_STAGE` when absent). */
 class StageNode(override val label: String, override val children: List<SidebarNode>) : SidebarNode
 
-/** Leaf node for a single job within a pipeline stage. */
-class JobNode(val job: GitLabJob) : SidebarNode {
+/**
+ * Leaf node for a single job within a pipeline stage. Carries [projectId] plus the same
+ * write-routing source-connection tags as [PipelineNode]; per-job retry/cancel/play
+ * eligibility is computed later from [job]'s status (PropertyTester), not stored here.
+ */
+class JobNode(
+  val job: GitLabJob,
+  val projectId: Long?,
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+) : SidebarNode {
   override val label: String = "${job.name ?: "(job)"} · ${CiStatus.displayName(job.status, job.allowFailure ?: false)}"
   override val children: List<SidebarNode> = emptyList()
   override val activationUrl: String? = job.webUrl
