@@ -16,12 +16,14 @@ data class WriteKey(val instanceUrl: String, val targetKind: String, val targetI
  * the coroutine's `finally` so success, failure, and cancellation all free the target.
  */
 object InFlightWriteGuard {
-  private val inFlight = ConcurrentHashMap.newKeySet<WriteKey>()
+  // Any: WriteKey (retry/cancel/play) and CreateWriteKey are distinct data classes and never
+  // compare equal, so one guard safely serializes both without cross-collision.
+  private val inFlight = ConcurrentHashMap.newKeySet<Any>()
 
   /** True if the caller now owns the key; false if a write to the same target is in flight. */
-  fun tryAcquire(key: WriteKey): Boolean = inFlight.add(key)
+  fun tryAcquire(key: Any): Boolean = inFlight.add(key)
 
-  fun release(key: WriteKey) {
+  fun release(key: Any) {
     inFlight.remove(key)
   }
 }
