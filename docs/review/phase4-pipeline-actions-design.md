@@ -161,9 +161,16 @@ VSCode の該当実装:
   UI 挙動は失敗一律で、status は監査ログ用メタデータ=§15)。
 - 公開 API: `fun post(path: String, query: Map<String, String> = emptyMap(), connection: ConnectionSnapshot): PostResult`。
   **送信先を「URL と認証を一体で固定した検証済みスナップショット」で受け取る**:
-  `data class ConnectionSnapshot(val instanceUrl: String, val token: String)`。`sendPost` は URI を
-  `connection.instanceUrl` から構築し(グローバル設定を再読しない)、Bearer には `connection.token` を用いる
-  (**`getToken()` を送信時に再取得しない**)。これは 2 つの TOCTOU を同時に塞ぐため:
+  `data class ConnectionSnapshot(val instanceUrl: String, val token: String, val authFingerprint: String, val configGeneration: Long)`。
+  `sendPost` は URI を `connection.instanceUrl` から構築し(グローバル設定を再読しない)、Bearer には `connection.token`
+  を用いる(**`getToken()` を送信時に再取得しない**)。
+  - **原子的捕捉(10B)**: `instanceUrl` / `token` / `authFingerprint` を個別に読むと同一時点の値にならない
+    (URL=A を読んだ直後に設定が B へ変わると A-url+B-token の不整合スナップショットになり得る)。よって
+    **一貫した設定世代のもとで一括取得する**: `configGeneration` を読む → url/token/fingerprint を読む →
+    `configGeneration` を再読し、**変化していれば破棄して再取得(bounded retry)**、収束しなければ操作を中止して
+    「接続が変わっています。更新してください」と通知する。捕捉は `GitLabApiClient`(または認証層)に
+    `captureConnection(): ConnectionSnapshot` として集約し、read/write 双方がこの単一関数で取得する。
+  これは 2 つの TOCTOU を同時に塞ぐため:
   - (6A/7A)ハンドラ検証(§8.7 2b)〜URI 構築の間に `gitlab.url` が変わっても検証済みインスタンスへ送る。
   - (7B)URL 固定後に認証先だけ B へ変わり、A の URI に B のトークンを送って**別インスタンスへ資格情報を漏洩**する
     事態を防ぐ(URL と token を同一スナップショットで束ねる)。
@@ -217,7 +224,7 @@ VSCode の該当実装:
     アカウント/PAT だけ変わったケース(9A)を検出するために URL とは別に持つ。正規化して比較する。
 
 ### 8.5 `SidebarViewModel.buildPipelineNode`(改修)
-- シグネチャを `buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)` に拡張(7A: 実取得元 URL を受け取り
+- シグネチャを `buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl, sourceAuthFingerprint)` に拡張(7A/9A/10A: 実取得元の URL と認証指紋を受け取り
   ノードへ付与)。呼び出し元(View の current-branch ユニット)が refresh 開始時に捕捉した URL を渡す。
 - 成功した jobs 一覧から `canRetry = jobs.any { contextAction == RETRYABLE }`、
   `canCancel = jobs.any { contextAction == CANCELLABLE }` を算出して `PipelineNode` に渡す。
@@ -230,13 +237,14 @@ VSCode の該当実装:
   `connection` として引き渡す(ページング=`sendPage` 経由も含む=9B)。URI もトークンもこの捕捉値から構築するため、
   取得中に設定が変わっても「取得元とノードタグの不一致」「A の URI に B のトークン」を排除する。ノードタグ
   `sourceInstanceUrl` は同スナップショットの `instanceUrl`、`sourceAuthFingerprint` は捕捉時の認証識別子(9A)。
-- **影響範囲(8C・実配線を正確に記載)**: 本改修は以下の既存配線の変更を伴う(「View 配線不変」ではない):
+- **影響範囲(8C/10A・実配線を正確に記載)**: 本改修は以下の既存配線の変更を伴う(「View 配線不変」ではない):
   - `PipelineService.getLatestPipelineForRef` / `JobService.getJobsForPipeline` に `connection: ConnectionSnapshot`
     引数を追加。
   - View が生成する `PipelineSnapshot`(current-branch の pipeline/jobs 取得結果を束ねる既存 data)に
-    **`instanceUrl` フィールドを追加**(または refresh 世代に紐づく捕捉スナップショットを保持)。
-  - `SidebarRefreshCoordinator` が ViewModel を呼ぶ経路で、捕捉スナップショットを `buildPipelineNode` まで引き回す
-    (`buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)`)。
+    **`sourceInstanceUrl` と `sourceAuthFingerprint` の両方を追加**(= 捕捉した接続の非機密タグ。生 token は載せない)。
+  - `SidebarRefreshCoordinator` が ViewModel を呼ぶ経路と `buildPipelineNode` の署名に **両タグを引き回す**
+    (`buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl, sourceAuthFingerprint)`)。指紋を通さないと §8.7 の
+    認証検証(9A)が成立しない(10A)。
   - 既存 GET の他呼び出し側は `connection = null` 既定で無改修(§8.1 後方互換)。
 
 ### 8.6 `CiActionPropertyTester : PropertyTester`(新規)
@@ -262,10 +270,11 @@ VSCode の該当実装:
   2b. **接続検証(URL + 認証)+ スナップショット固定(FR-8/6A/7A/7B/9A)**: ノードの `sourceInstanceUrl` と
       現在のグローバル `GITLAB_INSTANCE_URL`、**かつ** ノードの `sourceAuthFingerprint` と現在の認証識別子を比較。
       **いずれか不一致なら write を発行せず**「接続先/認証が変わっています。サイドバーを更新してください」と通知して終了
-      (同一 URL のままアカウント/PAT だけ変わった場合=9A も拒否)。両方一致したら、**その場で URL と token を一体で
-      読み取り `ConnectionSnapshot(instanceUrl, token)` を構築**して以降の送信先として固定する
-      (サービス→`post(connection=…)` に渡す)。URI もトークンも送信時にグローバル/`getToken()` を再取得しないため、検証後に URL・認証が変わっても
-      検証済み A へ A のトークンで送る(6A の URL-TOCTOU と 7B の資格情報漏洩を同時に回避)。
+      (同一 URL のままアカウント/PAT だけ変わった場合=9A も拒否)。両方一致したら、**`captureConnection()`(§8.1、
+      設定世代で原子的に取得)で `ConnectionSnapshot` を構築**し、その `instanceUrl`/`authFingerprint` が**ノードのタグと
+      なお一致すること**を確認したうえで送信先として固定する(サービス→`post(connection=…)` に渡す)。URI もトークンも
+      送信時にグローバル/`getToken()` を再取得しないため、検証後に URL・認証が変わっても検証済み A へ A のトークンで送る
+      (6A の URL-TOCTOU・7B の資格情報漏洩・10B の混成スナップショットを同時に回避)。
   3. in-flight ガードで (instanceUrl, 対象種別, 対象ID) を確認・登録。既に実行中なら終了。
   4. 背景コルーチン(`lazyService<CoroutineScope>()`)で該当サービスを **固定した `ConnectionSnapshot` 付きで**呼び、
      結果を FR-4 の 2 値で扱う:
@@ -304,7 +313,8 @@ VSCode の該当実装:
 ## 10. API / インターフェース
 
 - `GitLabApiClient.post(path: String, query: Map<String, String> = emptyMap(), connection: ConnectionSnapshot): PostResult`
-- `data class ConnectionSnapshot(val instanceUrl: String, val token: String)`
+- `data class ConnectionSnapshot(val instanceUrl: String, val token: String, val authFingerprint: String, val configGeneration: Long)`
+- `GitLabApiClient.captureConnection(): ConnectionSnapshot`(設定世代で原子的に取得・10B)
 - `data class PostResult(val httpStatus: Int, val correlationId: String?)`
 - `GitLabApiException`(既存)に `correlationId: String? = null` を追加(status/body は不変)
 - `PipelineActionService.retry(connection: ConnectionSnapshot, projectId: Long, pipelineId: Long): PostResult` / `.cancel(...)`
@@ -313,7 +323,7 @@ VSCode の該当実装:
   `sendGet` / `sendPage` / `buildUri` / `fetchObject` / `fetchListWithinDeadline`、および
   `PipelineService.getLatestPipelineForRef(projectId, ref, connection?)` /
   `JobService.getJobsForPipeline(projectId, pipelineId, isActive, connection?)`。
-- `SidebarViewModel.buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)`(拡張)。`PipelineSnapshot` に `instanceUrl` 追加。
+- `SidebarViewModel.buildPipelineNode(pipeline, jobsResult, sourceInstanceUrl)`(拡張)。`PipelineSnapshot` に `sourceInstanceUrl`+`sourceAuthFingerprint` 追加。
 - `CiStatus.contextAction(status: String?, allowFailure: Boolean = false): CiAction?`
 
 ## 11. データモデル
@@ -387,7 +397,7 @@ VSCode の該当実装:
 - `PipelineNode` / `JobNode` はフィールド追加(projectId/pipelineId/canRetry/canCancel/`sourceInstanceUrl`)。
   既存の label / activationUrl / children 契約は不変。
 - **`buildPipelineNode` はシグネチャ拡張**(`+ sourceInstanceUrl`)。**`PipelineService.getLatestPipelineForRef` /
-  `JobService.getJobsForPipeline` に `connection` 引数を追加**、**`PipelineSnapshot` に `instanceUrl` を追加**、
+  `JobService.getJobsForPipeline` に `connection` 引数を追加**、**`PipelineSnapshot` に `sourceInstanceUrl`+`sourceAuthFingerprint` を追加**、
   `SidebarRefreshCoordinator`→ViewModel 経路で捕捉スナップショットを引き回す(current-branch セクションの配線変更を伴う。
   §8.5)。他の View 機能(assigned MR 等)への影響はない。
 - Koin / 依存の追加なし。plugin.xml は command / handler / menu / propertyTester の追加のみ。
@@ -434,6 +444,9 @@ VSCode の該当実装:
   連打が直列化(2 回目 no-op)**されること、**成否によらず `finally` で除去**され以後は再操作可能になることを検証。
 - 接続検証(FR-8/9A): write 直前に **URL と認証識別子の両方**を比較し、URL 変更時・**同一 URL でアカウント/PAT だけ
   変更時**のいずれも write が発行されず通知されることを検証。
+- 原子的捕捉(10B): `captureConnection()` が url/token/fingerprint を一貫した `configGeneration` で返すこと、
+  **捕捉中に設定世代が変わった場合は破棄・再取得(bounded)し、収束しなければ中止**すること(混成スナップショットを
+  作らない)を検証。ノードタグに `sourceAuthFingerprint` が引き回される配線(10A)も検証。
 - 接続スナップショット固定(6A/7A/7B): `post` に渡した `ConnectionSnapshot` の `instanceUrl` から URI が構築され、
   Bearer に `connection.token` が使われること。検証後にグローバル URL / token を変えても**送信先 URL もトークンも
   変わらない**ことを検証(URL-TOCTOU + 資格情報漏洩の回避)。
