@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。**
 
 ---
 
@@ -179,6 +179,10 @@ fun openOrReload(fileStore: IFileStore)
 
 // BrowserLauncher(追加経路)
 fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
+
+// NotificationUtils(追加経路): 既に UI スレッド上で再マーシャルせず同期表示
+fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExec は不変
+// notifyIfLatest(§14): asyncExec { if (latest[key]==myGen) NotificationUtils.showOnUiThread(message) }
 ```
 
 `JobLogKey` = `(connHash: String, projectId: Long, jobId: Long)`。
@@ -231,7 +235,10 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
    - 最新なら `JobLogFileStore` の**堅牢な置換 move**(§7.1)でスクラッチ→可視ファイルへ commit(高速なリネームのみ・大容量書込は済み)。
    - `JobLogEditorOpener.openOrReload(fileStore)`(§7.2)。
    判定・move・open が同一 UI runnable 内で連続実行されるため、割り込みが入らない(mutex 不要)。
-4. **失敗時の通知(UI スレッド)**: 全失敗経路(pin 不一致 / 404 / その他 GitLabApiException / timeout / IO / 書込失敗 / 終端 catch)は共通の **`notifyIfLatest(key, myGen, message)`** を使う = `asyncExec { if (latest[key] == myGen) NotificationUtils.show(message) }`。**最新性の判定を通知を出す UI runnable の冒頭で**行うため、背景判定〜通知表示間に後発が最新化しても stale 通知は出ない。**監査ログは背景側で即時・無条件**に残す(通知抑止と独立)。
+4. **失敗時の通知(UI スレッド・同一ターンで判定+表示)**: 全失敗経路(pin 不一致 / 404 / その他 GitLabApiException / timeout / IO / 書込失敗 / 終端 catch)は共通の **`notifyIfLatest(key, myGen, message)`** を使う。
+   - **注意**: 既存 `NotificationUtils.show` は本体を **さらに `currentDisplay.asyncExec` で再マーシャル**する(`NotificationUtils.kt:11-26`)。よって `asyncExec { if (latest==myGen) NotificationUtils.show(msg) }` は、判定(turn N)と実際の popup 表示(turn N+1)が**別 UI ターン**になり、その間に後発が `latest` を更新すると stale 通知が出る(R7 指摘)。
+   - **対策**: 既に UI スレッド上にいる前提で **再マーシャルせず popup を同期的に開く経路**を用意する(`NotificationUtils.showOnUiThread(message)` を追加。既存 `show` は不変)。`notifyIfLatest` は `asyncExec { if (latest[key] == myGen) NotificationUtils.showOnUiThread(message) }` とし、**最新性判定と popup.open を同一 UI ターン**で行う。これで判定〜表示間に後発が割り込む余地が無い。
+   - **監査ログは背景側で即時・無条件**に残す(通知抑止と独立)。
 5. **キャンセル**: `CancellationException` は rethrow(通知しない)。スクラッチは finally で破棄。
 
 ### 14.3 性質
@@ -267,6 +274,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 
 - `GitLabApiClient` に公開メソッド 1 つ追加(`fetchText`)。加えて `sendGet` の非 2xx 例外に correlationId を付与する変更 → **全 GET 呼出(IssueService/MergeRequestService/PipelineService/JobService 等)の失敗例外に correlationId が載る**。`GitLabApiException.correlationId` は既定 null の追加フィールドで後方互換(値が入るだけ)。既存テストで body/status を検査しているものへの影響有無を確認する。
 - `BrowserLauncher` に成否を返す経路(`openChecked` 等)を**追加**。既存 `open(url): Unit` は不変で、他呼出(chat webview / ShowDocumentation / preferences / sidebar double-click)に影響なし。
+- `NotificationUtils` に同期表示経路 `showOnUiThread` を**追加**(既に UI スレッド上で再マーシャルしない)。既存 `show(message)`(内部 `asyncExec`)は不変で他呼出に影響なし。`notifyIfLatest` の「判定と表示を同一 UI ターンで」を成立させるために使う(§14)。
 - JobNode/PipelineNode/PropertyTester/既存 job action(retry/cancel/play)には変更なし。
 - plugin.xml は command/handler/popup を**追加**のみ(既存エントリ不変)。
 - build 依存・model・ディレクトリ構成の変更なし。
