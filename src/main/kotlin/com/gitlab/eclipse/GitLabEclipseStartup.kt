@@ -6,6 +6,8 @@ import com.gitlab.eclipse.api.http.relaxTunnelBasicAuthScheme
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
+import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
+import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.inject.service
@@ -13,12 +15,14 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.telemetry.telemetryModule
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.workspaceModule
 import org.eclipse.core.commands.ParameterizedCommand
 import org.eclipse.core.runtime.Platform
 import org.eclipse.jface.bindings.Binding
 import org.eclipse.jface.bindings.keys.KeyBinding
 import org.eclipse.jface.bindings.keys.KeySequence
+import org.eclipse.swt.SWTException
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.commands.ICommandService
 import org.eclipse.ui.keys.IBindingService
@@ -80,9 +84,32 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   }
 
   override fun stop(context: BundleContext) {
+    shutdownJobLog()
     service<GitLabLanguageServerProcessProvider>().stop()
     service<CodeSuggestionsManager>().endAllSessions()
     service<OAuthTokenProvider>().stopTokenRefreshTimer()
     service<GitLabHttpClient>().close()
+  }
+
+  private fun shutdownJobLog() {
+    // (1) Disable late UI reflections/notifications from any in-flight trace fetch.
+    JobLogGenerationRegistry.active = false
+    // (2) Close in-memory trace editors + remove listeners on the UI thread; guard a disposed/absent display.
+    try {
+      val display = PlatformUI.getWorkbench().display
+      if (!display.isDisposed) {
+        display.syncExec {
+          try {
+            // No-op internally if the workbench is closing (editors die with it).
+            JobLogEditorOpener.disposeAtShutdown()
+          } catch (_: SWTException) {
+            /* Display disposed mid-shutdown: nothing left to release. */
+          }
+        }
+      }
+    } catch (e: Exception) {
+      // Workbench/display already gone (headless or late shutdown): nothing to release. Never let stop throw.
+      logger<GitLabEclipseStartup>().warn("Job-log shutdown skipped: workbench/display unavailable.", e)
+    }
   }
 }
