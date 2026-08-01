@@ -43,6 +43,8 @@ object JobLogEditorOpener {
    *
    * @throws PartInitException if the active page cannot open a new editor (the caller's
    *   catch surfaces it as an audit entry + latest-gated notification).
+   * @throws CoreException if resetting the document of an editor on the ACTIVE page fails
+   *   (same surfacing path); background-page reset failures are logged and swallowed.
    */
   fun openOrReload(key: JobLogKey, text: String) {
     ensureListenersRegistered()
@@ -64,21 +66,29 @@ object JobLogEditorOpener {
       window.pages.forEach { page -> matches += matchingEditorsOn(page, input) }
     }
 
+    // The invoking page whose editor the user actually sees; used both to surface an
+    // active-page reload failure below and for the visibility step.
+    val activePage = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
+
     // Reset each matched editor's document so the new text shows (not just focus): reset
     // re-reads from the input's storage, which now reflects the updated shared content.
-    matches.forEach { (_, editor) ->
+    // Background-page failures are best-effort (logged); a failure on the ACTIVE page
+    // propagates so reflectLatest surfaces it instead of leaving the user looking at a
+    // stale log that appears refreshed.
+    matches.forEach { (page, editor) ->
       val textEditor = editor as? ITextEditor ?: return@forEach
       try {
         textEditor.documentProvider?.resetDocument(textEditor.editorInput)
       } catch (e: CoreException) {
         logger.error("Failed to reset job-log document for ${input.name}.", e)
+        if (page == activePage) throw e
       }
     }
 
     // Guarantee visibility in the invoking (active) page: bring an existing editor to front,
     // or open a fresh editor referencing the SHARED content. Duplicate tabs across pages are
     // acceptable - they all share one content.
-    val activePage = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage ?: return
+    if (activePage == null) return
     val editorOnActivePage = matches.firstOrNull { (page, _) -> page == activePage }?.second
     if (editorOnActivePage != null) {
       activePage.activate(editorOnActivePage)
