@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。** → **v8.6: 同一プロセス OSGi 再起動(Vk1K9)対策にセッション別ディレクトリ `job-logs/<sessionId>/`(起動時は他セッションのみ掃除)、notifyIfLatest の予約も try/catch(SWTException) で no-op 化し背景 launch/共有 scope へ例外を漏らさない(Vk1K-)。** → **v8.7: セッション dir に FileLock を持たせ、起動時掃除は tryLock 取得できた(静止した)他セッションのみ削除し稼働中の旧 activation はスキップ(Vk3fr)。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。** → **v8.6: 同一プロセス OSGi 再起動(Vk1K9)対策にセッション別ディレクトリ `job-logs/<sessionId>/`(起動時は他セッションのみ掃除)、notifyIfLatest の予約も try/catch(SWTException) で no-op 化し背景 launch/共有 scope へ例外を漏らさない(Vk1K-)。** → **v8.7: セッション dir に FileLock を持たせ、起動時掃除は tryLock 取得できた(静止した)他セッションのみ削除し稼働中の旧 activation はスキップ(Vk3fr)。** → **v9: trace 格納先を temp ファイルからインメモリ read-only エディタ入力(IStorageEditorInput/IStorage)へ変更(ユーザー選択)。ディスク由来の系統(temp 権限/NOFOLLOW/symlink・堅牢 move・セッション dir・FileLock・起動時掃除・同一プロセス再起動のファイル競合=hZA/hZC/xSX/xSa/Vk1K9/Vk3fr)を撤去。残る同一プロセス再起動の UI 反映(Vk5Pi)は registry.active フラグ(stop で false)で無効化。UI スレッド専有並行モデル・correlationId 伝播・launcher 結果化・404 非断定・notifyIfLatest の SWTException 安全化(Vk1K-/xSc)は維持。**
 
 ---
 
@@ -24,7 +24,7 @@ VSCode 実装の実挙動(実ソースで確定):
 
 ## 2. 対象範囲
 
-1. **ジョブトレース表示**: サイドバー JobNode の context menu「Display Log」から、当該ジョブの trace をテキスト取得 → 制御文字を除去 → **ユーザー専用状態ディレクトリ**の一時ファイルに安全に書き出し → エディタで開く。手動更新(同コマンド再実行)対応。
+1. **ジョブトレース表示**: サイドバー JobNode の context menu「Display Log」から、当該ジョブの trace をテキスト取得 → 制御文字を除去 → **インメモリの read-only エディタ入力**(`IStorageEditorInput`)でエディタに表示。手動更新(同コマンド再実行)対応。ディスク書き込みなし。
 2. **アーティファクトダウンロード**: JobNode の context menu「Download Artifacts」から、`${job.webUrl}/artifacts/download?file_type=archive` を外部ブラウザで開く(webUrl の妥当性検証を伴う)。
 
 ## 3. 対象外(本 PR では実装しない・#12 フォローアップ)
@@ -47,9 +47,9 @@ VSCode 実装の実挙動(実ソースで確定):
   - 根拠: `GitLabApiClient.kt:238`(correlationId なし)対 `:208`(あり)。
 - ブラウザ起動ユーティリティは既存。`BrowserLauncher.open(url)` が UI スレッドへマーシャルし外部ブラウザで開く。ただし**戻り値なし・例外は内部で catch/log するだけ**で、呼び出し側が失敗を検知できない。
   - 根拠: `src/main/kotlin/com/gitlab/eclipse/navigation/BrowserLauncher.kt:12-20`。
-- 一時ファイルをエディタで開くパターンは既存(MCP 設定)。`EFS.getLocalFileSystem().getStore(path.toUri())` + `IDE.openEditorOnFileStore(page, fileStore)`。
+- 一時ファイルをエディタで開くパターンは既存(MCP 設定 `IDE.openEditorOnFileStore`)。ただし本設計は**ディスクを使わず** `IStorageEditorInput`/`IStorage` でインメモリ表示する(§7.1)ため、この file-store 経路は使わない。
   - 根拠: `src/main/kotlin/com/gitlab/eclipse/mcp/McpConfigEditorOpener.kt`(全体)。
-- Console 表示・仮想ドキュメント・temp-file ヘルパは**既存コードに存在しない**(`org.eclipse.ui.console` 依存も未追加)。本設計は Console 依存を追加せず、状態ディレクトリの一時ファイル + `IDE.openEditorOnFileStore` を採用(依存追加ゼロ)。
+- Console 表示・仮想ドキュメント・temp-file ヘルパは**既存コードに存在しない**(`org.eclipse.ui.console` 依存も未追加)。本設計は Console 依存を追加せず、**インメモリ `IStorageEditorInput`/`IStorage`**(既存 `org.eclipse.ui`/`org.eclipse.ui.editors` 依存で解決)を採用(依存追加ゼロ・ディスク未使用)。
 - `GitLabJob.webUrl` は **`String?`(nullable、既定 null)**。API 応答で `web_url` 欠落時に null になり得る。
   - 根拠: `src/main/kotlin/com/gitlab/eclipse/api/model/GitLabJob.kt:11`。
 
@@ -58,7 +58,7 @@ VSCode 実装の実挙動(実ソースで確定):
 ### 機能要件
 
 - **FR-1**: JobNode を選択して「Display Log」を実行すると、当該ジョブの trace を取得・整形してエディタに表示する。
-- **FR-2**: 同一ジョブに対する「Display Log」再実行は、整形結果で一時ファイルを再書き込みし、既存エディタを更新(再オープン=フォーカス)する。これが手動更新の手段。連続実行時は**最新の取得結果のみ**が表示される(§14 参照)。
+- **FR-2**: 同一ジョブに対する「Display Log」再実行は、既存エディタの `IStorage` 内容を最新に差し替え文書をリセットして更新する(§7.2)。これが手動更新の手段。連続実行時は**最新の取得結果のみ**が表示される(§14 参照)。
 - **FR-3**: trace を取得できない(404 等)場合、エディタを開かず**非断定的**な通知を出す(「ログが存在しないかアクセスできません」)。
 - **FR-4**: JobNode を選択して「Download Artifacts」を実行すると、`job.webUrl` の妥当性(非 null・非空・http(s) scheme・host あり)を検証し、妥当なら `${job.webUrl}/artifacts/download?file_type=archive` を外部ブラウザで開く。妥当でない/起動失敗時はユーザーに通知し監査ログを残す。
 - **FR-5**: 両コマンドは JobNode の context menu に常時表示される(PipelineNode/その他ノードには出さない)。
@@ -69,7 +69,7 @@ VSCode 実装の実挙動(実ソースで確定):
 - **NFR-2(機密の非漏洩)**: (a) 例外メッセージ・監査ログに token/レスポンスボディを出さない。(b) **保存する trace ファイルはユーザー専用**とし、他ユーザーが閲覧・改竄できない場所・権限で扱う(§7.1)。
 - **NFR-3(UI スレッド規律)**: ネットワーク I/O・**ファイル書き込み**は背景コルーチン(共有 `Dispatchers.IO` scope)で行い、**エディタ起動・通知のみ** UI スレッド(`asyncExec`)。`CancellationException` は再送、終端 catch + finally。
 - **NFR-4(依存追加ゼロ)**: `build.gradle.kts` の依存・icon を追加しない。model 変更もしない。
-- **NFR-5(接続分離)**: 別インスタンス/別アカウントの同一 ID ジョブが、同一の一時ファイル/エディタを共有しない(§7.1)。
+- **NFR-5(接続分離)**: 別インスタンス/別アカウントの同一 ID ジョブが、同一のエディタ入力/エディタを共有しない(`JobLogEditorInput` の equals=connHash 由来・§7.1)。
 
 ## 6. 前提条件と制約
 
@@ -87,50 +87,39 @@ VSCode 実装の実挙動(実ソースで確定):
 | `GitLabApiClient.sendGet`(既存) | 変更 | 非 2xx 時の `GitLabApiException` に `correlationId(response)` を付与(sendPost と対称化)。 | 背景 |
 | `JobTraceService` | 新規 | `getTrace(projectId: Long, jobId: Long, connection): String` = `apiClient.fetchText("/projects/$projectId/jobs/$jobId/trace", connection)`。 | 背景 |
 | `TraceFormatter.stripTraceFormatting(raw): String` | 新規(純関数) | ANSI CSI/SGR エスケープ除去、GitLab `section_start/end` マーカー除去、`\r` overwrite 解決、改行正規化。TDD 対象。 | 任意 |
-| `JobLogFileStore` | 新規 | (a) 整形テキストを**generation 専用スクラッチ一時ファイル**へ書き込む(**背景スレッド**・大容量 I/O を UI 外に)。(b) スクラッチを可視ファイルへ**堅牢な置換 move**(§7.1)で commit する(**UI スレッド**・高速なリネームのみ)。ユーザー専用状態ディレクトリ・接続名前空間・権限・symlink 対策(§7.1)。 | 背景(書込)/ UI(move) |
-| `JobLogEditorOpener` | 新規 | 与えられた `IFileStore` を開く。**既存エディタがあれば明示的に再読込**、無ければ `IDE.openEditorOnFileStore` で新規オープン(§7.2)。書き込みは持たない。 | UI |
-| `JobLogGenerationRegistry` | 新規 | `Map<JobLogKey, Long>`(key→最新 generation)と単調カウンタを持つ。**UI スレッドからのみ触れる**(採番・登録・最新判定すべて UI スレッド)。mutex/AtomicLong/refcount は**持たない**(§14)。 | UI 専有 |
-| セッション別 `job-logs/<sessionId>/`(FileLock) + 起動時クリア | 新規(小) | activation 毎に一意 dir を使い `.lock` を `FileLock` で保持。`GitLabEclipseStartup.start` で**ロック取得できた静止セッションのみ**削除(稼働中の旧 activation はスキップ・§7.1/§7.3)。停止フック・専用 scope は持たない。 | 起動時 |
-| `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → UI で採番・登録(registry)→ 背景コルーチンで pin→getTrace→strip→スクラッチ書込 → `asyncExec` で最新判定→commit(move)→opener 起動。エラー/404 は `notifyIfLatest`・監査。 | UI→背景→UI |
+| `JobLogStorage`(`IStorage`)+ `JobLogEditorInput`(`IStorageEditorInput`) | 新規 | trace 整形テキストを**インメモリ**で保持する read-only エディタ入力(§7.1)。`getContents()` はメモリ上の文字列/バイトを返す。`isReadOnly()=true`。`equals/hashCode` は `JobLogKey`(connHash,projectId,jobId)由来=同一ジョブは同一入力に一致(エディタ再利用)。**ディスク書き込みなし**。 | — |
+| `JobLogEditorOpener` | 新規 | `JobLogEditorInput` を開く。**既存エディタがあれば storage 差し替え+文書リセットで明示再読込**、無ければ `IWorkbenchPage.openEditor(input, textEditorId)` で新規オープン(§7.2)。 | UI |
+| `JobLogGenerationRegistry` + activation 状態 | 新規 | `Map<JobLogKey, Long>`(key→最新 generation)と単調カウンタ、および `@Volatile active: Boolean` を持つ。**UI スレッドからのみ触れる**(採番・登録・最新判定すべて UI スレッド)。mutex/AtomicLong/refcount は**持たない**。stop で `active=false`(§14/§7.3)。 | UI 専有 |
+| `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → UI で採番・登録(registry)→ 背景コルーチンで pin→getTrace→strip(結果をメモリ保持)→ `asyncExec` で最新判定→エディタへ反映(open/reload)。エラー/404 は `notifyIfLatest`・監査。 | UI→背景→UI |
 | `BrowserLauncher.openChecked(url): Boolean`(または結果型) | 変更(追加経路) | 既存 `open(url): Unit` は不変のまま、**成否を返す**経路を追加。artifacts ハンドラが失敗を検知して通知・監査できるようにする。 | UI |
 | `DownloadArtifactsHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → webUrl 検証 → URL 構築 → `openChecked` → 失敗時に通知+構造化監査。ネットワーク I/O なし。 | UI |
 | `plugin.xml` | 変更 | command×2 / handler×2 / popup×2(`instanceof JobNode` visibleWhen)。既存 job action ブロックと同形状。 | - |
 
-### 7.1 一時ファイルの安全な取り扱い(P1-2/P1-3 反映)
+### 7.1 trace のインメモリ保持(read-only エディタ入力)
 
-- **配置(セッション別)**: OS 共有一時ディレクトリ(`/tmp` 等)を使わず、**プラグインのユーザー専用状態ディレクトリ**(`Platform.getStateLocation(bundle)` 配下)に置く。さらに**この activation 専用のセッションサブディレクトリ** `job-logs/<sessionId>/`(`sessionId` = start 時に一意採番)に置く(P2-Vk1K9)。同一 Eclipse プロセス内で bundle が stop→start しても、**新 activation は旧 activation とファイル/ディレクトリを共有しない**ため、旧 activation の in-flight I/O が新セッションの scratch/dest を壊す/新起動時掃除が旧処理の作業ファイルを消す、という競合が起きない。state location は各ユーザーのワークスペース metadata 配下で world-writable ではない。
-- **接続名前空間化(NFR-5)**: ファイル/エディタ識別子に `normalizeInstanceUrl(instanceUrl)` + `authFingerprint` の**非可逆ハッシュ**(例: SHA-256 の先頭 N 桁)を含める。ファイル名例: `job-<connHash>-<projectId>-<jobId>.log`。別インスタンス/別アカウントの同一 (projectId, jobId) は別 fileStore になる。
-- **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名(generation 専用スクラッチ)へ行い、**既存宛先を置換する堅牢な move 手順**(下記)で可視ファイルを置換する(部分書き込みの露出防止・2 回目以降の再実行で既存 dest を確実に置換)。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。テストで**既存 dest への 2 回目書き込みが atomic 経路・fallback 経路の双方で成功**することを検証。
-- **`writeScratch` の部分書き込み自己清掃(P2-hZA)**: `writeScratch` がスクラッチファイル作成後に disk-full/権限/IO などで例外を投げる場合、呼び出し側は戻り値 `Path` を受け取れず背景 finally も削除できない。よって **`writeScratch` 自身が失敗時に作成済み(部分)ファイルを削除してから rethrow** する(機密 trace 断片を state ディレクトリに残さない)。テストで途中書き込み失敗時に残存ファイルが無いことを検証。
-- **堅牢な置換 move 手順(P1-102/P2-R4 反映)**: `Files.move` の契約上、**`ATOMIC_MOVE` 指定時は `REPLACE_EXISTING` 等の他オプションが無視され**、既存宛先を置換するか `IOException` を投げるかは**実装依存**。したがって「REPLACE_EXISTING+ATOMIC_MOVE」を頼らず、次の順で試みる:
-  1. `Files.move(scratch, dest, StandardCopyOption.ATOMIC_MOVE)` を試行。成功すれば原子的置換完了。
-  2. `AtomicMoveNotSupportedException`、**または既存 dest を拒否した `FileAlreadyExistsException`/その他 `IOException`** を捕捉した場合、同一ディレクトリ内で `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING)`(非原子・極短時間の窓を許容)へフォールバックし、debug ログに残す。
-  3. フォールバックも失敗した場合は `IOException` として §8.1 手順 7 のエラー処理(通知+監査、エディタ開かず)へ。
-  この二段構えにより、「atomic move は対応するが既存 dest を拒否する provider」でも 2 回目以降の更新が失敗しない。
-- **セッションのロック**: 各セッションディレクトリ `job-logs/<sessionId>/` に `.lock` ファイルを置き、activation は**生存中 `FileLock`(`FileChannel.tryLock`)を保持**する。停止・JVM 終了でロックは解放される。
-- **クリーンアップ(起動時・稼働中セッションを除外)**: 起動時(`GitLabEclipseStartup.start`)に他セッション `job-logs/<other>/` を走査し、**その `.lock` を `tryLock` で取得できたもの(=停止/死亡済みで静止)だけ**を削除する。取得できない場合(同一 JVM の稼働中旧 activation はロック保持中で `OverlappingFileLockException`、別 JVM の生存プロセスはロック競合)は**スキップ**(P2-Vk3fr: 稼働中の旧セッションを消さない)。死んだ旧 JVM は OS がロックを解放済みのため取得成功→削除でき、stale ディレクトリの蓄積も防ぐ。**自セッションのディレクトリは触らない**。→ 停止時削除の競合(hZC/xSX/xSa)・同一プロセス再起動の競合(Vk1K9/Vk3fr)を構造的に解消。セッション内は同名を堅牢 move で上書きしファイルを保持。generation 専用スクラッチは commit runnable の finally(成功経路)または背景 finally(非移譲経路)、および `writeScratch` の自己清掃(部分書き込み時)で破棄。
+trace はディスクに永続化せず、**インメモリの read-only エディタ入力**で表示する。ディスクを使わないため、temp ファイルの権限/`NOFOLLOW`/symlink・堅牢 move・セッションディレクトリ・`FileLock`・起動時掃除・同一プロセス再起動のファイル競合(旧設計 v8 系で扱った hZA/hZC/xSX/xSa/xSc/Vk1K9/Vk1K-/Vk3fr の一群)が**すべて不要**になる。
 
-### 7.3 ライフサイクルと破棄済み Display ガード(P2-hZC/xSX/xSa/xSc 反映)
+- **格納**: 整形済み trace テキストを `JobLogStorage`(`IStorage` 実装、`getContents()` はメモリ上の UTF-8 バイト、`isReadOnly()=true`)に保持し、`JobLogEditorInput`(`IStorageEditorInput`)でエディタに開く。ディスク書き込みは行わない。表示エディタは既定のテキストエディタ(`org.eclipse.ui.DefaultTextEditor` 相当・既存 `org.eclipse.ui.editors` 依存で解決)。
+- **接続名前空間化(NFR-5)**: `JobLogEditorInput` の `equals/hashCode` を `JobLogKey`=`(connHash, projectId, jobId)`(`connHash` = `normalizeInstanceUrl(instanceUrl)+authFingerprint` の非可逆ハッシュ)で定義。別インスタンス/別アカウントの同一 (projectId, jobId) は**別の入力**=別エディタになり、内容も混ざらない(AC-8)。
+- **機密の非永続化(NFR-2b)**: trace はプロセスメモリ上のみに存在し、ディスクに書かない。エディタを閉じれば `IStorage` は GC 対象。プラグイン/JVM 終了でメモリごと消える。ディスク断片が残る経路が無い。
+- **大容量**: 巨大 trace はメモリに載る(GET で全文取得する時点と同等・単発)。極端な場合の上限は #12 フォローアップ(§24 R-5)。
 
-停止時にディレクトリ削除を行うと、移譲済み commit runnable(xSX)や非協調 I/O(xSa)との競合が残る。さらに同一プロセス内 stop→start では旧 activation の処理が新 start と共存し得る(Vk1K9)。これらは「共有ディレクトリを消す」設計が原因なので、**セッション別ディレクトリ + 起動時に他セッションのみ掃除**で競合を構造的に消す。
+### 7.2 既存エディタの明示再読込(FR-2 / P2-61 反映)
 
-- **セッション隔離 + ロック掃除**: §7.1 のとおり各 activation は `job-logs/<sessionId>/` を使い `.lock` を `FileLock` で保持する。`GitLabEclipseStartup.start` の掃除は**他セッション dir のうち `.lock` を `tryLock` で取得できた(=静止した)ものだけ**削除し、稼働中の旧 activation(ロック保持中→`OverlappingFileLockException`)や別 JVM 生存プロセスの dir はスキップする(Vk3fr)。自セッション・稼働中他セッションの作業ファイルを消さない。**停止時には何も削除しない**(専用 scope の cancel+join・停止順序は不要)。同一プロセス再起動でも新旧セッションがファイルを共有せず、かつ旧稼働セッションは掃除対象外なので安全(Vk1K9/Vk3fr)。
-- **scope**: job-log の背景処理は既存の共有 `CoroutineScope(Dispatchers.IO)`(`WorkspaceModule.kt:22`、CI write handlers と同じ)で launch してよい(停止時削除をしないため専用 scope の追跡は不要)。停止時に in-flight の GET が残っても、request timeout(§12)で自然終了し、書き込み先は次回起動で掃除される。
-- **`writeScratch` の部分書き込み自己清掃(hZA)**: §7.1 のとおり、失敗時は自身が部分ファイルを削除。
-- **`asyncExec` の二重ガード(xSc)**:
-  - **予約(scheduling)側**: `Display.asyncExec` 自体が破棄済み Display で `SWTException(ERROR_DEVICE_DISPOSED)` を投げ得るため、**予約呼び出しを `try/catch (SWTException)` で囲む**(`GitLabSidebarView.applyCompose` と同じ規律)。**予約に成功したときだけスクラッチ所有権を commit runnable へ移譲**し、予約が SWTException で失敗した場合は**背景側がスクラッチを破棄**(runnable は走らないため)。
-  - **runnable(実行)側**: runnable 冒頭で `if (display.isDisposed) return` を確認し、内側も `SWTException` を catch。予約〜実行間の破棄に対処。
+`IWorkbenchPage.openEditor(input, id)` は、`equals` 一致する入力に対しては既存エディタを**再利用してフォーカスするだけ**で、`IStorage` の内容差し替えを文書へ反映しない。手動更新(FR-2)を表示に反映するため `JobLogEditorOpener.openOrReload(input)` は:
 
-これにより、停止・ビュー破棄と競合しても例外を UI ループへ漏らさず、ディレクトリ再作成も起きない(そもそも停止時に消さない)。
+- 対象 `JobLogEditorInput` に `equals` 一致する開いているエディタを `IWorkbenchPage.findEditor(input)` で探索。
+- **存在すれば**、その `JobLogEditorInput`/`JobLogStorage` の内容を最新テキストへ差し替え、エディタの **document provider 経由で文書をリセット**(`AbstractTextEditor` の入力再設定 or `IDocumentProvider.resetDocument` 相当)してフォーカス。read-only 意図のため dirty は発生しないが、万一 dirty でも破棄して最新表示。
+- **存在しなければ** `page.openEditor(input, textEditorId)` で新規オープン。
+- 本メソッドは UI スレッドでのみ呼ぶ。呼び出しは §8.1 手順 4 の UI runnable 内で `latest[key] == myGen`(最新)かつ `active`(§7.3)を通過した後にのみ行う。
 
-### 7.2 既存エディタの明示再読込(P2-61 反映)
+### 7.3 ライフサイクル(activation ガード・破棄済み Display ガード)
 
-`IDE.openEditorOnFileStore` は、同一 `IFileStore` に対しては既に開いているエディタを**再利用してフォーカスするだけ**で、外部で原子的置換した内容を文書バッファへ再読込しない(`McpConfigEditorOpener.kt:9-12` と同じ挙動)。このままでは FR-2 の手動更新が表示に反映されない。対策として `JobLogEditorOpener.openOrReload(fileStore)` は:
+ディスクを使わないため停止時削除・ロック・起動時掃除は無い。残る同一プロセス OSGi 再起動の懸念は「旧 activation の遅延 UI runnable が共有 Display に古い内容を反映する(Vk5Pi)」のみで、これを軽量な**activation ガード**で無効化する:
 
-- 対象 `IFileStore`(= `FileStoreEditorInput`)に一致する開いているエディタを `IWorkbenchPage.findEditor(input)` で探索。
-- **存在すれば**、そのエディタが非 dirty であることを前提に**明示的に文書を再読込**(text editor の `doRevertToSaved()` 相当、または document provider 経由の resetDocument)してフォーカス。未保存編集は本ファイルが使い捨てのため発生し得ないが、万一 dirty の場合も破棄して最新内容を表示する(read-only 意図)。
-- **存在しなければ** `IDE.openEditorOnFileStore(page, fileStore)` で新規オープン。
-- 本メソッドは UI スレッドでのみ呼ぶ。呼び出しは §8.1 手順 4 の commit runnable 内で、`latest[key] == myGen`(最新)判定を通過した後にのみ行う(stale runnable による誤表示防止)。
+- **activation フラグ**: `JobLogGenerationRegistry`(activation 単位のインスタンス)が `@Volatile active: Boolean = true` を持つ。`GitLabEclipseStartup.stop` で **`active=false` に落とす 1 行**を追加(§18)。commit / notify の UI runnable は冒頭で **`if (!registry.active) return`** を確認し、停止済み activation の runnable は UI に何も反映しない。これで同一 JVM stop→start 後に旧 GET が遅れて完了しても、旧 registry の runnable は no-op(Vk5Pi)。`latest[key]` は activation 毎に別インスタンスなので、新 activation の判定を汚さない。
+- **破棄済み Display ガード**: `Display.asyncExec` は破棄済み Display で `SWTException(ERROR_DEVICE_DISPOSED)` を投げ得る。**予約呼び出しを `try/catch (SWTException)` で囲み**(`GitLabSidebarView.applyCompose` と同規律)、runnable 冒頭でも `if (display.isDisposed) return` + `SWTException` catch。これにより破棄済み Display への反映・予約が例外を UI ループ/背景 launch へ漏らさない。
+- **scope**: 背景 I/O は既存共有 `CoroutineScope(Dispatchers.IO)`(`WorkspaceModule.kt:22`、CI handlers と同じ)で launch。停止時に in-flight GET が残っても request timeout(§12)で自然終了し、UI 反映は activation フラグと isDisposed ガードで無害化。専用 scope は不要。
 
 ## 8. 処理フロー
 
@@ -140,33 +129,27 @@ VSCode 実装の実挙動(実ソースで確定):
 2. ハンドラ(UI スレッド): `selectedSidebarNode<JobNode>()` で JobNode 取得。取得不可 → 何もしない。
 3. `projectId == null` → 「ログを取得できません」通知して終了(数値 projectId 必須)。
 4. **採番・登録(UI スレッド、背景 launch の前)**: `connKey = hash(normalizeInstanceUrl(node.sourceInstanceUrl) + node.sourceAuthFingerprint)`、`key = (connKey, projectId, job.id)`。`JobLogGenerationRegistry` で `myGen = ++counter; latest[key] = myGen`(UI スレッド専有=§14)。以前の同 key 実行を supersede。
-5. 背景コルーチン(共有 `CoroutineScope(Dispatchers.IO)`=CI handlers と同じ・§7.3)= **大容量 I/O のみ**:
-   1. `pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)` で接続固定。`null`(不一致/Unstable)→ 監査ログ(即時)+ `notifyIfLatest(key, myGen, …)`(§14・UI 冒頭で最新判定)で通知して `return@launch`。
+5. 背景コルーチン(共有 `CoroutineScope(Dispatchers.IO)`=CI handlers と同じ・§7.3)= **ネットワーク I/O のみ**:
+   1. `pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)` で接続固定。`null`(不一致/Unstable)→ 監査ログ(即時)+ `notifyIfLatest(key, myGen, …)`(§14)で通知して `return@launch`。
    2. `JobTraceService.getTrace(projectId, job.id, connection)`。
-   3. 成功: `stripTraceFormatting(raw)` → **本 generation 専用のスクラッチ一時ファイル**へ背景スレッドで安全書き込み(§7.1)。可視ファイル(安定パス)は触れない。
-   4. **commit を UI スレッドへ予約(スクラッチ所有権を移譲)**: 成功時のみ commit runnable を予約し、**スクラッチの所有権をこの runnable へ移す**(`scratchHandedOff=true`)。
+   3. 成功: `stripTraceFormatting(raw)` を**メモリ上のローカル変数**として保持(ディスク書き込みなし)。
+   4. **反映を UI スレッドへ予約**: 予約呼び出しは `try/catch (SWTException)` で囲む(破棄済み Display で `asyncExec` 自体が投げ得る=§7.3/xSc)。
       ```
       asyncExec {
         try {
-          if (display.isDisposed) return@asyncExec              // 停止/ビュー破棄と競合(§7.3・SWTException 安全)
-          if (latest[key] != myGen) return@asyncExec           // supersede 済み→可視ファイル不変(finally で破棄)
-          val fileStore = JobLogFileStore.commit(key, scratch) // 堅牢 move(§7.1)。ここは UI スレッド
-          JobLogEditorOpener.openOrReload(fileStore)           // §7.2
-        } catch (e: Exception) {                               // move/fallback/open が UI 内で失敗(P2-b5e)
-          writeAudit(...)                                      // 監査は常時
-          if (latest[key] == myGen) NotificationUtils.showOnUiThread(generic)  // latest-gated・同一ターン
-        } finally {
-          deleteQuietly(scratch)                               // スクラッチはこの runnable が破棄(P1-b5c)
-        }
+          if (display.isDisposed || !registry.active) return@asyncExec   // 破棄/停止済み activation は反映しない(§7.3/Vk5Pi)
+          if (latest[key] != myGen) return@asyncExec                     // supersede 済み→何もしない
+          JobLogEditorOpener.openOrReload(JobLogEditorInput(key, text))  // storage 差し替え+文書リセット(§7.2)
+        } catch (e: SWTException) { /* Display 破棄済み: no-op */
+        } catch (e: Exception) { writeAudit(...); if (latest[key]==myGen) NotificationUtils.showOnUiThread(generic) }
       }
       ```
-      判定・move・open・失敗処理・スクラッチ破棄がすべて同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。
-      **予約(scheduling)は `try/catch (SWTException)` で囲む**(破棄済み Display で `asyncExec` 自体が投げ得る=§7.3/xSc)。**予約成功時のみ `scratchHandedOff=true`** とし、SWTException で予約に失敗したら背景側でスクラッチを破棄(runnable は走らない)。commit runnable 実行前に背景 finally がスクラッチを消さないよう、**所有権移譲後は背景側で破棄しない**(手順 8)。
+      判定(latest/active/isDisposed)・open/reload・失敗処理がすべて同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。**メモリ保持のため所有権移譲・スクラッチ破棄・finally は不要**。
    6. `GitLabApiException`:
-      - statusCode == 404 → 監査ログ(status/correlationId、token/body 非出力)を即時に残し、`notifyIfLatest` で「ログが存在しないかアクセスできません」**非断定**通知(supersede 済みなら UI runnable 冒頭の最新判定で抑止=P2-SGk/U32)。
+      - statusCode == 404 → 監査ログ(status/correlationId、token/body 非出力)を即時に残し、`notifyIfLatest` で「ログが存在しないかアクセスできません」**非断定**通知(supersede/停止済みなら UI runnable 冒頭判定で抑止=P2-SGk/U32/Vk5Pi)。
       - それ以外 → 監査ログを即時に残し、`notifyIfLatest` で generic 通知。
-   7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ 監査ログを即時に残し、`notifyIfLatest` で generic 通知。スクラッチ一時ファイルは finally で破棄。
-   8. `CancellationException` → rethrow(通知しない=意図的キャンセル)。終端 `catch (Exception)` は log + 監査(即時)+ `notifyIfLatest`。`finally` は **スクラッチ一時ファイルの削除のみ**、ただし **`scratchHandedOff==false` のとき(=commit runnable を予約していない全経路: pin 不一致・GET 失敗・書込失敗・キャンセル)に限る**(所有権を移譲した成功経路では commit runnable の finally が破棄する=P1-b5c)。GET/書込より前に失敗した経路はスクラッチ未作成のため何もしない。refcount/mutex/エントリ回収は無い(§14 の UI スレッド専有モデル。`latest[key]` は UI スレッド上で自然に上書き・停止時破棄)。
+   7. `HttpTimeoutException`/`IOException`(GET)→ 監査ログを即時に残し、`notifyIfLatest` で generic 通知。
+   8. `CancellationException` → rethrow(通知しない=意図的キャンセル)。終端 `catch (Exception)` は log + 監査(即時)+ `notifyIfLatest`。**ディスク資源を持たないため finally での破棄処理は不要**。`latest[key]` は UI スレッド上で自然に上書き、activation 状態は §7.3 の停止フラグで管理(refcount/mutex/scratch/ロックは無い)。
 
 ### 8.2 Download Artifacts
 
@@ -201,14 +184,20 @@ fun getTrace(projectId: Long, jobId: Long, connection: ConnectionSnapshot): Stri
 // TraceFormatter(新規・純関数)
 fun stripTraceFormatting(raw: String): String
 
-// JobLogFileStore(新規)
-//  背景スレッド: generation 専用スクラッチへ書き込み(可視ファイル不変)
-fun writeScratch(key: JobLogKey, gen: Long, text: String): java.nio.file.Path
-//  UI スレッド: スクラッチ→可視ファイルへ堅牢 move し IFileStore を返す(§7.1)
-fun commit(key: JobLogKey, scratch: java.nio.file.Path): org.eclipse.core.filesystem.IFileStore
-
-// JobLogEditorOpener(新規): UI スレッドで開く/既存なら明示再読込(§7.2)
-fun openOrReload(fileStore: IFileStore)
+// JobLogStorage(新規): インメモリ read-only IStorage
+class JobLogStorage(text: String) : IStorage {
+  override fun getContents() = text.toByteArray(Charsets.UTF_8).inputStream()
+  override fun isReadOnly() = true
+  // getName()=表示名(例 "job-<jobId>.log"), getFullPath()=null 可
+}
+// JobLogEditorInput(新規): IStorageEditorInput。equals/hashCode は JobLogKey 由来
+class JobLogEditorInput(val key: JobLogKey, text: String) : IStorageEditorInput {
+  override fun getStorage() = JobLogStorage(text)
+  override fun equals(o) = o is JobLogEditorInput && o.key == key   // 同一ジョブ=同一入力
+  override fun hashCode() = key.hashCode()
+}
+// JobLogEditorOpener(新規): UI スレッドで開く/既存なら storage 差し替え+文書リセット(§7.2)
+fun openOrReload(input: JobLogEditorInput)
 
 // BrowserLauncher(追加経路)
 fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
@@ -233,13 +222,13 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 | trace 404 | `GitLabApiException.statusCode==404` | **非断定**通知「ログが存在しないかアクセスできません」+ 監査(status/correlationId)。エディタ開かず。 |
 | 403 等アクセス不可・その他非 2xx | `GitLabApiException` | generic 通知 + 監査ログ(correlationId 含む)。 |
 | timeout/IO(GET) | 例外 | generic 通知 + 監査ログ。 |
-| trace ファイル書き込み失敗(IO/symlink 拒否/権限) | `IOException` 等 | generic 通知 + 監査ログ。エディタ開かず。 |
-| 本実行が最新でない(supersede 済) | commit/通知の UI runnable 冒頭で `latest[key] != myGen` | open/通知せず静かに終了(通知不要)。 |
+| 本実行が最新でない(supersede 済)/停止済み activation | UI runnable 冒頭で `latest[key] != myGen` または `!registry.active` | open/通知せず静かに終了(通知不要)。 |
+| Display 破棄済み | `asyncExec` 予約時 `SWTException` / runnable 冒頭 `isDisposed` | no-op(例外を漏らさない・§7.3)。 |
 | webUrl が null/空/不正 scheme・host | ハンドラ検証 | generic 通知 + 監査ログ。ブラウザ起動せず。 |
 | artifacts ブラウザ起動失敗 | `openChecked`→false/例外 | generic 通知 + 構造化監査ログ。 |
 
 - 監査ログ・例外メッセージに token / レスポンスボディを出さない(NFR-2a)。
-- **supersede 済み実行の失敗はユーザー通知を抑止**し監査ログのみ残す: 先発が後発に supersede された後で失敗しても、後発が正常表示中に古い「取得できない」通知を出さない。**全失敗経路(pin 不一致・404・その他・timeout・IO・書込失敗・終端 catch)を共通の `notifyIfLatest` に通し、最新性判定は通知を出す UI runnable の冒頭で `latest[key] == myGen`(UI スレッド専有・§14)により行う**。監査は背景側で即時・常時。
+- **supersede 済み/停止済み activation の失敗はユーザー通知を抑止**し監査ログのみ残す: **全失敗経路(pin 不一致・404・その他・timeout・IO・終端 catch)を共通の `notifyIfLatest` に通し、最新性判定は通知を出す UI runnable の冒頭で `latest[key] == myGen` かつ `registry.active`(UI スレッド専有・§14/§7.3)により行う**。監査は背景側で即時・常時。
 
 ## 12. タイムアウトとリトライ
 
@@ -248,7 +237,7 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 
 ## 13. 冪等性
 
-- trace GET・artifacts ブラウザ起動はいずれも**べき等な READ**。サーバ状態を変更しない。二重実行はエディタ再オープン/ブラウザ再オープンに留まり、サーバ副作用なし。よって書き込みガード(`InFlightWriteGuard`)は使用しないが、**表示の一貫性**のため §14 の UI スレッド専有 generation 判定(最新のみ反映)を行う。
+- trace GET・artifacts ブラウザ起動はいずれも**べき等な READ**。サーバ状態を変更しない。二重実行はエディタ再表示/ブラウザ再オープンに留まり、サーバ副作用なし。よって書き込みガード(`InFlightWriteGuard`)は使用しないが、**表示の一貫性**のため §14 の UI スレッド専有 generation 判定(最新のみ反映)を行う。
 
 ## 14. 並行処理(UI スレッド専有モデル)
 
@@ -256,20 +245,19 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 
 ### 14.1 原則
 
-- **大容量 I/O(GET・整形・スクラッチ書き込み)だけを背景スレッド**で行う。スクラッチは generation 専用の一時ファイルで、**可視ファイル(エディタが開く安定パス)には触れない**。
-- **共有可変状態(`JobLogGenerationRegistry` の `latest[key]` と採番カウンタ)は UI スレッドからのみ**読み書きする。UI スレッドは単一で全 runnable を直列実行するため、採番・登録・最新判定・可視ファイルへの commit・エディタ open・通知の最新性判定が**自然に不可分・直列化**される。→ 旧設計の **per-key mutex・AtomicLong・refcount ライフサイクル(および refcount に紐づく所有権移譲)は不要**。
-- 唯一の「移譲」は**スクラッチ一時ファイルの破棄責務**である(background が commit runnable を予約したら破棄責務も runnable へ渡す=`scratchHandedOff`)。これは refcount のような回収カウントではなく、成功時に「誰がスクラッチを消すか」を一意に決める単純なフラグで、§8.1 手順 4/8 のとおり。この移譲は必須(背景 finally が予約済み runnable より先にスクラッチを消すのを防ぐ=P1-b5c)。
+- **ネットワーク I/O(GET)と整形だけを背景スレッド**で行い、結果は**メモリ上のローカル変数**として保持する(ディスク書き込みなし=§7.1)。
+- **共有可変状態(`JobLogGenerationRegistry` の `latest[key]`・採番カウンタ・`active` フラグ)は UI スレッドからのみ**読み書きする。UI スレッドは単一で全 runnable を直列実行するため、採番・登録・最新判定・active 判定・エディタ open/reload・通知の最新性判定が**自然に不可分・直列化**される。→ 旧設計の **per-key mutex・AtomicLong・refcount・所有権移譲・スクラッチ破棄責務は不要**(ディスク資源が無い)。
 
 ### 14.2 プロトコル
 
 1. **採番と登録(UI スレッド、背景 launch の前)**: `myGen = ++counter; latest[key] = myGen`。UI スレッド専有なので `counter` は単調、`latest[key]` の巻き戻しは起こり得ない(小 gen が後で大 gen を上書きする経路が構造的に無い)。
-2. **背景(`Dispatchers.IO`)**: `pinnedConnectionFor` → `getTrace` → `stripTraceFormatting` → **スクラッチ一時ファイルへ書き込み**(可視ファイル不変)。
-3. **commit(UI スレッド、単一 `asyncExec`、成功経路のみ予約)**: スクラッチ書込成功時のみ予約し、**スクラッチ所有権をこの runnable に移す**。runnable 内はすべて UI スレッドで直列:
-   - `if (latest[key] != myGen) return` — supersede 済みなら**可視ファイルを一切触らず終了**(巻き戻り不能)。
-   - 最新なら `JobLogFileStore.commit`(§7.1 堅牢 move)でスクラッチ→可視ファイル(高速なリネームのみ・大容量書込は済み)→ `JobLogEditorOpener.openOrReload`(§7.2)。
-   - **commit/open が失敗しても背景の catch では捕捉できない**(別 runnable・別ターン)。よって runnable 内 `try/catch` で受け、失敗時も監査 + latest-gated 通知(`showOnUiThread`)を**この runnable 内**で行う(P2-b5e)。
-   - `finally` で**スクラッチを破棄**(stale return・commit 成否のいずれでも)。背景 finally は所有権移譲後にスクラッチを消さない(P1-b5c)。
-   判定・move・open・失敗処理・破棄が同一 UI runnable 内で連続実行されるため割り込みが入らない(mutex 不要)。
+2. **背景(`Dispatchers.IO`)**: `pinnedConnectionFor` → `getTrace` → `stripTraceFormatting` の結果を**メモリ保持**(ディスク書き込みなし)。
+3. **反映(UI スレッド、単一 `asyncExec`、成功時のみ予約)**: 予約呼び出しは `try/catch (SWTException)` で囲む(§7.3/xSc)。runnable 内はすべて UI スレッドで直列:
+   - `if (display.isDisposed || !registry.active) return` — 破棄/停止済み activation は反映しない(§7.3/Vk5Pi)。
+   - `if (latest[key] != myGen) return` — supersede 済みなら何もしない。
+   - 最新なら `JobLogEditorOpener.openOrReload(JobLogEditorInput(key, text))`=storage 差し替え+文書リセット(§7.2)。
+   - **open/reload が UI 内で失敗しても背景 catch では捕捉できない**ため、runnable 内 `try/catch`(`SWTException` は no-op、他例外は監査 + latest-gated 通知)で受ける(P2-b5e 相当)。
+   判定・open/reload・失敗処理が同一 UI runnable 内で連続実行され割り込みが入らない(mutex 不要)。**ディスク資源が無いのでスクラッチ破棄・所有権移譲・finally は不要**。
 4. **失敗時の通知(UI スレッド・同一ターンで判定+表示)**: 全失敗経路(pin 不一致 / 404 / その他 GitLabApiException / timeout / IO / 書込失敗 / 終端 catch)は共通の **`notifyIfLatest(key, myGen, message)`** を使う。
    - **注意**: 既存 `NotificationUtils.show` は本体を **さらに `currentDisplay.asyncExec` で再マーシャル**する(`NotificationUtils.kt:11-26`)。よって `asyncExec { if (latest==myGen) NotificationUtils.show(msg) }` は、判定(turn N)と実際の popup 表示(turn N+1)が**別 UI ターン**になり、その間に後発が `latest` を更新すると stale 通知が出る(R7 指摘)。
    - **対策**: 既に UI スレッド上にいる前提で **再マーシャルせず popup を同期的に開く経路**を用意する(`NotificationUtils.showOnUiThread(message)` を追加。既存 `show` は不変)。`notifyIfLatest` は次のとおり、**予約(`asyncExec`)呼び出し自体を `try/catch (SWTException)` で囲み**(破棄済み Display で `asyncExec` が投げても no-op)、runnable 内で判定と表示を同一 UI ターンで行う:
@@ -285,19 +273,19 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
      ```
      これで **notifyIfLatest は決して例外を投げない**(Vk1K- 反映: 背景 `launch` から SWTException が漏れて plain Job の共有 scope が他機能ごと cancel されるのを防ぐ)。判定〜表示間に後発が割り込む余地も無い。
    - **監査ログは背景側で即時・無条件**に残す(通知抑止と独立)。
-5. **キャンセル**: `CancellationException` は rethrow(通知しない)。スクラッチは finally で破棄。
+5. **キャンセル**: `CancellationException` は rethrow(通知しない)。ディスク資源が無いため破棄処理は不要。
 
 ### 14.3 性質
 
-- 同一 (接続, project, job) の連続/並行実行では、**最新の採番(=最後にユーザーが起動した実行)のみ**が可視ファイル・エディタ・通知に反映される。commit も通知も UI スレッドで `latest[key]` を見て最新性を判定するため、遅延完了した先発は可視ファイルを触らず通知も出さない(AC-2/P2-SGk 充足)。
-- `latest[key]` は UI スレッド専有の小さなマップ(値は `Long` 1 個/閲覧した (接続,job))。**refcount を持たない**ため解放漏れの概念自体が無い。多数 job 閲覧でも Long が増えるだけで、プラグイン停止時に破棄。ABA は単調カウンタ(再利用しない)で起きない。
-- スクラッチ→可視ファイルの move は §7.1 の堅牢手順(`ATOMIC_MOVE` → 既存 dest 拒否含む `IOException` で `REPLACE_EXISTING` fallback)。UI スレッド上のリネームは高速で UI を停止させない(大容量書込は手順 2 で背景済み)。
+- 同一 (接続, project, job) の連続/並行実行では、**最新の採番(=最後にユーザーが起動した実行)のみ**がエディタ・通知に反映される。反映も通知も UI スレッドで `latest[key]`(+`active`)を見て判定するため、遅延完了した先発・停止済み activation は反映も通知もしない(AC-2/P2-SGk/Vk5Pi 充足)。
+- `latest[key]` は UI スレッド専有の小さなマップ(値は `Long` 1 個/閲覧した (接続,job))。**refcount を持たない**ため解放漏れの概念が無い。多数 job 閲覧でも Long が増えるだけで、activation 破棄で GC。ABA は単調カウンタ(再利用しない)で起きない。
+- trace 内容はメモリ上の `IStorage` に保持し、エディタを閉じれば GC。ディスクに書かないため権限/symlink/cleanup/同一プロセス再起動のファイル競合が構造的に無い。
 - 別 key(別 job/別接続)は独立(相互ブロックしない)。
 - 接続 snapshot 固定により、実行中の設定変更でも誤インスタンス送信・資格情報漏洩は起きない(seqlock `captureConnection` 由来)。
 
 ### 14.4 テスト
 
-UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(先発の背景完了を後発より遅らせる)させ、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定で通知を出さず監査のみ残すこと、(c) `latest[key]` が UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**(所有権移譲)成功 commit が move できること(P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)、を検証。
+UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(先発の背景完了を後発より遅らせる)させ、エディタ内容が**後発(最新)**になり先発 runnable が反映しないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定で通知を出さず監査のみ残すこと、(c) `latest[key]` が UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **`active=false`(停止済み activation)の runnable が open/reload も通知もしないこと**(Vk5Pi)、(e) **open/reload が `SWTException` を投げても no-op、他例外は監査+latest-gated 通知され UI ループへ漏れないこと**、を検証。
 
 ## 15. 認証と認可
 
@@ -314,18 +302,19 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 ## 17. 障害時の復旧方法
 
 - trace が開けない(ネットワーク/権限/404)場合、ユーザーは通知内容を確認し再実行(手動更新)。恒久障害でも READ のためサーバ状態に影響なし。
-- 一時ファイルはユーザー専用状態ディレクトリに置き、再実行で原子的に上書き。プラグイン再起動後も再取得可能。
-- `job-logs/` の掃除は起動時に行う(race-free、§7.3)。停止時は削除しないので進行中処理との競合が無い。破棄済み Display への UI 反映・予約は `SWTException`/`isDisposed` ガードで無害化。
+- trace はメモリ保持のみ(ディスク書き込みなし)。エディタを閉じる/プラグイン停止で消え、再実行で再取得可能。ディスク残留・cleanup 競合が無い。
+- 破棄済み Display への UI 反映・予約は `SWTException`/`isDisposed` ガード、停止済み activation は `active` フラグで無害化(§7.3)。
 
 ## 18. 既存機能への影響
 
 - `GitLabApiClient` に公開メソッド 1 つ追加(`fetchText`)。加えて `sendGet` の非 2xx 例外に correlationId を付与する変更 → **全 GET 呼出(IssueService/MergeRequestService/PipelineService/JobService 等)の失敗例外に correlationId が載る**。`GitLabApiException.correlationId` は既定 null の追加フィールドで後方互換(値が入るだけ)。既存テストで body/status を検査しているものへの影響有無を確認する。
 - `BrowserLauncher` に成否を返す経路(`openChecked` 等)を**追加**。既存 `open(url): Unit` は不変で、他呼出(chat webview / ShowDocumentation / preferences / sidebar double-click)に影響なし。
 - `NotificationUtils` に同期表示経路 `showOnUiThread` を**追加**(既に UI スレッド上で再マーシャルしない)。既存 `show(message)`(内部 `asyncExec`)は不変で他呼出に影響なし。`notifyIfLatest` の「判定と表示を同一 UI ターンで」を成立させるために使う(§14)。
-- `GitLabEclipseStartup.start`(既存の起動処理)に **セッション ID 採番 + 他セッション `job-logs/<other>/` の起動時クリア呼び出しを追加**(§7.1/§7.3)。`stop`(`GitLabEclipseStartup.kt:82-87`)は**変更しない**(停止時削除をしないため)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も**変更しない**(job-log は既存の共有 scope を利用)。専用 scope/停止フックは新設しない。
+- `GitLabEclipseStartup.stop`(`GitLabEclipseStartup.kt:82-87`)に **job-log registry の `active=false` を落とす 1 行を追加**(§7.3・Vk5Pi。停止済み activation の遅延 UI runnable を no-op 化)。既存の停止処理(LSP/CodeSuggestions/OAuth/HttpClient)には手を触れない。`start` は変更しない(起動時掃除は無い=ディスクを使わない)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も変更しない(job-log は既存共有 scope を利用)。
+- `IStorageEditorInput`/`IStorage`/`IWorkbenchPage.openEditor` は既存 `org.eclipse.ui`/`org.eclipse.ui.editors`/`org.eclipse.ui.workbench.texteditor` 依存で解決(§18 の build 依存追加なし)。
 - JobNode/PipelineNode/PropertyTester/既存 job action(retry/cancel/play)には変更なし。
 - plugin.xml は command/handler/popup を**追加**のみ(既存エントリ不変)。
-- build 依存・model・ディレクトリ構成の変更なし。
+- build 依存・model・ディレクトリ構成の変更なし(ディスク未使用のため temp/state ディレクトリも使わない)。
 
 ## 19. 移行方法
 
@@ -341,9 +330,9 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
   - `stripTraceFormatting`: ANSI SGR/CSI 除去、`section_start/end` 除去、`\r` overwrite、改行正規化、空入力/非制御入力の恒等性を TDD。
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
-  - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。**move 契約**: (i)`ATOMIC_MOVE` が成功する経路、(ii)`AtomicMoveNotSupportedException` での fallback、(iii)**ATOMIC_MOVE 対応だが既存 dest を `FileAlreadyExistsException`/`IOException` で拒否する provider を疑似し、`REPLACE_EXISTING` 単独 move への fallback で 2 回目書き込みが成功**すること(P2-SGn)を検証。**部分書き込み清掃**: `writeScratch` がファイル作成後に例外を投げるケースで**残存ファイルが無い**こと(P2-hZA)。
-  - `JobLogGenerationRegistry` + commit/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・書込失敗・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**成功 commit が move できること(scratchHandedOff・P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)を検証。
-  - **ライフサイクル(§7.3)**: 起動時掃除が **`.lock` を取得できた(静止した)他セッション dir のみ**を削除し、**ロック保持中(稼働中)の他セッション dir をスキップ**すること(`OverlappingFileLockException`/別 JVM ロック競合をモックし非削除を assert=Vk3fr)、自セッションを消さないこと、同一プロセス stop→start でも新旧が非共有で競合しないこと(hZC/xSX/xSa/Vk1K9)。**commit の `asyncExec` 予約が破棄済み Display で `SWTException` を投げても背景側が catch してスクラッチを破棄し所有権移譲は予約成功時のみ**であること、**`notifyIfLatest` が予約失敗(SWTException)でも例外を投げず no-op**になり背景 launch/共有 scope を巻き込まないこと(xSc/Vk1K-)。runnable 側 `isDisposed`/`SWTException` ガードで破棄済み Display への反映が no-op になること。
+  - `JobLogEditorInput`/`JobLogStorage`: **接続名前空間化**(別 connHash の入力が `equals` で不一致=別エディタ)、同一 `JobLogKey` の入力が `equals`/`hashCode` 一致(エディタ再利用)、`getContents()` が保持テキストを返し `isReadOnly()=true` であること。
+  - `JobLogGenerationRegistry` + 反映/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、エディタ内容が**後発(最新)**になり先発 runnable が反映しないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **`active=false`(停止済み activation)の runnable が open/reload も通知もしないこと**(Vk5Pi)、(e) **open/reload が `SWTException` を投げても no-op、他例外は監査+latest-gated 通知され UI ループへ漏れないこと**、を検証。
+  - **通知の SWTException 安全性**: `notifyIfLatest` が予約(`asyncExec`)失敗(破棄済み Display)でも例外を投げず no-op になり、背景 `launch`/共有 scope へ SWTException を漏らさないこと(Vk1K-/xSc)。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
@@ -357,13 +346,13 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 - **AC-5**: 両コマンドが JobNode の context menu にのみ表示される(他ノードに出ない)。
 - **AC-6**: instance/auth 不一致時に trace GET を行わず通知のみ(誤送信・資格情報漏洩なし)。
 - **AC-7**: 例外メッセージ・監査ログに token/レスポンスボディが出ない。GET 障害の監査に correlationId が載る。
-- **AC-8**: 保存 trace ファイルはユーザー専用状態ディレクトリに接続名前空間つきで置かれ、別インスタンス/別アカウントの同一 ID ジョブが同一ファイル/エディタを共有しない。symlink 追従せず、原子的置換で書かれる。
+- **AC-8**: trace はメモリ保持(ディスク書き込みなし)。エディタ入力は接続名前空間つき(`JobLogKey`)で、別インスタンス/別アカウントの同一 ID ジョブは別エディタ入力になり内容が混ざらない。停止済み activation の遅延 runnable は反映しない(Vk5Pi)。
 - **AC-9**: build 依存・model・既存機能の破壊的変更がない(detekt 0、ベースライン外新規失敗 0)。
 
 ## 23. 未決事項
 
 - **U1(解決)**: trace の `Accept` ヘッダ。既存 `sendGet` は `Accept: application/json` を固定送信するが、GitLab `/trace` は Accept を無視して text を返すため実害なし。専用 `text/plain` 経路は設けず既存 sendGet を流用する(過剰実装回避)。実機手動検証で text が正しく取得できることを確認。
-- **U2(解決)**: 一時ファイルの配置・権限・クリーンアップは §7.1 で確定(ユーザー専用状態ディレクトリ・接続名前空間・原子的置換・best-effort 0600/NOFOLLOW・停止時削除)。
+- **U2(解決)**: trace はディスクに永続化せずインメモリ `IStorage` で保持(§7.1)。temp ファイルの権限/symlink/cleanup 論点は設計から消滅。
 - **U3(解決)**: 監査ログの READ 版様式は既存 `writeAuditMessage` を READ 用に一般化する(token/body 非出力は不変)。
 - **U4**: `stripTraceFormatting` の `\r` overwrite の厳密仕様。GitLab 進捗行は `\r` で行頭に戻り上書きする。行内 `\r` は「最後の `\r` 以降を採用」で近似する(厳密なターミナルエミュレーションは対象外・近似で受容)。テストで近似仕様を固定する。
 
@@ -371,7 +360,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 
 - **R-1(検証不能領域)**: エディタ起動・UI スレッドマーシャル・context menu 配線・並行直列化は headless で検出しにくく、実機でのみ露見しうる。→ 実装は fable、並行/接続分離は単体テストで可能な限り固定し、UI 部は手動検証手順を PR に明記。
 - **R-2(plugin.xml 配線ミス)**: command id / handler FQN / visibleWhen の不一致で menu が黙って消える/誤発火。→ 既存 job action ブロックの形状を厳密に踏襲し、id 一致・FQN 実在・well-formed(jshell)を検証。
-- **R-3(接続 pin/分離の抜け)**: READ 経路で pin を通さない、または一時ファイルを名前空間化しないと、誤インスタンス送信・資格情報漏洩・cross-account ログ混在。→ `pinnedConnectionFor` 必須通過 + §7.1 名前空間化 + 単体テスト。
+- **R-3(接続 pin/分離の抜け)**: READ 経路で pin を通さない、またはエディタ入力を名前空間化しないと、誤インスタンス送信・資格情報漏洩・cross-account ログ混在。→ `pinnedConnectionFor` 必須通過 + `JobLogEditorInput` の connHash 名前空間化 + 単体テスト。
 - **R-4(共有コード波及)**: `sendGet` correlationId 付与は全 GET 呼出に波及。追加情報のみで後方互換だが、既存テストが例外の等価性を厳密比較していないか確認する。`BrowserLauncher` は既存 `open` を残し追加経路のみとし波及を断つ。
 - **R-5(大容量 trace)**: 巨大ログを全文テキストで取得・書き込み・エディタ表示するとメモリ/描画負荷。VSCode も全文取得のため同等。本 PR は単発取得 + 背景書き込みで緩和。極端な場合の上限は未対応(#12 フォローアップ候補)。
 - **R-6(スコープ増)**: v2 で安全生成・接続分離・直列化・correlationId 伝播・launcher 結果化を追加したため、v1 想定より実装量が増える。薄い縦切りの範囲を保つため、色描画/ライブポーリング/複数 file_type は引き続き対象外に据え置く。
