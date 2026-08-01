@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / **v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映**。
+- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映 / **v5 R4(P1×1+P2×1: per-key エントリで stable mutex 維持・所有権移譲つき exactly-once refcount 解放)反映**。
 
 ---
 
@@ -89,7 +89,7 @@ VSCode 実装の実挙動(実ソースで確定):
 | `TraceFormatter.stripTraceFormatting(raw): String` | 新規(純関数) | ANSI CSI/SGR エスケープ除去、GitLab `section_start/end` マーカー除去、`\r` overwrite 解決、改行正規化。TDD 対象。 | 任意 |
 | `JobLogFileStore` | 新規 | 整形テキストを**ユーザー専用状態ディレクトリ**の接続名前空間つき一時ファイルへ**安全に書き込み**、`IFileStore`(またはパス)を返す。原子的置換・権限・symlink 対策(§7.1)。**書き込みは背景スレッド**。 | 背景 |
 | `JobLogEditorOpener` | 新規 | 与えられた `IFileStore` を開く。**既存エディタがあれば明示的に再読込**、無ければ `IDE.openEditorOnFileStore` で新規オープン(§7.2)。書き込みは持たない。 | UI |
-| `JobLogRequestCoordinator` | 新規 | per-key(接続ハッシュ+projectId+jobId)の **単調非再利用** request generation と mutex を管理し、**最新 generation のみ**が commit(判定→atomic move)→open を完了できるよう直列化・supersede する。generation は UI runnable 完了まで refcount で保持(§14)。 | 背景 |
+| `JobLogRequestCoordinator` | 新規 | per-key エントリ `{stable mutex, latest(単調非再利用), refcount}` を atomic な map 操作で管理。**最新 generation のみ**が commit(mutex 内で判定→atomic move)→open を完了できるよう直列化・supersede。mutex はエントリ寿命中同一、refcount は所有権移譲つき exactly-once 解放で 0 到達時に回収(§14)。 | 背景 |
 | `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → 背景コルーチンで pin→fetchText→strip→(coordinator 経由で)write → 最新なら `asyncExec` で opener 起動。エラー/404 通知・監査。 | UI→背景→UI |
 | `BrowserLauncher.openChecked(url): Boolean`(または結果型) | 変更(追加経路) | 既存 `open(url): Unit` は不変のまま、**成否を返す**経路を追加。artifacts ハンドラが失敗を検知して通知・監査できるようにする。 | UI |
 | `DownloadArtifactsHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → webUrl 検証 → URL 構築 → `openChecked` → 失敗時に通知+構造化監査。ネットワーク I/O なし。 | UI |
@@ -129,7 +129,7 @@ VSCode 実装の実挙動(実ソースで確定):
       - statusCode == 404 → 「ログが存在しないかアクセスできません」**非断定**通知 + 監査ログ(status/correlationId、token/body 非出力)。
       - それ以外 → generic 通知 + 監査ログ。
    7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ generic 通知 + 監査ログ。スクラッチ一時ファイルは finally で破棄。
-   8. `CancellationException` → rethrow。終端 `catch (Exception)` で log+notify。`finally` では **per-key mutex とスクラッチ一時ファイルのみ**を解放する。**generation トークン(`latest[key]`)は解放しない**(§14 のライフサイクル参照)。UI runnable が後で `latest[key]` を参照するため、背景 finally で消すと判定不能・ABA を招く(P1-132)。key エントリの回収は §14 の refcount による(UI runnable 完了後)。
+   8. `CancellationException` → rethrow。終端 `catch (Exception)` で log+notify。`finally` では **スクラッチ一時ファイルを削除**し、**`handedOff==false` のとき refcount を exactly-once で −1**(atomic decrement、§14)する。**mutex(=per-key エントリ)は破棄しない**(同一 mutex オブジェクトを key 寿命の間維持=P1-224)。UI runnable を予約した場合は所有権が UI runnable に移り、そちらが −1 する(P2-223)。エントリ(mutex/latest)の実回収は refcount 0 の atomic decrement 時のみ。
 
 ### 8.2 Download Artifacts
 
@@ -217,11 +217,16 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
   3. `asyncExec` で UI 反映を予約。
   これにより、後発が先に可視ファイルを更新した後で先発が古い内容へ上書きする経路が消える(判定と置換の間に割り込みが入らない)。
 - **UI runnable 内でも generation を再確認**(P2-117 反映): `asyncExec` の予約〜実行の間に後発が開始し得るため、runnable 冒頭で `if (generation != latest[key]) return` を再チェックしてから `openOrReload` する。stale な UI runnable が古い結果を表示・フォーカスするのを防ぐ。
-- **generation トークンのライフサイクル(P1-132 反映)**:
-  - `generation` は**単調増加で決して再利用しないトークン**(プロセス内 `AtomicLong` を全 key 共通でインクリメント、または per-key の never-reset カウンタ)。同じ値が別実行に再割り当てされないため、UI runnable の再確認で **ABA が起きない**。
-  - `latest[key]` は「その key で採番された最大 generation」を保持し、**背景コルーチンの `finally` では解放しない**。UI runnable がその後に参照するため。
-  - **参照カウント付き cleanup**: 各実行は開始時に key の refcount を +1、UI runnable 完了時(または stale 早期 return 時)に −1。refcount が 0 になった時点で `latest[key]` エントリを回収してよい(long-lived な小さなマップだが、多数の job を閲覧しても増え続けないようにする)。
-  - `finally` で解放するのは per-key **mutex**(write 直列化用)とスクラッチ一時ファイルのみ。mutex 解放は generation 判定の正しさに影響しない(判定・置換は既に mutex 区間で完了しているため)。
+- **coordinator エントリと generation ライフサイクル(P1-132/P1-224/P2-223 反映)**:
+  - coordinator は `ConcurrentHashMap<JobLogKey, Entry>` を持ち、`Entry = { mutex: Mutex(stable), latest: Long, refcount: Int }`。**mutex・latest・refcount は同じ per-key エントリに属し**、エントリの取得・破棄は `compute`/`computeIfAbsent` による**アトミックな map 操作**で行う(取得と破棄が競合しない)。
+  - `generation` は**プロセス内単調増加で決して再利用しないトークン**(全 key 共通 `AtomicLong`)。UI runnable 再確認で **ABA が起きない**。
+  - **開始(atomic `compute`)**: エントリを get-or-create し `refcount++`、`myGen = counter.incrementAndGet()`、`entry.latest = myGen`。
+  - **commit critical section**: `entry.mutex.withLock { if (myGen == entry.latest) { atomic move; scheduleUi=true } }`。mutex は**エントリ寿命の間ずっと同一オブジェクト**なので、同 key の B と C の「判定+置換」は相互排他され、判定と move の間に他 generation が割り込めない(P1-224 の巻き戻り再発を封じる)。
+  - **mutex を finally で破棄しない**: `finally` はスクラッチ一時ファイルの削除のみ。mutex(=エントリ)の回収は refcount が 0 になった時のみ、後述の atomic decrement で行う(mutex を毎回作り直さない)。
+  - **exactly-once refcount 解放と所有権受け渡し(P2-223)**: 開始時の `+1` は、
+    - commit で UI runnable を予約した場合のみ**所有権を UI runnable へ移譲**(背景側は減算しない、`handedOff=true`)。UI runnable は完了時(最新で open/reload した場合も、冒頭再確認で stale と判った場合も)に**必ず −1**。
+    - それ以外の**全終了経路**(pin 不一致 / 404 / 403 等 / timeout / IO / 書込失敗 / commit で stale と判定し UI 予約せず / `CancellationException` / 予期せぬ例外)では、背景の `finally` で `handedOff==false` のとき**exactly-once で −1**。
+  - **atomic decrement + 回収**: 減算は `map.compute(key){ e -> e.refcount--; if (e.refcount==0) null else e }` で行い、`refcount==0` のエントリ(mutex 含む)を map から除去する。除去は新規取得の `compute` と同一キーの map 操作で直列化されるため、in-flight 参照が残る間はエントリ(と mutex)が生存し続ける。
 - 結果、同一 (接続, project, job) に対する連続/並行実行では**最新取得のみ**が可視ファイルとエディタに反映される。
 - 別 key(別 job/別接続)は独立に進行(相互ブロックしない)。
 - 接続 snapshot 固定により、実行中の設定変更でも誤インスタンス送信・資格情報漏洩は起きない(seqlock `captureConnection` 由来)。
@@ -267,7 +272,7 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
   - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、**既存 dest への 2 回目書き込み成功**(REPLACE_EXISTING+ATOMIC_MOVE と非対応時 fallback)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。
-  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)、(c) 背景 `finally` が UI runnable より先に走っても `latest[key]` が保持され判定でき、単調非再利用トークンで ABA が起きないこと(generation ライフサイクル)を検証。
+  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)、(c) 背景 `finally` が UI runnable より先に走っても `latest[key]` が保持され判定でき、単調非再利用トークンで ABA が起きないこと、(d) **同一 mutex オブジェクトが key 寿命中維持され** B/C の commit が相互排他されること(P1-224)、(e) **全終了経路(pin 不一致/404/timeout/IO/書込失敗/cancel/stale-at-commit)で refcount が exactly-once 減算されエントリがリークしないこと**(P2-223・各失敗経路の cleanup テスト)を検証。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
