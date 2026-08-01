@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / **v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映**。
+- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / **v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映**。
 
 ---
 
@@ -89,7 +89,7 @@ VSCode 実装の実挙動(実ソースで確定):
 | `TraceFormatter.stripTraceFormatting(raw): String` | 新規(純関数) | ANSI CSI/SGR エスケープ除去、GitLab `section_start/end` マーカー除去、`\r` overwrite 解決、改行正規化。TDD 対象。 | 任意 |
 | `JobLogFileStore` | 新規 | 整形テキストを**ユーザー専用状態ディレクトリ**の接続名前空間つき一時ファイルへ**安全に書き込み**、`IFileStore`(またはパス)を返す。原子的置換・権限・symlink 対策(§7.1)。**書き込みは背景スレッド**。 | 背景 |
 | `JobLogEditorOpener` | 新規 | 与えられた `IFileStore` を開く。**既存エディタがあれば明示的に再読込**、無ければ `IDE.openEditorOnFileStore` で新規オープン(§7.2)。書き込みは持たない。 | UI |
-| `JobLogRequestCoordinator` | 新規 | per-key(接続ハッシュ+projectId+jobId)の request generation と mutex を管理し、**最新 generation のみ**が書込→open を完了できるよう直列化・supersede する(§14)。 | 背景 |
+| `JobLogRequestCoordinator` | 新規 | per-key(接続ハッシュ+projectId+jobId)の **単調非再利用** request generation と mutex を管理し、**最新 generation のみ**が commit(判定→atomic move)→open を完了できるよう直列化・supersede する。generation は UI runnable 完了まで refcount で保持(§14)。 | 背景 |
 | `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → 背景コルーチンで pin→fetchText→strip→(coordinator 経由で)write → 最新なら `asyncExec` で opener 起動。エラー/404 通知・監査。 | UI→背景→UI |
 | `BrowserLauncher.openChecked(url): Boolean`(または結果型) | 変更(追加経路) | 既存 `open(url): Unit` は不変のまま、**成否を返す**経路を追加。artifacts ハンドラが失敗を検知して通知・監査できるようにする。 | UI |
 | `DownloadArtifactsHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → webUrl 検証 → URL 構築 → `openChecked` → 失敗時に通知+構造化監査。ネットワーク I/O なし。 | UI |
@@ -99,7 +99,7 @@ VSCode 実装の実挙動(実ソースで確定):
 
 - **配置**: OS 共有一時ディレクトリ(`/tmp` 等)を使わず、**プラグインのユーザー専用状態ディレクトリ**(`Platform.getStateLocation(bundle)` 配下の `job-logs/` サブディレクトリ)に置く。state location は各ユーザーのワークスペース metadata 配下で、共有 world-writable ではない。
 - **接続名前空間化(NFR-5)**: ファイル/エディタ識別子に `normalizeInstanceUrl(instanceUrl)` + `authFingerprint` の**非可逆ハッシュ**(例: SHA-256 の先頭 N 桁)を含める。ファイル名例: `job-<connHash>-<projectId>-<jobId>.log`。別インスタンス/別アカウントの同一 (projectId, jobId) は別 fileStore になる。
-- **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名へ行い `Files.move(..., ATOMIC_MOVE)` で原子的に置換(部分書き込みの露出防止)。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。
+- **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名(generation 専用スクラッチ)へ行い、**既存宛先を置換する原子移動** `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)` で置換する(部分書き込みの露出防止・2 回目以降の再実行で既存 dest を確実に置換=P1-102)。`ATOMIC_MOVE` 非対応プロバイダで `AtomicMoveNotSupportedException` が出た場合は、同一ディレクトリ内での **`REPLACE_EXISTING` 単独の move**(非原子・極短時間の窓を許容)へフォールバックし、フォールバックした旨を debug ログに残す。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。テストで **既存 dest への 2 回目書き込みが成功**することを検証。
 - **クリーンアップ**: プラグイン停止時に `job-logs/` を best-effort で削除。再実行時は同名を原子的に上書き。スクラッチ一時ファイル(generation 専用)は commit 成否に関わらず finally で破棄。
 
 ### 7.2 既存エディタの明示再読込(P2-61 反映)
@@ -129,7 +129,7 @@ VSCode 実装の実挙動(実ソースで確定):
       - statusCode == 404 → 「ログが存在しないかアクセスできません」**非断定**通知 + 監査ログ(status/correlationId、token/body 非出力)。
       - それ以外 → generic 通知 + 監査ログ。
    7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ generic 通知 + 監査ログ。スクラッチ一時ファイルは finally で破棄。
-   8. `CancellationException` → rethrow。終端 `catch (Exception)` で log+notify。`finally` で mutex/generation 資源とスクラッチ一時ファイルを解放。
+   8. `CancellationException` → rethrow。終端 `catch (Exception)` で log+notify。`finally` では **per-key mutex とスクラッチ一時ファイルのみ**を解放する。**generation トークン(`latest[key]`)は解放しない**(§14 のライフサイクル参照)。UI runnable が後で `latest[key]` を参照するため、背景 finally で消すと判定不能・ABA を招く(P1-132)。key エントリの回収は §14 の refcount による(UI runnable 完了後)。
 
 ### 8.2 Download Artifacts
 
@@ -167,8 +167,8 @@ fun stripTraceFormatting(raw: String): String
 // JobLogFileStore(新規): 背景スレッドで安全書き込み
 fun write(key: JobLogKey, text: String): org.eclipse.core.filesystem.IFileStore
 
-// JobLogEditorOpener(新規): UI スレッドで開くだけ
-fun open(fileStore: IFileStore)
+// JobLogEditorOpener(新規): UI スレッドで開く/既存なら明示再読込(§7.2)
+fun openOrReload(fileStore: IFileStore)
 
 // BrowserLauncher(追加経路)
 fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
@@ -217,6 +217,11 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
   3. `asyncExec` で UI 反映を予約。
   これにより、後発が先に可視ファイルを更新した後で先発が古い内容へ上書きする経路が消える(判定と置換の間に割り込みが入らない)。
 - **UI runnable 内でも generation を再確認**(P2-117 反映): `asyncExec` の予約〜実行の間に後発が開始し得るため、runnable 冒頭で `if (generation != latest[key]) return` を再チェックしてから `openOrReload` する。stale な UI runnable が古い結果を表示・フォーカスするのを防ぐ。
+- **generation トークンのライフサイクル(P1-132 反映)**:
+  - `generation` は**単調増加で決して再利用しないトークン**(プロセス内 `AtomicLong` を全 key 共通でインクリメント、または per-key の never-reset カウンタ)。同じ値が別実行に再割り当てされないため、UI runnable の再確認で **ABA が起きない**。
+  - `latest[key]` は「その key で採番された最大 generation」を保持し、**背景コルーチンの `finally` では解放しない**。UI runnable がその後に参照するため。
+  - **参照カウント付き cleanup**: 各実行は開始時に key の refcount を +1、UI runnable 完了時(または stale 早期 return 時)に −1。refcount が 0 になった時点で `latest[key]` エントリを回収してよい(long-lived な小さなマップだが、多数の job を閲覧しても増え続けないようにする)。
+  - `finally` で解放するのは per-key **mutex**(write 直列化用)とスクラッチ一時ファイルのみ。mutex 解放は generation 判定の正しさに影響しない(判定・置換は既に mutex 区間で完了しているため)。
 - 結果、同一 (接続, project, job) に対する連続/並行実行では**最新取得のみ**が可視ファイルとエディタに反映される。
 - 別 key(別 job/別接続)は独立に進行(相互ブロックしない)。
 - 接続 snapshot 固定により、実行中の設定変更でも誤インスタンス送信・資格情報漏洩は起きない(seqlock `captureConnection` 由来)。
@@ -261,8 +266,8 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
   - `stripTraceFormatting`: ANSI SGR/CSI 除去、`section_start/end` 除去、`\r` overwrite、改行正規化、空入力/非制御入力の恒等性を TDD。
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
-  - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、原子的置換、symlink 拒否、(POSIX 環境で)権限 0600 を検証。
-  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)を検証。
+  - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、**既存 dest への 2 回目書き込み成功**(REPLACE_EXISTING+ATOMIC_MOVE と非対応時 fallback)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。
+  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)、(c) 背景 `finally` が UI runnable より先に走っても `latest[key]` が保持され判定でき、単調非再利用トークンで ABA が起きないこと(generation ライフサイクル)を検証。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
