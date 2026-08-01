@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。**
 
 ---
 
@@ -90,7 +90,7 @@ VSCode 実装の実挙動(実ソースで確定):
 | `JobLogFileStore` | 新規 | (a) 整形テキストを**generation 専用スクラッチ一時ファイル**へ書き込む(**背景スレッド**・大容量 I/O を UI 外に)。(b) スクラッチを可視ファイルへ**堅牢な置換 move**(§7.1)で commit する(**UI スレッド**・高速なリネームのみ)。ユーザー専用状態ディレクトリ・接続名前空間・権限・symlink 対策(§7.1)。 | 背景(書込)/ UI(move) |
 | `JobLogEditorOpener` | 新規 | 与えられた `IFileStore` を開く。**既存エディタがあれば明示的に再読込**、無ければ `IDE.openEditorOnFileStore` で新規オープン(§7.2)。書き込みは持たない。 | UI |
 | `JobLogGenerationRegistry` | 新規 | `Map<JobLogKey, Long>`(key→最新 generation)と単調カウンタを持つ。**UI スレッドからのみ触れる**(採番・登録・最新判定すべて UI スレッド)。mutex/AtomicLong/refcount は**持たない**(§14)。 | UI 専有 |
-| job-log 専用 `CoroutineScope` + `shutdown()` | 新規 | `SupervisorJob()+Dispatchers.IO` の専用子 scope で背景 I/O を launch(共有 singleton を使わない)。`GitLabEclipseStartup.stop` から `shutdown()`=cancel+join→`job-logs/` 削除(§7.3)。 | 背景 / 停止時 |
+| `job-logs/` 起動時クリア | 新規(小) | `GitLabEclipseStartup.start` で前回セッション分の `job-logs/` をクリア(起動時=in-flight 無し=race-free、§7.1/§7.3)。停止フック・専用 scope は持たない。 | 起動時 |
 | `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → UI で採番・登録(registry)→ 背景コルーチンで pin→getTrace→strip→スクラッチ書込 → `asyncExec` で最新判定→commit(move)→opener 起動。エラー/404 は `notifyIfLatest`・監査。 | UI→背景→UI |
 | `BrowserLauncher.openChecked(url): Boolean`(または結果型) | 変更(追加経路) | 既存 `open(url): Unit` は不変のまま、**成否を返す**経路を追加。artifacts ハンドラが失敗を検知して通知・監査できるようにする。 | UI |
 | `DownloadArtifactsHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → webUrl 検証 → URL 構築 → `openChecked` → 失敗時に通知+構造化監査。ネットワーク I/O なし。 | UI |
@@ -107,13 +107,20 @@ VSCode 実装の実挙動(実ソースで確定):
   2. `AtomicMoveNotSupportedException`、**または既存 dest を拒否した `FileAlreadyExistsException`/その他 `IOException`** を捕捉した場合、同一ディレクトリ内で `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING)`(非原子・極短時間の窓を許容)へフォールバックし、debug ログに残す。
   3. フォールバックも失敗した場合は `IOException` として §8.1 手順 7 のエラー処理(通知+監査、エディタ開かず)へ。
   この二段構えにより、「atomic move は対応するが既存 dest を拒否する provider」でも 2 回目以降の更新が失敗しない。
-- **クリーンアップ**: プラグイン停止時に **§7.3 の停止手順(専用 scope の cancel+join)を経てから** `job-logs/` を best-effort で削除する(削除後に in-flight 背景処理が再作成する競合を防ぐ)。再実行時は同名を堅牢 move で上書き。generation 専用スクラッチは commit runnable の finally(成功経路)または背景 finally(非移譲経路)で破棄(§8.1 手順 4/8)。
+- **クリーンアップ(起動時・race-free)**: `job-logs/` の掃除は **プラグイン停止時ではなく起動時**(`GitLabEclipseStartup.start`、最初の Display Log より前)に行う。起動時は job-log の in-flight 背景処理も予約済み UI runnable も存在しないため、ディレクトリのクリアは**構造的に競合しない**(停止時削除で生じる「削除後に in-flight が dir 再作成」「移譲済み commit runnable が削除後に走る」等を根絶=§7.3)。セッション内は同名を堅牢 move で上書きしファイルを保持、**次回起動で前回セッション分を掃除**。generation 専用スクラッチは commit runnable の finally(成功経路)または背景 finally(非移譲経路)、および `writeScratch` の自己清掃(部分書き込み時)で破棄。
 
-### 7.3 停止ライフサイクルと破棄済み Display ガード(P2-hZC 反映)
+### 7.3 ライフサイクルと破棄済み Display ガード(P2-hZC/xSX/xSa/xSc 反映)
 
-- **専用の追跡可能な scope**: job-log の背景処理は、`WorkspaceModule.kt:22` の共有 `CoroutineScope(Dispatchers.IO)` singleton(他機能=CI write 等が使用・停止時に cancel されない)を**使わず**、job-log 機能**専用の子 scope** `CoroutineScope(SupervisorJob() + Dispatchers.IO)`(Job ハンドルを保持)で launch する。他機能に影響を与えずに一括 cancel できる。
-- **停止順序**: `GitLabEclipseStartup.stop`(`GitLabEclipseStartup.kt:82-87`)に job-log 機能の `shutdown()` 呼び出しを**追加**し、(1) 専用 scope を `cancel()` → (2) 進行中コルーチンの終了を `join`(短時間・with timeout)→ (3) §7.1 の `job-logs/` 削除、の順で行う。これにより「削除後に in-flight 書き込みが dir を再作成」する競合を排除する。
-- **破棄済み Display ガード**: commit / notify の `asyncExec` runnable は、停止・ビュー破棄と競合し得る。runnable 冒頭で `if (display.isDisposed) return` を確認し、`SWTException`(disposed)を catch して静かに戻る(PR-1 の `applyCompose` race 対策と同じ規律)。破棄済み Display への表示・フォーカスで例外を UI ループへ漏らさない。
+停止時にディレクトリ削除を行うと、(1) UI キューへ移譲済みの commit runnable は背景 scope の子ではないため cancel+join で待てず削除後に走る(xSX)、(2) 同期 `sendGet`/ファイル書き込みは cancel に協調しないため join timeout 後にコルーチンが `writeScratch` へ進み削除済み dir を再作成する(xSa)——という競合が残る。これらは「停止時に消す」設計そのものが原因なので、**掃除を起動時に移して競合を構造的に消す**。
+
+- **起動時掃除(race-free)**: §7.1 のとおり `job-logs/` のクリアは `GitLabEclipseStartup.start`(最初の Display Log より前)で行う。起動時は in-flight 背景処理も予約済み UI runnable も無いため競合しない。**停止時には何も削除しない**(専用 scope の cancel+join・停止順序は不要)。
+- **scope**: job-log の背景処理は既存の共有 `CoroutineScope(Dispatchers.IO)`(`WorkspaceModule.kt:22`、CI write handlers と同じ)で launch してよい(停止時削除をしないため専用 scope の追跡は不要)。停止時に in-flight の GET が残っても、request timeout(§12)で自然終了し、書き込み先は次回起動で掃除される。
+- **`writeScratch` の部分書き込み自己清掃(hZA)**: §7.1 のとおり、失敗時は自身が部分ファイルを削除。
+- **`asyncExec` の二重ガード(xSc)**:
+  - **予約(scheduling)側**: `Display.asyncExec` 自体が破棄済み Display で `SWTException(ERROR_DEVICE_DISPOSED)` を投げ得るため、**予約呼び出しを `try/catch (SWTException)` で囲む**(`GitLabSidebarView.applyCompose` と同じ規律)。**予約に成功したときだけスクラッチ所有権を commit runnable へ移譲**し、予約が SWTException で失敗した場合は**背景側がスクラッチを破棄**(runnable は走らないため)。
+  - **runnable(実行)側**: runnable 冒頭で `if (display.isDisposed) return` を確認し、内側も `SWTException` を catch。予約〜実行間の破棄に対処。
+
+これにより、停止・ビュー破棄と競合しても例外を UI ループへ漏らさず、ディレクトリ再作成も起きない(そもそも停止時に消さない)。
 
 ### 7.2 既存エディタの明示再読込(P2-61 反映)
 
@@ -132,7 +139,7 @@ VSCode 実装の実挙動(実ソースで確定):
 2. ハンドラ(UI スレッド): `selectedSidebarNode<JobNode>()` で JobNode 取得。取得不可 → 何もしない。
 3. `projectId == null` → 「ログを取得できません」通知して終了(数値 projectId 必須)。
 4. **採番・登録(UI スレッド、背景 launch の前)**: `connKey = hash(normalizeInstanceUrl(node.sourceInstanceUrl) + node.sourceAuthFingerprint)`、`key = (connKey, projectId, job.id)`。`JobLogGenerationRegistry` で `myGen = ++counter; latest[key] = myGen`(UI スレッド専有=§14)。以前の同 key 実行を supersede。
-5. 背景コルーチン(**job-log 専用の追跡可能 scope**=§7.3、共有 singleton は使わない)= **大容量 I/O のみ**:
+5. 背景コルーチン(共有 `CoroutineScope(Dispatchers.IO)`=CI handlers と同じ・§7.3)= **大容量 I/O のみ**:
    1. `pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)` で接続固定。`null`(不一致/Unstable)→ 監査ログ(即時)+ `notifyIfLatest(key, myGen, …)`(§14・UI 冒頭で最新判定)で通知して `return@launch`。
    2. `JobTraceService.getTrace(projectId, job.id, connection)`。
    3. 成功: `stripTraceFormatting(raw)` → **本 generation 専用のスクラッチ一時ファイル**へ背景スレッドで安全書き込み(§7.1)。可視ファイル(安定パス)は触れない。
@@ -152,7 +159,8 @@ VSCode 実装の実挙動(実ソースで確定):
         }
       }
       ```
-      判定・move・open・失敗処理・スクラッチ破棄がすべて同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。commit runnable 実行前に背景 finally がスクラッチを消さないよう、**所有権移譲後は背景側で破棄しない**(手順 8)。
+      判定・move・open・失敗処理・スクラッチ破棄がすべて同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。
+      **予約(scheduling)は `try/catch (SWTException)` で囲む**(破棄済み Display で `asyncExec` 自体が投げ得る=§7.3/xSc)。**予約成功時のみ `scratchHandedOff=true`** とし、SWTException で予約に失敗したら背景側でスクラッチを破棄(runnable は走らない)。commit runnable 実行前に背景 finally がスクラッチを消さないよう、**所有権移譲後は背景側で破棄しない**(手順 8)。
    6. `GitLabApiException`:
       - statusCode == 404 → 監査ログ(status/correlationId、token/body 非出力)を即時に残し、`notifyIfLatest` で「ログが存在しないかアクセスできません」**非断定**通知(supersede 済みなら UI runnable 冒頭の最新判定で抑止=P2-SGk/U32)。
       - それ以外 → 監査ログを即時に残し、`notifyIfLatest` で generic 通知。
@@ -295,14 +303,14 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 
 - trace が開けない(ネットワーク/権限/404)場合、ユーザーは通知内容を確認し再実行(手動更新)。恒久障害でも READ のためサーバ状態に影響なし。
 - 一時ファイルはユーザー専用状態ディレクトリに置き、再実行で原子的に上書き。プラグイン再起動後も再取得可能。
-- プラグイン停止は §7.3 の順序(専用 scope cancel+join → dir 削除)で行い、進行中処理を終わらせてから片付ける。破棄済み Display への UI 反映は `isDisposed` ガードで無害化。
+- `job-logs/` の掃除は起動時に行う(race-free、§7.3)。停止時は削除しないので進行中処理との競合が無い。破棄済み Display への UI 反映・予約は `SWTException`/`isDisposed` ガードで無害化。
 
 ## 18. 既存機能への影響
 
 - `GitLabApiClient` に公開メソッド 1 つ追加(`fetchText`)。加えて `sendGet` の非 2xx 例外に correlationId を付与する変更 → **全 GET 呼出(IssueService/MergeRequestService/PipelineService/JobService 等)の失敗例外に correlationId が載る**。`GitLabApiException.correlationId` は既定 null の追加フィールドで後方互換(値が入るだけ)。既存テストで body/status を検査しているものへの影響有無を確認する。
 - `BrowserLauncher` に成否を返す経路(`openChecked` 等)を**追加**。既存 `open(url): Unit` は不変で、他呼出(chat webview / ShowDocumentation / preferences / sidebar double-click)に影響なし。
 - `NotificationUtils` に同期表示経路 `showOnUiThread` を**追加**(既に UI スレッド上で再マーシャルしない)。既存 `show(message)`(内部 `asyncExec`)は不変で他呼出に影響なし。`notifyIfLatest` の「判定と表示を同一 UI ターンで」を成立させるために使う(§14)。
-- `GitLabEclipseStartup.stop`(`GitLabEclipseStartup.kt:82-87`)に **job-log 機能の `shutdown()`(専用 scope cancel+join → `job-logs/` 削除)呼び出しを 1 行追加**(§7.3)。既存の停止処理(LSP/CodeSuggestions/OAuth/HttpClient)には手を触れない。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)は**変更しない**(他機能が使用)。job-log は専用子 scope を新設して使う。
+- `GitLabEclipseStartup.start`(既存の起動処理)に **`job-logs/` の起動時クリア呼び出しを 1 行追加**(§7.1/§7.3・race-free)。`stop`(`GitLabEclipseStartup.kt:82-87`)は**変更しない**(停止時削除をしないため)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も**変更しない**(job-log は既存の共有 scope を利用)。専用 scope/停止フックは新設しない。
 - JobNode/PipelineNode/PropertyTester/既存 job action(retry/cancel/play)には変更なし。
 - plugin.xml は command/handler/popup を**追加**のみ(既存エントリ不変)。
 - build 依存・model・ディレクトリ構成の変更なし。
@@ -323,7 +331,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
   - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。**move 契約**: (i)`ATOMIC_MOVE` が成功する経路、(ii)`AtomicMoveNotSupportedException` での fallback、(iii)**ATOMIC_MOVE 対応だが既存 dest を `FileAlreadyExistsException`/`IOException` で拒否する provider を疑似し、`REPLACE_EXISTING` 単独 move への fallback で 2 回目書き込みが成功**すること(P2-SGn)を検証。**部分書き込み清掃**: `writeScratch` がファイル作成後に例外を投げるケースで**残存ファイルが無い**こと(P2-hZA)。
   - `JobLogGenerationRegistry` + commit/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・書込失敗・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**成功 commit が move できること(scratchHandedOff・P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)を検証。
-  - **停止ライフサイクル(§7.3)**: 専用 scope の `cancel+join` が `job-logs/` 削除より前に行われること、進行中書き込み・予約済み commit 中に停止しても dir 再作成が起きないこと(P2-hZC)。破棄済み Display への commit/notify runnable が `isDisposed` ガードで no-op になり例外を出さないこと。
+  - **ライフサイクル(§7.3)**: `job-logs/` クリアが起動時に行われ、in-flight 背景処理・予約済み commit 中に**停止しても dir 再作成が起きないこと**(停止時削除をしない=hZC/xSX/xSa)。**`asyncExec` 予約呼び出しが破棄済み Display で `SWTException` を投げても背景側が catch してスクラッチを破棄し、所有権移譲は予約成功時のみ**であること(xSc)。runnable 側 `isDisposed`/`SWTException` ガードで破棄済み Display への反映が no-op になること。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
