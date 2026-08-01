@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。**
 
 ---
 
@@ -239,7 +239,8 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 ### 14.1 原則
 
 - **大容量 I/O(GET・整形・スクラッチ書き込み)だけを背景スレッド**で行う。スクラッチは generation 専用の一時ファイルで、**可視ファイル(エディタが開く安定パス)には触れない**。
-- **共有可変状態(`JobLogGenerationRegistry` の `latest[key]` と採番カウンタ)は UI スレッドからのみ**読み書きする。UI スレッドは単一で全 runnable を直列実行するため、採番・登録・最新判定・可視ファイルへの commit・エディタ open・通知の最新性判定が**自然に不可分・直列化**される。→ **mutex・AtomicLong・refcount・所有権移譲は不要**。
+- **共有可変状態(`JobLogGenerationRegistry` の `latest[key]` と採番カウンタ)は UI スレッドからのみ**読み書きする。UI スレッドは単一で全 runnable を直列実行するため、採番・登録・最新判定・可視ファイルへの commit・エディタ open・通知の最新性判定が**自然に不可分・直列化**される。→ 旧設計の **per-key mutex・AtomicLong・refcount ライフサイクル(および refcount に紐づく所有権移譲)は不要**。
+- 唯一の「移譲」は**スクラッチ一時ファイルの破棄責務**である(background が commit runnable を予約したら破棄責務も runnable へ渡す=`scratchHandedOff`)。これは refcount のような回収カウントではなく、成功時に「誰がスクラッチを消すか」を一意に決める単純なフラグで、§8.1 手順 4/8 のとおり。この移譲は必須(背景 finally が予約済み runnable より先にスクラッチを消すのを防ぐ=P1-b5c)。
 
 ### 14.2 プロトコル
 
@@ -310,7 +311,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
   - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。**move 契約**: (i)`ATOMIC_MOVE` が成功する経路、(ii)`AtomicMoveNotSupportedException` での fallback、(iii)**ATOMIC_MOVE 対応だが既存 dest を `FileAlreadyExistsException`/`IOException` で拒否する provider を疑似し、`REPLACE_EXISTING` 単独 move への fallback で 2 回目書き込みが成功**すること(P2-SGn)を検証。
-  - `JobLogGenerationRegistry` + commit/通知 runnable(UI スレッド直列実行を模したドライバで): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・書込失敗・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと(§14.4)を検証。
+  - `JobLogGenerationRegistry` + commit/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・書込失敗・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**成功 commit が move できること(scratchHandedOff・P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)を検証。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
