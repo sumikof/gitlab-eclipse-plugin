@@ -159,6 +159,18 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.DisplayJobLog"
+                name="Display Log"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.DownloadArtifacts"
+                name="Download Artifacts"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.CreatePipeline"
                 name="Create Pipeline from Current Branch"
                 categoryId="gitlab-eclipse-plugin">
@@ -554,6 +566,16 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.PlayJob"
                 class="com.gitlab.eclipse.ci.actions.JobActionHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.DisplayJobLog"
+                class="com.gitlab.eclipse.ci.actions.DisplayJobLogHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.DownloadArtifacts"
+                class="com.gitlab.eclipse.ci.actions.DownloadArtifactsHandler"
         />
 
         <handler
@@ -1024,6 +1046,30 @@
                                 <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
                                 <test property="com.gitlab.eclipse.node.canPlay"/>
                             </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.DisplayJobLog"
+                    label="Display Log">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.DownloadArtifacts"
+                    label="Download Artifacts">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
                         </iterate>
                     </with>
                 </visibleWhen>
