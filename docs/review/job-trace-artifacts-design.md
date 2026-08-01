@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映 / **v5 R4(P1×1+P2×2: per-key エントリで stable mutex 維持・所有権移譲つき exactly-once refcount 解放・ATOMIC_MOVE 既存宛先拒否も fallback する堅牢 move 手順)反映**。
+- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映 / **v5 R4(P1×1+P2×2: per-key エントリで stable mutex 維持・所有権移譲つき exactly-once refcount 解放・ATOMIC_MOVE 既存宛先拒否も fallback する堅牢 move 手順)反映 / **v6 R5(P1×1+P2×2: entry.latest 代入も mutex 直列化・supersede 済み失敗のユーザー通知抑止・move fallback 試験を新契約に更新)反映**。
 
 ---
 
@@ -131,9 +131,9 @@ VSCode 実装の実挙動(実ソースで確定):
    4. **コミット critical section(per-key mutex 内で不可分に実行)**: (a) 本 `generation` が同 key の**最新**か確認。最新でなければ**スクラッチを破棄して終了**(可視ファイルへ move しない=stale な巻き戻りを起こさない=P1-203)。(b) 最新なら、スクラッチを可視ファイルへ `ATOMIC_MOVE` で置換し、`asyncExec` で UI 反映を予約する。**generation 判定と atomic move は同一 mutex 区間で行い、判定→置換の割り込みを許さない**。
    5. **UI 反映(`asyncExec` runnable)**: runnable 冒頭で **再度**本 `generation` が同 key の最新か確認する(判定〜runnable 実行の間に後発が開始しても古い結果を表示しない=P2-117)。stale なら何もしない。最新なら `JobLogEditorOpener.openOrReload(fileStore)`(§7.2)で新規オープンまたは既存エディタの明示再読込。
    6. `GitLabApiException`:
-      - statusCode == 404 → 「ログが存在しないかアクセスできません」**非断定**通知 + 監査ログ(status/correlationId、token/body 非出力)。
-      - それ以外 → generic 通知 + 監査ログ。
-   7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ generic 通知 + 監査ログ。スクラッチ一時ファイルは finally で破棄。
+      - statusCode == 404 → 監査ログ(status/correlationId、token/body 非出力)を残し、**本実行がまだ最新(`myGen == entry.latest`)のときのみ**「ログが存在しないかアクセスできません」**非断定**通知(P2-SGk: supersede 済みなら通知抑止)。
+      - それ以外 → 監査ログを残し、**最新のときのみ** generic 通知。
+   7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ 監査ログを残し、**最新のときのみ** generic 通知。スクラッチ一時ファイルは finally で破棄。
    8. `CancellationException` → rethrow。終端 `catch (Exception)` で log+notify。`finally` では **スクラッチ一時ファイルを削除**し、**`handedOff==false` のとき refcount を exactly-once で −1**(atomic decrement、§14)する。**mutex(=per-key エントリ)は破棄しない**(同一 mutex オブジェクトを key 寿命の間維持=P1-224)。UI runnable を予約した場合は所有権が UI runnable に移り、そちらが −1 する(P2-223)。エントリ(mutex/latest)の実回収は refcount 0 の atomic decrement 時のみ。
 
 ### 8.2 Download Artifacts
@@ -200,6 +200,7 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
 | artifacts ブラウザ起動失敗 | `openChecked`→false/例外 | generic 通知 + 構造化監査ログ。 |
 
 - 監査ログ・例外メッセージに token / レスポンスボディを出さない(NFR-2a)。
+- **supersede 済み実行の失敗はユーザー通知を抑止**し監査ログのみ残す(P2-SGk): 先発が後発に supersede された後で失敗しても、後発が正常表示中に古い「取得できない」通知を出さない。判定はユーザー通知の直前に `myGen == entry.latest` で行う(監査は常に出す)。
 
 ## 12. タイムアウトとリトライ
 
@@ -225,8 +226,8 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
 - **coordinator エントリと generation ライフサイクル(P1-132/P1-224/P2-223 反映)**:
   - coordinator は `ConcurrentHashMap<JobLogKey, Entry>` を持ち、`Entry = { mutex: Mutex(stable), latest: Long, refcount: Int }`。**mutex・latest・refcount は同じ per-key エントリに属し**、エントリの取得・破棄は `compute`/`computeIfAbsent` による**アトミックな map 操作**で行う(取得と破棄が競合しない)。
   - `generation` は**プロセス内単調増加で決して再利用しないトークン**(全 key 共通 `AtomicLong`)。UI runnable 再確認で **ABA が起きない**。
-  - **開始(atomic `compute`)**: エントリを get-or-create し `refcount++`、`myGen = counter.incrementAndGet()`、`entry.latest = myGen`。
-  - **commit critical section**: `entry.mutex.withLock { if (myGen == entry.latest) { atomic move; scheduleUi=true } }`。mutex は**エントリ寿命の間ずっと同一オブジェクト**なので、同 key の B と C の「判定+置換」は相互排他され、判定と move の間に他 generation が割り込めない(P1-224 の巻き戻り再発を封じる)。
+  - **開始**: エントリを get-or-create(`compute` で `refcount++`)し `myGen = counter.incrementAndGet()`。**`entry.latest = myGen` の代入は `entry.mutex.withLock` 内で行う**(P1-SGg 反映)。`entry.latest` の読み書きを**すべて同一 mutex で直列化**し、開始側の最新値更新が commit の判定と競合しないようにする(map の atomicity だけに依存しない)。
+  - **commit critical section**: `entry.mutex.withLock { if (myGen == entry.latest) { atomic move; scheduleUi=true } }`。mutex は**エントリ寿命の間ずっと同一オブジェクト**。`entry.latest` の更新(開始)も判定+move(commit)も同一 mutex 下なので、B の判定直後に C が mutex 外で latest を更新して B が古い scratch を move する経路が消える(P1-224/P1-SGg)。
   - **mutex を finally で破棄しない**: `finally` はスクラッチ一時ファイルの削除のみ。mutex(=エントリ)の回収は refcount が 0 になった時のみ、後述の atomic decrement で行う(mutex を毎回作り直さない)。
   - **exactly-once refcount 解放と所有権受け渡し(P2-223)**: 開始時の `+1` は、
     - commit で UI runnable を予約した場合のみ**所有権を UI runnable へ移譲**(背景側は減算しない、`handedOff=true`)。UI runnable は完了時(最新で open/reload した場合も、冒頭再確認で stale と判った場合も)に**必ず −1**。
@@ -276,8 +277,8 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
   - `stripTraceFormatting`: ANSI SGR/CSI 除去、`section_start/end` 除去、`\r` overwrite、改行正規化、空入力/非制御入力の恒等性を TDD。
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
-  - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、**既存 dest への 2 回目書き込み成功**(REPLACE_EXISTING+ATOMIC_MOVE と非対応時 fallback)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。
-  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)、(c) 背景 `finally` が UI runnable より先に走っても `latest[key]` が保持され判定でき、単調非再利用トークンで ABA が起きないこと、(d) **同一 mutex オブジェクトが key 寿命中維持され** B/C の commit が相互排他されること(P1-224)、(e) **全終了経路(pin 不一致/404/timeout/IO/書込失敗/cancel/stale-at-commit)で refcount が exactly-once 減算されエントリがリークしないこと**(P2-223・各失敗経路の cleanup テスト)を検証。
+  - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。**move 契約**: (i)`ATOMIC_MOVE` が成功する経路、(ii)`AtomicMoveNotSupportedException` での fallback、(iii)**ATOMIC_MOVE 対応だが既存 dest を `FileAlreadyExistsException`/`IOException` で拒否する provider を疑似し、`REPLACE_EXISTING` 単独 move への fallback で 2 回目書き込みが成功**すること(P2-SGn)を検証。
+  - `JobLogRequestCoordinator`: **応答順逆転**で (a) 可視ファイルへの置換が最新 generation のみで起こり stale は可視ファイルを触らないこと(commit critical section)、(b) generation 判定後〜UI runnable 実行前に最新化した場合に stale runnable が open/reload しないこと(UI 再確認)、(c) 背景 `finally` が UI runnable より先に走っても `latest[key]` が保持され判定でき、単調非再利用トークンで ABA が起きないこと、(d) **同一 mutex オブジェクトが key 寿命中維持され** B/C の commit が相互排他されること(P1-224)、(e) **全終了経路(pin 不一致/404/timeout/IO/書込失敗/cancel/stale-at-commit)で refcount が exactly-once 減算されエントリがリークしないこと**(P2-223・各失敗経路の cleanup テスト)、(f) **supersede 済み実行の失敗がユーザー通知を出さず監査のみ残すこと**(P2-SGk)、(g) `entry.latest` の代入が mutex 下で行われ、開始側の最新更新と commit の判定が競合しないこと(P1-SGg)を検証。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
