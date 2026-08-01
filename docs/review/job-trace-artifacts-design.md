@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。** → **v8.6: 同一プロセス OSGi 再起動(Vk1K9)対策にセッション別ディレクトリ `job-logs/<sessionId>/`(起動時は他セッションのみ掃除)、notifyIfLatest の予約も try/catch(SWTException) で no-op 化し背景 launch/共有 scope へ例外を漏らさない(Vk1K-)。**
 
 ---
 
@@ -90,7 +90,7 @@ VSCode 実装の実挙動(実ソースで確定):
 | `JobLogFileStore` | 新規 | (a) 整形テキストを**generation 専用スクラッチ一時ファイル**へ書き込む(**背景スレッド**・大容量 I/O を UI 外に)。(b) スクラッチを可視ファイルへ**堅牢な置換 move**(§7.1)で commit する(**UI スレッド**・高速なリネームのみ)。ユーザー専用状態ディレクトリ・接続名前空間・権限・symlink 対策(§7.1)。 | 背景(書込)/ UI(move) |
 | `JobLogEditorOpener` | 新規 | 与えられた `IFileStore` を開く。**既存エディタがあれば明示的に再読込**、無ければ `IDE.openEditorOnFileStore` で新規オープン(§7.2)。書き込みは持たない。 | UI |
 | `JobLogGenerationRegistry` | 新規 | `Map<JobLogKey, Long>`(key→最新 generation)と単調カウンタを持つ。**UI スレッドからのみ触れる**(採番・登録・最新判定すべて UI スレッド)。mutex/AtomicLong/refcount は**持たない**(§14)。 | UI 専有 |
-| `job-logs/` 起動時クリア | 新規(小) | `GitLabEclipseStartup.start` で前回セッション分の `job-logs/` をクリア(起動時=in-flight 無し=race-free、§7.1/§7.3)。停止フック・専用 scope は持たない。 | 起動時 |
+| セッション別 `job-logs/<sessionId>/` + 起動時クリア | 新規(小) | activation 毎に一意セッションディレクトリを使い、`GitLabEclipseStartup.start` で**他セッションのみ** best-effort 削除(§7.1/§7.3)。停止フック・専用 scope は持たない。同一プロセス再起動でも新旧が非共有。 | 起動時 |
 | `DisplayJobLogHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → UI で採番・登録(registry)→ 背景コルーチンで pin→getTrace→strip→スクラッチ書込 → `asyncExec` で最新判定→commit(move)→opener 起動。エラー/404 は `notifyIfLatest`・監査。 | UI→背景→UI |
 | `BrowserLauncher.openChecked(url): Boolean`(または結果型) | 変更(追加経路) | 既存 `open(url): Unit` は不変のまま、**成否を返す**経路を追加。artifacts ハンドラが失敗を検知して通知・監査できるようにする。 | UI |
 | `DownloadArtifactsHandler` | 新規 | thin SWT `AbstractHandler`。UI で JobNode 解決 → webUrl 検証 → URL 構築 → `openChecked` → 失敗時に通知+構造化監査。ネットワーク I/O なし。 | UI |
@@ -98,7 +98,7 @@ VSCode 実装の実挙動(実ソースで確定):
 
 ### 7.1 一時ファイルの安全な取り扱い(P1-2/P1-3 反映)
 
-- **配置**: OS 共有一時ディレクトリ(`/tmp` 等)を使わず、**プラグインのユーザー専用状態ディレクトリ**(`Platform.getStateLocation(bundle)` 配下の `job-logs/` サブディレクトリ)に置く。state location は各ユーザーのワークスペース metadata 配下で、共有 world-writable ではない。
+- **配置(セッション別)**: OS 共有一時ディレクトリ(`/tmp` 等)を使わず、**プラグインのユーザー専用状態ディレクトリ**(`Platform.getStateLocation(bundle)` 配下)に置く。さらに**この activation 専用のセッションサブディレクトリ** `job-logs/<sessionId>/`(`sessionId` = start 時に一意採番)に置く(P2-Vk1K9)。同一 Eclipse プロセス内で bundle が stop→start しても、**新 activation は旧 activation とファイル/ディレクトリを共有しない**ため、旧 activation の in-flight I/O が新セッションの scratch/dest を壊す/新起動時掃除が旧処理の作業ファイルを消す、という競合が起きない。state location は各ユーザーのワークスペース metadata 配下で world-writable ではない。
 - **接続名前空間化(NFR-5)**: ファイル/エディタ識別子に `normalizeInstanceUrl(instanceUrl)` + `authFingerprint` の**非可逆ハッシュ**(例: SHA-256 の先頭 N 桁)を含める。ファイル名例: `job-<connHash>-<projectId>-<jobId>.log`。別インスタンス/別アカウントの同一 (projectId, jobId) は別 fileStore になる。
 - **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名(generation 専用スクラッチ)へ行い、**既存宛先を置換する堅牢な move 手順**(下記)で可視ファイルを置換する(部分書き込みの露出防止・2 回目以降の再実行で既存 dest を確実に置換)。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。テストで**既存 dest への 2 回目書き込みが atomic 経路・fallback 経路の双方で成功**することを検証。
 - **`writeScratch` の部分書き込み自己清掃(P2-hZA)**: `writeScratch` がスクラッチファイル作成後に disk-full/権限/IO などで例外を投げる場合、呼び出し側は戻り値 `Path` を受け取れず背景 finally も削除できない。よって **`writeScratch` 自身が失敗時に作成済み(部分)ファイルを削除してから rethrow** する(機密 trace 断片を state ディレクトリに残さない)。テストで途中書き込み失敗時に残存ファイルが無いことを検証。
@@ -107,13 +107,13 @@ VSCode 実装の実挙動(実ソースで確定):
   2. `AtomicMoveNotSupportedException`、**または既存 dest を拒否した `FileAlreadyExistsException`/その他 `IOException`** を捕捉した場合、同一ディレクトリ内で `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING)`(非原子・極短時間の窓を許容)へフォールバックし、debug ログに残す。
   3. フォールバックも失敗した場合は `IOException` として §8.1 手順 7 のエラー処理(通知+監査、エディタ開かず)へ。
   この二段構えにより、「atomic move は対応するが既存 dest を拒否する provider」でも 2 回目以降の更新が失敗しない。
-- **クリーンアップ(起動時・race-free)**: `job-logs/` の掃除は **プラグイン停止時ではなく起動時**(`GitLabEclipseStartup.start`、最初の Display Log より前)に行う。起動時は job-log の in-flight 背景処理も予約済み UI runnable も存在しないため、ディレクトリのクリアは**構造的に競合しない**(停止時削除で生じる「削除後に in-flight が dir 再作成」「移譲済み commit runnable が削除後に走る」等を根絶=§7.3)。セッション内は同名を堅牢 move で上書きしファイルを保持、**次回起動で前回セッション分を掃除**。generation 専用スクラッチは commit runnable の finally(成功経路)または背景 finally(非移譲経路)、および `writeScratch` の自己清掃(部分書き込み時)で破棄。
+- **クリーンアップ(起動時・セッション隔離)**: 起動時(`GitLabEclipseStartup.start`)に、**自セッション以外の** `job-logs/<other>/` サブディレクトリを best-effort で削除する(前回セッション分の掃除)。**自セッションのディレクトリは触らない**。旧 activation が同一プロセス内でまだ動いていても、それは自分のセッションディレクトリに書くだけで新セッションと交わらない。旧処理が消された自分のディレクトリを再作成しても、それは次回起動で掃除される(bounded・user-private)。→ 停止時削除が生む競合(hZC/xSX/xSa)も、同一プロセス再起動の競合(Vk1K9)も構造的に消える。セッション内は同名を堅牢 move で上書きしファイルを保持。generation 専用スクラッチは commit runnable の finally(成功経路)または背景 finally(非移譲経路)、および `writeScratch` の自己清掃(部分書き込み時)で破棄。
 
 ### 7.3 ライフサイクルと破棄済み Display ガード(P2-hZC/xSX/xSa/xSc 反映)
 
-停止時にディレクトリ削除を行うと、(1) UI キューへ移譲済みの commit runnable は背景 scope の子ではないため cancel+join で待てず削除後に走る(xSX)、(2) 同期 `sendGet`/ファイル書き込みは cancel に協調しないため join timeout 後にコルーチンが `writeScratch` へ進み削除済み dir を再作成する(xSa)——という競合が残る。これらは「停止時に消す」設計そのものが原因なので、**掃除を起動時に移して競合を構造的に消す**。
+停止時にディレクトリ削除を行うと、移譲済み commit runnable(xSX)や非協調 I/O(xSa)との競合が残る。さらに同一プロセス内 stop→start では旧 activation の処理が新 start と共存し得る(Vk1K9)。これらは「共有ディレクトリを消す」設計が原因なので、**セッション別ディレクトリ + 起動時に他セッションのみ掃除**で競合を構造的に消す。
 
-- **起動時掃除(race-free)**: §7.1 のとおり `job-logs/` のクリアは `GitLabEclipseStartup.start`(最初の Display Log より前)で行う。起動時は in-flight 背景処理も予約済み UI runnable も無いため競合しない。**停止時には何も削除しない**(専用 scope の cancel+join・停止順序は不要)。
+- **セッション隔離掃除**: §7.1 のとおり各 activation は `job-logs/<sessionId>/` を使い、`GitLabEclipseStartup.start` で**自セッション以外**のサブディレクトリのみ best-effort 削除。自セッション・他 activation の作業ファイルを途中で消さない。**停止時には何も削除しない**(専用 scope の cancel+join・停止順序は不要)。同一プロセス再起動でも新旧セッションがファイルを共有しないため安全(Vk1K9)。
 - **scope**: job-log の背景処理は既存の共有 `CoroutineScope(Dispatchers.IO)`(`WorkspaceModule.kt:22`、CI write handlers と同じ)で launch してよい(停止時削除をしないため専用 scope の追跡は不要)。停止時に in-flight の GET が残っても、request timeout(§12)で自然終了し、書き込み先は次回起動で掃除される。
 - **`writeScratch` の部分書き込み自己清掃(hZA)**: §7.1 のとおり、失敗時は自身が部分ファイルを削除。
 - **`asyncExec` の二重ガード(xSc)**:
@@ -214,7 +214,7 @@ fun openChecked(url: String): Boolean   // 既存 open(url): Unit は不変
 
 // NotificationUtils(追加経路): 既に UI スレッド上で再マーシャルせず同期表示
 fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExec は不変
-// notifyIfLatest(§14): asyncExec { if (display.isDisposed) return; if (latest[key]==myGen) NotificationUtils.showOnUiThread(message) }
+// notifyIfLatest(§14): try { asyncExec { if (display.isDisposed) return; if (latest[key]==myGen) NotificationUtils.showOnUiThread(message) } } catch (SWTException) { /* no-op */ }
 ```
 
 `JobLogKey` = `(connHash: String, projectId: Long, jobId: Long)`。
@@ -271,7 +271,18 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
    判定・move・open・失敗処理・破棄が同一 UI runnable 内で連続実行されるため割り込みが入らない(mutex 不要)。
 4. **失敗時の通知(UI スレッド・同一ターンで判定+表示)**: 全失敗経路(pin 不一致 / 404 / その他 GitLabApiException / timeout / IO / 書込失敗 / 終端 catch)は共通の **`notifyIfLatest(key, myGen, message)`** を使う。
    - **注意**: 既存 `NotificationUtils.show` は本体を **さらに `currentDisplay.asyncExec` で再マーシャル**する(`NotificationUtils.kt:11-26`)。よって `asyncExec { if (latest==myGen) NotificationUtils.show(msg) }` は、判定(turn N)と実際の popup 表示(turn N+1)が**別 UI ターン**になり、その間に後発が `latest` を更新すると stale 通知が出る(R7 指摘)。
-   - **対策**: 既に UI スレッド上にいる前提で **再マーシャルせず popup を同期的に開く経路**を用意する(`NotificationUtils.showOnUiThread(message)` を追加。既存 `show` は不変)。`notifyIfLatest` は `asyncExec { if (latest[key] == myGen) NotificationUtils.showOnUiThread(message) }` とし、**最新性判定と popup.open を同一 UI ターン**で行う。これで判定〜表示間に後発が割り込む余地が無い。
+   - **対策**: 既に UI スレッド上にいる前提で **再マーシャルせず popup を同期的に開く経路**を用意する(`NotificationUtils.showOnUiThread(message)` を追加。既存 `show` は不変)。`notifyIfLatest` は次のとおり、**予約(`asyncExec`)呼び出し自体を `try/catch (SWTException)` で囲み**(破棄済み Display で `asyncExec` が投げても no-op)、runnable 内で判定と表示を同一 UI ターンで行う:
+     ```
+     fun notifyIfLatest(key, myGen, message) {
+       try {
+         display.asyncExec {
+           if (display.isDisposed) return@asyncExec
+           if (latest[key] == myGen) NotificationUtils.showOnUiThread(message)
+         }
+       } catch (e: SWTException) { /* Display 破棄済み: 通知 no-op */ }
+     }
+     ```
+     これで **notifyIfLatest は決して例外を投げない**(Vk1K- 反映: 背景 `launch` から SWTException が漏れて plain Job の共有 scope が他機能ごと cancel されるのを防ぐ)。判定〜表示間に後発が割り込む余地も無い。
    - **監査ログは背景側で即時・無条件**に残す(通知抑止と独立)。
 5. **キャンセル**: `CancellationException` は rethrow(通知しない)。スクラッチは finally で破棄。
 
@@ -310,7 +321,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 - `GitLabApiClient` に公開メソッド 1 つ追加(`fetchText`)。加えて `sendGet` の非 2xx 例外に correlationId を付与する変更 → **全 GET 呼出(IssueService/MergeRequestService/PipelineService/JobService 等)の失敗例外に correlationId が載る**。`GitLabApiException.correlationId` は既定 null の追加フィールドで後方互換(値が入るだけ)。既存テストで body/status を検査しているものへの影響有無を確認する。
 - `BrowserLauncher` に成否を返す経路(`openChecked` 等)を**追加**。既存 `open(url): Unit` は不変で、他呼出(chat webview / ShowDocumentation / preferences / sidebar double-click)に影響なし。
 - `NotificationUtils` に同期表示経路 `showOnUiThread` を**追加**(既に UI スレッド上で再マーシャルしない)。既存 `show(message)`(内部 `asyncExec`)は不変で他呼出に影響なし。`notifyIfLatest` の「判定と表示を同一 UI ターンで」を成立させるために使う(§14)。
-- `GitLabEclipseStartup.start`(既存の起動処理)に **`job-logs/` の起動時クリア呼び出しを 1 行追加**(§7.1/§7.3・race-free)。`stop`(`GitLabEclipseStartup.kt:82-87`)は**変更しない**(停止時削除をしないため)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も**変更しない**(job-log は既存の共有 scope を利用)。専用 scope/停止フックは新設しない。
+- `GitLabEclipseStartup.start`(既存の起動処理)に **セッション ID 採番 + 他セッション `job-logs/<other>/` の起動時クリア呼び出しを追加**(§7.1/§7.3)。`stop`(`GitLabEclipseStartup.kt:82-87`)は**変更しない**(停止時削除をしないため)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も**変更しない**(job-log は既存の共有 scope を利用)。専用 scope/停止フックは新設しない。
 - JobNode/PipelineNode/PropertyTester/既存 job action(retry/cancel/play)には変更なし。
 - plugin.xml は command/handler/popup を**追加**のみ(既存エントリ不変)。
 - build 依存・model・ディレクトリ構成の変更なし。
@@ -331,7 +342,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
   - `JobLogFileStore`: 接続名前空間化(別 connHash→別パス)、symlink 拒否、(POSIX 環境で)権限 0600 を検証。**move 契約**: (i)`ATOMIC_MOVE` が成功する経路、(ii)`AtomicMoveNotSupportedException` での fallback、(iii)**ATOMIC_MOVE 対応だが既存 dest を `FileAlreadyExistsException`/`IOException` で拒否する provider を疑似し、`REPLACE_EXISTING` 単独 move への fallback で 2 回目書き込みが成功**すること(P2-SGn)を検証。**部分書き込み清掃**: `writeScratch` がファイル作成後に例外を投げるケースで**残存ファイルが無い**こと(P2-hZA)。
   - `JobLogGenerationRegistry` + commit/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・書込失敗・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**成功 commit が move できること(scratchHandedOff・P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)を検証。
-  - **ライフサイクル(§7.3)**: `job-logs/` クリアが起動時に行われ、in-flight 背景処理・予約済み commit 中に**停止しても dir 再作成が起きないこと**(停止時削除をしない=hZC/xSX/xSa)。**`asyncExec` 予約呼び出しが破棄済み Display で `SWTException` を投げても背景側が catch してスクラッチを破棄し、所有権移譲は予約成功時のみ**であること(xSc)。runnable 側 `isDisposed`/`SWTException` ガードで破棄済み Display への反映が no-op になること。
+  - **ライフサイクル(§7.3)**: 起動時掃除が**他セッションディレクトリのみ**を対象とし自セッション/他 activation の作業ファイルを消さないこと、同一プロセス stop→start でも新旧が非共有で競合しないこと(hZC/xSX/xSa/Vk1K9)。**commit の `asyncExec` 予約が破棄済み Display で `SWTException` を投げても背景側が catch してスクラッチを破棄し所有権移譲は予約成功時のみ**であること、**`notifyIfLatest` が予約失敗(SWTException)でも例外を投げず no-op**になり背景 launch/共有 scope を巻き込まないこと(xSc/Vk1K-)。runnable 側 `isDisposed`/`SWTException` ガードで破棄済み Display への反映が no-op になること。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
 - **手動(実機・PR 説明文にチェックリスト)**: Display Log 表示/整形/404 非断定通知/手動更新/連続実行で最新反映、Download Artifacts のブラウザ起動と webUrl 不正時通知、接続変更時 pin 挙動、別アカウント同一 ID ジョブでの非混在、権限 403 時の通知。
 - ベースライン: 既存 36 失敗(SWT-env)は不変。検証=対象テスト PASS + ベースライン外の新規失敗ゼロ + 変更ファイル detekt 0。
