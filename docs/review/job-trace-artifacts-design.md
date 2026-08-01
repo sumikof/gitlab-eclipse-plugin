@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。**
 
 ---
 
@@ -128,12 +128,27 @@ VSCode 実装の実挙動(実ソースで確定):
    1. `pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)` で接続固定。`null`(不一致/Unstable)→ 監査ログ(即時)+ `notifyIfLatest(key, myGen, …)`(§14・UI 冒頭で最新判定)で通知して `return@launch`。
    2. `JobTraceService.getTrace(projectId, job.id, connection)`。
    3. 成功: `stripTraceFormatting(raw)` → **本 generation 専用のスクラッチ一時ファイル**へ背景スレッドで安全書き込み(§7.1)。可視ファイル(安定パス)は触れない。
-   4. **commit を UI スレッドへ予約**: `asyncExec { if (latest[key] != myGen) { スクラッチ破棄; return }; JobLogFileStore.commit(スクラッチ→可視ファイル, §7.1 堅牢 move); JobLogEditorOpener.openOrReload(fileStore) }`。判定・move・open は同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。
+   4. **commit を UI スレッドへ予約(スクラッチ所有権を移譲)**: 成功時のみ commit runnable を予約し、**スクラッチの所有権をこの runnable へ移す**(`scratchHandedOff=true`)。
+      ```
+      asyncExec {
+        try {
+          if (latest[key] != myGen) return@asyncExec           // supersede 済み→可視ファイル不変(finally で破棄)
+          val fileStore = JobLogFileStore.commit(key, scratch) // 堅牢 move(§7.1)。ここは UI スレッド
+          JobLogEditorOpener.openOrReload(fileStore)           // §7.2
+        } catch (e: Exception) {                               // move/fallback/open が UI 内で失敗(P2-b5e)
+          writeAudit(...)                                      // 監査は常時
+          if (latest[key] == myGen) NotificationUtils.showOnUiThread(generic)  // latest-gated・同一ターン
+        } finally {
+          deleteQuietly(scratch)                               // スクラッチはこの runnable が破棄(P1-b5c)
+        }
+      }
+      ```
+      判定・move・open・失敗処理・スクラッチ破棄がすべて同一 UI runnable 内で直列=不可分(mutex 不要=§14.2)。commit runnable 実行前に背景 finally がスクラッチを消さないよう、**所有権移譲後は背景側で破棄しない**(手順 8)。
    6. `GitLabApiException`:
       - statusCode == 404 → 監査ログ(status/correlationId、token/body 非出力)を即時に残し、`notifyIfLatest` で「ログが存在しないかアクセスできません」**非断定**通知(supersede 済みなら UI runnable 冒頭の最新判定で抑止=P2-SGk/U32)。
       - それ以外 → 監査ログを即時に残し、`notifyIfLatest` で generic 通知。
    7. `HttpTimeoutException`/`IOException`(GET・ファイル書き込み双方)→ 監査ログを即時に残し、`notifyIfLatest` で generic 通知。スクラッチ一時ファイルは finally で破棄。
-   8. `CancellationException` → rethrow(通知しない=意図的キャンセル)。終端 `catch (Exception)` は log + 監査(即時)+ `notifyIfLatest`。`finally` は **スクラッチ一時ファイルの削除のみ**(refcount/mutex/エントリ回収は無い=§14 の UI スレッド専有モデル。`latest[key]` は UI スレッド上で自然に上書き・停止時破棄)。
+   8. `CancellationException` → rethrow(通知しない=意図的キャンセル)。終端 `catch (Exception)` は log + 監査(即時)+ `notifyIfLatest`。`finally` は **スクラッチ一時ファイルの削除のみ**、ただし **`scratchHandedOff==false` のとき(=commit runnable を予約していない全経路: pin 不一致・GET 失敗・書込失敗・キャンセル)に限る**(所有権を移譲した成功経路では commit runnable の finally が破棄する=P1-b5c)。GET/書込より前に失敗した経路はスクラッチ未作成のため何もしない。refcount/mutex/エントリ回収は無い(§14 の UI スレッド専有モデル。`latest[key]` は UI スレッド上で自然に上書き・停止時破棄)。
 
 ### 8.2 Download Artifacts
 
@@ -230,11 +245,12 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 
 1. **採番と登録(UI スレッド、背景 launch の前)**: `myGen = ++counter; latest[key] = myGen`。UI スレッド専有なので `counter` は単調、`latest[key]` の巻き戻しは起こり得ない(小 gen が後で大 gen を上書きする経路が構造的に無い)。
 2. **背景(`Dispatchers.IO`)**: `pinnedConnectionFor` → `getTrace` → `stripTraceFormatting` → **スクラッチ一時ファイルへ書き込み**(可視ファイル不変)。
-3. **commit(UI スレッド、単一 `asyncExec`)**: この runnable 内はすべて UI スレッドで直列:
-   - `if (latest[key] != myGen) { スクラッチ破棄; return }` — supersede 済みなら**可視ファイルを一切触らず終了**(巻き戻り不能)。
-   - 最新なら `JobLogFileStore` の**堅牢な置換 move**(§7.1)でスクラッチ→可視ファイルへ commit(高速なリネームのみ・大容量書込は済み)。
-   - `JobLogEditorOpener.openOrReload(fileStore)`(§7.2)。
-   判定・move・open が同一 UI runnable 内で連続実行されるため、割り込みが入らない(mutex 不要)。
+3. **commit(UI スレッド、単一 `asyncExec`、成功経路のみ予約)**: スクラッチ書込成功時のみ予約し、**スクラッチ所有権をこの runnable に移す**。runnable 内はすべて UI スレッドで直列:
+   - `if (latest[key] != myGen) return` — supersede 済みなら**可視ファイルを一切触らず終了**(巻き戻り不能)。
+   - 最新なら `JobLogFileStore.commit`(§7.1 堅牢 move)でスクラッチ→可視ファイル(高速なリネームのみ・大容量書込は済み)→ `JobLogEditorOpener.openOrReload`(§7.2)。
+   - **commit/open が失敗しても背景の catch では捕捉できない**(別 runnable・別ターン)。よって runnable 内 `try/catch` で受け、失敗時も監査 + latest-gated 通知(`showOnUiThread`)を**この runnable 内**で行う(P2-b5e)。
+   - `finally` で**スクラッチを破棄**(stale return・commit 成否のいずれでも)。背景 finally は所有権移譲後にスクラッチを消さない(P1-b5c)。
+   判定・move・open・失敗処理・破棄が同一 UI runnable 内で連続実行されるため割り込みが入らない(mutex 不要)。
 4. **失敗時の通知(UI スレッド・同一ターンで判定+表示)**: 全失敗経路(pin 不一致 / 404 / その他 GitLabApiException / timeout / IO / 書込失敗 / 終端 catch)は共通の **`notifyIfLatest(key, myGen, message)`** を使う。
    - **注意**: 既存 `NotificationUtils.show` は本体を **さらに `currentDisplay.asyncExec` で再マーシャル**する(`NotificationUtils.kt:11-26`)。よって `asyncExec { if (latest==myGen) NotificationUtils.show(msg) }` は、判定(turn N)と実際の popup 表示(turn N+1)が**別 UI ターン**になり、その間に後発が `latest` を更新すると stale 通知が出る(R7 指摘)。
    - **対策**: 既に UI スレッド上にいる前提で **再マーシャルせず popup を同期的に開く経路**を用意する(`NotificationUtils.showOnUiThread(message)` を追加。既存 `show` は不変)。`notifyIfLatest` は `asyncExec { if (latest[key] == myGen) NotificationUtils.showOnUiThread(message) }` とし、**最新性判定と popup.open を同一 UI ターン**で行う。これで判定〜表示間に後発が割り込む余地が無い。
@@ -251,7 +267,7 @@ fun showOnUiThread(message: String)     // 既存 show(message): 内部 asyncExe
 
 ### 14.4 テスト
 
-UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(先発の背景完了を後発より遅らせる)させ、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定で通知を出さず監査のみ残すこと、(c) `latest[key]` が UI スレッドからのみ更新され単調で巻き戻らないこと、を検証。
+UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(先発の背景完了を後発より遅らせる)させ、可視ファイル/エディタが**後発(最新)**になり先発 commit runnable が可視ファイルを触らないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定で通知を出さず監査のみ残すこと、(c) `latest[key]` が UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **背景 finally が commit runnable 実行前に走ってもスクラッチが消えず**(所有権移譲)成功 commit が move できること(P1-b5c)、(e) **commit runnable 内で move/fallback/open が例外を投げても runnable 内 try/catch で監査+latest-gated 通知が行われ例外が UI ループへ漏れないこと**(P2-b5e)、を検証。
 
 ## 15. 認証と認可
 
