@@ -150,7 +150,9 @@ internal fun launchDisplayJobLog(
  * still the active activation's latest generation for [key] (design §14.2 step 3). The gate and
  * the open/reload happen in the same UI turn, so they are atomic w.r.t. any newer run. asyncExec
  * itself can throw [SWTException] on a disposed Display — swallowed, never allowed to cancel the
- * shared scope.
+ * shared scope. The `currentDisplay` lookup itself can throw [IllegalStateException] from this
+ * background thread once the workbench is torn down — also swallowed: the helper must be total
+ * (never throw), or the launch's terminal catch would propagate it and cancel the shared scope.
  */
 private fun reflectLatest(log: ILog, key: JobLogKey, myGen: Long, text: String) {
   try {
@@ -171,6 +173,8 @@ private fun reflectLatest(log: ILog, key: JobLogKey, myGen: Long, text: String) 
     }
   } catch (ignored: SWTException) {
     /* asyncExec on disposed display: no-op — never let it cancel the shared scope */
+  } catch (ignored: IllegalStateException) {
+    /* workbench torn down (background-thread display lookup): nothing to reflect */
   }
 }
 
@@ -178,6 +182,9 @@ private fun reflectLatest(log: ILog, key: JobLogKey, myGen: Long, text: String) 
  * Marshals a failure notification to the UI thread and shows it ONLY if this run is still the
  * active activation's latest generation for [key] — decided and displayed in the SAME UI turn
  * via [NotificationUtils.showOnUiThread] so no stale popup can slip through (design §14.4 R7).
+ * Total (never throws): the `currentDisplay` lookup can throw [IllegalStateException] from this
+ * background thread once the workbench is torn down, and the launch's terminal catch calls this
+ * helper — an escape here would cancel the shared scope.
  */
 private fun notifyIfLatest(key: JobLogKey, myGen: Long, message: String) {
   try {
@@ -187,5 +194,7 @@ private fun notifyIfLatest(key: JobLogKey, myGen: Long, message: String) {
     }
   } catch (ignored: SWTException) {
     /* disposed: notification no-op (design §14.4) */
+  } catch (ignored: IllegalStateException) {
+    /* workbench torn down (background-thread display lookup): notification no-op */
   }
 }
