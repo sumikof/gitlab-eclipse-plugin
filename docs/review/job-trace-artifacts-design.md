@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映 / **v5 R4(P1×1+P2×1: per-key エントリで stable mutex 維持・所有権移譲つき exactly-once refcount 解放)反映**。
+- 改訂履歴: v1 初版 / v2 Codex 設計レビュー #39 R1(P1×5+P2×3)反映 / v3 R2(P1×1+P2×2: commit critical section・UI 再確認・既存エディタ明示再読込)反映 / v4 R3(P1×1+P2×2: generation 単調非再利用トークン+refcount ライフサイクル・REPLACE_EXISTING+ATOMIC_MOVE と fallback・§9 を openOrReload に統一)反映 / **v5 R4(P1×1+P2×2: per-key エントリで stable mutex 維持・所有権移譲つき exactly-once refcount 解放・ATOMIC_MOVE 既存宛先拒否も fallback する堅牢 move 手順)反映**。
 
 ---
 
@@ -99,7 +99,12 @@ VSCode 実装の実挙動(実ソースで確定):
 
 - **配置**: OS 共有一時ディレクトリ(`/tmp` 等)を使わず、**プラグインのユーザー専用状態ディレクトリ**(`Platform.getStateLocation(bundle)` 配下の `job-logs/` サブディレクトリ)に置く。state location は各ユーザーのワークスペース metadata 配下で、共有 world-writable ではない。
 - **接続名前空間化(NFR-5)**: ファイル/エディタ識別子に `normalizeInstanceUrl(instanceUrl)` + `authFingerprint` の**非可逆ハッシュ**(例: SHA-256 の先頭 N 桁)を含める。ファイル名例: `job-<connHash>-<projectId>-<jobId>.log`。別インスタンス/別アカウントの同一 (projectId, jobId) は別 fileStore になる。
-- **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名(generation 専用スクラッチ)へ行い、**既存宛先を置換する原子移動** `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)` で置換する(部分書き込みの露出防止・2 回目以降の再実行で既存 dest を確実に置換=P1-102)。`ATOMIC_MOVE` 非対応プロバイダで `AtomicMoveNotSupportedException` が出た場合は、同一ディレクトリ内での **`REPLACE_EXISTING` 単独の move**(非原子・極短時間の窓を許容)へフォールバックし、フォールバックした旨を debug ログに残す。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。テストで **既存 dest への 2 回目書き込みが成功**することを検証。
+- **安全な生成**: 既存ファイルが**シンボリックリンクの場合は追従せず失敗**(`LinkOption.NOFOLLOW_LINKS` で検査、リンクなら拒否)。書き込みは同ディレクトリ内の一時名(generation 専用スクラッチ)へ行い、**既存宛先を置換する堅牢な move 手順**(下記)で可視ファイルを置換する(部分書き込みの露出防止・2 回目以降の再実行で既存 dest を確実に置換)。可能なプラットフォームでは POSIX 権限 `rw-------`(0600)を best-effort で設定(Windows 等 POSIX 非対応は state location のユーザー専用性に依拠)。テストで**既存 dest への 2 回目書き込みが atomic 経路・fallback 経路の双方で成功**することを検証。
+- **堅牢な置換 move 手順(P1-102/P2-R4 反映)**: `Files.move` の契約上、**`ATOMIC_MOVE` 指定時は `REPLACE_EXISTING` 等の他オプションが無視され**、既存宛先を置換するか `IOException` を投げるかは**実装依存**。したがって「REPLACE_EXISTING+ATOMIC_MOVE」を頼らず、次の順で試みる:
+  1. `Files.move(scratch, dest, StandardCopyOption.ATOMIC_MOVE)` を試行。成功すれば原子的置換完了。
+  2. `AtomicMoveNotSupportedException`、**または既存 dest を拒否した `FileAlreadyExistsException`/その他 `IOException`** を捕捉した場合、同一ディレクトリ内で `Files.move(scratch, dest, StandardCopyOption.REPLACE_EXISTING)`(非原子・極短時間の窓を許容)へフォールバックし、debug ログに残す。
+  3. フォールバックも失敗した場合は `IOException` として §8.1 手順 7 のエラー処理(通知+監査、エディタ開かず)へ。
+  この二段構えにより、「atomic move は対応するが既存 dest を拒否する provider」でも 2 回目以降の更新が失敗しない。
 - **クリーンアップ**: プラグイン停止時に `job-logs/` を best-effort で削除。再実行時は同名を原子的に上書き。スクラッチ一時ファイル(generation 専用)は commit 成否に関わらず finally で破棄。
 
 ### 7.2 既存エディタの明示再読込(P2-61 反映)
