@@ -43,6 +43,9 @@ private fun sha256(value: String): ByteArray =
 
 private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 
+@Suppress("UNCHECKED_CAST")
+private fun <T> emptyArrayOf(): Array<T> = arrayOfNulls<Any?>(0) as Array<T>
+
 /**
  * REST endpoint abstraction over [GitLabHttpClient]. Builds URLs from `gitlab.url`,
  * attaches Bearer auth, aggregates paginated list responses, and parses JSON.
@@ -190,6 +193,16 @@ class GitLabApiClient(
     return PostResult(response.statusCode(), correlationId(response))
   }
 
+  /**
+   * Sends a body-less GET and returns the raw response body as text (not JSON-parsed). When
+   * [connection] is non-null, the URI base and the Bearer credential both come from the snapshot
+   * instead of the live preference store / token manager, mirroring the pinning [sendPost] already
+   * does for writes; when null, [sendGet] falls back to its own [captureConnection] read. Non-2xx
+   * → [GitLabApiException] (with correlation id); timeouts and I/O errors propagate as-is.
+   */
+  fun fetchText(path: String, connection: ConnectionSnapshot? = null): String =
+    sendGet(path, emptyMap(), connection = connection).body()
+
   private fun sendPost(
     path: String,
     query: Map<String, String>,
@@ -235,7 +248,7 @@ class GitLabApiClient(
 
     val response = httpClient.send(httpRequest)
     if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
-      throw GitLabApiException(response.statusCode(), response.body())
+      throw GitLabApiException(response.statusCode(), response.body(), correlationId(response))
     }
     return response
   }
@@ -247,9 +260,6 @@ class GitLabApiClient(
     }
     return URI.create("$base/api/v4$path?$queryString")
   }
-
-  @Suppress("UNCHECKED_CAST")
-  private fun <T> emptyArrayOf(): Array<T> = arrayOfNulls<Any?>(0) as Array<T>
 
   companion object {
     private const val PER_PAGE = 100

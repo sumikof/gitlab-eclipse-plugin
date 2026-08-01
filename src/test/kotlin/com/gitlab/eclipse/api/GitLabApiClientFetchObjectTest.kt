@@ -37,6 +37,7 @@ class GitLabApiClientFetchObjectTest : StringSpec({
     val resp = mockk<HttpResponse<String>>()
     every { resp.statusCode() } returns 404
     every { resp.body() } returns "not found"
+    every { resp.headers() } returns java.net.http.HttpHeaders.of(emptyMap()) { _, _ -> true }
     every { http.send(any()) } returns resp
     val client = GitLabApiClient(http, tokens, prefs)
 
