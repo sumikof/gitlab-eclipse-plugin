@@ -5,7 +5,7 @@
 - パリティ台帳: #7(D14 CI ドメイン)/ ロードマップ: #8 / フェーズ issue: #12
 - 参照: VSCode 拡張 `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
 - 本設計書はレビュー専用。実装 PR・マージ先には含めない。
-- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。** → **v8.6: 同一プロセス OSGi 再起動(Vk1K9)対策にセッション別ディレクトリ `job-logs/<sessionId>/`(起動時は他セッションのみ掃除)、notifyIfLatest の予約も try/catch(SWTException) で no-op 化し背景 launch/共有 scope へ例外を漏らさない(Vk1K-)。** → **v8.7: セッション dir に FileLock を持たせ、起動時掃除は tryLock 取得できた(静止した)他セッションのみ削除し稼働中の旧 activation はスキップ(Vk3fr)。** → **v9: trace 格納先を temp ファイルからインメモリ read-only エディタ入力(IStorageEditorInput/IStorage)へ変更(ユーザー選択)。ディスク由来の系統(temp 権限/NOFOLLOW/symlink・堅牢 move・セッション dir・FileLock・起動時掃除・同一プロセス再起動のファイル競合=hZA/hZC/xSX/xSa/Vk1K9/Vk3fr)を撤去。残る同一プロセス再起動の UI 反映(Vk5Pi)は registry.active フラグ(stop で false)で無効化。UI スレッド専有並行モデル・correlationId 伝播・launcher 結果化・404 非断定・notifyIfLatest の SWTException 安全化(Vk1K-/xSc)は維持。** → **v9.1: notifyIfLatest と手順4 catch の通知経路にも `!registry.active` を no-op 条件へ追加(停止済み activation の通知抑止・VluBE)。**
+- 改訂履歴: v1 初版 → v2〜v7 で Codex #39 R1〜R6 の指摘(temp 安全化・接続名前空間・責務分割・404 非断定・correlationId 伝播・launcher 結果化、および並行機構=mutex/AtomicLong/refcount ライフサイクルの逐次精緻化)を反映 → **v8: 並行モデルを「共有可変状態を UI スレッド専有」に再設計(ユーザー選択)。coordinator の mutex/AtomicLong/refcount/所有権移譲を撤去し、大容量 I/O のみ背景・採番/登録/最新判定/commit/open/通知判定を UI スレッドに集約。R2〜R6 で扱った並行バグクラスを設計から消去。temp 安全化・堅牢 move・correlationId 伝播・launcher 結果化・404 非断定は維持。** → **v8.1: R7 指摘(NotificationUtils.show の内部 asyncExec 二重マーシャルで通知の最新性判定がすり抜ける)を反映。`showOnUiThread` 同期経路を追加し判定+表示を同一 UI ターンに。** → **v8.2: 再設計版レビュー(P1×1+P2×1)反映。スクラッチ所有権を commit runnable へ移譲し背景 finally の早すぎる削除を防止、commit/open の例外を commit runnable 内 try/catch で監査+latest-gated 通知。** → **v8.3: 内部整合(P1×1+P2×1)反映。§14.1 の「所有権移譲は不要」を『refcount 由来の移譲は不要・スクラッチ破棄移譲は必須』に訂正、§21 単体テスト一覧に (d)/(e) を追加。** → **v8.4: 停止/清掃(P2×2)反映。writeScratch の部分書き込み自己清掃(hZA)、job-log 専用の追跡可能 scope を新設し stop で cancel+join→dir 削除・破棄済み Display ガード(hZC)。** → **v8.5: 停止時削除が生む競合(移譲済み commit runnable/非協調 I/O/asyncExec 自体の SWTException=xSX/xSa/xSc)を根絶するため、掃除を起動時(race-free)へ移し専用 scope/停止フックを撤去。asyncExec 予約を try/catch(SWTException)で囲み予約成功時のみ所有権移譲。** → **v8.6: 同一プロセス OSGi 再起動(Vk1K9)対策にセッション別ディレクトリ `job-logs/<sessionId>/`(起動時は他セッションのみ掃除)、notifyIfLatest の予約も try/catch(SWTException) で no-op 化し背景 launch/共有 scope へ例外を漏らさない(Vk1K-)。** → **v8.7: セッション dir に FileLock を持たせ、起動時掃除は tryLock 取得できた(静止した)他セッションのみ削除し稼働中の旧 activation はスキップ(Vk3fr)。** → **v9: trace 格納先を temp ファイルからインメモリ read-only エディタ入力(IStorageEditorInput/IStorage)へ変更(ユーザー選択)。ディスク由来の系統(temp 権限/NOFOLLOW/symlink・堅牢 move・セッション dir・FileLock・起動時掃除・同一プロセス再起動のファイル競合=hZA/hZC/xSX/xSa/Vk1K9/Vk3fr)を撤去。残る同一プロセス再起動の UI 反映(Vk5Pi)は registry.active フラグ(stop で false)で無効化。UI スレッド専有並行モデル・correlationId 伝播・launcher 結果化・404 非断定・notifyIfLatest の SWTException 安全化(Vk1K-/xSc)は維持。** → **v9.1: notifyIfLatest と手順4 catch の通知経路にも `!registry.active` を no-op 条件へ追加(停止済み activation の通知抑止・VluBE)。** → **v9.2: JobLogStorage を IEncodedStorage 化し getCharset()=UTF-8 で文字化け防止(VlwEB)、stop で JobLogEditorInput の開いているエディタを閉じ旧入力/クラスローダを解放(VlwEC)。**
 
 ---
 
@@ -99,7 +99,8 @@ VSCode 実装の実挙動(実ソースで確定):
 
 trace はディスクに永続化せず、**インメモリの read-only エディタ入力**で表示する。ディスクを使わないため、temp ファイルの権限/`NOFOLLOW`/symlink・堅牢 move・セッションディレクトリ・`FileLock`・起動時掃除・同一プロセス再起動のファイル競合(旧設計 v8 系で扱った hZA/hZC/xSX/xSa/xSc/Vk1K9/Vk1K-/Vk3fr の一群)が**すべて不要**になる。
 
-- **格納**: 整形済み trace テキストを `JobLogStorage`(`IStorage` 実装、`getContents()` はメモリ上の UTF-8 バイト、`isReadOnly()=true`)に保持し、`JobLogEditorInput`(`IStorageEditorInput`)でエディタに開く。ディスク書き込みは行わない。表示エディタは既定のテキストエディタ(`org.eclipse.ui.DefaultTextEditor` 相当・既存 `org.eclipse.ui.editors` 依存で解決)。
+- **格納**: 整形済み trace テキストを `JobLogStorage`(**`IEncodedStorage` 実装**=`IStorage`+`getCharset()="UTF-8"`、`getContents()` はメモリ上の UTF-8 バイト、`isReadOnly()=true`)に保持し、`JobLogEditorInput`(`IStorageEditorInput`)でエディタに開く。ディスク書き込みは行わない。表示エディタは既定のテキストエディタ(`org.eclipse.ui.DefaultTextEditor` 相当・既存 `org.eclipse.ui.editors` 依存で解決)。
+- **エンコーディング(VlwEB)**: `IStorage` のみだと `StorageDocumentProvider` は workspace 既定エンコーディングでバイトを復号し、非 UTF-8 既定環境で日本語等が文字化けする。`IEncodedStorage.getCharset()` で **UTF-8 を明示**し、既定値に依存せず正しく表示する。
 - **接続名前空間化(NFR-5)**: `JobLogEditorInput` の `equals/hashCode` を `JobLogKey`=`(connHash, projectId, jobId)`(`connHash` = `normalizeInstanceUrl(instanceUrl)+authFingerprint` の非可逆ハッシュ)で定義。別インスタンス/別アカウントの同一 (projectId, jobId) は**別の入力**=別エディタになり、内容も混ざらない(AC-8)。
 - **機密の非永続化(NFR-2b)**: trace はプロセスメモリ上のみに存在し、ディスクに書かない。エディタを閉じれば `IStorage` は GC 対象。プラグイン/JVM 終了でメモリごと消える。ディスク断片が残る経路が無い。
 - **大容量**: 巨大 trace はメモリに載る(GET で全文取得する時点と同等・単発)。極端な場合の上限は #12 フォローアップ(§24 R-5)。
@@ -117,7 +118,8 @@ trace はディスクに永続化せず、**インメモリの read-only エデ�
 
 ディスクを使わないため停止時削除・ロック・起動時掃除は無い。残る同一プロセス OSGi 再起動の懸念は「旧 activation の遅延 UI runnable が共有 Display に古い内容を反映する(Vk5Pi)」のみで、これを軽量な**activation ガード**で無効化する:
 
-- **activation フラグ**: `JobLogGenerationRegistry`(activation 単位のインスタンス)が `@Volatile active: Boolean = true` を持つ。`GitLabEclipseStartup.stop` で **`active=false` に落とす 1 行**を追加(§18)。commit / notify の UI runnable は冒頭で **`if (!registry.active) return`** を確認し、停止済み activation の runnable は UI に何も反映しない。これで同一 JVM stop→start 後に旧 GET が遅れて完了しても、旧 registry の runnable は no-op(Vk5Pi)。`latest[key]` は activation 毎に別インスタンスなので、新 activation の判定を汚さない。
+- **activation フラグ**: `JobLogGenerationRegistry`(activation 単位のインスタンス)が `@Volatile active: Boolean = true` を持つ。`GitLabEclipseStartup.stop` で **`active=false` に落とす**(§18)。commit / notify の UI runnable は冒頭で **`if (!registry.active) return`** を確認し、停止済み activation の runnable は UI に何も反映しない。これで同一 JVM stop→start 後に旧 GET が遅れて完了しても、旧 registry の runnable は no-op(Vk5Pi/VluBE)。`latest[key]` は activation 毎に別インスタンスなので、新 activation の判定を汚さない。
+- **停止時に旧 job-log エディタを解放(VlwEC)**: `active=false` は遅延 runnable を止めるだけで、既に開いている `DefaultTextEditor`+旧 `JobLogEditorInput` は閉じない。旧入力が旧 bundle のクラスローダを保持し(re-deploy 間リーク)、trace が停止後も残り、再実行時に別クラスの入力と `equals` 不一致で stale 旧タブが残る。よって `GitLabEclipseStartup.stop` で、**開いている全エディタのうち入力が `JobLogEditorInput` のものを閉じる**(`IWorkbenchPage.closeEditors`)。stop が UI スレッド外で走る場合は `Display.syncExec`(`isDisposed`/`SWTException` ガード)で UI スレッドに委譲。ワークベンチ破棄中(`workbench.isClosing`)は既にエディタごと破棄されるため no-op。
 - **破棄済み Display ガード**: `Display.asyncExec` は破棄済み Display で `SWTException(ERROR_DEVICE_DISPOSED)` を投げ得る。**予約呼び出しを `try/catch (SWTException)` で囲み**(`GitLabSidebarView.applyCompose` と同規律)、runnable 冒頭でも `if (display.isDisposed) return` + `SWTException` catch。これにより破棄済み Display への反映・予約が例外を UI ループ/背景 launch へ漏らさない。
 - **scope**: 背景 I/O は既存共有 `CoroutineScope(Dispatchers.IO)`(`WorkspaceModule.kt:22`、CI handlers と同じ)で launch。停止時に in-flight GET が残っても request timeout(§12)で自然終了し、UI 反映は activation フラグと isDisposed ガードで無害化。専用 scope は不要。
 
@@ -184,9 +186,10 @@ fun getTrace(projectId: Long, jobId: Long, connection: ConnectionSnapshot): Stri
 // TraceFormatter(新規・純関数)
 fun stripTraceFormatting(raw: String): String
 
-// JobLogStorage(新規): インメモリ read-only IStorage
-class JobLogStorage(text: String) : IStorage {
+// JobLogStorage(新規): インメモリ read-only IStorage(charset 明示)
+class JobLogStorage(text: String) : IEncodedStorage {          // IStorage + getCharset
   override fun getContents() = text.toByteArray(Charsets.UTF_8).inputStream()
+  override fun getCharset() = "UTF-8"                           // StorageDocumentProvider の復号を UTF-8 に固定(VlwEB)
   override fun isReadOnly() = true
   // getName()=表示名(例 "job-<jobId>.log"), getFullPath()=null 可
 }
@@ -310,7 +313,7 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
 - `GitLabApiClient` に公開メソッド 1 つ追加(`fetchText`)。加えて `sendGet` の非 2xx 例外に correlationId を付与する変更 → **全 GET 呼出(IssueService/MergeRequestService/PipelineService/JobService 等)の失敗例外に correlationId が載る**。`GitLabApiException.correlationId` は既定 null の追加フィールドで後方互換(値が入るだけ)。既存テストで body/status を検査しているものへの影響有無を確認する。
 - `BrowserLauncher` に成否を返す経路(`openChecked` 等)を**追加**。既存 `open(url): Unit` は不変で、他呼出(chat webview / ShowDocumentation / preferences / sidebar double-click)に影響なし。
 - `NotificationUtils` に同期表示経路 `showOnUiThread` を**追加**(既に UI スレッド上で再マーシャルしない)。既存 `show(message)`(内部 `asyncExec`)は不変で他呼出に影響なし。`notifyIfLatest` の「判定と表示を同一 UI ターンで」を成立させるために使う(§14)。
-- `GitLabEclipseStartup.stop`(`GitLabEclipseStartup.kt:82-87`)に **job-log registry の `active=false` を落とす 1 行を追加**(§7.3・Vk5Pi。停止済み activation の遅延 UI runnable を no-op 化)。既存の停止処理(LSP/CodeSuggestions/OAuth/HttpClient)には手を触れない。`start` は変更しない(起動時掃除は無い=ディスクを使わない)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も変更しない(job-log は既存共有 scope を利用)。
+- `GitLabEclipseStartup.stop`(`GitLabEclipseStartup.kt:82-87`)に **(1) job-log registry の `active=false`(Vk5Pi/VluBE)、(2) 入力が `JobLogEditorInput` の開いているエディタを閉じる(VlwEC・UI スレッドで、ワークベンチ破棄中は no-op)** を追加。既存の停止処理(LSP/CodeSuggestions/OAuth/HttpClient)には手を触れない。`start` は変更しない(起動時掃除は無い=ディスクを使わない)。共有 `CoroutineScope` singleton(`WorkspaceModule.kt:22`)も変更しない(job-log は既存共有 scope を利用)。
 - `IStorageEditorInput`/`IStorage`/`IWorkbenchPage.openEditor` は既存 `org.eclipse.ui`/`org.eclipse.ui.editors`/`org.eclipse.ui.workbench.texteditor` 依存で解決(§18 の build 依存追加なし)。
 - JobNode/PipelineNode/PropertyTester/既存 job action(retry/cancel/play)には変更なし。
 - plugin.xml は command/handler/popup を**追加**のみ(既存エントリ不変)。
@@ -330,7 +333,8 @@ UI スレッド直列実行を模したドライバで: (a) 応答順を逆転(�
   - `stripTraceFormatting`: ANSI SGR/CSI 除去、`section_start/end` 除去、`\r` overwrite、改行正規化、空入力/非制御入力の恒等性を TDD。
   - `JobTraceService.getTrace`: モック `GitLabApiClient` で正しいパス `/projects/{id}/jobs/{jobId}/trace` と connection 引き回しを検証。
   - `GitLabApiClient.fetchText` / `sendGet`: モック http client で connection pin(instanceUrl/Bearer)、非 2xx→例外、**correlationId 伝播**、token/body 非出力を検証。
-  - `JobLogEditorInput`/`JobLogStorage`: **接続名前空間化**(別 connHash の入力が `equals` で不一致=別エディタ)、同一 `JobLogKey` の入力が `equals`/`hashCode` 一致(エディタ再利用)、`getContents()` が保持テキストを返し `isReadOnly()=true` であること。
+  - `JobLogEditorInput`/`JobLogStorage`: **接続名前空間化**(別 connHash の入力が `equals` で不一致=別エディタ)、同一 `JobLogKey` の入力が `equals`/`hashCode` 一致(エディタ再利用)、`getContents()` が保持テキストを返し `isReadOnly()=true`、**`getCharset()=="UTF-8"`**(非 UTF-8 既定環境でも文字化けしないこと=VlwEB)を検証。
+  - **停止時エディタ解放(VlwEC)**: stop で入力が `JobLogEditorInput` の開いているエディタが閉じられ(モック `IWorkbenchPage`)、他エディタは閉じないこと。ワークベンチ破棄中は no-op であること。
   - `JobLogGenerationRegistry` + 反映/通知 runnable(UI スレッド直列実行を模したドライバで、§14.4 と対応): (a) **応答順逆転**で先発の背景完了を後発より遅らせても、エディタ内容が**後発(最新)**になり先発 runnable が反映しないこと、(b) supersede 済み実行の失敗が `notifyIfLatest` の UI 冒頭判定(`latest[key]==myGen`)で通知を出さず監査のみ残すこと(pin 失敗・404・timeout・IO・終端 catch の全経路)、(c) `latest[key]`・カウンタが UI スレッドからのみ更新され単調で巻き戻らないこと、(d) **`active=false`(停止済み activation)の runnable が open/reload も通知もしないこと**(`notifyIfLatest` と手順4 catch の両経路・Vk5Pi/VluBE)、(e) **open/reload が `SWTException` を投げても no-op、他例外は監査+latest-gated 通知され UI ループへ漏れないこと**、を検証。
   - **通知の SWTException 安全性**: `notifyIfLatest` が予約(`asyncExec`)失敗(破棄済み Display)でも例外を投げず no-op になり、背景 `launch`/共有 scope へ SWTException を漏らさないこと(Vk1K-/xSc)。
   - artifacts URL 構築 + webUrl 検証(null/空/不正 scheme・host→失敗、正常→`.../artifacts/download?file_type=archive`)を純ロジックとして検証。
