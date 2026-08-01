@@ -40,6 +40,9 @@ object JobLogEditorOpener {
    * Updates the shared content for [key] to [text], refreshes every already-open editor for
    * [key] across all windows/pages, and makes sure the result is visible in the active page.
    * UI thread only. Generation/latest gating is the caller's responsibility.
+   *
+   * @throws PartInitException if the active page cannot open a new editor (the caller's
+   *   catch surfaces it as an audit entry + latest-gated notification).
    */
   fun openOrReload(key: JobLogKey, text: String) {
     ensureListenersRegistered()
@@ -54,12 +57,11 @@ object JobLogEditorOpener {
 
     val input = JobLogEditorInput(key, content)
 
-    // findEditor only sees its own page, so collect matches across ALL windows/pages.
+    // findEditors returns ALL matching editors per page (including clones/splits of the same
+    // input), collected across ALL windows/pages so every open tab gets refreshed.
     val matches = mutableListOf<Pair<IWorkbenchPage, IEditorPart>>()
     PlatformUI.getWorkbench().workbenchWindows.forEach { window ->
-      window.pages.forEach { page ->
-        page.findEditor(input)?.let { matches.add(page to it) }
-      }
+      window.pages.forEach { page -> matches += matchingEditorsOn(page, input) }
     }
 
     // Reset each matched editor's document so the new text shows (not just focus): reset
@@ -81,13 +83,24 @@ object JobLogEditorOpener {
     if (editorOnActivePage != null) {
       activePage.activate(editorOnActivePage)
     } else {
-      try {
-        activePage.openEditor(input, DEFAULT_TEXT_EDITOR_ID)
-      } catch (e: PartInitException) {
-        logger.error("Failed to open job-log editor for ${input.name}.", e)
-      }
+      // Let a terminal open failure propagate: reflectLatest's catch audits + shows a
+      // latest-gated notification, so a GET-succeeded-but-cannot-display case isn't silent.
+      activePage.openEditor(input, DEFAULT_TEXT_EDITOR_ID)
     }
   }
+
+  /**
+   * All materialized editors on [page] whose input matches [input] by MATCH_INPUT (so cloned/
+   * split editors of the same job log are included, unlike findEditor which returns only one).
+   * getEditor(true) restores not-yet-materialized parts; a null (failed restore) is skipped.
+   */
+  private fun matchingEditorsOn(
+    page: IWorkbenchPage,
+    input: JobLogEditorInput,
+  ): List<Pair<IWorkbenchPage, IEditorPart>> =
+    page.findEditors(input, null, IWorkbenchPage.MATCH_INPUT)
+      .mapNotNull { ref -> ref.getEditor(true) }
+      .map { page to it }
 
   /**
    * Shutdown path: closes every open job-log editor, removes the part/window listeners, and
