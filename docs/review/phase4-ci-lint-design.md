@@ -183,15 +183,18 @@ fun runCiLint(
 object CiLintGenerationRegistry {          // 変異/読取は UI スレッド。active のみ @Volatile
   @Volatile var active: Boolean = true      // plugin 停止で false(stop フックが設定)
   private var counter: Long = 0             // 単調増加(activation を跨いでもリセットしない=ABA 回避)
+  private var epoch: Long = 0               // activation ごとに ++。未採番の in-flight 起動を失効
   private val latest = HashMap<CiLintKey, Long>()
+  val currentEpoch: Long get() = epoch      // execute で捕捉、コールバックで照合(§8.6)
   fun nextGeneration(key: CiLintKey): Long  // ++counter を key の最新として記録
   fun isLatest(key: CiLintKey, gen: Long): Boolean   // latest[key] == gen
   fun shouldAct(key: CiLintKey, gen: Long): Boolean  // active かつ isLatest
-  fun onActivate()   { latest.clear(); active = true }   // start: 旧世代失効 + 再有効化
-  fun onDeactivate() { active = false }                  // stop: 反映停止
+  fun onActivate()   { latest.clear(); epoch += 1; active = true }  // start: 旧世代 + 未採番起動を失効
+  fun onDeactivate() { active = false }                             // stop: 反映停止
   internal fun resetForTest()               // テスト用リセット(本番未使用)
 }
 ```
+- **epoch(Codex round5 P2)**: `latest.clear()` は**既に採番済み**の世代しか失効できない。§8.6 は generation を非同期 `selectActiveContext` コールバック内で採番するため、execute 後・context 解決中に stop→start すると、古いコールバックが start 後に到着して新規 gen を採番し clear をすり抜ける。→ `onActivate()` で `epoch` をインクリメントし、execute 時点で捕捉した epoch とコールバックで照合(§8.6)することで、**activation を跨いだ起動を採番前に破棄**する。
 - `JobLogGenerationRegistry`(実ソース `ci/joblog/JobLogGenerationRegistry.kt`)を**忠実にミラー**: `counter` 単調増加・key ごと `latest` map・`active` は `@Volatile`(停止が別スレッドからの syncExec 経由になり得るため)。
 - 世代採番は **UI スレッド**(§8.6 の `selectActiveContext` コールバック内、context 解決後・IO launch 前)。
 - 反映/通知は UI turn 内で `shouldAct(key, myGen)` を判定してから実行(判定と実行を同一 turn=stale すり抜け防止。`DisplayJobLogHandler.reflectLatest/notifyIfLatest` と同一構造)。
@@ -248,7 +251,9 @@ private fun notifyIfLatest(key, myGen, message) { /* isLatest 判定 → try{ sh
 
 ### 8.6 `ValidateCiConfigHandler` / `ShowMergedCiConfigHandler`
 - `execute`(UI): `ActiveEditorContent.of(event)` で **text + source identity(§8.7)を同一 UI turn で抽出**。null → `NotificationUtils.show("GitLab: No open file.")` して return。
+- **activation epoch を execute 時点で捕捉**: `val startEpoch = CiLintGenerationRegistry.currentEpoch`(Codex round5 P2)。
 - 次に `contextResolver.selectActiveContext { ctx -> …(UI スレッド)}`:
+  - **`if (CiLintGenerationRegistry.currentEpoch != startEpoch) return`**(execute 後・context 解決中に stop→start が起きた=このコールバックは失効。採番も launch もしない)。
   - `ctx == null` → 終了(resolver が通知)。
   - `key = CiLintKey(command, normalizeInstanceUrl(ctx.instanceUrl), ctx.projectId, sourceId)`。
   - `myGen = CiLintGenerationRegistry.nextGeneration(key)`(**UI スレッドで採番**・§8.4a)。
@@ -442,7 +447,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - **`runCiLint`(安全網の要)**: `capture → gate → lint` の順序、`InstanceMismatch` 時に lint ラムダが **0 回**呼ばれること、`ConnectionUnstable`、`Failed` の分類(http/timeout/io)、`CancellationException` 伝播。
 - `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、を検証。
 - `MergedYamlEditorInput`: `equals/hashCode` が key のみ依存、`exists()=false`、`getName()` が期待値。`MergedYamlKey`: 同一(instance,project,sourceId)は等価、sourceId 差で非等価。
-- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `onDeactivate()`(stop 相当)→ `shouldAct`=false。**`onActivate()`(start 相当)→ `latest` を失効するため、停止前に採番した gen は `onActivate()` 後も `shouldAct=false` のまま**(Codex round4 P2)。`onActivate()` 後に採番した新規 gen は反映される(再起動後の永久抑止なし・Codex round3 P2)。`counter` は activation を跨いで単調(ABA 無し)。
+- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `onDeactivate()`(stop 相当)→ `shouldAct`=false。**`onActivate()`(start 相当)→ `latest` を失効するため、停止前に採番した gen は `onActivate()` 後も `shouldAct=false` のまま**(Codex round4 P2)。`onActivate()` 後に採番した新規 gen は反映される(再起動後の永久抑止なし・Codex round3 P2)。`counter` は activation を跨いで単調(ABA 無し)。**epoch(Codex round5 P2)**: execute で捕捉した `currentEpoch` が、`onActivate()`(epoch++)後にコールバックで照合されると不一致 → **採番も launch もされない**(context 解決中の stop→start をすり抜けない)ことを検証。
 - **`ActiveEditorContent.sourceId` 導出(指摘 #6)**: `IFileEditorInput`(mock)→ fullPath、`IURIEditorInput`(mock)→ uri、フォールバック → `name + "#" + identityHashCode`。**同名別パス → 別 sourceId**、**同一未保存入力インスタンスの 2 回抽出 → 同一 sourceId**。SWT/document 取得部は手動、input→sourceId 純ロジックは mock 入力で単体化。
 - **total helper の gating 純ロジック**: `shouldAct` 判定分岐(反映/通知の可否)を SWT 非依存部分で単体化。SWT 例外 catch(disposed display/`asyncExec`)の no-op は手動検証(§手動)。
 
