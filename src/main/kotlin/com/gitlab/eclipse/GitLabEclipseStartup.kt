@@ -35,14 +35,16 @@ import org.osgi.framework.BundleContext
 @Suppress("unused", "SpreadOperator")
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
-    // Invalidate any CI lint generations left in `latest` by a previous stop (stop lets
-    // in-flight lints finish) so their stale notifications/merged YAML cannot reapply.
-    activateCiLint()
-
     // Set system property for log4j2 configuration to use Eclipse's state location
     // This ensures logs are written to a consistent location regardless of working directory
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
+
+    // Invalidate any CI lint generations left in `latest` by a previous stop (stop lets
+    // in-flight lints finish) so their stale notifications/merged YAML cannot reapply.
+    // Runs after the state-dir property is set so a degraded-path log4j2 touch here
+    // (this warn) cannot pin a misconfigured log location for the whole session.
+    activateCiLint()
 
     // Best-effort: allow Basic proxy auth over HTTPS CONNECT tunnels for the native REST
     // client. Read-once in java.net.http; reliable activation needs the eclipse.ini VM arg

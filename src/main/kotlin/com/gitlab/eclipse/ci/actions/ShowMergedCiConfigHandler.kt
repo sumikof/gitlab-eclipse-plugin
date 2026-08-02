@@ -88,8 +88,9 @@ class ShowMergedCiConfigHandler(
     if (merged != null) {
       MergedYamlEditorOpener.openOrReload(MergedYamlKey(key.instanceUrl, key.projectId, sourceId), merged)
     } else {
-      // Lint error display lines (never a response body) go to the Error Log for diagnosis.
-      result.errors.forEach { log.error("ciLint mergedUnavailable error=$it") }
+      // Only the error count is logged: the response body's error strings can echo user
+      // YAML fragments (possible secrets) and must never be persisted to the Error Log.
+      log.error("ciLint mergedUnavailable errorCount=${result.errors.size}")
       val pressed = MessageDialog.open(
         MessageDialog.ERROR,
         shell,
