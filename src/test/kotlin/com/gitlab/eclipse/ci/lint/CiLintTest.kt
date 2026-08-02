@@ -120,7 +120,7 @@ class CiLintTest : DescribeSpec({
         "and never the yaml body or httpStatus",
     ) {
       val outcome = CiLintOutcome.Linted(
-        CiLintResult(valid = true, mergedYaml = "x", errors = emptyList()),
+        CiLintResult(valid = true, mergedYaml = "yaml-body-marker", errors = emptyList()),
       )
       val msg = buildCiLintAuditMessage("https://gl.example.com/", "group%2Fp", "validateCiConfig", outcome)
 
@@ -129,7 +129,7 @@ class CiLintTest : DescribeSpec({
       msg shouldContain "projectId=group%2Fp"
       msg shouldContain "outcome=success valid=true merged=present"
       msg shouldNotContain "httpStatus"
-      msg shouldNotContain "\"x\""
+      msg shouldNotContain "yaml-body-marker"
     }
 
     it("for Linted(valid=false, mergedYaml absent, errors) includes merged=absent and never the errors body") {
@@ -162,8 +162,9 @@ class CiLintTest : DescribeSpec({
     }
 
     it("never includes a token in any outcome's audit line") {
+      val lintedMergedYamlMarker = "yaml-body-token-sweep-marker"
       val outcomes = listOf(
-        CiLintOutcome.Linted(CiLintResult(valid = true, mergedYaml = "x", errors = emptyList())),
+        CiLintOutcome.Linted(CiLintResult(valid = true, mergedYaml = lintedMergedYamlMarker, errors = emptyList())),
         CiLintOutcome.Failed(WriteOutcome.Failure(403, "corr-403", "http")),
         CiLintOutcome.ConnectionUnstable,
         CiLintOutcome.InstanceMismatch,
@@ -174,6 +175,9 @@ class CiLintTest : DescribeSpec({
         msg shouldContain "instanceUrl=https://gl.example.com"
         msg shouldContain "projectId=group%2Fp"
         msg shouldContain "command=validateCiConfig"
+        if (outcome is CiLintOutcome.Linted) {
+          msg shouldNotContain lintedMergedYamlMarker
+        }
       }
     }
   }
