@@ -74,22 +74,25 @@ internal fun launchCiLint(
       throw e
     } catch (e: Exception) {
       // Unclassified escape: must not cancel the shared scope. Same token/body-free structured
-      // audit line as the classified path; the exception rides along in the log entry.
-      log.error(
-        buildCiLintAuditMessage(
-          context.instanceUrl,
-          context.projectId,
-          key.command,
-          CiLintOutcome.Failed(
-            WriteOutcome.Failure(
-              httpStatus = null,
-              correlationId = null,
-              failureKind = "unexpected",
-            ),
+      // audit line as the classified path. The exception object itself must NOT be attached to
+      // the log entry: an invalid HTTP-header character in the captured token makes
+      // HttpRequest.Builder.header("Authorization", ...) throw an IllegalArgumentException whose
+      // message embeds the full "Bearer <token>" value, and it lands here unclassified — logging
+      // e (message/stacktrace/cause) would persist the token in the Eclipse Error Log. Only the
+      // exception TYPE is appended; that is safe and still identifies the failure shape.
+      val audit = buildCiLintAuditMessage(
+        context.instanceUrl,
+        context.projectId,
+        key.command,
+        CiLintOutcome.Failed(
+          WriteOutcome.Failure(
+            httpStatus = null,
+            correlationId = null,
+            failureKind = "unexpected",
           ),
         ),
-        e,
       )
+      log.error(audit + " exceptionType=" + e.javaClass.name)
       notifyIfLatest(key, myGen, GENERIC_CI_LINT_ERROR)
     }
   }

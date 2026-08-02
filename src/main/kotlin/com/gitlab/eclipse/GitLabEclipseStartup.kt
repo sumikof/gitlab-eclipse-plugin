@@ -102,13 +102,22 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   private fun shutdownJobLog() {
     // (1) Disable late UI reflections/notifications from any in-flight trace fetch.
     JobLogGenerationRegistry.active = false
-    CiLintGenerationRegistry.onDeactivate()
     // (2) Close in-memory trace editors + remove listeners on the UI thread; guard a disposed/absent display.
     try {
       val display = PlatformUI.getWorkbench().display
       if (!display.isDisposed) {
         display.syncExec {
           try {
+            // Deactivate CI lint ON the UI thread, before editor disposal: every CI-lint
+            // reflect/notify runnable runs on the UI thread, so flipping `active` here totally
+            // orders the deactivation with each runnable's gate-check-then-act — no runnable can
+            // pass its gate and then act after deactivation (a bare off-thread write left that
+            // torn window open). If the display is unavailable/disposed this syncExec is skipped
+            // and `active` stays true, which is inert: without a live display no reflect/notify
+            // runnable can run (currentDisplay throws IllegalStateException, asyncExec throws
+            // SWTException — both caught as no-ops), and the command handlers are unregistered
+            // once the bundle stops, so nothing reads `active` after a display-less stop.
+            CiLintGenerationRegistry.onDeactivate()
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()
             MergedYamlEditorOpener.disposeAtShutdown()
