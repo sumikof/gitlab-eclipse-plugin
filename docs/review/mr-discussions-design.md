@@ -273,7 +273,8 @@ class GitLabGraphQlClient(
 
 **責務**: 応答の UI 反映を最新世代に限定する。Phase 4 の `CiLintGenerationRegistry`（`src/main/kotlin/com/gitlab/eclipse/ci/lint/CiLintGenerationRegistry.kt`）の忠実なミラー。
 
-- キー = （instanceUrl, projectId, mrIid）。
+- キー = （`normalizeInstanceUrl(instanceUrl)`, **`authFingerprint`**, `projectId`, `mrIid`）。§8.1 / §15.3 と同一。
+  **`authFingerprint` を必ず含める。** 含めないと、同じ URL でアカウントを切り替えた後に旧アカウントの遅い応答と新アカウントの取得が同じ世代を争い、旧アカウントの結果が UI に反映されうる。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）が `normalizeInstanceUrl(instanceUrl) + "\n" + authFingerprint` をハッシュしているのと同じ扱いである。
 - `nextGeneration(key)` / `isLatest(key, gen)` / `currentEpoch` / `onActivate()` / `onDeactivate()`。
 - `@Volatile active` のみが複数スレッドから読まれ、カウンタ・epoch・latest マップは UI スレッド専有。
 
@@ -307,7 +308,18 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
 
 読み取りの入口は **`loadDiscussions(node, force: Boolean, onOutcome: (LoadOutcome) -> Unit)` の 1 つ**とする。`force = false` は遅延取得（節の展開時。既に読み込み済みなら何もしない）、`force = true` は無条件取得（書き込み成功後の再取得。§8.2）。
 
-**完了契約（`LoadOutcome`）。** `loadDiscussions` は background を起動して即座に戻るため、呼び出し側が「ツリーに実際に反映された時点」を知る手段が必要である（§9.3 の Ambiguous フローがこれに依存する）。`onOutcome` は必ず **UI スレッド上で 1 回だけ**呼ばれ、次のいずれかを渡す。
+**完了契約（`LoadOutcome`）。** `loadDiscussions` は background を起動して即座に戻るため、呼び出し側が「ツリーに実際に反映された時点」を知る手段が必要である（§9.3 の Ambiguous フローがこれに依存する）。
+
+契約は次のとおり。
+
+> **プラグインが動作している限り、`onOutcome` は UI スレッド上で必ず 1 回だけ呼ばれる。**
+> **唯一の例外はライフサイクル終了（`active == false` または `epoch` 変化）であり、この場合 callback の所有権は意図的に破棄され、`onOutcome` は呼ばれない。**
+
+この例外を契約に明記するのは、停止時には「UI 処理を一切起こさない」ことが優先されるためである（§14.2 / §14.3 / R-8）。停止中に callback を呼べば、その先でダイアログや再取得が起動し、gate-first 不変条件を破る。**呼ばないことが正しい動作**であり、契約違反ではない。
+
+呼び出し側（§9.3）は「callback が来ないのは停止時だけ」を前提にしてよい。停止時にダイアログが出ないことは問題にならない（ワークベンチ自体が閉じている）。
+
+`onOutcome` に渡される値:
 
 | 値 | 意味 |
 |---|---|
@@ -319,29 +331,46 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
 
 `Applied` **以外は「ユーザーが最新状態を見た」ことを意味しない。** §9.3 はこの区別に依存する。
 
+**すべての早期終了は、対応する outcome の 1 回通知に合流させる。** 「中止して return」で終わる経路を残してはならない。残すと §9.3 の callback が永久に呼ばれず、保持した本文をコピーするダイアログすら出ない。
+
 ```
-loadDiscussions(node, force)
+loadDiscussions(node, force, onOutcome)
 
 [UI スレッド]
-  if (!force && node.loadState == LOADED) return      ← force=true はこの分岐を通らない
+  if (!force && node.loadState == LOADED) {
+    onOutcome(Skipped); return                        ← ★ return だけで終わらせない ★
+  }
   node.loadState = LOADING                            ← UI スレッド専有なので原子的
   startEpoch = registry.currentEpoch
-  gen        = registry.nextGeneration(key)
+  gen        = registry.nextGeneration(key)           ← key は §7.3（authFingerprint を含む）
   節を「Loading…」表示に切り替え
     → background へ
 [background]
   connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
-    → null（URL 不一致 / 資格情報不一致 / 接続不安定）なら中止し HTTP を発行しない（§15.3）
+    → null（URL 不一致 / 資格情報不一致 / 接続不安定）なら
+       HTTP を発行せず finish(GateRejected) へ         ← ★ 中止するだけにしない ★
   deadline = 60 秒の wall-clock（§12.1）
-  discussions = discussionService.getDiscussions(connection, namespaceWithPath, mrIid, deadline)
-    ページングループ（§8.5）
-  正規化・system ノート除外・ソート
-[UI スレッド（asyncExec）]
-  ガード: registry.active が false          → 破棄（onOutcome は呼ばない。§14.3）
+  try {
+    discussions = discussionService.getDiscussions(connection, namespaceWithPath, mrIid, deadline)
+      ページングループ（§8.5）
+    正規化・system ノート除外・ソート
+    finish(Applied 候補, discussions)
+  } catch (e) {
+    finish(Failed(e))
+  }
+
+finish(...) = [UI スレッド（asyncExec）]
+  ガード: registry.active が false          → 破棄（onOutcome を呼ばない = 契約上の例外）
   ガード: registry.currentEpoch != startEpoch → 破棄（同上）
-  ガード: !registry.isLatest(key, gen)       → onOutcome(Superseded)
-  ツリーへ反映 / node.loadState = LOADED     → onOutcome(Applied)
+  ── ここから先は必ず onOutcome を 1 回呼ぶ ──
+  GateRejected → loadState を FAILED へ戻す → onOutcome(GateRejected)
+  Failed(e)    → 失敗ノード表示・loadState を FAILED へ戻す → onOutcome(Failed(e))
+  Applied 候補:
+    !registry.isLatest(key, gen) → onOutcome(Superseded)     ← loadState は触らない
+    それ以外 → ツリーへ反映 / loadState = LOADED → onOutcome(Applied)
 ```
+
+`Superseded` の場合に `loadState` を触らないのは、より新しい要求が進行中でありその要求が最終的に `LOADED` か `FAILED` を確定させるためである。ここで書き換えると新しい要求の状態を壊す。
 
 `key` は（`normalizeInstanceUrl(sourceInstanceUrl)`, `sourceAuthFingerprint`, `projectId`, `mrIid`）から作る。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）と同じく、URL と資格情報フィンガープリントの**両方**をキーに織り込む。
 
@@ -360,6 +389,8 @@ loadDiscussions(node, force)
   入力が必要な操作はダイアログを開く → Cancel なら終了
   in-flight ガード取得（キー = §14.4 の DiscussionWriteKey。操作種別を含めない）
     → 取得できなければ「already in progress」通知
+  ★ startEpoch = registry.currentEpoch を **この UI ターンで凍結する** ★
+    （background 起動の前。完了時に比較する基準値）
     → background へ
 [background]
   try {
@@ -386,6 +417,8 @@ loadDiscussions(node, force)
 | **ライフサイクルガード**（`active` / `epoch`） | プラグインが停止処理に入っていないか | **適用する。** 適用しないと、停止中にブロッキング HTTP が戻ったときに再取得やダイアログが起動し、§14.3 / R-8 の gate-first 不変条件を破る。コルーチンのキャンセルだけでは後続の非 suspend 処理を止められない |
 | **鮮度ガード**（`isLatest(key, gen)`） | この取得より新しい取得が出ていないか | **適用しない。** mutation の完了は取得結果ではない |
 
+**`startEpoch` は background 起動前の UI ターンで凍結する。** background 完了後に `registry.currentEpoch` を読んで比較しても常に一致してしまい、送信中の停止→再開を跨いだ古い mutation のダイアログや再取得が新しいライフサイクルで起動する。読み取り側（§8.1）と同じ扱いである。`gen` は mutation 側では取得しない（鮮度ガードを適用しないため）。
+
 鮮度ガードを mutation 完了に適用してはならない理由: 送信中にユーザーが同じ MR を更新すると新しい generation が発行されるため、
 
 - サーバで成功しているのに再取得が発行されず、表示が古いままになる（FR-10 違反）。しかも先行した更新取得が mutation のコミット前に完了していると、古い状態が確定して残る。
@@ -403,8 +436,9 @@ loadDiscussions(node, force)
   G2: エディタ入力が IFileEditorInput か（ワークスペース上のファイルか）
   G3: エディタが dirty でないか（editor.isDirty() == false）
       → dirty なら拒否（早期・親切な拒否。最終的な保証は G8 が与える）
-  ★ SNAPSHOT: (cursorLine, documentText, filePath) を同一ターン内で取得 ★
+  ★ SNAPSHOT: (oneBasedLine, documentText, filePath) を同一ターン内で取得 ★
      documentText = documentProvider.getDocument(input).get()
+     oneBasedLine = selection.startLine + 1   ← ★ 0 始まり → 1 始まりへ変換（§8.3.1）★
   ダイアログで本文を受け取る → Cancel なら終了
     → background へ（以降、エディタの状態には二度と触れない）
 [background]
@@ -419,7 +453,7 @@ loadDiscussions(node, force)
       → 不一致なら拒否
   G9: 対象ファイルの MR 相対パスが、その MR の diff の newPath に含まれるか
   connection = pinnedConnectionFor(...)（§15.3）
-  createDiffNote 送信（newLine = snapshot.cursorLine）
+  createDiffNote 送信（newLine = snapshot.oneBasedLine）
 [UI スレッド] ライフサイクルガードのみ（§8.2）
   Success → loadDiscussions(node, force = true)
   失敗    → §9 のフロー
@@ -433,7 +467,7 @@ loadDiscussions(node, force)
 - ディスク上のファイルは HEAD のままでも、エディタのバッファがカーソル行より前に行を追加していれば、捕捉した行番号は「ユーザーが見ていた内容」と対応しなくなる。
 - 逆に、捕捉時点では作業ツリーが変更されていて、background の検査時点までに revert されていた場合、作業ツリー検査は通ってしまう。
 
-**本文そのものを比較すれば、これらはすべて 1 つの判定に畳まれる。** `snapshot.documentText == HEAD blob` が成立するとき、捕捉した行番号は HEAD blob の同じ行を指し、HEAD blob = MR head 版（G7 による）なので、**`newLine = snapshot.cursorLine`** が確定する。比較対象は UI ターンで凍結された値であり、その後のエディタ操作に影響されない。
+**本文そのものを比較すれば、これらはすべて 1 つの判定に畳まれる。** `snapshot.documentText == HEAD blob` が成立するとき、捕捉した行番号は HEAD blob の同じ行を指し、HEAD blob = MR head 版（G7 による）なので、**`newLine = snapshot.oneBasedLine`** が確定する。比較対象は UI ターンで凍結された値であり、その後のエディタ操作に影響されない。
 
 G3 を残すのは、よくある失敗（保存し忘れ）を background に降りる前に安価かつ分かりやすく弾くためであり、正しさの根拠は G8 が単独で与える。
 
@@ -448,6 +482,16 @@ G3 を残すのは、よくある失敗（保存し忘れ）を background に�
 G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。**検査は対象パスの blob 1 本に限定**する。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
 
 比較は改行コードを正規化せずバイト列として厳密に行う。正規化すると、行区切りの違いで行数がずれる場合を見逃す。
+
+### 8.3.1 行番号の基数（0 始まり → 1 始まり）
+
+**Eclipse の `ITextSelection.getStartLine()` は 0 始まり、GraphQL の `newLine` は 1 始まりである。** 変換を落とすとすべての diff コメントが 1 行上に付く。
+
+**変換はスナップショット時に行い、`oneBasedLine` は最初から 1 始まりの値として保持する**（送信時に変換しない）。理由: 送信時変換にすると、値が 0 始まりのまま複数の関数を通過し、どこで変換済みかが呼び出し側から見て分からなくなる。スナップショットの時点で基数を確定させれば、以降のすべてのコードが 1 始まりとして一貫して扱える。
+
+既存コードも同じ前提に立っている。`GitLabProjectUrlResolver.anchor`（`src/main/kotlin/com/gitlab/eclipse/navigation/GitLabProjectUrlResolver.kt:153-156`）は 0 始まりの `startLine` を受け取り、URL を組み立てる時点で `"#L${startLine + 1}"` としている。本設計はこの既存パターンとは逆に「早期に変換する」方針を採る。両者が混在すると取り違えの温床になるため、**変換済みの値は `oneBasedLine` と命名し、基数を名前に含める**ことを実装時の要件とする（`cursorLine` のような基数の曖昧な名前を使わない）。
+
+**受け入れテストに先頭行（ファイルの 1 行目）を含める。** 0 始まり/1 始まりの取り違えは先頭行で最も検出しやすく（`0` と `1` の差が境界として現れる）、中間行だけのテストでは両方の実装が通ってしまう場合がある。
 
 ### 8.4 old 側（削除行）の扱い
 
@@ -870,10 +914,22 @@ Phase 4 PR-4 の Codex 指摘 P1-2 を最初から織り込む。
 data class DiscussionWriteKey(
   val instanceUrl: String,      // normalizeInstanceUrl 済み
   val authFingerprint: String,  // §15.3 と同じ理由でアカウントも識別に含める
-  val targetKind: String,       // "discussion" | "note"
-  val targetId: String,         // replyId または note GID
+  val targetKind: String,       // "discussion" | "note" | "mergeRequest" | "mergeRequestLine"
+  val targetId: String,         // targetKind に応じた識別子（下表）
 )
 ```
+
+**作成操作には送信前に存在する識別子を使う。** 既存スレッド/ノートに対する操作は `replyId` や note GID で識別できるが、**MR 全体コメント（`replyId = null`）と新規 diff スレッド（`createDiffNote`）には、送信前の時点で discussion / note の ID が存在しない。**これらにキーを与えないと、ダブルクリックによる重複コメントを防げない。
+
+| 操作 | `targetKind` | `targetId`（送信前に確定している値） |
+|---|---|---|
+| スレッドへの返信 / 解決切替 | `"discussion"` | `discussion.replyId` |
+| ノートの編集 / 削除 | `"note"` | note GID |
+| **MR 全体コメント作成** | `"mergeRequest"` | **MR GID**（`gid://gitlab/MergeRequest/{id}`） |
+| **新規 diff スレッド作成** | `"mergeRequestLine"` | **`"{MR GID}#{newPath}:{oneBasedLine}"`** |
+
+- MR 全体コメントは MR GID 単位で直列化する。同一 MR への全体コメントを同時に 2 本投げる状況は UI 上ほぼ発生せず（ダイアログは 1 つずつ）、二重送信の抑止が目的として適切である。
+- 新規 diff スレッドは行単位で直列化する。MR GID 単位にすると別の行へのコメントまでブロックしてしまうため、`path:line` まで含めて粒度を細かくする。ダブルクリック抑止という目的はこの粒度でも達成される。
 
 `InFlightWriteGuard.tryAcquire` は `Any` を受けるため（既存 `WriteKey` と `CreateWriteKey` が別 data class として共存しているのと同じ理屈で）、新しい data class を追加するだけで既存キーと衝突せずに共存できる。
 
@@ -971,6 +1027,14 @@ round 2 の指摘を受けて追加で確定した事項:
 - **`GitLabGraphQlClient.execute` は `timeout: Duration` を受け取る**（§7.1 / §12.1）。
 - **残時間由来の timeout でリクエストが失敗した場合も部分結果として扱う**（§12.1）。
 
+round 3 の指摘を受けて追加で確定した事項:
+
+- **`LoadOutcome` の契約はライフサイクル終了を明示的な例外とする。** それ以外では必ず 1 回呼ばれ、すべての早期終了が対応する outcome に合流する（§8.1）。
+- **世代キーは §7.3 と §8.1 で同一**（`normalizeInstanceUrl` + `authFingerprint` + `projectId` + `mrIid`）。
+- **`startEpoch` は mutation 側でも background 起動前の UI ターンで凍結する**（§8.2）。
+- **行番号はスナップショット時に `selection.startLine + 1` で 1 始まりへ変換する**（§8.3.1）。
+- **作成操作の in-flight キーは送信前に確定している識別子を使う**（MR GID / `{MR GID}#{newPath}:{line}`）（§14.4）。
+
 ### 16.2 未決（レビューで判断したい）
 
 | # | 事項 | 現時点の提案 | 判断が必要な理由 |
@@ -1007,6 +1071,10 @@ round 2 の指摘を受けて追加で確定した事項:
 | R-13 | **in-flight キーに操作種別を含め、同一対象への相反する書き込みが同時に飛ぶ** | 同じノートへの Edit と Delete の競合。既存ガードを流用しても直列化されない | キーは接続タグ + 対象のみ。既存 `WriteKey` の契約（ACTION を意図的に含めない）に従う（§14.4） |
 | R-14 | **`loadDiscussions` の完了を待たずに `[Send again]` を出し、ユーザーが最新状態を見ないまま再送する** | R-7 の緩和策が機能せず重複投稿 | `LoadOutcome` の完了契約を定義し、`Applied` でのみ再送を許可（§8.1 / §9.3） |
 | R-15 | **残時間由来の timeout が例外として伝播し、取得済みページと打ち切り表示が失われる** | 通常の deadline 到達が読み取り失敗として扱われる | deadline 予算由来の timeout を捕捉して部分結果を返す（§12.1） |
+| R-16 | **早期終了経路が `LoadOutcome` を返さず、§9.3 の callback が永久に呼ばれない** | Ambiguous 失敗後に本文を保持したダイアログすら出ず、入力が失われる（FR-8 違反） | すべての早期終了を対応する outcome の 1 回通知に合流させる（§8.1） |
+| R-17 | **`startEpoch` を background 完了後に読み、停止→再開を跨いだ古い mutation の UI が新しいライフサイクルで起動する** | 停止後のダイアログ・再取得（R-8 と同じ障害） | `startEpoch` は background 起動前の UI ターンで凍結する（§8.2） |
+| R-18 | **Eclipse の 0 始まり行番号を変換せず送り、全 diff コメントが 1 行上に付く** | 機能としては動くが、常に誤った行に付く。レビューとして使い物にならない | スナップショット時に `+ 1` して 1 始まりで保持し、変数名に基数を含める。先頭行を含む境界テストを置く（§8.3.1） |
+| R-19 | **作成操作の in-flight キーが構築できず、ガードを省略してダブルクリックで重複コメントが作られる** | R-7 と同じ重複投稿が、作成経路で再発 | 送信前に確定している識別子（MR GID / `{MR GID}#{newPath}:{line}`）をキーにする（§14.4） |
 
 ---
 
@@ -1020,8 +1088,9 @@ round 2 の指摘を受けて追加で確定した事項:
 | `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
 | **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
 | **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
-| **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ 1 回だけ UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／新しい世代に破棄された場合 → `Superseded`（`Applied` ではない） |
-| **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと |
+| **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ **1 回だけ** UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／接続ゲート拒否 → `GateRejected`（`return` で終わらない）／新しい世代に破棄 → `Superseded`（`Applied` ではない）／**`active == false` / `epoch` 変化時は呼ばれないこと**（契約上の例外） |
+| **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと／**作成操作のキーが構築できること**: MR 全体コメント = MR GID、新規 diff スレッド = `{MR GID}#{newPath}:{line}`／MR 全体コメントの二重送信が抑止されること／異なる行への diff コメントは同時に進められること |
+| **行番号の基数**（§8.3.1） | `selection.startLine + 1` がスナップショット時に適用されること／**ファイル先頭行（0 始まりの 0 → 1 始まりの 1）** を含む境界ケース／送信される `newLine` が 1 始まりであること |
 | `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
 | **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
 | **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
@@ -1059,7 +1128,8 @@ round 2 の指摘を受けて追加で確定した事項:
 1. `GitLabGraphQlClient` が存在し、§18.1 の全テストが PASS する。
 2. `DiscussionService.getDiscussions` が**外側のみをページングし**、`endCursor` を次要求に渡す。ページ上限 20 と **wall-clock deadline 60 秒**の両方で打ち切り、取得済み分を返して警告を記録する（§8.5 / §12.1）。
 3. 各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡る。**残時間由来の timeout でリクエストが失敗した場合も、例外を伝播させず取得済み分 + 打ち切り表示を返す**（§12.1）。
-3b. `loadDiscussions` が `LoadOutcome`（`Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped`）を UI スレッドで 1 回だけ渡す。
+3b. `loadDiscussions` が `LoadOutcome`（`Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped`）を UI スレッドで 1 回だけ渡す。**すべての早期終了（読み込み済み → `Skipped`、接続ゲート拒否 → `GateRejected`）が対応する outcome に合流し、`return` だけで終わる経路が無い。**唯一の例外はライフサイクル終了（`active == false` / `epoch` 変化）で、この場合は callback を呼ばない（§8.1 の契約上の例外）。
+3c. 世代キーが `normalizeInstanceUrl(instanceUrl)` と `authFingerprint` を含む（§7.3 / §8.1 が一致）。
 4. `notes.pageInfo.hasNextPage` が真のスレッドに `(more replies — open in GitLab)` 子ノードが出る。内側をページングしようとしない。
 5. サイドバーの MR ノード配下に Discussions 節が出る。展開時に遅延取得する（`loadDiscussions(force = false)`）。
 6. スレッドが `path:line` または `(overall)` のラベルで、解決状態とともに表示される。
@@ -1081,6 +1151,7 @@ round 2 の指摘を受けて追加で確定した事項:
 8. **L2 の部分成功（`data` キーあり + `errors`）が Ambiguous に分類され、[Retry] が出ない**（§11.1 / §12.2）。
 9. **Ambiguous 失敗**時、[Retry] を出さず強制再取得を行い、**`LoadOutcome` が `Applied` の場合にのみ** [Send again] / [Cancel] を提示する。`Superseded` / `Failed` / `GateRejected` / `Skipped` では [Copy text] / [Cancel] のみ（§9.3）。
 10. **in-flight キーが操作種別を含まず**、同一ノートへの Edit と Delete が直列化される（§14.4）。
+10b. **MR 全体コメント作成の in-flight キーが MR GID で構築され**、ダブルクリックによる二重送信が抑止される（§14.4）。
 11. **書き込み成功後、`loadState == LOADED` であっても再取得の HTTP が実際に発行され**、当該 MR の Discussions 節が最新化される（FR-10 / §8.2）。
 12. **mutation 送信中に generation が進んでも**、in-flight ガードの解放・成功時の再取得・失敗時の本文保持がいずれも実行される（鮮度ガードは適用されない。§8.2）。
 13. **`active == false` または `epoch` 変化時は UI 処理が一切起きず、それでも in-flight ガードは解放されている**（ライフサイクルガードは適用される / 解放は background の `finally`。§8.2）。
@@ -1094,6 +1165,8 @@ round 2 の指摘を受けて追加で確定した事項:
 3. **G3（エディタが dirty）で拒否される**（早期拒否）。
 4. **G8（捕捉した本文 != HEAD blob）で拒否される。**改行コードのみが異なる場合も拒否される（正規化しない）。
 5. スナップショット取得後にエディタを編集しても、送信される `newLine` が変わらない。
+5b. **送信される `newLine` が 1 始まりである。ファイル先頭行にコメントすると `newLine = 1` になる**（§8.3.1）。
+5c. **新規 diff スレッド作成の in-flight キーが `{MR GID}#{newPath}:{line}` で構築され**、ダブルクリックによる二重送信が抑止される。異なる行へのコメントは同時に進められる（§14.4）。
 6. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
 7. `DiffPositionInput` が `newLine` のみを含み、3 つの sha が MR の diff version 由来である。
 8. old 側へのコメント作成が対象外であることが PR に明記される。
