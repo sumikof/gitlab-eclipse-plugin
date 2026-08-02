@@ -100,20 +100,33 @@ com.gitlab.eclipse.ci.actions
   ├─ ValidateCiConfigHandler.kt    (新) AbstractHandler
   └─ ShowMergedCiConfigHandler.kt  (新) AbstractHandler
 
+com.gitlab.eclipse
+  └─ GitLabEclipseStartup.kt         (変更=追加のみ) stop 先頭に CiLintGenerationRegistry.active=false
+
 src/main/resources/plugin.xml       (変更=追加のみ) command×2 + handler×2 + submenu 項目×2
 ```
 
 ## 8. コンポーネントの責務
 
 ### 8.1 `CiLintResult`(データモデル・純)
+
+**重要(Codex round2 P2)**: Gson は Unsafe でインスタンスを生成し**コンストラクタ/Kotlin 既定引数/`init` を実行しない**。したがって `errors: List<String> = emptyList()` の既定値は**効かず**、JSON に `errors` が無ければ non-null 宣言でも `null` が残り、`result.errors.firstOrNull()`(validate)や merge 不能ログ(showMerged)で NPE になる。→ **パース DTO は nullable、ドメイン型はパース後に non-null 正規化**に確定する。
 ```
+// パース専用 DTO(全フィールド nullable。Gson が直接 map)
+private data class CiLintResponse(
+  val valid: Boolean?,
+  @SerializedName("merged_yaml") val merged_yaml: String?,
+  val errors: List<String>?,
+)
+
+// ドメイン型(non-null 正規化済み。上位はこれだけを扱う)
 data class CiLintResult(
   val valid: Boolean,
-  @SerializedName("merged_yaml") val mergedYaml: String?,
+  val mergedYaml: String?,
   val errors: List<String>,
 )
 ```
-- Gson で応答 JSON を写像。`valid` 欠落時は false、`errors` 欠落時は空リスト扱い(Gson 既定では null。null 安全のため `errors` を non-null 化する正規化を CiLintService 側で行う、または `errors: List<String> = emptyList()` の既定を持たせる)。**U-2**(§25)で明確化。
+- `CiLintService`(§8.3)が `CiLintResponse` にパース後、`CiLintResult(valid = r.valid ?: false, mergedYaml = r.merged_yaml, errors = r.errors ?: emptyList())` に正規化。これで欠落フィールドの NPE を根絶(U-2 解決)。
 
 ### 8.2 `GitLabApiClient.postJson`(追加のみ)
 ```
@@ -130,7 +143,7 @@ class CiLintService(apiClient = service()) {
 }
 ```
 - body = Gson で `{"content": content}` を生成(手組み文字列連結ではなく Gson でエスケープ)。
-- `apiClient.postJson("/projects/$projectId/ci/lint", body, connection)` → 応答 body を `CiLintResult` にパースして返す。
+- `apiClient.postJson("/projects/$projectId/ci/lint", body, connection)` → 応答 body を `CiLintResponse`(nullable DTO)にパース → non-null 正規化した `CiLintResult` を返す(§8.1)。
 - 例外はそのまま伝播(分類・監査は上位の `runCiLint`)。`JobTraceService`(`api/JobTraceService.kt`)と同格の薄いサービス。
 
 ### 8.4 `CiLint.kt`(SWT-free コア=headless テスト可能)
@@ -159,7 +172,7 @@ fun runCiLint(
 - 手続き: `capture()`(`UnstableConnectionException` → `ConnectionUnstable`)→ `sameConfiguredInstance(contextInstanceUrl, connection.instanceUrl)` が false → `InstanceMismatch`(**lint を一度も呼ばない**)→ `lint(connection)` を try で実行し、`GitLabApiException`→`Failed(http)` / `HttpTimeoutException`→`Failed(timeout)` / `IOException`→`Failed(io)` / 成功 → `Linted`。`CancellationException` は再スロー。
 - `sameConfiguredInstance` / `normalizeInstanceUrl` は既存 `CreatePipeline.kt` / `WriteAction.kt` の関数を再利用。
 - `classifyWrite`(`WriteAction.kt:37`)は `() -> PostResult` 専用で成功ペイロードが `PostResult` 固定のため流用不可。`runCiLint` 内で直接分類する(`WriteOutcome.Failure` はペイロード非依存なので再利用)。
-- `buildCiLintAuditMessage(instanceUrl, projectId, command, outcome)`: `ciLint command=<validateCiConfig|showMergedCiConfig> instanceUrl=<正規化> projectId=<id> outcome=…`。token/body/yaml を一切含めない。`CreatePipeline.kt:67-90` と同型。
+- `buildCiLintAuditMessage(instanceUrl, projectId, command, outcome)`: `ciLint command=<validateCiConfig|showMergedCiConfig> instanceUrl=<正規化> projectId=<id> outcome=…`。token/body/yaml を一切含めない。`CreatePipeline.kt:67-90` と同型。**`Linted` を含む全 outcome を分岐**(`buildCreateAuditMessage` が `Created` を扱うのと同様):success 行は `outcome=success valid=<bool> merged=<present|absent> httpStatus=…`(yaml 本文は出さず存在有無のみ)。
 
 ### 8.4a `CiLintGenerationRegistry`(UI スレッド専有・順序安全=Codex round1 P1 反映)
 
@@ -167,15 +180,18 @@ fun runCiLint(
 
 **対策**: `JobLogGenerationRegistry`(PR-3、`DisplayJobLogHandler` が使用)と**同型**の per-key 世代レジストリを新設し、**最新世代のみが UI(エディタ・通知・エラー)へ反映**されるようにする。
 ```
-object CiLintGenerationRegistry {          // UI スレッドからのみアクセス
-  fun nextGeneration(key: CiLintKey): Long // この実行を key の最新として採番・記録
+object CiLintGenerationRegistry {          // 変異/読取は UI スレッド。active のみ @Volatile
+  @Volatile var active: Boolean = true      // plugin 停止で false(stop フックが設定)
+  fun nextGeneration(key: CiLintKey): Long  // この実行を key の最新として採番・記録
   fun isLatest(key: CiLintKey, gen: Long): Boolean
   fun shouldAct(key: CiLintKey, gen: Long): Boolean  // active かつ isLatest
-  val active: Boolean                       // plugin 停止時に false
+  internal fun resetForTest()               // テスト用リセット(本番未使用)
 }
 ```
+- `JobLogGenerationRegistry`(実ソース `ci/joblog/JobLogGenerationRegistry.kt`)を**忠実にミラー**: `counter` 単調増加・key ごと `latest` map・`active` は `@Volatile`(停止が別スレッドからの syncExec 経由になり得るため)。
 - 世代採番は **UI スレッド**(§8.6 の `selectActiveContext` コールバック内、context 解決後・IO launch 前)。
 - 反映/通知は UI turn 内で `shouldAct(key, myGen)` を判定してから実行(判定と実行を同一 turn=stale すり抜け防止。`DisplayJobLogHandler.reflectLatest/notifyIfLatest` と同一構造)。
+- **ライフサイクル配線(Codex round2 P1 反映)**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.active = false` を追加する。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。stop への変更は §20(既存機能への影響)に明記。
 
 ### 8.5 `launchCiLint`(top-level・共有骨格)+ CI-lint total UI helper
 ```
@@ -189,7 +205,8 @@ internal fun launchCiLint(
 ```
 - `scope.launch { try { … } catch (CancellationException) throw; catch (Exception) 監査 + gated 通知 }`。
 - 本体: `runCiLint(context.instanceUrl, { apiClient.captureConnection() }, { service.validate(it, context.projectId, content) })` を評価。
-- 結果を **CI-lint total helper** で UI にマーシャル(下記)。`Linted` → gate 通過時のみ `onLinted(result)`、`InstanceMismatch`/`ConnectionUnstable`/`Failed` → 監査ログ(`log.error(buildCiLintAuditMessage(...))`)+ gate 通過時のみ generic 通知。
+- **監査(1 操作 1 行・§18・Codex round2 P2)**: `Linted` は `log.info(buildCiLintAuditMessage(..., outcome=Linted))`(成功も件数/成功率が追跡できるよう記録・body 非出力)、`InstanceMismatch`/`ConnectionUnstable`/`Failed` は `log.error(buildCiLintAuditMessage(...))`。監査はゲート判定と独立に**必ず 1 行**出す(反映/通知のみ gate で抑制)。
+- 結果を **CI-lint total helper** で UI にマーシャル(下記)。`Linted` → gate 通過時のみ `onLinted(result)`、`InstanceMismatch`/`ConnectionUnstable`/`Failed` → gate 通過時のみ generic 通知。
 - `DisplayJobLogHandler.launchDisplayJobLog`(`DisplayJobLogHandler.kt:94-146`)と同型。2 ハンドラは `onLinted` のみ差分。
 
 **CI-lint total UI helper(指摘 #5 反映)**: `NotificationUtils.showOnUiThread` は**それ自体は total ではない**(実ソース `NotificationUtils.kt:21-35` に catch 無し。teardown 安全性は呼び出し側の private helper が担う)。したがって CI lint 専用に、`DisplayJobLogHandler.reflectLatest/notifyIfLatest`(`:157-200`)と**同一構造**の total helper を `CiLintLaunch.kt` に置く:
@@ -220,8 +237,20 @@ private fun notifyIfLatest(key, myGen, message) { /* 同型。isLatest 判定 �
   - `myGen = CiLintGenerationRegistry.nextGeneration(key)`(**UI スレッドで採番**・§8.4a)。
   - `launchCiLint(scope, log, apiClient, service, ctx, content, key, myGen, onLinted)`。
 - **validate の onLinted**(gate 通過後・UI): `if (result.valid) NotificationUtils.showOnUiThread("GitLab: Your CI configuration is valid.") else { エラー "GitLab: Invalid CI configuration."; result.errors.firstOrNull()?.let { エラー } }`。
-- **showMerged の onLinted**(gate 通過後・UI): `val merged = result.mergedYaml; if (merged != null) MergedYamlEditorOpener.openOrReload(mergedKey, merged) else { log.error(errors); エラーダイアログ "GitLab: Cannot merge the CI configuration. Check your CI configuration files for errors." + "Validate GitLab CI Config" ボタン → 押下で validate コマンド実行 }`。
+- **showMerged の onLinted**(gate 通過後・UI): `val merged = result.mergedYaml; if (merged != null) MergedYamlEditorOpener.openOrReload(mergedKey, merged) else <merge 不能ダイアログ>`。
   - `mergedKey = MergedYamlKey(key.instanceUrl, key.projectId, sourceId)`(§8.8)。`openOrReload` の `PartInitException`/`CoreException` は onLinted の UI turn(=total helper 内)で catch され、Error Log + latest-gated 通知(§8.5 の inner catch)。
+  - **merge 不能ダイアログの実装方式(Codex round2 P2 反映)**: `NotificationUtils` はメッセージのみ popup でボタン/コマンド実行を持たないため使わない。`errors` を `log.error` 記録の上、`MessageDialog`(`org.eclipse.jface.dialogs`)を明示使用:
+    ```
+    val open = MessageDialog.open(
+      MessageDialog.ERROR, shell, "GitLab",
+      "GitLab: Cannot merge the CI configuration. Check your CI configuration files for errors.",
+      SWT.NONE, "Validate GitLab CI Config", "Close",
+    )  // 戻り値 true = 先頭ボタン(index 0)押下
+    if (open) executeValidateCommand()
+    ```
+    - `shell` は `HandlerUtil.getActiveShell(event)`(execute で捕捉)or `PlatformUI.getWorkbench().activeWorkbenchWindow?.shell`。
+    - `executeValidateCommand()` = `PlatformUI.getWorkbench().getService(IHandlerService).executeCommand("com.gitlab.eclipse.commands.ValidateCiConfig", null)`(VSCode の `executeCommand(VALIDATE_CI_CONFIG)` パリティ・`ci_config_lint_commands.ts:56`)。`ExecutionException`/`NotHandledException` 等は catch して Error Log(共有 scope 非依存の UI 経路)。
+    - これにより AC-4(Validate 再実行)を一貫実装。`MessageDialog` は既存 JFace(`CreatePipelineHandler` が `MessageDialog.openConfirm` を使用済み・新規依存なし)。
 - `@Suppress("unused")`(plugin.xml リフレクションで実体化されるため Kotlin 参照なし。既存ハンドラと同様)。
 
 ### 8.7 `ActiveEditorContent`(UI・text + source identity 抽出=Codex round1 P1 反映)
@@ -244,7 +273,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - `MergedYamlKey(instanceUrl, projectId, sourceId)`(指摘 #6 反映): `instanceUrl` は正規化済み、`sourceId` は §8.7 の安定 source identity。同一(インスタンス, プロジェクト, ソース)の再実行は同一タブに集約(タブ堆積防止)、同名別パス/別未保存入力は別 `sourceId`=別タブ。
 
 **`MergedYamlEditorOpener.openOrReload(key, mergedText)`(UI スレッド専有・`JobLogEditorOpener.openOrReload:49-100` を忠実移植=指摘 #3/#4 反映)**:
-1. **共有 content 更新**: `contentRegistry[key]?.get() ?: MergedYamlContent(mergedText)` を取得(既存タブの input が strong-ref するため weak が生存)し、`content.text = mergedText`。`WeakReference` 値で最後のタブが閉じると GC 可能。
+1. **共有 content 更新**: `val content = contentRegistry[key]?.get() ?: MergedYamlContent(mergedText).also { contentRegistry[key] = WeakReference(it) }` を取得(**新規生成時は registry へ即登録**=`JobLogEditorOpener.kt:57` の `.also { contentRegistry[key] = WeakReference(it) }` と同一。これが無いと初回タブの content が registry に残らず、再実行時に別 content を作ってしまい既存エディタの古い input を reset して古い YAML が残る=AC-3 不成立/Codex round2 P1)し、`content.text = mergedText`。既存タブの input が同一 content を strong-ref するため weak が生存。最後のタブが閉じると GC 可能。
 2. **全 window/page の一致エディタ列挙**: `PlatformUI.getWorkbench().workbenchWindows` × `pages` を走査し、`page.findEditors(input, null, IWorkbenchPage.MATCH_INPUT)` + `getEditor(true)` で**分割/クローンを含む全一致タブ**を収集(`findEditor` は 1 つしか返さない=不可)。
 3. **文書再読込**: 各一致エディタを `ITextEditor` にアダプトし `documentProvider.resetDocument(editorInput)` を呼ぶ(**content 差替だけでは既定テキストエディタの `IDocument` キャッシュが更新されない**ため必須)。背景ページの `CoreException` は log して best-effort 継続、**アクティブページのエディタの reset 失敗は伝播**(呼び出し元 total helper が Error Log + latest-gated 通知。stale を「更新済み」に見せない)。
 4. **可視化(タブ・Beside ではない=E2)**: アクティブページに既存一致タブがあれば `activePage.activate(editor)`、無ければ `activePage.openEditor(input, "org.eclipse.ui.DefaultTextEditor")` で**通常タブとして開く**(U-5 解決。`JobLogEditorOpener.DEFAULT_TEXT_EDITOR_ID` と同一)。`IWorkbenchPage.openEditor` は横並び配置を行わず、Eclipse には依存追加なしの Beside 相当 API が無いため、VSCode の `ViewColumn.Beside` はタブで代替(E2・§1)。`PartInitException` は呼び出し元(total helper)へ伝播し Error Log + latest-gated 通知。
@@ -358,8 +387,9 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 ## 18. ログ、監視、監査
 
-- 監査ログ 1 行/操作(`buildCiLintAuditMessage`): `command`(validateCiConfig|showMergedCiConfig)、正規化 instanceUrl、projectId、outcome(success/aborted-reason/failure+status+correlationId)。token/body/yaml を含めない。
-- 失敗時は Eclipse Error Log(`ILog`)へ。showMerged のマージ不能時は `errors` を Error Log に記録(VSCode `ci_config_lint_commands.ts:50` と同等)。
+- 監査ログ **1 行/操作**(`buildCiLintAuditMessage`): `command`(validateCiConfig|showMergedCiConfig)、正規化 instanceUrl、projectId、outcome(success+valid+merged有無 / aborted-reason / failure+status+correlationId)。token/body/yaml を含めない。
+- **成功(`Linted`)は `ILog.info`、異常(mismatch/unstable/failed/unexpected)は `ILog.error`**(Codex round2 P2。成功も件数・成功率が Error Log から追跡可能)。監査行は latest gate と独立に必ず出力(反映/通知のみ gate 対象)。
+- showMerged のマージ不能時は `errors` を Error Log に記録(VSCode `ci_config_lint_commands.ts:50` と同等)。
 - 監視: 既存の Error Log ベース。追加のテレメトリは無い。
 
 ## 19. 障害時の復旧方法
@@ -374,6 +404,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 - **`GitLabApiClient` に `postJson` を追加**(既存メソッド不変)。既存テストへの回帰なし。
 - 新規パッケージ `ci.lint` の追加のみ。既存 `ci.joblog` / `ci.actions` / `api` の既存型は不変(新規ファイル追加と plugin.xml への追加のみ)。
+- **`GitLabEclipseStartup.stop` に 1 行追加**(`CiLintGenerationRegistry.active = false`。既存 `shutdownJobLog()` と同経路・Codex round2 P1)。start は不変。既存挙動への回帰なし。
 - plugin.xml は command/handler/submenu 項目の**追加のみ**。既存の「GitLab」サブメニュー(navigation)に 2 項目を足す。
 - 新規 bundle 依存なし。
 
@@ -389,10 +420,10 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 ### headless 単体(TDD・SWT 非依存)
 - `CiLintResult` の Gson パース: valid/invalid、`merged_yaml` の snake_case 写像、`errors` 空/複数、欠落フィールドの既定。
-- `CiLintService.validate`: 正しい path(`/projects/{encoded}/ci/lint`)+ body(`{"content":…}` の Gson エスケープ)+ 応答パース(mock apiClient)。
+- `CiLintService.validate`: 正しい path(`/projects/{encoded}/ci/lint`)+ body(`{"content":…}` の Gson エスケープ)+ 応答パース(mock apiClient)。**`errors`/`valid`/`merged_yaml` 欠落 JSON でも NPE を出さず `errors=[] / valid=false / mergedYaml=null` に正規化**(Codex round2 P2)。`valid:false`+`errors` あり、`merged_yaml` あり、の各ケース。
 - `GitLabApiClient.postJson`: `Content-Type: application/json`、body 送出、Bearer が snapshot 由来、非 2xx → `GitLabApiException`、応答 body 返却(mock httpClient。既存 `sendPost` テストと同型)。
 - **`runCiLint`(安全網の要)**: `capture → gate → lint` の順序、`InstanceMismatch` 時に lint ラムダが **0 回**呼ばれること、`ConnectionUnstable`、`Failed` の分類(http/timeout/io)、`CancellationException` 伝播。
-- `buildCiLintAuditMessage`: 各 outcome で token/body/yaml を含まないこと。
+- `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、を検証。
 - `MergedYamlEditorInput`: `equals/hashCode` が key のみ依存、`exists()=false`、`getName()` が期待値。`MergedYamlKey`: 同一(instance,project,sourceId)は等価、sourceId 差で非等価。
 - **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。plugin 停止で `active=false` → `shouldAct`=false。
 - **`ActiveEditorContent.sourceId` 導出(指摘 #6)**: `IFileEditorInput`(mock)→ fullPath、`IURIEditorInput`(mock)→ uri、フォールバック → `name + "#" + identityHashCode`。**同名別パス → 別 sourceId**、**同一未保存入力インスタンスの 2 回抽出 → 同一 sourceId**。SWT/document 取得部は手動、input→sourceId 純ロジックは mock 入力で単体化。
@@ -407,7 +438,9 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - **showMerged 再実行(同一ソース)→ 同一タブの内容が `resetDocument` で更新される**(古い YAML が残らない・指摘 #3)。
 - **同名別パスの CI ファイル 2 つで showMerged → 別タブ**(sourceId 分離・指摘 #6)。未保存エディタの lint → 「No open file.」にならず lint 実行、再実行で同一タブ。
 - **完了順逆転**: 内容 A で実行直後に内容 B で実行 → 最終的に B の結果のみが表示/通知される(A の遅延完了が上書きしない・指摘 #2)。手動再現が難しい場合はネットワーク遅延注入で確認。
-- showMerged で merge 不能 → 「Cannot merge…」+ Validate ボタン → validate 実行。
+- showMerged で merge 不能 → `MessageDialog` に「Cannot merge…」+「Validate GitLab CI Config」ボタン → 押下で validate コマンドが `IHandlerService` 経由で実行される(指摘 P2)。
+- 監査ログに **成功操作も 1 行**残る(`ILog.info`・valid/merged 有無つき・yaml 本文なし)。
+- 進行中 lint がある状態で plugin を停止 → 完了しても通知/エディタ操作が出ない(stop フックで `CiLintGenerationRegistry.active=false`・指摘 P1)。
 - アクティブエディタ無し/非テキストエディタ → 「No open file.」。
 - 複数リポジトリ → picker。
 - 表示中に接続先/認証を切替 → 誤インスタンスへ送信されない(監査ログで確認)。
@@ -435,9 +468,9 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 継続中(要 Codex/ユーザー判断):
 
 - **U-1(バージョンゲート)**: VSCode は `POST /ci/lint` 前に GitLab ≥ 13.6.0 を明示チェックする(`gitlab_service.ts:635`, `constants.ts:35`)。本プラグインには汎用のバージョンチェック機構が無い。13.6.0 は 2020 年で実質常に満たされる。**方針案**: 実装しない(未対応バージョンでは通常の API エラー→ generic 通知にフォールバック)。Codex 判断を仰ぐ。
-- **U-2(`errors` の null 安全)**: Gson は JSON に `errors` が無い場合 `null` を代入し得る。`CiLintResult.errors` を non-null 化する(既定 `emptyList()` かパース後正規化)。どちらを採るか実装時に確定。挙動要件は「errors[0] があれば表示」なので null=空扱いで問題なし。
+解決済み(Codex round1/round2 反映):
 
-解決済み(Codex round1 反映):
+- **U-2(`errors`/`valid` の null 安全)→ 解決**: Gson がコンストラクタを迂回するため既定値は効かない。nullable パース DTO `CiLintResponse` → non-null 正規化した `CiLintResult`(§8.1・§8.3・Codex round2 P2)。
 
 - **U-3(merged 再表示ポリシー)→ 解決**: 同一 `MergedYamlKey` の再実行は `openOrReload` で**同一タブを `resetDocument` 更新**(タブ堆積防止・§8.8・指摘 #3)。異なる sourceId は別タブ。
 - **U-4(source label)→ 解決**: merged エディタ名は VSCode 固定文字列「.gitlab-ci (Merged).yml」(`merged_yaml_uri.ts:14`)。source identity は表示名でなく §8.7 の `sourceId` が担う。
