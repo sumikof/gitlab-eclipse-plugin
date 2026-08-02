@@ -269,6 +269,21 @@ class GitLabGraphQlClient(
 
 **知らないこと**: SWT、UI スレッド、ツリー構造。**このクラスは SWT-free であり、単体テスト可能である。**
 
+### 7.2.1 既存 REST サービスへの接続スナップショット受け渡し（PR-3 の前提）
+
+エディタ経路（§8.3）は「捕捉した 1 つの `ConnectionSnapshot` を識別子解決・in-flight キー・送信のすべてで使う」ことを要件とする（R-24）。しかし現状の既存 API はこれを満たせない。
+
+| 既存 API | 現状 | 必要な変更 |
+|---|---|---|
+| `GitLabApiClient.fetchListFromApi(request)` | `connection` 引数が無く、各要求で `captureConnection` を再実行する | `connection: ConnectionSnapshot? = null` を**追加**（既定 null で従来の挙動と完全に同一） |
+| `MergeRequestService.getLatestMrVersion(encodedProjectId, mrIid)` | 上記 `fetchListFromApi` と `fetchObject` を接続無しで呼ぶ | `connection: ConnectionSnapshot? = null` を追加し、内部の両呼び出しへ透過 |
+| `CurrentBranchMrLookup.lookup(context, branch)` | 接続引数が無く、内部の `ProjectDetailService` / `MergeRequestService` が各要求で再捕捉する | `connection: ConnectionSnapshot? = null` を追加し、内部サービスへ透過 |
+| `ProjectDetailService.getProject(encodedProjectId)` | `fetchObject` を接続無しで呼ぶ | 同上 |
+
+**これらを追加しないと R-24 の修正は実装できない。** 後段の `pinnedConnectionFor` が送信を止めても、識別子と position は既に別インスタンス／別アカウントから取得済みになりうるためである。
+
+すべて**引数の追加のみ**であり、既定値 `null` は現行の挙動（要求ごとに `captureConnection`）と完全に同一である。既存の呼び出し箇所は 1 箇所も変更しない。**この変更は §15.4 に明示する。**
+
 ### 7.3 `DiscussionGenerationRegistry`
 
 **責務**: 応答の UI 反映を最新世代に限定する。Phase 4 の `CiLintGenerationRegistry`（`src/main/kotlin/com/gitlab/eclipse/ci/lint/CiLintGenerationRegistry.kt`）の忠実なミラー。
@@ -276,7 +291,9 @@ class GitLabGraphQlClient(
 - キー = （`normalizeInstanceUrl(instanceUrl)`, **`authFingerprint`**, `projectId`, `mrIid`）。§8.1 / §15.3 と同一。
   **`authFingerprint` を必ず含める。** 含めないと、同じ URL でアカウントを切り替えた後に旧アカウントの遅い応答と新アカウントの取得が同じ世代を争い、旧アカウントの結果が UI に反映されうる。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）が `normalizeInstanceUrl(instanceUrl) + "\n" + authFingerprint` をハッシュしているのと同じ扱いである。
 - `nextGeneration(key)` / `isLatest(key, gen)` / `currentEpoch` / `onActivate()` / `onDeactivate()`。
-- `@Volatile active` のみが複数スレッドから読まれ、カウンタ・epoch・latest マップは UI スレッド専有。
+- `@Volatile active` と **`@Volatile epoch`** が複数スレッドから読まれる。**書き込みは UI スレッドのみ**（`onActivate` / `onDeactivate`）。
+  `epoch` を background から読めるようにするのは、送信直前のライフサイクル検証（§8.2「送信直前の検証」）に必要なためである。書き込みが UI スレッドに限られるため、volatile 読み取りで十分であり追加のロックは要らない。
+- カウンタと latest マップは UI スレッド専有（従来どおり）。
 
 ### 7.4 サイドバーノード
 
@@ -406,6 +423,9 @@ finish(result) = [UI スレッド（asyncExec）]
     connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
       → null なら HTTP を発行せず、結果を GateRejected として終端へ   ← ★中止するだけにしない★
     else {
+      ★ 送信直前のライフサイクル検証（§8.2「送信直前の検証」）★
+        !registry.active || registry.epoch != startEpoch || !isActive()
+          → mutation を **発行せず** Aborted として終端へ
       GraphQL mutation 送信
       3 層のエラー検査（§11.1）→ Success / Definite / Ambiguous に分類（§12.2）
     }
@@ -420,6 +440,8 @@ finish(result) = [UI スレッド（asyncExec）]
   Definite     → §9.2 の再試行ダイアログ（本文保持・[Retry] / [Cancel]）
   Ambiguous    → §9.3 の結果確認フロー（本文保持・自動再送しない）
   GateRejected → §11.2 の接続不一致通知 + 本文保持ダイアログ（[Copy text] / [Cancel]）
+  Aborted      → 停止を跨いだため送信していない。UI 処理はライフサイクルガードで
+                 破棄されるのが正常（＝この分岐に到達するのは再開後の稀な順序のみ）
 ```
 
 **ガードを 2 種類に分けて扱う。** これらは目的が異なるため、一括で適用しても一括で外してもいけない。
@@ -432,6 +454,12 @@ finish(result) = [UI スレッド（asyncExec）]
 **`startEpoch` は background 起動前の UI ターンで凍結する。** background 完了後に `registry.currentEpoch` を読んで比較しても常に一致してしまい、送信中の停止→再開を跨いだ古い mutation のダイアログや再取得が新しいライフサイクルで起動する。読み取り側（§8.1）と同じ扱いである。`gen` は mutation 側では取得しない（鮮度ガードを適用しないため）。**これは §8.3 の diff スレッド作成フローにも等しく適用される。**
 
 **書き込みの結果は 4 つであり、例外なくこの終端処理に合流する。** `Success` / `Definite` / `Ambiguous` / `GateRejected` のいずれも、ライフサイクルガードを通したうえで UI 処理を行う。
+
+**送信直前の検証。** `pinnedConnectionFor` を通した直後、mutation を発行する前に、`registry.active` / `registry.epoch == startEpoch` / コルーチンの `isActive()` を再検査し、いずれかが崩れていれば **mutation を発行しない**。
+
+理由: 識別子解決や `pinnedConnectionFor` の前後にはブロッキングな REST 呼び出しがありうる（特に §8.3 の G6 / G9）。その間に bundle が停止して再開すると、コルーチンのキャンセルだけでは戻った後の非 suspend 処理は止まらず、**接続が同じであれば `pinnedConnectionFor` も通ってしまう**。その結果、旧ライフサイクルの操作が新しいライフサイクルで送信され、投稿は成立するのに完了 UI は epoch ガードで破棄されるため、成功時の再取得も失敗時の本文保持も行われない。送信前に検証すれば、投稿自体が起きないので不整合が生じない。
+
+`epoch` を background から読むために `DiscussionGenerationRegistry.epoch` を `@Volatile` とする（書き込みは UI スレッドのみ。§7.3）。
 
 `GateRejected` を結果として持つ理由: 本文入力ダイアログを閉じてから background が接続を捕捉するまでの間に URL またはアカウントが変わると `pinnedConnectionFor` が null を返す。これを「中止」で終わらせると §11.2 の通知が出ず、作成・返信・編集で入力した本文も再提示もコピーもできないまま失われる（FR-8 違反）。読み取り側の `GateRejected`（§8.1）と対になる扱いである。
 
@@ -465,20 +493,28 @@ finish(result) = [UI スレッド（asyncExec）]
     → background へ（以降、エディタの状態には二度と触れない）
 
 [background：識別子の解決とゲート（このフロー固有の前段）]
-  ★ conn = apiClient.captureConnection() ★  ← G5 より前に 1 回だけ捕捉
-     以降の識別子解決・in-flight キー・送信のすべてがこの conn を使う
+  ★ すべてを try で囲む。以下の例外も終端処理へ合流させる ★
+  conn = try { apiClient.captureConnection() }
+         catch (UnstableConnectionException) { → GateRejected として終端へ }
+     ← G5 より前に 1 回だけ捕捉。try の外に置かない（設定保存中に例外が
+       coroutine を抜けると通知も本文保持も行われず FR-8 違反になる）
+     以降の識別子解決・in-flight キー・送信のすべてがこの conn を**引数で**渡して使う
+     （§7.2.1 の接続受け渡し契約。渡せなければ各サービスが接続を再捕捉してしまう）
   G5: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
       （RepositoryContextResolver。0 件・複数件は拒否）
   G6: そのリポジトリの現ブランチに対応する MR が特定できるか
-      （CurrentBranchMrLookup。conn 上で実行）
-      → MR GID / iid / projectId / mr.sha が確定
+      （CurrentBranchMrLookup.lookup(context, branch, conn)。§7.2.1）
+      → MR GID / iid / projectId / mr.sha / namespaceWithPath が確定
+  G6b: 作成権限があるか（§8.3.4）
+      GetMrPermissions クエリ（§10.3）を conn 上で実行し
+      userPermissions.createNote が false なら Definite 相当として拒否
   G7: リポジトリの HEAD sha == その MR の diff head sha か
       （OpenMrFileHandler と同一のゲート）
   G8: ★ snapshot.documentText == HEAD blob の内容（対象パス）★
       JGit で HEAD ツリーから当該パスの blob を読み、捕捉した本文と厳密比較
       → 不一致なら拒否
   G9: ★ 最新 diff version を取得し、position を凍結する ★
-      version = MergeRequestService.getLatestMrVersion(projectId, mrIid)（conn 上で実行）
+      version = MergeRequestService.getLatestMrVersion(projectId, mrIid, conn)（§7.2.1）
         → null なら拒否
       version.headCommitSha == G7 で確認した head sha か → 不一致なら拒否
         （G7 の判定後に新しい version が push された場合を弾く）
@@ -491,12 +527,15 @@ finish(result) = [UI スレッド（asyncExec）]
                                "{MR GID}#{newPath}:{oneBasedLine}")
      ← conn（捕捉済み）と G6・G9（解決済み）が揃って初めて構築できる
      → 取得できなければ「already in progress」を UI へ marshal して終了
-  ★ 再取得対象ノードの解決（§8.3.3）★
-     target = sidebar.resolveDiscussionsSection(conn タグ, projectId, mrIid)  // null 可
+  ★ 再取得対象は「識別子」だけを持ち回る（§8.3.3）★
+     targetRef = (normalizeInstanceUrl(conn.instanceUrl), conn.authFingerprint,
+                  projectId, mrIid)
+     ← ★ここでノード実体を解決しない★（解決は終端の UI ターンで行う）
   try {
     pinned = pinnedConnectionFor(apiClient, conn.instanceUrl, conn.authFingerprint)（§15.3）
       → null なら GateRejected として終端へ
         （= 識別子解決中に URL / アカウントが変わった。送信しない）
+    ★ 送信直前のライフサイクル検証（§8.2）★ → 崩れていれば Aborted（送信しない）
     createDiffNote 送信（position = G9 の凍結値、newLine = snapshot.oneBasedLine）
     3 層のエラー検査（§11.1）→ Success / Definite / Ambiguous（§12.2）
   } finally {
@@ -504,7 +543,8 @@ finish(result) = [UI スレッド（asyncExec）]
   }
 [UI スレッド] ★ §8.2 の終端処理をそのまま使う ★
   ライフサイクルガード（active / epoch != startEpoch）→ 破棄
-  Success / Definite / Ambiguous / GateRejected の 4 分岐（§8.2 + §8.3.3）
+  ★ ここで初めて target = sidebar.resolveDiscussionsSection(targetRef) を解決 ★
+  Success / Definite / Ambiguous / GateRejected / Aborted の分岐（§8.2 + §8.3.3）
 ```
 
 **2 つの捕捉時点を区別する。** 内容のスナップショット（ターン 1）と `startEpoch`（ターン 2）は、目的が異なるため捕捉時点も異なる。
@@ -530,6 +570,21 @@ fun resolveDiscussionsSection(
 ): DiscussionsSectionNode?   // 現在ツリーに存在しなければ null
 ```
 
+**解決は「送信前の background」ではなく「終端の UI ターン」で行う。** background で解決したノード実体を持ち回ると、G9 から mutation 完了までの間にサイドバー全体の更新や表示モード変更が起きた場合、**現在のツリーから切り離された旧ノード**を掴んだままになる。その状態では、`Success` の強制再取得が誰にも見えない旧ノードを更新し、`Ambiguous` ではユーザーに結果が見えないまま `Applied` が返って `[Send again]` を許してしまう。
+
+したがって background が持ち回るのは**識別子だけ**である。
+
+```kotlin
+data class DiscussionsTargetRef(
+  val instanceUrl: String,      // normalizeInstanceUrl 済み
+  val authFingerprint: String,
+  val projectId: Long,
+  val mrIid: Long,
+)
+```
+
+終端の UI ターンで、ライフサイクルガードを通過した**直後**に `resolveDiscussionsSection(targetRef)` を呼ぶ。サイドバーの状態は UI スレッド専有なので、この解決と直後の利用は同一 UI ターン内で完結し、間に更新が割り込む窓が無い。
+
 `target == null` の場合の終端処理:
 
 | 結果 | `target != null` | `target == null` |
@@ -539,6 +594,20 @@ fun resolveDiscussionsSection(
 | `Definite` / `GateRejected` | §8.2 のとおり | 同じ（ノートに依存しない） |
 
 `target == null` で `Ambiguous` のときに `[Send again]` を出さないのは、§9.3 の原則（**ユーザーが最新状態を確認してからでなければ再送を許さない**）をそのまま適用した結果である。
+
+### 8.3.4 エディタ経路の権限確認（FR-9 の限界）
+
+§15.2 は「権限のない操作はメニューに出さない」（FR-9）を、ノードが保持する `userPermissions` を入力として実現する。**エディタ経路にはノードが無く、G6 で得る REST の `GitLabMergeRequest` にも権限フィールドが無い。**したがってエディタのコンテキストメニュー項目を、同期的に権限でフィルタすることはできない。
+
+本設計は次を確定する。
+
+1. **FR-9 のエディタ経路に対する明示的な例外**: 「GitLab > Comment on this line…」のメニュー項目は、権限の有無にかかわらず常に表示する。メニューは同期的に構築されるため、ネットワーク往復を要する権限判定を挟めない。
+2. **代わりに G6b で権限を確認する**: 識別子解決の一環として `GetMrPermissions` クエリ（§10.3）を実行し、`userPermissions.createNote` が false なら**送信せずに拒否**する。分類は Definite（サーバは要求を受け取っていないが、拒否が確定しており副作用が無いため再送しても安全）。
+3. **本文は失われない**: Definite 扱いなので §9.2 のダイアログで本文が保持される。ただし権限が無い以上 `[Retry]` は無意味なので、この拒否に限り `[Copy text]` / `[Cancel]` を出す。
+
+拒否文言: `You do not have permission to comment on this merge request.`
+
+VSCode も同じクエリで同じ判定を行っている（`canUserCommentOnMr`、`gitlab_service.ts:464-478`）。VSCode は Comments API の `commentingRangeProvider` でこの結果を使って UI を抑止できるが、Eclipse のコンテキストメニューには相当する非同期フィルタが無いため、本設計は「起動後に拒否する」形になる。**この差分は既知の制限として PR に明記する。**
 
 ### 8.3.2 in-flight ガードの取得スレッド（本フローのみの例外）
 
@@ -763,6 +832,7 @@ query GetMrDiscussions($namespaceWithPath: ID!, $iid: String!, $afterCursor: Str
 | 解決切替 | `mutation DiscussionToggleResolve($replyId: DiscussionID!, $resolved: Boolean!) { discussionToggleResolve(input: { id: $replyId, resolve: $resolved }) { errors } }` | `gitlab_service.ts:128-134` |
 | 削除 | `mutation DeleteNote($noteId: NoteID!) { destroyNote(input: { id: $noteId }) { errors } }` | `gitlab_service.ts:137-143` |
 | 編集 | `mutation UpdateNoteBody($noteId: NoteID!, $body: String) { updateNote(input: { id: $noteId, body: $body }) { errors } }` | `gitlab_service.ts:146-152` |
+| **作成権限の確認**（§8.3.4） | `query GetMrPermissions($namespaceWithPath: ID!, $iid: String!) { project(fullPath: $namespaceWithPath) { mergeRequest(iid: $iid) { userPermissions { createNote } } } }` | `graphql/mr_permission.ts:3-14` |
 
 `replyId` は「返信先スレッドの `discussion.replyId`」であり、null なら新規の（行に紐づかない）スレッドになる。
 
@@ -1070,7 +1140,8 @@ val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sou
 
 | 対象 | 影響 |
 |---|---|
-| `GitLabApiClient` | **変更しない**（`captureConnection` を呼ぶだけ） |
+| `GitLabApiClient` | **引数の追加のみ**（§7.2.1）。`fetchListFromApi` に `connection: ConnectionSnapshot? = null` を追加する。既定値は現行の挙動と完全に同一で、既存の呼び出し箇所は 1 箇所も変更しない。ロジックの変更は無い |
+| `MergeRequestService` / `CurrentBranchMrLookup` / `ProjectDetailService` | **引数の追加のみ**（§7.2.1）。`connection: ConnectionSnapshot? = null` を追加し内部へ透過。既定値で従来動作 |
 | `GitLabHttpClient` | **変更しない** |
 | `SidebarNode.kt` | ノード型を追加（既存型は変更しない） |
 | `SidebarViewModel` / `SidebarContentProvider` / `SidebarLabelProvider` | 新ノード型の分岐を追加。既存分岐は変更しない |
@@ -1145,6 +1216,14 @@ round 5 の指摘を受けて追加で確定した事項:
 - **`DiffPositionInput` の 5 値（baseSha / headSha / startSha / newPath / oldPath）は G9 で `getLatestMrVersion` から凍結する。** version の `headCommitSha` が G7 の head sha と一致することを確認する。
 - **再取得対象ノードは `resolveDiscussionsSection` で解決し、`null` の場合の終端処理を定義する**（§8.3.3）。
 
+round 6 の指摘を受けて追加で確定した事項:
+
+- **既存 REST サービス 4 つに `connection: ConnectionSnapshot? = null` を追加する**（§7.2.1）。これが無いと「全段で同じスナップショット」は実装できない。§15.4 に影響を明記した。
+- **最初の `captureConnection()` も `try` の内側に置き、`UnstableConnectionException` を `GateRejected` に変換する**（§8.3）。
+- **再取得対象は識別子（`DiscussionsTargetRef`）だけを持ち回り、ノード実体の解決は終端の UI ターンで行う**（§8.3.3）。
+- **送信直前にライフサイクル検証を行い、崩れていれば mutation を発行しない**（`Aborted`）。`epoch` を `@Volatile` にする（§7.3 / §8.2）。
+- **エディタ経路は FR-9 の明示的な例外**とし、メニューは常時表示・G6b の `GetMrPermissions` で起動後に拒否する（§8.3.4）。
+
 ### 16.2 未決（レビューで判断したい）
 
 | # | 事項 | 現時点の提案 | 判断が必要な理由 |
@@ -1191,6 +1270,10 @@ round 5 の指摘を受けて追加で確定した事項:
 | R-24 | **識別子解決中に接続が変わり、解決元・排他キー・送信先が別接続になる** | 別インスタンス/別アカウントへの送信、キーの取り違え | G5 より前に接続を 1 回捕捉して全段で共有し、送信直前に `pinnedConnectionFor` で変化なしを確認（§8.3） |
 | R-25 | **`baseSha` / `startSha` / `oldPath` の取得手順が無く position を構築できない** | 全行コメントが送信不能 | G9 で `getLatestMrVersion` から 5 値を凍結し、`headCommitSha` の一致も確認（§8.3） |
 | R-26 | **modal ダイアログ中の停止→再開を検出できず、送信はされるのに完了 UI が破棄される** | 成功時の再取得も失敗時の本文保持も行われない（FR-8 / FR-10 違反） | `startEpoch` をダイアログ終了後の UI ターンで捕捉（§8.3） |
+| R-27 | **識別子解決が接続引数を取れず、position や MR 識別子が別インスタンス／別アカウントから取得される** | 送信は止まっても、解決結果が別接続由来という不整合。R-24 の修正が実装できない | 既存 4 サービスに `connection` 引数を追加（§7.2.1） |
+| R-28 | **最初の `captureConnection()` が `try` の外にあり、例外が coroutine を抜けて本文が失われる** | FR-8 違反。通知も出ない | `try` の内側に置き `GateRejected` に変換（§8.3） |
+| R-29 | **background で解決したノード実体が、完了時には現在ツリーから切り離されている** | 誰にも見えない旧ノードを更新し、`Ambiguous` では未確認のまま `[Send again]` を許す | 識別子だけを持ち回り、終端 UI ターンで解決（§8.3.3） |
+| R-30 | **ブロッキング REST 中の停止→再開を跨いで mutation が発行される** | 投稿は成立するのに完了 UI が破棄され、再取得も本文保持も行われない | 送信直前にライフサイクル検証を行い発行しない（§8.2） |
 | R-19 | **作成操作の in-flight キーが構築できず、ガードを省略してダブルクリックで重複コメントが作られる** | R-7 と同じ重複投稿が、作成経路で再発 | 送信前に確定している識別子（MR GID / `{MR GID}#{newPath}:{line}`）をキーにする（§14.4） |
 
 ---
@@ -1206,6 +1289,11 @@ round 5 の指摘を受けて追加で確定した事項:
 | **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
 | **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
 | **終端処理の共通規律**（§8.1 / §8.2） | 読み取り: **`Failed` / `GateRejected` でも鮮度ガードが先に効き**、古い要求が新しい要求の `LOADED` とツリーを上書きしないこと／`GateRejected` で `Loading…` 表示が失敗ノードへ置換されること／書き込み: **`GateRejected` が終端処理に合流し**、§11.2 の通知が出て本文が保持されること（`return` で消えないこと） |
+| **§7.2.1 接続受け渡し** | `connection` を渡した `fetchListFromApi` / `getLatestMrVersion` / `lookup` / `getProject` が、要求ごとに `captureConnection` を再実行しないこと（呼び出し回数で実証）／`null` 既定で従来と同一の挙動になること |
+| **送信直前の検証**（§8.2） | `active == false` / `epoch != startEpoch` / `!isActive()` のそれぞれで **mutation が発行されないこと**（API 呼び出し回数 0 をカウンタで実証）／`Aborted` になること |
+| **§8.3 の例外合流** | 最初の `captureConnection()` が `UnstableConnectionException` を投げた場合に `GateRejected` として終端へ合流し、本文が保持されること（例外が外へ抜けないこと） |
+| **§8.3.3 target 解決時点** | 解決が終端 UI ターンで行われること／background で解決した実体を保持しないこと（`DiscussionsTargetRef` のみ持ち回る）／解決から利用まで同一 UI ターンで完結すること |
+| **§8.3.4 権限** | `userPermissions.createNote == false` で送信 0 回で拒否されること／本文が保持され `[Copy text]` / `[Cancel]` が出ること |
 | **§8.3 の position 凍結** | `getLatestMrVersion` から `baseSha` / `headSha` / `startSha` / `newPath` / `oldPath` の 5 値が凍結されること／version の `headCommitSha` != G7 head sha なら拒否されること／対象パスが version の diffs に無ければ拒否されること |
 | **§8.3 の接続共有** | 接続が G5 より前に 1 回だけ捕捉されること／識別子解決・キー・送信が同一スナップショットを使うこと／送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected` になること |
 | **§8.3.3 対象ノード解決** | `target == null` のとき Success は通知のみで再取得を発行しないこと／`target == null` かつ Ambiguous では `[Send again]` を出さないこと |
@@ -1277,6 +1365,7 @@ round 5 の指摘を受けて追加で確定した事項:
 11. **書き込み成功後、`loadState == LOADED` であっても再取得の HTTP が実際に発行され**、当該 MR の Discussions 節が最新化される（FR-10 / §8.2）。
 12. **mutation 送信中に generation が進んでも**、in-flight ガードの解放・成功時の再取得・失敗時の本文保持がいずれも実行される（鮮度ガードは適用されない。§8.2）。
 13. **`active == false` または `epoch` 変化時は UI 処理が一切起きず、それでも in-flight ガードは解放されている**（ライフサイクルガードは適用される / 解放は background の `finally`。§8.2）。
+13b. **送信直前のライフサイクル検証により、停止を跨いだ場合は mutation が発行されない**（API 呼び出し回数 0）。結果は `Aborted`（§8.2）。
 14. 接続ゲートが PR-1 AC-9 と同じ強度（URL + `authFingerprint`）で書き込みにも適用される。
 15. 検証バー（§18.3）を満たす。
 
@@ -1293,7 +1382,10 @@ round 5 の指摘を受けて追加で確定した事項:
 5c. **新規 diff スレッド作成の in-flight キーが `{MR GID}#{newPath}:{line}` で構築され**、ダブルクリックによる二重送信が抑止される。異なる行へのコメントは同時に進められる（§14.4）。
 6. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
 7. **`DiffPositionInput` の 5 値（`baseSha` / `headSha` / `startSha` / `newPath` / `oldPath`）が G9 で `getLatestMrVersion` から凍結される。** version の `headCommitSha` が G7 の head sha と一致しない場合、および対象パスが version の diffs に無い場合は拒否される（§8.3）。`oldLine` は送らない。
-7b. **再取得対象ノードが `resolveDiscussionsSection` で解決される。** `target == null`（サイドバーに当該 MR が無い）のとき、Success は通知のみで再取得を発行せず、Ambiguous は `[Send again]` を出さない（§8.3.3）。
+7b. **再取得対象は `DiscussionsTargetRef`（識別子のみ）で持ち回られ、ノード実体の解決は終端 UI ターンで行われる。** `target == null`（サイドバーに当該 MR が無い）のとき、Success は通知のみで再取得を発行せず、Ambiguous は `[Send again]` を出さない（§8.3.3）。
+7c. **識別子解決（G6 / G6b / G9）が最初に捕捉した `conn` を引数で受け取る**（§7.2.1）。要求ごとの再捕捉が起きない。
+7d. **最初の `captureConnection()` の `UnstableConnectionException` が `GateRejected` として終端に合流し**、本文が保持される（§8.3）。
+7e. **G6b で `userPermissions.createNote == false` の場合、送信 0 回で拒否され**、本文を保持したまま `[Copy text]` / `[Cancel]` が出る（§8.3.4）。エディタのメニュー項目自体は常時表示される（FR-9 の明示的例外）。
 8. old 側へのコメント作成が対象外であることが PR に明記される。
 9. 検証バー（§18.3）を満たす。
 
