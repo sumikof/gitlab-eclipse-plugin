@@ -8,6 +8,8 @@ import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
 import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
+import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
+import com.gitlab.eclipse.ci.lint.MergedYamlEditorOpener
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.inject.service
@@ -37,6 +39,12 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // This ensures logs are written to a consistent location regardless of working directory
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
+
+    // Invalidate any CI lint generations left in `latest` by a previous stop (stop lets
+    // in-flight lints finish) so their stale notifications/merged YAML cannot reapply.
+    // Runs after the state-dir property is set so a degraded-path log4j2 touch here
+    // (this warn) cannot pin a misconfigured log location for the whole session.
+    activateCiLint()
 
     // Best-effort: allow Basic proxy auth over HTTPS CONNECT tunnels for the native REST
     // client. Read-once in java.net.http; reliable activation needs the eclipse.ini VM arg
@@ -100,8 +108,19 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       if (!display.isDisposed) {
         display.syncExec {
           try {
+            // Deactivate CI lint ON the UI thread, before editor disposal: every CI-lint
+            // reflect/notify runnable runs on the UI thread, so flipping `active` here totally
+            // orders the deactivation with each runnable's gate-check-then-act — no runnable can
+            // pass its gate and then act after deactivation (a bare off-thread write left that
+            // torn window open). If the display is unavailable/disposed this syncExec is skipped
+            // and `active` stays true, which is inert: without a live display no reflect/notify
+            // runnable can run (currentDisplay throws IllegalStateException, asyncExec throws
+            // SWTException — both caught as no-ops), and the command handlers are unregistered
+            // once the bundle stops, so nothing reads `active` after a display-less stop.
+            CiLintGenerationRegistry.onDeactivate()
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()
+            MergedYamlEditorOpener.disposeAtShutdown()
           } catch (_: SWTException) {
             /* Display disposed mid-shutdown: nothing left to release. */
           }
@@ -110,6 +129,25 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     } catch (e: Exception) {
       // Workbench/display already gone (headless or late shutdown): nothing to release. Never let stop throw.
       logger<GitLabEclipseStartup>().warn("Job-log shutdown skipped: workbench/display unavailable.", e)
+    }
+  }
+
+  private fun activateCiLint() {
+    try {
+      val display = PlatformUI.getWorkbench().display
+      if (!display.isDisposed) {
+        display.syncExec {
+          try {
+            CiLintGenerationRegistry.onActivate()
+          } catch (_: SWTException) {
+            /* Display disposed mid-activation: registry stays at its initial fresh state. */
+          }
+        }
+      }
+    } catch (e: Exception) {
+      // First start may run before the workbench/display exists; the registry's initial
+      // state (active=true, epoch=0, empty latest) is already fresh. Never let start throw.
+      logger<GitLabEclipseStartup>().warn("CI lint activation skipped: workbench/display unavailable.", e)
     }
   }
 }
