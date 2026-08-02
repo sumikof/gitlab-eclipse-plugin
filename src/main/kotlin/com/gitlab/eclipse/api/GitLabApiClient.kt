@@ -51,6 +51,7 @@ private fun <T> emptyArrayOf(): Array<T> = arrayOfNulls<Any?>(0) as Array<T>
  * attaches Bearer auth, aggregates paginated list responses, and parses JSON.
  * GraphQL will be added later as a sibling method on this class.
  */
+@Suppress("TooManyFunctions")
 class GitLabApiClient(
   private val httpClient: GitLabHttpClient = service(),
   private val tokenManager: GitLabTokenProviderManager = service(),
@@ -191,6 +192,30 @@ class GitLabApiClient(
   fun post(path: String, query: Map<String, String> = emptyMap(), connection: ConnectionSnapshot): PostResult {
     val response = sendPost(path, query, connection)
     return PostResult(response.statusCode(), correlationId(response))
+  }
+
+  /**
+   * Sends a JSON-body POST pinned to [connection]: the URI base and the Bearer credential both
+   * come from the snapshot, never from the live preference store / token manager, mirroring the
+   * pinning [sendPost] already does for writes. Returns the raw response body as text (not
+   * JSON-parsed) instead of a [PostResult], so the caller receives the server's response payload
+   * directly (e.g. the merged YAML from CI lint). Non-2xx → [GitLabApiException] (with
+   * correlation id); timeouts and I/O errors propagate as-is.
+   */
+  fun postJson(path: String, jsonBody: String, connection: ConnectionSnapshot): String {
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, emptyMap(), baseOverride = connection.instanceUrl))
+      .header("Authorization", "Bearer ${connection.token}")
+      .header("Accept", "application/json")
+      .header("Content-Type", "application/json")
+      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+      .build()
+
+    val response = httpClient.send(httpRequest)
+    if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
+      throw GitLabApiException(response.statusCode(), response.body(), correlationId(response))
+    }
+    return response.body()
   }
 
   /**
