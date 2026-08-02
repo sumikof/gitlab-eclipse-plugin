@@ -8,6 +8,8 @@ import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
 import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
+import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
+import com.gitlab.eclipse.ci.lint.MergedYamlEditorOpener
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.inject.service
@@ -33,6 +35,10 @@ import org.osgi.framework.BundleContext
 @Suppress("unused", "SpreadOperator")
 class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun start(context: BundleContext) {
+    // Invalidate any CI lint generations left in `latest` by a previous stop (stop lets
+    // in-flight lints finish) so their stale notifications/merged YAML cannot reapply.
+    activateCiLint()
+
     // Set system property for log4j2 configuration to use Eclipse's state location
     // This ensures logs are written to a consistent location regardless of working directory
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
@@ -94,6 +100,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   private fun shutdownJobLog() {
     // (1) Disable late UI reflections/notifications from any in-flight trace fetch.
     JobLogGenerationRegistry.active = false
+    CiLintGenerationRegistry.onDeactivate()
     // (2) Close in-memory trace editors + remove listeners on the UI thread; guard a disposed/absent display.
     try {
       val display = PlatformUI.getWorkbench().display
@@ -102,6 +109,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
           try {
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()
+            MergedYamlEditorOpener.disposeAtShutdown()
           } catch (_: SWTException) {
             /* Display disposed mid-shutdown: nothing left to release. */
           }
@@ -110,6 +118,25 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     } catch (e: Exception) {
       // Workbench/display already gone (headless or late shutdown): nothing to release. Never let stop throw.
       logger<GitLabEclipseStartup>().warn("Job-log shutdown skipped: workbench/display unavailable.", e)
+    }
+  }
+
+  private fun activateCiLint() {
+    try {
+      val display = PlatformUI.getWorkbench().display
+      if (!display.isDisposed) {
+        display.syncExec {
+          try {
+            CiLintGenerationRegistry.onActivate()
+          } catch (_: SWTException) {
+            /* Display disposed mid-activation: registry stays at its initial fresh state. */
+          }
+        }
+      }
+    } catch (e: Exception) {
+      // First start may run before the workbench/display exists; the registry's initial
+      // state (active=true, epoch=0, empty latest) is already fresh. Never let start throw.
+      logger<GitLabEclipseStartup>().warn("CI lint activation skipped: workbench/display unavailable.", e)
     }
   }
 }
