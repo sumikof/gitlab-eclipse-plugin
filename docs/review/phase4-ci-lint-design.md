@@ -101,7 +101,7 @@ com.gitlab.eclipse.ci.actions
   └─ ShowMergedCiConfigHandler.kt  (新) AbstractHandler
 
 com.gitlab.eclipse
-  └─ GitLabEclipseStartup.kt         (変更=追加のみ) start 先頭に active=true / stop 先頭に active=false
+  └─ GitLabEclipseStartup.kt         (変更=追加のみ) start 先頭 onActivate() / stop 先頭 onDeactivate()
 
 src/main/resources/plugin.xml       (変更=追加のみ) command×2 + handler×2 + submenu 項目×2
 ```
@@ -182,9 +182,13 @@ fun runCiLint(
 ```
 object CiLintGenerationRegistry {          // 変異/読取は UI スレッド。active のみ @Volatile
   @Volatile var active: Boolean = true      // plugin 停止で false(stop フックが設定)
-  fun nextGeneration(key: CiLintKey): Long  // この実行を key の最新として採番・記録
-  fun isLatest(key: CiLintKey, gen: Long): Boolean
+  private var counter: Long = 0             // 単調増加(activation を跨いでもリセットしない=ABA 回避)
+  private val latest = HashMap<CiLintKey, Long>()
+  fun nextGeneration(key: CiLintKey): Long  // ++counter を key の最新として記録
+  fun isLatest(key: CiLintKey, gen: Long): Boolean   // latest[key] == gen
   fun shouldAct(key: CiLintKey, gen: Long): Boolean  // active かつ isLatest
+  fun onActivate()   { latest.clear(); active = true }   // start: 旧世代失効 + 再有効化
+  fun onDeactivate() { active = false }                  // stop: 反映停止
   internal fun resetForTest()               // テスト用リセット(本番未使用)
 }
 ```
@@ -192,9 +196,10 @@ object CiLintGenerationRegistry {          // 変異/読取は UI スレッド�
 - 世代採番は **UI スレッド**(§8.6 の `selectActiveContext` コールバック内、context 解決後・IO launch 前)。
 - 反映/通知は UI turn 内で `shouldAct(key, myGen)` を判定してから実行(判定と実行を同一 turn=stale すり抜け防止。`DisplayJobLogHandler.reflectLatest/notifyIfLatest` と同一構造)。
 - **ライフサイクル配線(Codex round2 P1 + round3 P2 反映)**:
-  - **stop**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.active = false` を追加。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。
-  - **start**: `GitLabEclipseStartup.start` の**先頭**に `CiLintGenerationRegistry.active = true` を追加。Eclipse の動的 bundle stop→start で**同一クラスローダーが維持**される場合、singleton の `active` は false のまま残り、再 activation 後の全 lint が `shouldAct=false` となって HTTP 成功後も通知/merged 表示が永久抑止される(Codex round3 P2)。start での再有効化でこれを防ぐ(注: 既存 `JobLogGenerationRegistry` は start で再有効化しておらず同型の潜在ギャップを持つが、本 PR のスコープ外。CI lint 側は正しく再有効化する)。
-  - start/stop への変更は §7 ファイル一覧・§20(既存機能への影響)に明記。stop→start ライフサイクルテストを §23 に追加。
+  - **stop**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.onDeactivate()`(= `active = false`)を追加。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。
+  - **start**: `GitLabEclipseStartup.start` の**先頭**に `CiLintGenerationRegistry.onActivate()` を追加。単に `active=true` に戻すだけでは**不十分**(Codex round4 P2): stop は共有 `CoroutineScope` を cancel せず `HttpClient.shutdown()` も in-flight 完了を許すため、**停止前に採番された世代が `latest` map に残存**し、その lint が再起動後に完了すると `active=true`+`isLatest=true` を満たして古い通知/merged YAML を反映し得る。`onActivate()` は **`latest.clear()`(停止前世代を失効)+ `active=true`** を原子的に行い、この窓を塞ぐ(`counter` は単調増加のまま=ABA 回避)。逆に、これが無いと同一クラスローダー再起動後の全 lint が永久抑止される問題(round3)も同時に解消。
+  - start/stop への変更は §7 ファイル一覧・§20(既存機能への影響)に明記。stop→start ライフサイクルテストを §23 に追加(**停止前 gen が start 後も `false` のままである**ことを含む)。
+  - 注: 既存 `JobLogGenerationRegistry` は start で再有効化/失効しておらず同型の潜在ギャップを持つが、本 PR のスコープ外。CI lint 側は正しく処理する。
 
 ### 8.5 `launchCiLint`(top-level・共有骨格)+ CI-lint total UI helper
 ```
@@ -416,7 +421,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 - **`GitLabApiClient` に `postJson` を追加**(既存メソッド不変)。既存テストへの回帰なし。
 - 新規パッケージ `ci.lint` の追加のみ。既存 `ci.joblog` / `ci.actions` / `api` の既存型は不変(新規ファイル追加と plugin.xml への追加のみ)。
-- **`GitLabEclipseStartup.stop`/`start` に各 1 行追加**(stop: `CiLintGenerationRegistry.active = false`=既存 `shutdownJobLog()` と同経路・Codex round2 P1。start: `CiLintGenerationRegistry.active = true`=同一クラスローダー再起動での永久抑止防止・Codex round3 P2)。既存 start/stop の他処理は不変・回帰なし。
+- **`GitLabEclipseStartup.stop`/`start` に各 1 行追加**(stop: `CiLintGenerationRegistry.onDeactivate()`=既存 `shutdownJobLog()` と同経路・Codex round2 P1。start: `CiLintGenerationRegistry.onActivate()`=停止前世代の失効 + 再有効化・Codex round3/round4 P2)。既存 start/stop の他処理は不変・回帰なし。
 - plugin.xml は command/handler/submenu 項目の**追加のみ**。既存の「GitLab」サブメニュー(navigation)に 2 項目を足す。
 - 新規 bundle 依存なし。
 
@@ -437,7 +442,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - **`runCiLint`(安全網の要)**: `capture → gate → lint` の順序、`InstanceMismatch` 時に lint ラムダが **0 回**呼ばれること、`ConnectionUnstable`、`Failed` の分類(http/timeout/io)、`CancellationException` 伝播。
 - `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、を検証。
 - `MergedYamlEditorInput`: `equals/hashCode` が key のみ依存、`exists()=false`、`getName()` が期待値。`MergedYamlKey`: 同一(instance,project,sourceId)は等価、sourceId 差で非等価。
-- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `active=false`(stop 相当)→ `shouldAct`=false、その後 `active=true`(start 相当)→ 新規 gen が再び反映される(**stop→start 再有効化**・Codex round3 P2)。
+- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `onDeactivate()`(stop 相当)→ `shouldAct`=false。**`onActivate()`(start 相当)→ `latest` を失効するため、停止前に採番した gen は `onActivate()` 後も `shouldAct=false` のまま**(Codex round4 P2)。`onActivate()` 後に採番した新規 gen は反映される(再起動後の永久抑止なし・Codex round3 P2)。`counter` は activation を跨いで単調(ABA 無し)。
 - **`ActiveEditorContent.sourceId` 導出(指摘 #6)**: `IFileEditorInput`(mock)→ fullPath、`IURIEditorInput`(mock)→ uri、フォールバック → `name + "#" + identityHashCode`。**同名別パス → 別 sourceId**、**同一未保存入力インスタンスの 2 回抽出 → 同一 sourceId**。SWT/document 取得部は手動、input→sourceId 純ロジックは mock 入力で単体化。
 - **total helper の gating 純ロジック**: `shouldAct` 判定分岐(反映/通知の可否)を SWT 非依存部分で単体化。SWT 例外 catch(disposed display/`asyncExec`)の no-op は手動検証(§手動)。
 
