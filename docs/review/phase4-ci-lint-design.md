@@ -172,7 +172,7 @@ fun runCiLint(
 - 手続き: `capture()`(`UnstableConnectionException` → `ConnectionUnstable`)→ `sameConfiguredInstance(contextInstanceUrl, connection.instanceUrl)` が false → `InstanceMismatch`(**lint を一度も呼ばない**)→ `lint(connection)` を try で実行し、`GitLabApiException`→`Failed(http)` / `HttpTimeoutException`→`Failed(timeout)` / `IOException`→`Failed(io)` / 成功 → `Linted`。`CancellationException` は再スロー。
 - `sameConfiguredInstance` / `normalizeInstanceUrl` は既存 `CreatePipeline.kt` / `WriteAction.kt` の関数を再利用。
 - `classifyWrite`(`WriteAction.kt:37`)は `() -> PostResult` 専用で成功ペイロードが `PostResult` 固定のため流用不可。`runCiLint` 内で直接分類する(`WriteOutcome.Failure` はペイロード非依存なので再利用)。
-- `buildCiLintAuditMessage(instanceUrl, projectId, command, outcome)`: `ciLint command=<validateCiConfig|showMergedCiConfig> instanceUrl=<正規化> projectId=<id> outcome=…`。token/body/yaml を一切含めない。`CreatePipeline.kt:67-90` と同型。**`Linted` を含む全 outcome を分岐**(`buildCreateAuditMessage` が `Created` を扱うのと同様):success 行は `outcome=success valid=<bool> merged=<present|absent> httpStatus=…`(yaml 本文は出さず存在有無のみ)。
+- `buildCiLintAuditMessage(instanceUrl, projectId, command, outcome)`: `ciLint command=<validateCiConfig|showMergedCiConfig> instanceUrl=<正規化> projectId=<id> outcome=…`。token/body/yaml を一切含めない。`CreatePipeline.kt:67-90` と同型。**`Linted` を含む全 outcome を分岐**(`buildCreateAuditMessage` が `Created` を扱うのと同様):success 行は `outcome=success valid=<bool> merged=<present|absent>`(yaml 本文は出さず存在有無のみ)。**`httpStatus` は成功行に含めない**(Codex round6 P2): `postJson` は body の `String` のみ返し `CiLintResult`/`Linted` も status を保持しないため渡す経路が無く、success を 2xx 一括で扱う以上 200 固定値は不正確。失敗行の `httpStatus`/`correlationId` は `GitLabApiException` 由来なので従来どおり保持。
 
 ### 8.4a `CiLintGenerationRegistry`(UI スレッド専有・順序安全=Codex round1 P1 反映)
 
@@ -189,18 +189,21 @@ object CiLintGenerationRegistry {          // 変異/読取は UI スレッド�
   fun nextGeneration(key: CiLintKey): Long  // ++counter を key の最新として記録
   fun isLatest(key: CiLintKey, gen: Long): Boolean   // latest[key] == gen
   fun shouldAct(key: CiLintKey, gen: Long): Boolean  // active かつ isLatest
-  fun onActivate()   { latest.clear(); epoch += 1; active = true }  // start: 旧世代 + 未採番起動を失効
-  fun onDeactivate() { active = false }                             // stop: 反映停止
+  fun onActivate()   { latest.clear(); epoch += 1; active = true }  // UI スレッドのみ。start が syncExec で呼ぶ
+  fun onDeactivate() { active = false }                             // @Volatile 直書き(OSGi スレッド可)
   internal fun resetForTest()               // テスト用リセット(本番未使用)
 }
 ```
 - **epoch(Codex round5 P2)**: `latest.clear()` は**既に採番済み**の世代しか失効できない。§8.6 は generation を非同期 `selectActiveContext` コールバック内で採番するため、execute 後・context 解決中に stop→start すると、古いコールバックが start 後に到着して新規 gen を採番し clear をすり抜ける。→ `onActivate()` で `epoch` をインクリメントし、execute 時点で捕捉した epoch とコールバックで照合(§8.6)することで、**activation を跨いだ起動を採番前に破棄**する。
+- **スレッド安全(Codex round6 P2)**: `latest`/`counter`/`epoch` は **UI スレッド専有**、`active` のみ `@Volatile`。`GitLabEclipseStartup.start`/`stop` は OSGi 呼出スレッド(UI スレッドとは限らない)で走るため:
+  - **onDeactivate(stop)**: `active = false` の @Volatile 直書きのみ(`shutdownJobLog` の `JobLogGenerationRegistry.active = false` と同じく OSGi スレッドから安全)。
+  - **onActivate(start)**: `latest.clear()`(HashMap)+`epoch++` は UI-only のため、`start` から**ガード付き `display.syncExec { CiLintGenerationRegistry.onActivate() }`** でマーシャル(`shutdownJobLog` の syncExec と同じ 3 層ガード=display 取得の `IllegalStateException` outer catch / `isDisposed` pre-check / 内側 `SWTException` catch)。これで epoch/latest の読み書きが UI スレッドに一本化され、context コールバックの `currentEpoch` 読取や `nextGeneration` と競合しない。
 - `JobLogGenerationRegistry`(実ソース `ci/joblog/JobLogGenerationRegistry.kt`)を**忠実にミラー**: `counter` 単調増加・key ごと `latest` map・`active` は `@Volatile`(停止が別スレッドからの syncExec 経由になり得るため)。
 - 世代採番は **UI スレッド**(§8.6 の `selectActiveContext` コールバック内、context 解決後・IO launch 前)。
 - 反映/通知は UI turn 内で `shouldAct(key, myGen)` を判定してから実行(判定と実行を同一 turn=stale すり抜け防止。`DisplayJobLogHandler.reflectLatest/notifyIfLatest` と同一構造)。
 - **ライフサイクル配線(Codex round2 P1 + round3 P2 反映)**:
   - **stop**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.onDeactivate()`(= `active = false`)を追加。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。
-  - **start**: `GitLabEclipseStartup.start` の**先頭**に `CiLintGenerationRegistry.onActivate()` を追加。単に `active=true` に戻すだけでは**不十分**(Codex round4 P2): stop は共有 `CoroutineScope` を cancel せず `HttpClient.shutdown()` も in-flight 完了を許すため、**停止前に採番された世代が `latest` map に残存**し、その lint が再起動後に完了すると `active=true`+`isLatest=true` を満たして古い通知/merged YAML を反映し得る。`onActivate()` は **`latest.clear()`(停止前世代を失効)+ `active=true`** を原子的に行い、この窓を塞ぐ(`counter` は単調増加のまま=ABA 回避)。逆に、これが無いと同一クラスローダー再起動後の全 lint が永久抑止される問題(round3)も同時に解消。
+  - **start**: `GitLabEclipseStartup.start` の**先頭**に **ガード付き `display.syncExec { CiLintGenerationRegistry.onActivate() }`**(§8.4a のスレッド安全)を追加。単に `active=true` に戻すだけでは**不十分**(Codex round4 P2): stop は共有 `CoroutineScope` を cancel せず `HttpClient.shutdown()` も in-flight 完了を許すため、**停止前に採番された世代が `latest` map に残存**し、その lint が再起動後に完了すると `active=true`+`isLatest=true` を満たして古い通知/merged YAML を反映し得る。`onActivate()` は **`latest.clear()`(停止前世代を失効)+ `epoch++` + `active=true`** を UI スレッドで行い、この窓を塞ぐ(`counter` は単調増加のまま=ABA 回避)。逆に、これが無いと同一クラスローダー再起動後の全 lint が永久抑止される問題(round3)も同時に解消。
   - start/stop への変更は §7 ファイル一覧・§20(既存機能への影響)に明記。stop→start ライフサイクルテストを §23 に追加(**停止前 gen が start 後も `false` のままである**ことを含む)。
   - 注: 既存 `JobLogGenerationRegistry` は start で再有効化/失効しておらず同型の潜在ギャップを持つが、本 PR のスコープ外。CI lint 側は正しく処理する。
 
@@ -253,7 +256,7 @@ private fun notifyIfLatest(key, myGen, message) { /* isLatest 判定 → try{ sh
 - `execute`(UI): `ActiveEditorContent.of(event)` で **text + source identity(§8.7)を同一 UI turn で抽出**。null → `NotificationUtils.show("GitLab: No open file.")` して return。
 - **activation epoch を execute 時点で捕捉**: `val startEpoch = CiLintGenerationRegistry.currentEpoch`(Codex round5 P2)。
 - 次に `contextResolver.selectActiveContext { ctx -> …(UI スレッド)}`:
-  - **`if (CiLintGenerationRegistry.currentEpoch != startEpoch) return`**(execute 後・context 解決中に stop→start が起きた=このコールバックは失効。採番も launch もしない)。
+  - **`if (!CiLintGenerationRegistry.active || CiLintGenerationRegistry.currentEpoch != startEpoch) return`**(採番前ガード・Codex round5/round6 P2): (a) epoch 不一致=execute 後・context 解決中に stop→start が起きた、(b) `!active`=停止区間(`onDeactivate()` 後・次の `onActivate()` 前。epoch は不変なので epoch だけでは通過してしまう)。どちらも**採番も launch もしない**=停止済み plugin から新規 capture/POST を発行しない(`shouldAct` は完了後の UI 反映しか抑止しないため、採番前にここで弾く必要がある)。
   - `ctx == null` → 終了(resolver が通知)。
   - `key = CiLintKey(command, normalizeInstanceUrl(ctx.instanceUrl), ctx.projectId, sourceId)`。
   - `myGen = CiLintGenerationRegistry.nextGeneration(key)`(**UI スレッドで採番**・§8.4a)。
@@ -409,7 +412,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 ## 18. ログ、監視、監査
 
-- 監査ログ **1 行/操作**(`buildCiLintAuditMessage`): `command`(validateCiConfig|showMergedCiConfig)、正規化 instanceUrl、projectId、outcome(success+valid+merged有無 / aborted-reason / failure+status+correlationId)。token/body/yaml を含めない。
+- 監査ログ **1 行/操作**(`buildCiLintAuditMessage`): `command`(validateCiConfig|showMergedCiConfig)、正規化 instanceUrl、projectId、outcome(success+valid+merged有無[**httpStatus なし**] / aborted-reason / failure+status+correlationId)。token/body/yaml を含めない。
 - **成功(`Linted`)は `ILog.info`、異常(mismatch/unstable/failed/unexpected)は `ILog.error`**(Codex round2 P2。成功も件数・成功率が Error Log から追跡可能)。監査行は latest gate と独立に必ず出力(反映/通知のみ gate 対象)。
 - showMerged のマージ不能時は `errors` を Error Log に記録(VSCode `ci_config_lint_commands.ts:50` と同等)。
 - 監視: 既存の Error Log ベース。追加のテレメトリは無い。
@@ -445,9 +448,9 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - `CiLintService.validate`: 正しい path(`/projects/{encoded}/ci/lint`)+ body(`{"content":…}` の Gson エスケープ)+ 応答パース(mock apiClient)。**`errors`/`valid`/`merged_yaml` 欠落 JSON でも NPE を出さず `errors=[] / valid=false / mergedYaml=null` に正規化**(Codex round2 P2)。`valid:false`+`errors` あり、`merged_yaml` あり、の各ケース。
 - `GitLabApiClient.postJson`: `Content-Type: application/json`、body 送出、Bearer が snapshot 由来、非 2xx → `GitLabApiException`、応答 body 返却(mock httpClient。既存 `sendPost` テストと同型)。
 - **`runCiLint`(安全網の要)**: `capture → gate → lint` の順序、`InstanceMismatch` 時に lint ラムダが **0 回**呼ばれること、`ConnectionUnstable`、`Failed` の分類(http/timeout/io)、`CancellationException` 伝播。
-- `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、を検証。
+- `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、**success 行は httpStatus を含まない**(Codex round6 P2)ことを検証。
 - `MergedYamlEditorInput`: `equals/hashCode` が key のみ依存、`exists()=false`、`getName()` が期待値。`MergedYamlKey`: 同一(instance,project,sourceId)は等価、sourceId 差で非等価。
-- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `onDeactivate()`(stop 相当)→ `shouldAct`=false。**`onActivate()`(start 相当)→ `latest` を失効するため、停止前に採番した gen は `onActivate()` 後も `shouldAct=false` のまま**(Codex round4 P2)。`onActivate()` 後に採番した新規 gen は反映される(再起動後の永久抑止なし・Codex round3 P2)。`counter` は activation を跨いで単調(ABA 無し)。**epoch(Codex round5 P2)**: execute で捕捉した `currentEpoch` が、`onActivate()`(epoch++)後にコールバックで照合されると不一致 → **採番も launch もされない**(context 解決中の stop→start をすり抜けない)ことを検証。
+- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `onDeactivate()`(stop 相当)→ `shouldAct`=false。**`onActivate()`(start 相当)→ `latest` を失効するため、停止前に採番した gen は `onActivate()` 後も `shouldAct=false` のまま**(Codex round4 P2)。`onActivate()` 後に採番した新規 gen は反映される(再起動後の永久抑止なし・Codex round3 P2)。`counter` は activation を跨いで単調(ABA 無し)。**epoch(Codex round5 P2)**: execute で捕捉した `currentEpoch` が、`onActivate()`(epoch++)後にコールバックで照合されると不一致 → **採番も launch もされない**(context 解決中の stop→start をすり抜けない)。**停止区間ガード(Codex round6 P2)**: `onDeactivate()`(active=false・epoch 不変)後に到着したコールバックは `!active` で弾かれ、**採番も launch もされない**(停止済み plugin から capture/POST を発行しない)ことを検証。
 - **`ActiveEditorContent.sourceId` 導出(指摘 #6)**: `IFileEditorInput`(mock)→ fullPath、`IURIEditorInput`(mock)→ uri、フォールバック → `name + "#" + identityHashCode`。**同名別パス → 別 sourceId**、**同一未保存入力インスタンスの 2 回抽出 → 同一 sourceId**。SWT/document 取得部は手動、input→sourceId 純ロジックは mock 入力で単体化。
 - **total helper の gating 純ロジック**: `shouldAct` 判定分岐(反映/通知の可否)を SWT 非依存部分で単体化。SWT 例外 catch(disposed display/`asyncExec`)の no-op は手動検証(§手動)。
 
