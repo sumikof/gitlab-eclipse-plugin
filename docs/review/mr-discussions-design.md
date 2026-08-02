@@ -225,18 +225,27 @@ class GitLabGraphQlClient(
   private val httpClient: GitLabHttpClient = service(),
   private val apiClient: GitLabApiClient = service(),
 ) {
-  /** 単発の GraphQL 呼び出し。connection に pin される。 */
+  /**
+   * 単発の GraphQL 呼び出し。connection に pin される。
+   *
+   * [timeout] は呼び出し側が決める（既定は使わせない）。ページングを伴う取得では
+   * `min(30 秒, deadline の残時間)` が渡される（§12.1）。この引数がないと、残り 2 秒しか
+   * ないページ要求が固定 30 秒待ててしまい、全体 deadline 60 秒を超過する。
+   */
   fun <T> execute(
     query: String,
     variables: Map<String, Any?>,
     type: Class<T>,
     connection: ConnectionSnapshot,
+    timeout: Duration,
   ): T
 
   /** 接続スナップショットの取得は GitLabApiClient に委譲する（seqlock の実装を二重に持たない）。 */
   fun captureConnection(): ConnectionSnapshot = apiClient.captureConnection()
 }
 ```
+
+**エラー分類はトランスポート層では行わない。** `execute` は L1（非 2xx）と L2（トップレベル `errors`）を例外に変換し、`data` の有無を例外に載せる（§12.2 の分類に必要）。Definite / Ambiguous の判定は `DiscussionService` が行う。
 
 - URI は `<connection.instanceUrl のトレイリングスラッシュ除去>/api/graphql` として組み立てる。`GitLabApiClient.buildUri` は使わない（`/api/v4` を含むため）。
 - 本文は `{"query": ..., "variables": {...}}` を Gson でシリアライズしたもの。`Content-Type: application/json`。
@@ -251,9 +260,12 @@ class GitLabGraphQlClient(
 - クエリ文字列を定数として保持（§10 の確定値）。
 - GID の組み立て（`gid://gitlab/MergeRequest/{id}`）。
 - `namespaceWithPath` の導出（`references.full` を `#` または `!` で分割した先頭）。
-- ページングループ（discussion 一覧とノート一覧の二重）。
+- **外側（`discussions`）のページングループのみ**。`pageInfo.endCursor` を次要求の `$afterCursor` に渡す。ページ上限 20 と wall-clock deadline 60 秒で打ち切り、取得済み分を返す（§8.5 / §12.1）。
+- **内側（`notes`）はページングしない。** `notes.pageInfo.hasNextPage` を読み取り、真ならそのスレッドに打ち切りフラグを立てるだけ（§8.5）。
+- 各ページ要求の timeout を `min(30 秒, 残時間)` として `GitLabGraphQlClient.execute` に渡す（§12.1）。
 - レスポンス DTO（nullable）からドメイン型（non-null）への正規化。
 - `system: true` のノートの除外。
+- 失敗の Definite / Ambiguous 分類（§12.2）。
 
 **知らないこと**: SWT、UI スレッド、ツリー構造。**このクラスは SWT-free であり、単体テスト可能である。**
 
@@ -293,7 +305,19 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
 
 ### 8.1 読み取り（PR-1）
 
-読み取りの入口は **`loadDiscussions(node, force: Boolean)` の 1 つ**とする。`force = false` は遅延取得（節の展開時。既に読み込み済みなら何もしない）、`force = true` は無条件取得（書き込み成功後の再取得。§8.2）。
+読み取りの入口は **`loadDiscussions(node, force: Boolean, onOutcome: (LoadOutcome) -> Unit)` の 1 つ**とする。`force = false` は遅延取得（節の展開時。既に読み込み済みなら何もしない）、`force = true` は無条件取得（書き込み成功後の再取得。§8.2）。
+
+**完了契約（`LoadOutcome`）。** `loadDiscussions` は background を起動して即座に戻るため、呼び出し側が「ツリーに実際に反映された時点」を知る手段が必要である（§9.3 の Ambiguous フローがこれに依存する）。`onOutcome` は必ず **UI スレッド上で 1 回だけ**呼ばれ、次のいずれかを渡す。
+
+| 値 | 意味 |
+|---|---|
+| `Applied` | 最新世代として**ツリーへの反映が完了**した。取得結果がユーザーの目に入っている |
+| `Superseded` | より新しい世代に破棄された。この呼び出しの結果は表示されていない |
+| `Failed(cause)` | 取得が失敗した（分類は §12.2）。失敗ノードを表示した |
+| `GateRejected` | 接続ゲート（§15.3）で拒否された。HTTP は発行していない |
+| `Skipped` | `force = false` かつ既に読み込み済みだったため何もしなかった |
+
+`Applied` **以外は「ユーザーが最新状態を見た」ことを意味しない。** §9.3 はこの区別に依存する。
 
 ```
 loadDiscussions(node, force)
@@ -313,10 +337,10 @@ loadDiscussions(node, force)
     ページングループ（§8.5）
   正規化・system ノート除外・ソート
 [UI スレッド（asyncExec）]
-  ガード: registry.active が false → 破棄
-  ガード: registry.currentEpoch != startEpoch → 破棄
-  ガード: !registry.isLatest(key, gen) → 破棄
-  ツリーへ反映 / node.loadState = LOADED
+  ガード: registry.active が false          → 破棄（onOutcome は呼ばない。§14.3）
+  ガード: registry.currentEpoch != startEpoch → 破棄（同上）
+  ガード: !registry.isLatest(key, gen)       → onOutcome(Superseded)
+  ツリーへ反映 / node.loadState = LOADED     → onOutcome(Applied)
 ```
 
 `key` は（`normalizeInstanceUrl(sourceInstanceUrl)`, `sourceAuthFingerprint`, `projectId`, `mrIid`）から作る。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）と同じく、URL と資格情報フィンガープリントの**両方**をキーに織り込む。
@@ -334,42 +358,55 @@ loadDiscussions(node, force)
   選択ノードを同期的に捕捉（背景に渡す前に）
   権限チェック（メニュー出し分けで既に済んでいるが、実行時にも再確認）
   入力が必要な操作はダイアログを開く → Cancel なら終了
-  in-flight ガード取得（キー = 操作種別 + 対象 ID）→ 取得できなければ「already in progress」通知
+  in-flight ガード取得（キー = §14.4 の DiscussionWriteKey。操作種別を含めない）
+    → 取得できなければ「already in progress」通知
     → background へ
 [background]
-  connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
-    → null なら中止し HTTP を発行しない（§15.3）
-  GraphQL mutation 送信
-  3 層のエラー検査（§11.1）→ 結果を Definite / Ambiguous / Success に分類（§12.2）
-[UI スレッド（asyncExec）] ★世代ガードを通さない★
-  in-flight ガード解放
-  Success   → loadDiscussions(node, force = true)（§8.1。ここで初めて世代管理に入る）
-  Definite  → §9 の再試行ダイアログ（本文保持・[Retry] / [Cancel]）
+  try {
+    connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
+      → null なら中止し HTTP を発行しない（§15.3）
+    GraphQL mutation 送信
+    3 層のエラー検査（§11.1）→ Success / Definite / Ambiguous に分類（§12.2）
+  } finally {
+    in-flight ガード解放          ← ★background の finally。UI スレッドに到達しなくても必ず解放される★
+  }
+[UI スレッド（asyncExec）]
+  ライフサイクルガード: registry.active が false          → 破棄（UI を一切出さない）
+  ライフサイクルガード: registry.currentEpoch != startEpoch → 破棄（同上）
+  ★ isLatest（世代/鮮度ガード）は適用しない ★
+  Success   → loadDiscussions(node, force = true) （§8.1）
+  Definite  → §9.2 の再試行ダイアログ（本文保持・[Retry] / [Cancel]）
   Ambiguous → §9.3 の結果確認フロー（本文保持・自動再送しない）
 ```
 
-**世代ガードは mutation の完了処理に適用しない。** 適用してよいのは「取得結果をツリーへ反映する箇所」だけである（§8.1 の末尾および §14.2）。
+**ガードを 2 種類に分けて扱う。** これらは目的が異なるため、一括で適用しても一括で外してもいけない。
 
-理由: 世代ガードの目的は「古い**取得**結果が新しい取得結果を上書きしないこと」であり、mutation の完了は取得結果ではない。送信中にユーザーが同じ MR を更新すると新しい generation が発行されるため、mutation の完了処理を世代ガードの内側に置くと、
+| 種類 | 対象 | mutation 完了処理への適用 |
+|---|---|---|
+| **ライフサイクルガード**（`active` / `epoch`） | プラグインが停止処理に入っていないか | **適用する。** 適用しないと、停止中にブロッキング HTTP が戻ったときに再取得やダイアログが起動し、§14.3 / R-8 の gate-first 不変条件を破る。コルーチンのキャンセルだけでは後続の非 suspend 処理を止められない |
+| **鮮度ガード**（`isLatest(key, gen)`） | この取得より新しい取得が出ていないか | **適用しない。** mutation の完了は取得結果ではない |
+
+鮮度ガードを mutation 完了に適用してはならない理由: 送信中にユーザーが同じ MR を更新すると新しい generation が発行されるため、
 
 - サーバで成功しているのに再取得が発行されず、表示が古いままになる（FR-10 違反）。しかも先行した更新取得が mutation のコミット前に完了していると、古い状態が確定して残る。
 - 失敗時に再試行ダイアログが出ず、ユーザーが入力した本文が失われる（FR-8 違反）。
 
-したがって **in-flight ガード解放・成功時の強制再取得・失敗時の本文保持は、世代にかかわらず必ず実行する。**
+**in-flight ガードの解放は background の `finally` で行う**（UI スレッドのブロックではない）。ライフサイクルガードで UI 処理が破棄された場合でも、`asyncExec` がそもそも実行されない場合でも、キーが確実に解放される。既存 CI ハンドラも同じ形である（`InFlightWriteGuard` の KDoc: 「releases it in the coroutine's `finally` so success, failure, and cancellation all free the target」）。
 
 **同一インスタンス/同一アカウントのゲートは HTTP 送信より前に評価する。** Phase 4 の `runCiLint` で確立した不変条件（「ゲート不成立時は API 呼び出し回数 0」をテストで実証する）を踏襲する。
 
 ### 8.3 エディタ行からの新規 diff スレッド（PR-3）
 
 ```
-[UI スレッド]
+[UI スレッド：ただ 1 回のターンで、以下をアトミックにスナップショット化する]
   G1: アクティブエディタが ITextEditor か
   G2: エディタ入力が IFileEditorInput か（ワークスペース上のファイルか）
   G3: エディタが dirty でないか（editor.isDirty() == false）
-      → dirty なら拒否（未保存の編集で行番号が本文とずれるため）
-  G4: カーソル行番号を取得（1 始まりへ変換）
+      → dirty なら拒否（早期・親切な拒否。最終的な保証は G8 が与える）
+  ★ SNAPSHOT: (cursorLine, documentText, filePath) を同一ターン内で取得 ★
+     documentText = documentProvider.getDocument(input).get()
   ダイアログで本文を受け取る → Cancel なら終了
-    → background へ
+    → background へ（以降、エディタの状態には二度と触れない）
 [background]
   G5: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
       （RepositoryContextResolver。0 件・複数件は拒否）
@@ -377,24 +414,28 @@ loadDiscussions(node, force)
       （CurrentBranchMrLookup）
   G7: リポジトリの HEAD sha == その MR の diff head sha か
       （OpenMrFileHandler と同一のゲート）
-  G8: 対象パスが HEAD に対して未変更か
-      （JGit: Git(repo).status().addPath(relPath).call() が当該パスに
-        変更・ステージ・未追跡を報告しないこと）
-      → 変更ありなら拒否（作業ツリーの改変で行番号がずれるため）
+  G8: ★ snapshot.documentText == HEAD blob の内容（対象パス）★
+      JGit で HEAD ツリーから当該パスの blob を読み、捕捉した本文と厳密比較
+      → 不一致なら拒否
   G9: 対象ファイルの MR 相対パスが、その MR の diff の newPath に含まれるか
   connection = pinnedConnectionFor(...)（§15.3）
-  createDiffNote 送信（position は §10 の DiffPositionInput）
-[UI スレッド] ★世代ガードを通さない（§8.2）★
+  createDiffNote 送信（newLine = snapshot.cursorLine）
+[UI スレッド] ライフサイクルガードのみ（§8.2）
   Success → loadDiscussions(node, force = true)
   失敗    → §9 のフロー
 ```
 
-**行の一致は G3・G7・G8 の 3 つが同時に成立して初めて保証される。** いずれか 1 つでも欠けると、エディタが表示している内容と MR head 版の内容が食い違い、カーソル行を `newLine` として送ると別の行にコメントが付くか、GitLab 側で position が拒否される。
+**行の一致は「捕捉した本文が HEAD blob と一致すること」で保証する。** `dirty か` と `作業ツリーが変更されているか` という 2 つの間接指標を別々の時点で評価するのではなく、**行番号と一緒に捕捉した本文そのもの**を HEAD blob と直接比較する。
 
-- **G7 のみでは不十分**である。HEAD sha が一致していても、作業ツリーに未コミットの変更があればファイルの内容と行番号はずれる（→ G8 が必要）。
-- **G7 + G8 でも不十分**である。エディタに未保存の編集があれば、ディスク上の内容と表示中の内容がずれる（→ G3 が必要）。
+この形にする理由は、間接指標では TOCTOU が閉じないためである。
 
-3 つがすべて成立するとき、エディタに表示されている内容 = ディスク上の内容 = HEAD の blob = MR head 版 となり、**カーソル行 = diff の `newLine`** が推測なしに確定する。この場合に限り行ズレ補正が不要になる。
+- G3（dirty 判定）は UI ターンで、作業ツリーの検査は background で評価される。その間にユーザーは編集を続けられる。
+- ディスク上のファイルは HEAD のままでも、エディタのバッファがカーソル行より前に行を追加していれば、捕捉した行番号は「ユーザーが見ていた内容」と対応しなくなる。
+- 逆に、捕捉時点では作業ツリーが変更されていて、background の検査時点までに revert されていた場合、作業ツリー検査は通ってしまう。
+
+**本文そのものを比較すれば、これらはすべて 1 つの判定に畳まれる。** `snapshot.documentText == HEAD blob` が成立するとき、捕捉した行番号は HEAD blob の同じ行を指し、HEAD blob = MR head 版（G7 による）なので、**`newLine = snapshot.cursorLine`** が確定する。比較対象は UI ターンで凍結された値であり、その後のエディタ操作に影響されない。
+
+G3 を残すのは、よくある失敗（保存し忘れ）を background に降りる前に安価かつ分かりやすく弾くためであり、正しさの根拠は G8 が単独で与える。
 
 拒否時のメッセージ:
 
@@ -402,9 +443,11 @@ loadDiscussions(node, force)
 |---|---|
 | G3 | `Save the file before commenting on a line.` |
 | G7 | 既存 `OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE`（`src/main/kotlin/com/gitlab/eclipse/mergerequests/OpenMrFileHandler.kt:133-134`）と同一文言 |
-| G8 | `This file has uncommitted changes; its line numbers no longer match the merge request.` |
+| G8 | `This file does not match the merge request revision; its line numbers would not line up.` |
 
-G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。本設計では**対象パスに限定**した検査とする。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
+G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。**検査は対象パスの blob 1 本に限定**する。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
+
+比較は改行コードを正規化せずバイト列として厳密に行う。正規化すると、行区切りの違いで行数がずれる場合を見逃す。
 
 ### 8.4 old 側（削除行）の扱い
 
@@ -445,15 +488,13 @@ GraphQL の応答には 2 つの `pageInfo` が現れるが、**本設計がペ�
 
 VSCode の `gl.retryFailedComment` / `gl.cancelFailedComment` は Comments API の楽観 UI に由来する。送信が失敗すると、入力されたテキストを `FAILED_COMMENT_CONTEXT` を持つプレースホルダのコメントとしてスレッドウィジェットに残し（`src/desktop/commands/mr_discussion_commands.ts:60-70`）、Retry は同じテキストで再送、Cancel はスレッドウィジェットを破棄して下書きを捨てる（同 :102-105, :133-137）。
 
-### 9.2 本設計での等価物
+### 9.2 本設計での等価物 — 確定拒否（Definite）の場合
 
 ツリー + ダイアログの設計に楽観プレースホルダは存在しない。しかし**満たすべき本質的要件は同一である**: ユーザーが入力した本文を、送信失敗によって失わせない。
 
 ただし「失敗」を一括で再送可能として扱ってはならない。**サーバがコミットしたか判定できる失敗と、できない失敗を分ける**（§12.2 の分類）。
 
-### 9.2 確定拒否（Definite）の場合
-
-サーバが要求を**受理して拒否した**ことが確定している失敗。L2（GraphQL `errors`）、L3（mutation ペイロードの `errors`）、HTTP 4xx が該当する。この場合サーバ側に副作用は無いので、同じ本文の再送は安全である。
+本節が扱うのは前者、すなわちサーバが要求を**受理して拒否した**ことが確定している失敗である。HTTP 4xx、L2 のうちリクエストレベルエラー（`data` キーが応答に無い）、L3（mutation ペイロードの `errors`）が該当する。この場合サーバ側に副作用は無いので、同じ本文の再送は安全である。
 
 ```
 送信失敗（Definite）
@@ -473,19 +514,33 @@ VSCode の `gl.retryFailedComment` / `gl.cancelFailedComment` は Comments API �
 
 ```
 送信失敗（Ambiguous）
-  → まず loadDiscussions(node, force = true) を実行し、サーバの現在状態を取り込む
-  → 取り込み完了後にダイアログを開く
+  → loadDiscussions(node, force = true) { outcome ->
+       when (outcome) {
+         Applied    -> ダイアログ [Send again] / [Cancel]      ← ここだけ再送を許す
+         Superseded,
+         Failed,
+         GateRejected,
+         Skipped    -> ダイアログ [Copy text] / [Cancel]        ← 再送を許さない
+       }
+     }
+  → [Send again] のダイアログ:
       初期本文 = 直前に入力された本文（保持）
       表示     = 「送信結果を確認できませんでした。最新の状態を再読み込みしました。
                   上のスレッドに反映されていない場合のみ、送信し直してください。」
-      ボタン   = [Send again] / [Cancel]
-  → Send again: ユーザーが最新状態を見た上での明示的な判断。§8.2 を再入
-  → Cancel: 閉じる
+  → [Copy text] のダイアログ:
+      初期本文 = 同上（保持）
+      表示     = 「送信結果を確認できず、最新の状態も取得できませんでした。
+                  GitLab で確認してください。」
 ```
 
-再読み込みを**先に**行うのが要点である。ユーザーは「自分のコメントが既に付いているかどうか」を見てから判断できるため、重複投稿はユーザーが最新状態を確認した上での意図的な操作に限られる。
+**`Applied` でのみ `[Send again]` を出すことが要件である。** §8.1 の `loadDiscussions` は background を起動して即座に戻るため、「呼んだこと」と「ユーザーが最新状態を見たこと」は同じではない。完了契約（§8.1 の `LoadOutcome`）を通さずに実装すると、
 
-再読み込み自体が失敗した場合は、その旨を表示したうえで [Send again] を**出さない**（[Copy text] / [Cancel] のみ）。状態を確認できないまま再送を促さない。
+- 要求の発行直後に `[Send again]` を出してしまう
+- より新しい世代に破棄された要求（`Superseded`）の通信完了時点で `[Send again]` を出してしまう
+
+のいずれかが起こり、ユーザーが最新状態を確認しないまま再送できてしまう。`Applied` は「最新世代としてツリーへの反映が完了した」ことだけを意味するので、この経路でのみ再送を許可する。
+
+再読み込みが成立しなかった場合に `[Send again]` を出さないのは、状態を確認できないまま再送を促さないためである。ユーザーは本文をコピーして GitLab 側で確認できる。
 
 ### 9.4 パリティ上の位置づけ
 
@@ -615,12 +670,23 @@ GraphQL の失敗は 3 箇所に現れうる。**すべてを検査しないと�
 | 層 | 現れ方 | 扱い |
 |---|---|---|
 | L1 トランスポート | HTTP 非 2xx | 既存 `GitLabApiException`（status + correlation id）。既存 REST と同一 |
-| L2 GraphQL 実行 | HTTP 200 かつ本文トップレベルに `errors: [...]` | `GraphQlException`。クエリ構文エラー・スキーマ不一致・認可エラーがここに出る |
+| L2 GraphQL 実行 | HTTP 200 かつ本文トップレベルに `errors: [...]` | `GraphQlException`。クエリ構文エラー・スキーマ不一致・認可エラー・**フィールド resolver の失敗**がここに出る |
 | L3 mutation ペイロード | HTTP 200、トップレベル `errors` なし、しかし `createNote.errors` 等が非空 | `GraphQlException`。ビジネスロジック上の拒否がここに出る |
 
 VSCode も L3 を明示的に検査している（`gitlab_service.ts:534-536`）。
 
-**L2 の検査には注意点がある。** GraphQL は部分成功を返しうる（`data` と `errors` の両方が非 null）。本設計では**`errors` が非空なら常に失敗として扱う**。理由: 本設計が扱う操作はいずれも部分結果に意味がなく、部分結果を成功として表示するとユーザーを誤認させるため。
+**`errors` が非空なら常に失敗として扱う。** 本設計が扱う操作はいずれも部分結果に意味がなく、部分結果を成功として表示するとユーザーを誤認させるため。
+
+**ただし「失敗」と「副作用が無い」は別である。** L2 は 2 つの異なる状況を含み、mutation が実行されたかどうかが違う。
+
+| L2 の種類 | 応答の形 | mutation は実行されたか | 分類（§12.2） |
+|---|---|---|---|
+| **リクエストレベルエラー**（構文エラー、バリデーション、変数の型不一致、認証失敗） | `data` フィールドが**存在しない** | 実行されていないことが応答から証明できる | **Definite** |
+| **フィールドレベルエラー**（部分成功。resolver の失敗） | `data` が**存在する**（`null` を含みうる）かつ `errors` も非空 | **証明できない。** 例えば `createNote` 自体は完了した後に、選択した `note` / `discussion` サブフィールドの resolver が失敗した場合がこれにあたる | **Ambiguous** |
+
+この区別は GraphQL の仕様に基づく。リクエストレベルのエラーでは実行フェーズに入らないため `data` はレスポンスに含まれない。実行フェーズに入った後の失敗では `data` キーが存在する。
+
+**したがって `GraphQlException` は「`data` キーが応答に存在したか」を保持する必要がある。** これを持たないと §12.2 の分類ができず、部分成功を Definite として `[Retry]` を出し、同じコメントを重複投稿する。トランスポート層（`GitLabGraphQlClient`）はこのフラグを例外に載せるところまでを担い、分類自体は `DiscussionService` が行う（§7.1）。
 
 ### 11.2 ユーザーへの提示
 
@@ -629,7 +695,7 @@ VSCode も L3 を明示的に検査している（`gitlab_service.ts:534-536`）
 | 読み取り失敗 | 節を失敗ノードに置換 + 「see the Error Log」 |
 | 書き込み失敗（本文入力を伴うもの） | §9 の再試行ダイアログ |
 | 書き込み失敗（解決切替・削除など本文を伴わないもの） | 通知（`NotificationUtils.show`）。ユーザーは操作を再実行すればよい |
-| 同一インスタンス不一致 | 「表示元と現在の接続先が異なる」旨の通知。HTTP は発行しない |
+| 接続ゲート不成立（インスタンス不一致 / アカウント不一致 / 接続不安定） | 「表示元と現在の接続先が異なる」旨の通知。HTTP は発行しない（§15.3） |
 | 権限不足 | メニューに出さない（FR-9）。実行時に判明した場合は L3 エラーとして通知 |
 
 ### 11.3 ログと監査
@@ -653,13 +719,33 @@ Phase 4 の Codex レビューで確定した規律を最初から適用する�
 
 ```
 start = clock()
+fetched = []
 ループ先頭（各ページ取得の前）で:
   1. キャンセル判定: isActive() が false → CancellationException
   2. 残時間 = deadline - (clock() - start)
-     残時間 <= 0 → 打ち切り（GitLabApiTimeoutException ではなく
-                   「取得済み分 + 打ち切り表示」で返す。§8.5）
+     残時間 <= 0 → 打ち切り（例外ではなく fetched + 打ち切り理由 DEADLINE を返す）
   3. この 1 リクエストの timeout = min(30 秒, 残時間)
+  4. try {
+       page = execute(..., timeout)
+       fetched += page
+     } catch (タイムアウト例外) {
+       ★ この timeout が deadline 予算に由来する（= 残時間 < 30 秒だった）場合、
+         これは通常の deadline 到達である。例外を外へ伝播させず、
+         fetched + 打ち切り理由 DEADLINE を返す ★
+       残時間 >= 30 秒だった場合は真のサーバ無応答なので、例外を伝播させる
+     }
 ```
+
+**deadline 到達は 2 つの経路で起きる。両方を部分結果として扱う。**
+
+| 経路 | 発生条件 | 扱い |
+|---|---|---|
+| ループ先頭での検出 | 前のページ取得が終わった時点で既に残時間 <= 0 | 取得済み分 + 打ち切り表示 |
+| **リクエスト中のタイムアウト** | 残時間を timeout に設定した要求が、その残時間を使い切った | **同じく**取得済み分 + 打ち切り表示 |
+
+2 番目を見落とすと、例えば「1 ページ取得済み・残り 10 秒」の次要求が 10 秒を超えた場合、ループ先頭に戻る前に例外が発生し、§8.1 の読み取り失敗経路に落ちて**取得済みページも打ち切り表示も失われる**。deadline 予算で設定した timeout に由来する例外は、通常の打ち切りとして扱わなければならない。
+
+判別は「その要求に設定した timeout が 30 秒未満だったか（= 残時間由来だったか）」で行う。30 秒フルを与えた要求のタイムアウトは deadline とは無関係のサーバ無応答なので、通常の失敗として伝播させる。
 
 **単発 30 秒 + ページ上限 20 だけでは総時間が有界にならない**（最悪 20 × 30 = 600 秒）。60 秒の wall-clock deadline を置くことで、ユーザーが節を何度も開き直しても長時間ジョブが積み上がらない。残時間を単発 timeout に反映することで、deadline 直前に 30 秒待つことも防ぐ。
 
@@ -675,10 +761,23 @@ start = clock()
 
 | 分類 | 該当する失敗 | サーバ状態 | 再送 |
 |---|---|---|---|
-| **Definite**（確定拒否） | L2 GraphQL `errors`、L3 mutation ペイロード `errors`、HTTP 4xx | コミットされていないことが確定 | **安全**。§9.2 の [Retry] を出す |
-| **Ambiguous**（結果不明） | タイムアウト、`IOException`（接続断）、レスポンス解析失敗、HTTP 5xx | **判定不能。**コミット済みかもしれない | **危険**。§9.3 のとおり、先に強制再取得してユーザーに現状を見せ、[Send again] を明示的に選ばせる |
+| **Definite**（確定拒否） | HTTP 4xx / **L2 のうちリクエストレベルエラー（`data` キーが応答に無い）** / L3 mutation ペイロード `errors` | mutation が実行されていないことを応答から証明できる | **安全**。§9.2 の [Retry] を出す |
+| **Ambiguous**（結果不明） | タイムアウト、`IOException`（接続断）、レスポンス解析失敗、HTTP 5xx、**L2 のうちフィールドレベルエラー（`data` キーが存在する部分成功）** | **判定不能。**コミット済みかもしれない | **危険**。§9.3 のとおり、先に強制再取得してユーザーに現状を見せ、[Send again] を明示的に選ばせる |
 
-実装上は `GitLabApiTimeoutException` / `IOException` / JSON 解析例外 / HTTP 5xx を Ambiguous、それ以外の `GitLabApiException`（4xx）と `GraphQlException` を Definite に分類する。**分類のテストを単体テストに含める**（§18.1）。
+**L2 を一律 Definite にしてはならない。** §11.1 のとおり、`data` と `errors` が併存する部分成功では mutation 本体が完了している可能性がある（`createNote` が成功した後に `note` サブフィールドの resolver が失敗した場合など）。これを Definite として `[Retry]` を出すと同じコメントを重複投稿する。**「mutation が実行されなかったことをレスポンスから証明できる場合だけ Definite」**という規準で判定する。
+
+実装上の判定順:
+
+```
+HTTP 非 2xx        → 4xx: Definite / 5xx: Ambiguous
+GitLabApiTimeoutException / IOException / JSON 解析失敗 → Ambiguous
+GraphQlException(L2) → hasDataKey ? Ambiguous : Definite
+GraphQlException(L3) → Definite（実行されたが payload.errors で拒否＝副作用なし）
+```
+
+L3 が Definite でよいのは、mutation の `errors` フィールドは「実行されたが業務ルールで拒否した」ことをサーバが明示したものであり、副作用が無いことをサーバが表明しているためである。
+
+**分類のテストを単体テストに含める**（§18.1）。特に「`data` あり + `errors` あり → Ambiguous」「`data` なし + `errors` あり → Definite」の 2 ケースを個別に持つ。
 
 読み取りについても自動リトライは行わない（ユーザーが節を再展開すればよい）。読み取りは副作用が無いため分類は不要。
 
@@ -730,13 +829,19 @@ REST 呼び出しは既存 `GitLabApiClient.fetchObject` で足りる。GraphQL 
 
 ### 14.2 世代ガード
 
-`DiscussionGenerationRegistry` により、UI 反映は以下 3 条件を**すべて**満たす場合のみ行う。
+ガードは目的の異なる 2 群からなる。**適用範囲が違うため、常に区別して扱う。**
 
-1. `registry.active` が true（プラグインが停止処理に入っていない）
-2. `registry.currentEpoch == startEpoch`（停止→再開を跨いでいない）
-3. `registry.isLatest(key, gen)`（同一 MR に対するより新しい要求が出ていない）
+| 群 | 条件 | 意味 | 適用範囲 |
+|---|---|---|---|
+| **ライフサイクル** | 1. `registry.active` が true<br>2. `registry.currentEpoch == startEpoch` | プラグインが停止処理に入っていない / 停止→再開を跨いでいない | **UI スレッドで何かを行うすべての箇所**。取得結果の反映も、mutation 完了処理も |
+| **鮮度** | 3. `registry.isLatest(key, gen)` | 同一 MR に対するより新しい要求が出ていない | **取得結果をツリーへ反映する箇所のみ**。mutation 完了処理には適用しない（§8.2） |
 
-これらは `asyncExec` の runnable 内で**最初に**評価する（gate-first）。ガード評価と反映が同一 UI ターン内で完結するため、判定後に状態が変わる窓は存在しない。
+- **取得結果の反映**（§8.1）: 1・2・3 をすべて満たす場合のみ行う。3 で落ちた場合は `LoadOutcome.Superseded` を返す。1・2 で落ちた場合は停止中なので `onOutcome` も呼ばない。
+- **mutation 完了処理**（§8.2）: 1・2 のみを適用する。3 は適用しない。
+
+これらは `asyncExec` の runnable 内で**最初に**評価する（gate-first）。ガード評価と後続処理が同一 UI ターン内で完結するため、判定後に状態が変わる窓は存在しない。
+
+なお in-flight ガードの解放だけは UI スレッドではなく background の `finally` で行うため、ライフサイクルガードで UI 処理が破棄されても解放される（§14.4）。
 
 ### 14.3 起動・停止順序
 
@@ -751,7 +856,28 @@ Phase 4 PR-4 の Codex 指摘 P1-2 を最初から織り込む。
 
 ### 14.4 多重送信の防止
 
-既存 `InFlightWriteGuard`（`src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt`）を流用する。キーは（操作種別, 対象 ID）とし、同一スレッドへの返信の二重送信、同一ノートの二重削除などを防ぐ。
+既存 `InFlightWriteGuard`（`src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt`）を流用する。
+
+**キーに操作種別を含めてはならない。** 既存 `WriteKey` の KDoc が定めている契約は次のとおりである。
+
+> The ACTION is deliberately NOT part of the key so a retry and a cancel on the same target serialize instead of racing each other.
+
+操作種別をキーに含めると、同じノートに対する Edit と Delete、同じスレッドに対する Reply と Resolve が別キーになり、**相反する書き込みが同時に飛ぶ**。既存ガードを流用しても対象単位の直列化が成立しない。
+
+したがってキーは**接続タグと対象**のみで構成する。
+
+```kotlin
+data class DiscussionWriteKey(
+  val instanceUrl: String,      // normalizeInstanceUrl 済み
+  val authFingerprint: String,  // §15.3 と同じ理由でアカウントも識別に含める
+  val targetKind: String,       // "discussion" | "note"
+  val targetId: String,         // replyId または note GID
+)
+```
+
+`InFlightWriteGuard.tryAcquire` は `Any` を受けるため（既存 `WriteKey` と `CreateWriteKey` が別 data class として共存しているのと同じ理屈で）、新しい data class を追加するだけで既存キーと衝突せずに共存できる。
+
+取得は UI スレッドで background 起動の**前**に行い、解放は background の `finally` で行う（§8.2）。これも既存ハンドラと同じ形である。
 
 ---
 
@@ -834,6 +960,17 @@ PR 単位で revert 可能である。
 - **エディタ行コメントは G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲート**が揃って初めて行一致が保証される（§8.3）。
 - **失敗は Definite / Ambiguous に分類し、Ambiguous では単純再送しない**（§9.3 / §12.2）。
 
+round 2 の指摘を受けて追加で確定した事項:
+
+- **L2 は一律 Definite ではない。** `data` キーが応答に存在しない（リクエストレベルエラー）場合のみ Definite、`data` が存在する部分成功は Ambiguous（§11.1 / §12.2）。
+- **mutation 完了処理にもライフサイクルガード（`active` / `epoch`）を適用する。** 外すのは鮮度ガード（`isLatest`）だけである（§8.2）。
+- **in-flight ガードの解放は background の `finally`** で行う（§8.2 / §14.4）。
+- **in-flight キーに操作種別を含めない。** `DiscussionWriteKey(instanceUrl, authFingerprint, targetKind, targetId)`（§14.4）。
+- **`loadDiscussions` は `LoadOutcome` の完了契約を持つ。** `Applied` でのみ `[Send again]` を出す（§8.1 / §9.3）。
+- **行一致は「捕捉した本文 == HEAD blob」で直接検証する。** dirty 判定と作業ツリー検査の組み合わせでは TOCTOU が閉じない（§8.3）。
+- **`GitLabGraphQlClient.execute` は `timeout: Duration` を受け取る**（§7.1 / §12.1）。
+- **残時間由来の timeout でリクエストが失敗した場合も部分結果として扱う**（§12.1）。
+
 ### 16.2 未決（レビューで判断したい）
 
 | # | 事項 | 現時点の提案 | 判断が必要な理由 |
@@ -864,7 +1001,12 @@ PR 単位で revert 可能である。
 | R-7 | **結果不明の失敗後に再送し、サーバが既にコミットしていた場合に重複コメントが作られる** | 重複投稿。in-flight ガードは最初の要求が完了済みのため防げない | 失敗を Definite / Ambiguous に分類し、Ambiguous では先に強制再取得してユーザーに現状を見せてから [Send again] を選ばせる（§9.3 / §12.2） |
 | R-8 | 停止処理と UI 反映の競合により、停止後に通知やダイアログが出る | 例外・ゴースト UI | §14.3 の停止順序を最初から適用 |
 | R-9 | **エディタの表示内容と MR head 版がずれた状態で行コメントを送る** | 別の行にコメントが付く、または GitLab が position を拒否する | G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲートを揃えて初めて送信する（§8.3） |
-| R-10 | mutation 完了処理を世代ガードで破棄し、成功が表示に反映されない / 失敗時に本文が失われる | FR-8・FR-10 違反 | 世代ガードの適用範囲を「取得結果の反映」に限定する（§8.2） |
+| R-10 | mutation 完了処理を鮮度ガードで破棄し、成功が表示に反映されない / 失敗時に本文が失われる | FR-8・FR-10 違反 | 鮮度ガードの適用範囲を「取得結果の反映」に限定する（§8.2） |
+| R-11 | **R-10 の修正を過剰に行い、停止処理中に UI が起動する。** ブロッキング HTTP は停止後に戻りうる | 停止後のダイアログ・再取得。R-8 と同じ障害 | ライフサイクルガード（`active` / `epoch`）は mutation 完了処理にも**適用する**。外すのは鮮度ガードだけ（§8.2） |
+| R-12 | **部分成功（`data` + `errors`）を Definite と誤分類し、`[Retry]` で重複投稿する** | R-7 と同じ重複投稿が、L2 経由で再発する | L2 は `data` キーの有無で分岐。「mutation が実行されなかったことを証明できる場合だけ Definite」（§11.1 / §12.2） |
+| R-13 | **in-flight キーに操作種別を含め、同一対象への相反する書き込みが同時に飛ぶ** | 同じノートへの Edit と Delete の競合。既存ガードを流用しても直列化されない | キーは接続タグ + 対象のみ。既存 `WriteKey` の契約（ACTION を意図的に含めない）に従う（§14.4） |
+| R-14 | **`loadDiscussions` の完了を待たずに `[Send again]` を出し、ユーザーが最新状態を見ないまま再送する** | R-7 の緩和策が機能せず重複投稿 | `LoadOutcome` の完了契約を定義し、`Applied` でのみ再送を許可（§8.1 / §9.3） |
+| R-15 | **残時間由来の timeout が例外として伝播し、取得済みページと打ち切り表示が失われる** | 通常の deadline 到達が読み取り失敗として扱われる | deadline 予算由来の timeout を捕捉して部分結果を返す（§12.1） |
 
 ---
 
@@ -876,15 +1018,17 @@ PR 単位で revert 可能である。
 |---|---|
 | `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
 | `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
-| **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` になること**／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
-| **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L2 `errors` / L3 `errors` → **Definite**。分類ごとに 1 ケース以上 |
+| **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
+| **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
+| **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ 1 回だけ UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／新しい世代に破棄された場合 → `Superseded`（`Applied` ではない） |
+| **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと |
 | `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
 | **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
 | **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
-| **世代ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること |
+| **ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること（**鮮度ガードは適用されない**）／**逆に `active == false` または `epoch` 変化時は UI 処理が一切起きないこと**（ライフサイクルガードは適用される）／**その場合でも in-flight ガードが解放されていること**（background の `finally` で解放されるため） |
+| **行一致ゲート**（§8.3、SWT-free 部分） | 捕捉本文 == HEAD blob なら送信、1 バイトでも異なれば拒否／改行コードのみが異なる場合も拒否（正規化しない）／`newLine` が捕捉時のカーソル行であり、後続のエディタ操作に影響されないこと |
 | 監査ログ | 本文・トークン由来のマーカー文字列がログ行に含まれないこと（識別可能なマーカーを使う。Phase 4 PR-4 の指摘を踏まえ、引用符付きの弱い検証にしない） |
 | 位置情報 | `DiffPositionInput` の組み立て（`newLine` のみ、`oldLine` 不在） |
-| **行一致ゲート**（§8.3、SWT-free 部分） | G7 のみ成立・G8 不成立（対象パスに未コミット変更）→ 拒否されること／G8 成立時のみ送信されること。エディタ dirty 判定（G3）は実機検証（§18.2） |
 
 ### 18.2 実機のみで確認する項目（PR 説明文のチェックリスト）
 
@@ -914,7 +1058,8 @@ PR 単位で revert 可能である。
 
 1. `GitLabGraphQlClient` が存在し、§18.1 の全テストが PASS する。
 2. `DiscussionService.getDiscussions` が**外側のみをページングし**、`endCursor` を次要求に渡す。ページ上限 20 と **wall-clock deadline 60 秒**の両方で打ち切り、取得済み分を返して警告を記録する（§8.5 / §12.1）。
-3. 各ページの単発 timeout が `min(30 秒, 残時間)` になる。
+3. 各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡る。**残時間由来の timeout でリクエストが失敗した場合も、例外を伝播させず取得済み分 + 打ち切り表示を返す**（§12.1）。
+3b. `loadDiscussions` が `LoadOutcome`（`Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped`）を UI スレッドで 1 回だけ渡す。
 4. `notes.pageInfo.hasNextPage` が真のスレッドに `(more replies — open in GitLab)` 子ノードが出る。内側をページングしようとしない。
 5. サイドバーの MR ノード配下に Discussions 節が出る。展開時に遅延取得する（`loadDiscussions(force = false)`）。
 6. スレッドが `path:line` または `(overall)` のラベルで、解決状態とともに表示される。
@@ -933,22 +1078,26 @@ PR 単位で revert 可能である。
 5. ノートを確認ダイアログを経て削除できる（FR-7）。
 6. 権限のない操作がメニューに出ない（FR-9）。
 7. **Definite 失敗**時、本文を保持したダイアログが [Retry] / [Cancel] とともに再提示される（FR-8 / §9.2）。
-8. **Ambiguous 失敗**時、[Retry] を出さず、先に強制再取得を行ってから本文を保持したダイアログを [Send again] / [Cancel] で提示する（§9.3）。再取得自体が失敗した場合は [Send again] を出さない。
-9. 同一操作の二重送信が in-flight ガードで抑止される。
-10. **書き込み成功後、`loadState == LOADED` であっても再取得の HTTP が実際に発行され**、当該 MR の Discussions 節が最新化される（FR-10 / §8.2）。
-11. **mutation 送信中に generation が進んでも**、in-flight ガードの解放・成功時の再取得・失敗時の本文保持がいずれも実行される（§8.2）。
-12. 接続ゲートが PR-1 AC-9 と同じ強度（URL + `authFingerprint`）で書き込みにも適用される。
-13. 検証バー（§18.3）を満たす。
+8. **L2 の部分成功（`data` キーあり + `errors`）が Ambiguous に分類され、[Retry] が出ない**（§11.1 / §12.2）。
+9. **Ambiguous 失敗**時、[Retry] を出さず強制再取得を行い、**`LoadOutcome` が `Applied` の場合にのみ** [Send again] / [Cancel] を提示する。`Superseded` / `Failed` / `GateRejected` / `Skipped` では [Copy text] / [Cancel] のみ（§9.3）。
+10. **in-flight キーが操作種別を含まず**、同一ノートへの Edit と Delete が直列化される（§14.4）。
+11. **書き込み成功後、`loadState == LOADED` であっても再取得の HTTP が実際に発行され**、当該 MR の Discussions 節が最新化される（FR-10 / §8.2）。
+12. **mutation 送信中に generation が進んでも**、in-flight ガードの解放・成功時の再取得・失敗時の本文保持がいずれも実行される（鮮度ガードは適用されない。§8.2）。
+13. **`active == false` または `epoch` 変化時は UI 処理が一切起きず、それでも in-flight ガードは解放されている**（ライフサイクルガードは適用される / 解放は background の `finally`。§8.2）。
+14. 接続ゲートが PR-1 AC-9 と同じ強度（URL + `authFingerprint`）で書き込みにも適用される。
+15. 検証バー（§18.3）を満たす。
 
 ### PR-3（エディタ行からの新規 diff スレッド）
 
 1. MR ブランチをチェックアウトした状態で、エディタ右クリックから行コメントを作成できる（FR-4）。
-2. **G3（エディタが dirty）で拒否される。**
-3. **G8（対象パスに未コミット変更がある）で拒否される。**
-4. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
-5. `DiffPositionInput` が `newLine` のみを含み、3 つの sha が MR の diff version 由来である。
-6. old 側へのコメント作成が対象外であることが PR に明記される。
-7. 検証バー（§18.3）を満たす。
+2. **カーソル行と本文が同一 UI ターンでスナップショット化され**、以降の処理がエディタの状態を再参照しない（§8.3）。
+3. **G3（エディタが dirty）で拒否される**（早期拒否）。
+4. **G8（捕捉した本文 != HEAD blob）で拒否される。**改行コードのみが異なる場合も拒否される（正規化しない）。
+5. スナップショット取得後にエディタを編集しても、送信される `newLine` が変わらない。
+6. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
+7. `DiffPositionInput` が `newLine` のみを含み、3 つの sha が MR の diff version 由来である。
+8. old 側へのコメント作成が対象外であることが PR に明記される。
+9. 検証バー（§18.3）を満たす。
 
 ### Phase 5A 全体
 
