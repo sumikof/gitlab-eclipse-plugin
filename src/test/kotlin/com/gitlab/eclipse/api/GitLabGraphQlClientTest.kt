@@ -25,15 +25,23 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Flow
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 private data class SamplePayload(val id: Int, val name: String)
 
 private const val CUSTOM_TIMEOUT_SECONDS = 7L
+private const val BODY_TEXT_AWAIT_SECONDS = 5L
 
-/** Reads the actual bytes of an [HttpRequest]'s body publisher, not just its length. */
+/**
+ * Reads the actual bytes of an [HttpRequest]'s body publisher, not just its length. Bounded by
+ * [BODY_TEXT_AWAIT_SECONDS] so a stuck publisher fails the test instead of hanging, and rethrows
+ * any [onError] failure instead of silently returning a partial/empty body.
+ */
 private fun HttpRequest.bodyText(): String {
   val publisher = bodyPublisher().get()
   val bytes = mutableListOf<Byte>()
+  val failure = AtomicReference<Throwable?>()
   val done = CountDownLatch(1)
   publisher.subscribe(
     object : Flow.Subscriber<ByteBuffer> {
@@ -45,12 +53,16 @@ private fun HttpRequest.bodyText(): String {
         bytes.addAll(chunk.toList())
       }
 
-      override fun onError(throwable: Throwable) = done.countDown()
+      override fun onError(throwable: Throwable) {
+        failure.set(throwable)
+        done.countDown()
+      }
 
       override fun onComplete() = done.countDown()
     },
   )
-  done.await()
+  check(done.await(BODY_TEXT_AWAIT_SECONDS, TimeUnit.SECONDS)) { "Timed out reading HttpRequest body publisher" }
+  failure.get()?.let { throw it }
   return String(bytes.toByteArray(), StandardCharsets.UTF_8)
 }
 
@@ -279,6 +291,28 @@ class GitLabGraphQlClientTest : DescribeSpec({
 
       result shouldBe SamplePayload(1, "a")
     }
+
+    it("throws GraphQlException with empty messages when an errors element has no usable message") {
+      every { http.send(any()) } returns response("""{"data":{"id":1,"name":"a"},"errors":[{}]}""")
+
+      val exception = shouldThrow<GraphQlException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+
+      exception.hasDataKey shouldBe true
+      exception.messages shouldBe emptyList()
+    }
+
+    it("throws GraphQlException when errors has no usable message and data key is absent") {
+      every { http.send(any()) } returns response("""{"errors":[{}]}""")
+
+      val exception = shouldThrow<GraphQlException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+
+      exception.hasDataKey shouldBe false
+      exception.messages shouldBe emptyList()
+    }
   }
 
   describe("execute - malformed and successful responses") {
@@ -300,6 +334,22 @@ class GitLabGraphQlClientTest : DescribeSpec({
 
     it("throws JsonSyntaxException when the body is not JSON at all") {
       every { http.send(any()) } returns response("not json")
+
+      shouldThrow<JsonSyntaxException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+    }
+
+    it("throws JsonSyntaxException when the body is empty") {
+      every { http.send(any()) } returns response("")
+
+      shouldThrow<JsonSyntaxException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+    }
+
+    it("throws JsonSyntaxException when the body is valid JSON but not an object") {
+      every { http.send(any()) } returns response("[]")
 
       shouldThrow<JsonSyntaxException> {
         client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)

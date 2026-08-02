@@ -3,6 +3,8 @@ package com.gitlab.eclipse.api
 import com.gitlab.eclipse.api.http.GitLabHttpClient
 import com.gitlab.eclipse.inject.service
 import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonSyntaxException
 import java.net.URI
@@ -84,29 +86,34 @@ class GitLabGraphQlClient(
   }
 
   private fun <T> parseGraphQlResponse(body: String, correlationId: String?, type: Class<T>): T {
-    val root = gson.fromJson(body, JsonObject::class.java)
+    val root = parseRootObject(body)
     val hasDataKey = root.has("data")
-    val errorMessages = extractErrorMessages(root)
 
-    if (errorMessages.isNotEmpty()) {
-      throw GraphQlException(hasDataKey, errorMessages, correlationId)
+    val errors = root.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray
+    if (errors != null && !errors.isEmpty) {
+      throw GraphQlException(hasDataKey, extractErrorMessages(errors), correlationId)
     }
 
-    val dataElement = root.get("data")
-    if (dataElement == null || dataElement.isJsonNull) {
-      throw JsonSyntaxException("GraphQL response contained no data")
-    }
+    val dataElement = root.get("data")?.takeUnless { it.isJsonNull } ?: throw noDataException()
 
     return gson.fromJson(dataElement, type)
   }
 
-  private fun extractErrorMessages(root: JsonObject): List<String> {
-    val errors = root.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
-    return errors.mapNotNull { element ->
+  /**
+   * Parses [body] into a [JsonObject], demanding a JSON object so that every uninterpretable
+   * response (empty body, non-object JSON, or invalid JSON) lands in the single
+   * [JsonSyntaxException] bucket a later PR relies on for its Ambiguous classification.
+   */
+  private fun parseRootObject(body: String): JsonObject =
+    gson.fromJson(body, JsonElement::class.java)?.takeIf { it.isJsonObject }?.asJsonObject ?: throw noDataException()
+
+  private fun noDataException() = JsonSyntaxException("GraphQL response contained no data")
+
+  private fun extractErrorMessages(errors: JsonArray): List<String> =
+    errors.mapNotNull { element ->
       if (!element.isJsonObject) return@mapNotNull null
       element.asJsonObject.get("message")?.takeIf { it.isJsonPrimitive }?.asString
     }
-  }
 
   /** Delegates to [GitLabApiClient.captureConnection]; the seqlock logic lives in one place only. */
   fun captureConnection(): ConnectionSnapshot = apiClient.captureConnection()
