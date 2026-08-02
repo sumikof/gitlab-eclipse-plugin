@@ -56,13 +56,12 @@ data class DiscussionsReadResult(
 )
 
 /**
- * Fetches a merge request's discussion threads over GraphQL (design phase5a-pr1). This task adds
- * only the protocol constants and identifier construction; the paging loop and deadline handling
- * that use [graphQlClient] are added by a later task appending to this same file. [graphQlClient]
- * is intentionally unused for now — do not delete it, and do not resolve the resulting detekt
- * finding by removing the parameter.
+ * Fetches a merge request's discussion threads over GraphQL. Holds the query constants
+ * ([GET_MR_DISCUSSIONS_QUERY], [mrGid], [namespaceWithPath], [queryVariables]) and the identifier
+ * construction they need, and runs a paged fetch of the outer `discussions` connection through
+ * [graphQlClient], bounded by a wall-clock deadline and by [MAX_DISCUSSION_PAGES] — see
+ * [getDiscussions].
  */
-@Suppress("UnusedPrivateProperty")
 class DiscussionService(private val graphQlClient: GitLabGraphQlClient = service()) {
 
   private val logger by lazy { logger<DiscussionService>() }
@@ -77,7 +76,7 @@ class DiscussionService(private val graphQlClient: GitLabGraphQlClient = service
      *   variable signature —
      *   `out/gitlab-vscode-extension/src/desktop/gitlab/graphql/get_discussions.ts:25-36`.
      * - the discussion / note / position field sets —
-     *   `out/gitlab-vscode-extension/src/desktop/gitlab/graphql/shared.ts:3-60`.
+     *   `out/gitlab-vscode-extension/src/desktop/gitlab/graphql/shared.ts:3-63`.
      * - `mergeRequest.userPermissions { createNote }` is **not** part of the reference's
      *   discussions query; it comes from the reference's separate permissions query,
      *   `out/gitlab-vscode-extension/src/desktop/gitlab/graphql/mr_permission.ts:3-14`, folded

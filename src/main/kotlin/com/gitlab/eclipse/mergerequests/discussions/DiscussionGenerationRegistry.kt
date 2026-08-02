@@ -24,9 +24,10 @@ package com.gitlab.eclipse.mergerequests.discussions
  * 2. [epoch] is `@Volatile` here, whereas the CI-lint registry's is a plain field. There, `epoch`
  *    is only ever read on the UI thread. Here, a later PR reads [currentEpoch] from a background
  *    thread immediately before sending a write, to verify the plugin was not stopped and
- *    restarted while the request was being prepared. Writes to [epoch] still happen only on the
- *    UI thread ([onActivate]/[onDeactivate]), so a volatile read is sufficient and no lock is
- *    needed -- do not add a lock or an `AtomicLong`. [counter] and [latest] remain UI-thread-
+ *    restarted while the request was being prepared. [epoch] still has exactly ONE writer,
+ *    [onActivate], and that write happens on the UI thread, so a volatile read is sufficient and
+ *    no lock is needed -- do not add a lock or an `AtomicLong`. ([onDeactivate] writes only
+ *    [active], never [epoch].) [counter] and [latest] remain UI-thread-
  *    confined and must NOT be made volatile or synchronized; that confinement is the
  *    synchronization, exactly as in the model class.
  */
@@ -40,8 +41,8 @@ object DiscussionGenerationRegistry {
 
   /**
    * Read from a background thread right before a write is sent (a later PR), in addition to the
-   * UI thread reads shared with the CI-lint registry -- hence @Volatile. Written only on the UI
-   * thread, by [onActivate]/[onDeactivate].
+   * UI thread reads shared with the CI-lint registry -- hence @Volatile. Written by exactly one
+   * method, [onActivate], and only on the UI thread; [onDeactivate] writes [active] alone.
    */
   @Volatile
   private var epoch: Long = 0
@@ -83,7 +84,15 @@ object DiscussionGenerationRegistry {
     active = true
   }
 
-  /** May be called from any thread (the stop hook runs on an OSGi thread) -- @Volatile write only. */
+  /**
+   * Clears [active] (and nothing else -- [epoch] is untouched). Must be called ON the UI thread:
+   * the stop hook runs on an OSGi thread and therefore marshals this through `display.syncExec`
+   * (`GitLabEclipseStartup.stop` -> `shutdownJobLog`). Flipping the flag on the UI thread is what
+   * totally orders the deactivation against every UI runnable's check-then-act on [shouldAct]; a
+   * bare off-thread write would leave a torn window in which a runnable passes its gate and then
+   * acts after deactivation. [active] stays @Volatile so that a display-less shutdown, where the
+   * syncExec is skipped, still cannot publish a torn value.
+   */
   fun onDeactivate() {
     active = false
   }

@@ -93,7 +93,7 @@ class GitLabDiscussionNormalizationTest : DescribeSpec({
       permissions shouldBe GitLabNotePermissions(resolveNote = false, adminNote = false, createNote = false)
     }
 
-    it("defaults each missing permission field to false individually") {
+    it("defaults every permission field to false when the whole set is null") {
       val permissions = fullNoteDto(
         userPermissions = NotePermissionsDto(resolveNote = null, adminNote = null, createNote = null),
       ).toDomain().permissions

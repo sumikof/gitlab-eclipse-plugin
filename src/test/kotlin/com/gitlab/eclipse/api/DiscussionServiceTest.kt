@@ -92,12 +92,13 @@ class DiscussionServiceTest : DescribeSpec({
       DiscussionService.GET_MR_DISCUSSIONS_QUERY.contains("discussions(after: \$afterCursor)") shouldBe true
     }
 
-    it("does not request bodyHtml, avatarUrl, or diffRefs") {
+    it("does not request bodyHtml, avatarUrl, diffRefs, or filePath") {
       val query = DiscussionService.GET_MR_DISCUSSIONS_QUERY
 
       query.contains("bodyHtml") shouldBe false
       query.contains("avatarUrl") shouldBe false
       query.contains("diffRefs") shouldBe false
+      query.contains("filePath") shouldBe false
     }
   }
 

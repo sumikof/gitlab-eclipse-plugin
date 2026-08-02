@@ -127,7 +127,6 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
       val accountA = DiscussionKey.of("https://a", "fp-A", 1L, 10L)
       val accountB = DiscussionKey.of("https://a", "fp-B", 1L, 10L)
 
-      accountA shouldBe accountA
       (accountA == accountB) shouldBe false
 
       val genA = DiscussionGenerationRegistry.nextGeneration(accountA)

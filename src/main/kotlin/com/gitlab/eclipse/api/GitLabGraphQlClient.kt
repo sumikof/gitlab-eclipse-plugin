@@ -115,7 +115,11 @@ class GitLabGraphQlClient(
       element.asJsonObject.get("message")?.takeIf { it.isJsonPrimitive }?.asString
     }
 
-  /** Delegates to [GitLabApiClient.captureConnection]; the seqlock logic lives in one place only. */
+  /**
+   * Delegates to [GitLabApiClient.captureConnection]; the seqlock logic lives in one place only.
+   * No production caller today — the discussions read path pins its connection through a different
+   * helper — but it exists for the write path in the follow-up PR, so do not delete it as dead code.
+   */
   fun captureConnection(): ConnectionSnapshot = apiClient.captureConnection()
 
   companion object {

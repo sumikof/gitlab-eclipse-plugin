@@ -6,8 +6,8 @@ import io.kotest.matchers.shouldBe
 
 /**
  * Proves that Gson leaves absent GraphQL keys as `null` (even for non-null-declared fields on the
- * DTOs) and that the normalizers in [GitLabDiscussion.kt], [GitLabNote.kt] and
- * [GitLabNotePosition.kt] repair every such gap. This is the reason task 3 exists.
+ * DTOs) and that the normalizers producing [GitLabDiscussion], [GitLabNote] and
+ * [GitLabNotePosition] repair every such gap. This is the reason task 3 exists.
  */
 class GitLabDiscussionGsonTest : DescribeSpec({
   val gson = Gson()
