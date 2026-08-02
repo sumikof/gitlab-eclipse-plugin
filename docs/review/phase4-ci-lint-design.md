@@ -93,7 +93,7 @@ com.gitlab.eclipse.ci.lint          (新パッケージ)
   ├─ MergedYamlContent.kt          (新) 可変 text ホルダ(共有・resetDocument で再読込)
   ├─ MergedYamlStorage.kt          (新) IEncodedStorage(UTF-8・read-only)
   ├─ MergedYamlEditorInput.kt      (新) IStorageEditorInput(exists=false・key 同一性)
-  └─ MergedYamlEditorOpener.kt     (新) UI: openOrReload(全 window/page 一致エディタ resetDocument + タブで open)
+  └─ MergedYamlEditorOpener.kt     (新) UI: openOrReload(resetDocument+タブ open) + disposeAtShutdown(stop 解放)
 
 com.gitlab.eclipse.ci.actions
   ├─ CiLintLaunch.kt               (新) launchCiLint(top-level・共有骨格) + CI-lint total UI helper
@@ -290,7 +290,7 @@ private fun notifyIfLatest(key, myGen, message) { /* isLatest 判定 → try{ sh
 
 ### 8.8 merged yaml 読み取り専用エディタ(`MergedYamlContent` / `MergedYamlStorage` / `MergedYamlEditorInput` / `MergedYamlEditorOpener`)
 
-PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEditorInput`/`JobLogEditorOpener`)を**忠実にミラー**する(A1 採用=JobLog パッケージと疎結合の専用実装)。ライブ再検証(E1)を行わないため JobLog の shutdown/part-listener/content-GC 機構までは要さないが、**再読込の機構は JobLog と同一でなければならない**(指摘 #3)。
+PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEditorInput`/`JobLogEditorOpener`)を**忠実にミラー**する(A1 採用=JobLog パッケージと疎結合の専用実装)。**再読込の機構(§3)も stop 時解放の機構(下記)も JobLog と同一でなければならない**(Codex round1 #3 / round7 P2)。ライブ再検証(E1)を行わないため per-editor-close の即時 content wipe(JobLog の part-listener)は省略可(WeakReference 値で最後のタブが閉じれば GC 可能・merged YAML は秘匿情報ではない)。
 
 - `MergedYamlContent(var text)`: storage が `getContents()` 時に読む**共有可変ホルダ**。既存タブの再読込を成立させる要。`JobLogContent` 同型。
 - `MergedYamlStorage(content, name)`: `IEncodedStorage`・`getCharset()="UTF-8"`・`isReadOnly()=true`・`getContents()` は `content.text` を UTF-8 で返す。`JobLogStorage.kt` と同型。
@@ -303,6 +303,13 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 3. **文書再読込**: 各一致エディタを `ITextEditor` にアダプトし `documentProvider.resetDocument(editorInput)` を呼ぶ(**content 差替だけでは既定テキストエディタの `IDocument` キャッシュが更新されない**ため必須)。背景ページの `CoreException` は log して best-effort 継続、**アクティブページのエディタの reset 失敗は伝播**(呼び出し元 total helper が Error Log + latest-gated 通知。stale を「更新済み」に見せない)。
 4. **可視化(タブ・Beside ではない=E2)**: アクティブページに既存一致タブがあれば `activePage.activate(editor)`、無ければ `activePage.openEditor(input, "org.eclipse.ui.DefaultTextEditor")` で**通常タブとして開く**(U-5 解決。`JobLogEditorOpener.DEFAULT_TEXT_EDITOR_ID` と同一)。`IWorkbenchPage.openEditor` は横並び配置を行わず、Eclipse には依存追加なしの Beside 相当 API が無いため、VSCode の `ViewColumn.Beside` はタブで代替(E2・§1)。`PartInitException` は呼び出し元(total helper)へ伝播し Error Log + latest-gated 通知。
 - 呼び出しは §8.6 の onLinted 経由=**latest gate 通過後のみ**(§8.4a)。よって遅延完了した旧 lint は既存タブを上書きしない。
+
+**`MergedYamlEditorOpener.disposeAtShutdown()`(UI スレッド専有・`JobLogEditorOpener.disposeAtShutdown:120-131` を忠実移植=Codex round7 P2)**: 動的 bundle stop→start/update で、既定テキストエディタは**別 bundle 所属**のため本 bundle 停止後も `MergedYamlEditorInput`(と強参照する YAML content)が開いたまま残り、(a) 旧 classloader を保持(リーク)、(b) 新 classloader 再起動後は旧 input が新 `MergedYamlEditorInput` と非等価になり再実行で古いタブを更新できず**重複タブ**を生む。これはライブ再検証の有無と無関係。→ stop の UI turn で:
+- `workbench.isClosing` でなければ全 window/page の `editorReferences` から入力が `MergedYamlEditorInput` のものを列挙し `page.closeEditors(refs, false)`(read-only=保存しない)。
+- `contentRegistry` の各 content の text を空にして `clear()`(参照除去)。
+- `JobLogEditorOpener.disposeAtShutdown` と同一構造(3 層ガード付き)。
+
+**stop 配線**: `GitLabEclipseStartup.stop` の既存 `shutdownJobLog()` のガード付き `display.syncExec` ブロック内に `MergedYamlEditorOpener.disposeAtShutdown()` を並置(同一 UI turn・`onDeactivate()` は §8.4a どおり @Volatile 直書き)。§7/§20 に明記。
 
 ## 9. 処理フロー
 
@@ -429,7 +436,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 - **`GitLabApiClient` に `postJson` を追加**(既存メソッド不変)。既存テストへの回帰なし。
 - 新規パッケージ `ci.lint` の追加のみ。既存 `ci.joblog` / `ci.actions` / `api` の既存型は不変(新規ファイル追加と plugin.xml への追加のみ)。
-- **`GitLabEclipseStartup.stop`/`start` に各 1 行追加**(stop: `CiLintGenerationRegistry.onDeactivate()`=既存 `shutdownJobLog()` と同経路・Codex round2 P1。start: `CiLintGenerationRegistry.onActivate()`=停止前世代の失効 + 再有効化・Codex round3/round4 P2)。既存 start/stop の他処理は不変・回帰なし。
+- **`GitLabEclipseStartup.stop`/`start` に追加**(stop: `CiLintGenerationRegistry.onDeactivate()` の @Volatile 直書き + ガード付き `display.syncExec` 内に `MergedYamlEditorOpener.disposeAtShutdown()` を並置=既存 `shutdownJobLog()` と同 UI turn・Codex round2 P1/round7 P2。start: ガード付き `display.syncExec { CiLintGenerationRegistry.onActivate() }`=停止前世代の失効 + 再有効化・Codex round3/4/6 P2)。既存 start/stop の他処理は不変・回帰なし。
 - plugin.xml は command/handler/submenu 項目の**追加のみ**。既存の「GitLab」サブメニュー(navigation)に 2 項目を足す。
 - 新規 bundle 依存なし。
 
@@ -466,6 +473,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - showMerged で merge 不能 → `MessageDialog` に「Cannot merge…」+「Validate GitLab CI Config」ボタン → 押下で validate コマンドが `IHandlerService` 経由で実行される(指摘 P2)。
 - 監査ログに **成功操作も 1 行**残る(`ILog.info`・valid/merged 有無つき・yaml 本文なし)。
 - 進行中 lint がある状態で plugin を停止 → 完了しても通知/エディタ操作が出ない(stop フックで `CiLintGenerationRegistry.active=false`・指摘 P1)。
+- merged タブを開いた状態で plugin stop→start → 旧タブが**閉じられ**(残存/重複タブなし)、再実行で正しく単一タブに表示(`disposeAtShutdown`・Codex round7 P2)。
 - アクティブエディタ無し/非テキストエディタ → 「No open file.」。
 - 複数リポジトリ → picker。
 - 表示中に接続先/認証を切替 → 誤インスタンスへ送信されない(監査ログで確認)。
