@@ -315,6 +315,33 @@ class GitLabGraphQlClientTest : DescribeSpec({
     }
   }
 
+  describe("execute - non-array errors member (never a success)") {
+    it("throws JsonSyntaxException when errors is a JSON object, even alongside usable data") {
+      every { http.send(any()) } returns
+        response("""{"data":{"id":1,"name":"a"},"errors":{"message":"resolver failed"}}""")
+
+      shouldThrow<JsonSyntaxException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+    }
+
+    it("throws JsonSyntaxException when errors is a string") {
+      every { http.send(any()) } returns response("""{"data":{"id":1,"name":"a"},"errors":"boom"}""")
+
+      shouldThrow<JsonSyntaxException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+    }
+
+    it("throws JsonSyntaxException when errors is a number") {
+      every { http.send(any()) } returns response("""{"data":{"id":1,"name":"a"},"errors":7}""")
+
+      shouldThrow<JsonSyntaxException> {
+        client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
+      }
+    }
+  }
+
   describe("execute - malformed and successful responses") {
     it("throws JsonSyntaxException when the body has neither data nor errors") {
       every { http.send(any()) } returns response("{}")

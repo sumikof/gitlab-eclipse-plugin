@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.JobService
@@ -12,6 +13,7 @@ import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
@@ -238,6 +240,10 @@ class GitLabSidebarView : ViewPart() {
     mrVersionCache.clear()
     // Cleared with the versions it labels: a tag must never outlive the cached data it describes.
     mrConnectionTagsCache.clear()
+    // A full refresh rebuilds every DiscussionsSectionNode (new instances, new nodeIds), so the
+    // registry's per-node latest map would only accumulate dead keys — and any in-flight load
+    // keyed on an old node must not touch the rebuilt tree; clearing makes it report Superseded.
+    DiscussionGenerationRegistry.clearLatest()
     fetchJob?.cancel()
     fetchJob = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
@@ -493,17 +499,25 @@ class GitLabSidebarView : ViewPart() {
     coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch (see refresh()).
       try {
+        // ONE snapshot for the whole fetch, captured BEFORE it: the version fetch is pinned to
+        // this connection and the tags below are derived from the same snapshot, so the node can
+        // never be stamped with a connection its data did not come from (a capture after the
+        // fetch would read whatever is configured THEN, hiding the very mismatch the connection
+        // gate compares against). A failed capture (settings mid-change, credential read error)
+        // yields null: the fetch falls back to the per-request capture inside the client, and
+        // the tags stay (null, null) — rendered as "no Discussions section", exactly as before.
+        val snapshot = runCatching { apiClient.captureConnection() }.getOrNull()
         val versionResult = runCatching {
           // REST accepts a numeric project id directly, so no URL encoding is needed.
-          mergeRequestService.getLatestMrVersion(node.mr.projectId.toString(), node.mr.iid)
+          mergeRequestService.getLatestMrVersion(node.mr.projectId.toString(), node.mr.iid, snapshot)
         }
         // Logged here so the error message the node renders has a matching Error Log entry.
         versionResult.exceptionOrNull()?.let {
           logger.error("Failed to load changed files for merge request !${node.mr.iid}.", it)
         }
-        // Reduced to its two non-secret fields right here, off the UI thread: the snapshot itself
+        // Reduced to the two non-secret fields right here, off the UI thread: the snapshot itself
         // holds the token and must never be carried into the UI block below.
-        val tags = captureConnectionTags()
+        val tags = sourceTagsFor(snapshot, node.mr.webUrl)
         if (!control.isDisposed) {
           control.display.asyncExec {
             if (control.isDisposed) return@asyncExec
@@ -533,7 +547,8 @@ class GitLabSidebarView : ViewPart() {
    * refresh (which rebuilds the node) retries the fetch.
    *
    * [sourceInstanceUrl]/[sourceAuthFingerprint] are the non-secret tags of the connection the
-   * children were built under ([captureConnectionTags]); they are stamped on the node's
+   * children were actually fetched over (the pinned snapshot in [loadMrChildren]); they are
+   * stamped on the node's
    * [DiscussionsSectionNode] so a later write can refuse to send when instance OR account has
    * changed underneath it. Both `null` (capture failed) means no Discussions section at all,
    * which is deliberate — see `SidebarViewModel.buildMrChildren`.
@@ -549,22 +564,6 @@ class GitLabSidebarView : ViewPart() {
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
   }
-
-  /**
-   * **Background thread only.** `captureConnection` reads the stored token, and an expired OAuth
-   * credential refreshes it over HTTP synchronously on the calling thread; on the UI thread that
-   * freezes the workbench. Callers that need tags on the UI thread read [mrConnectionTagsCache]
-   * instead — which is also the truthful value there, since it labels the data being shown.
-   *
-   * The live connection's two non-secret tags, or `(null, null)` when it could not be captured
-   * ([com.gitlab.eclipse.api.UnstableConnectionException] from a settings change in progress, or
-   * a failure reading the stored credential). The [com.gitlab.eclipse.api.ConnectionSnapshot]
-   * itself never leaves this function: it holds the token.
-   */
-  private fun captureConnectionTags(): Pair<String?, String?> =
-    runCatching { apiClient.captureConnection() }
-      .map { snapshot -> snapshot.instanceUrl to snapshot.authFingerprint }
-      .getOrElse { null to null }
 
   /**
    * UI thread only. Runs [block] on the SWT UI thread, dropping it when the viewer's control (or
@@ -668,6 +667,36 @@ internal fun remapExpandedElements(expanded: List<Any>, newInput: List<SidebarNo
       else -> element
     }
   }
+
+/**
+ * The two non-secret connection tags to stamp on a merge request node's children, or
+ * `(null, null)` — rendered as "no Discussions section" — when there is nothing truthful to
+ * stamp: no snapshot was captured, or the merge request does not belong to the captured
+ * instance. The MR came from an earlier list fetch that may have run under a DIFFERENT
+ * connection, and tagging foreign data with the live connection would make the connection gate
+ * pass and send the MR's identifiers to the wrong instance or account.
+ */
+private fun sourceTagsFor(snapshot: ConnectionSnapshot?, mrWebUrl: String?): Pair<String?, String?> =
+  if (snapshot != null && mrBelongsToInstance(mrWebUrl, snapshot.instanceUrl)) {
+    snapshot.instanceUrl to snapshot.authFingerprint
+  } else {
+    null to null
+  }
+
+/**
+ * Whether a merge request whose web URL is [mrWebUrl] belongs to the instance at [instanceUrl]:
+ * the web URL must start with the normalized instance URL followed by a `/` boundary, so
+ * `https://gitlab.example.com` never matches `https://gitlab.example.com.attacker.test/...`.
+ * A null or blank [mrWebUrl] fails the check ([com.gitlab.eclipse.api.model.GitLabMergeRequest]
+ * declares `webUrl` non-null, but Gson builds it through `Unsafe` and a key missing from the
+ * response leaves it null regardless). Pure and SWT-free so the headless tests can reach it.
+ */
+internal fun mrBelongsToInstance(mrWebUrl: String?, instanceUrl: String): Boolean {
+  if (mrWebUrl.isNullOrBlank()) return false
+  val normalized = normalizeInstanceUrl(instanceUrl)
+  if (normalized.isBlank()) return false
+  return mrWebUrl.startsWith("$normalized/")
+}
 
 /**
  * Every [DiscussionsSectionNode] at or under [node], depth-first. Recursion stops at a section

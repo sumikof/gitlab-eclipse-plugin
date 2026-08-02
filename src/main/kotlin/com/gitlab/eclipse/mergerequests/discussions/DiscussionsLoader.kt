@@ -81,7 +81,8 @@ class DiscussionsLoader(
     }
     node.loadState = DiscussionLoadState.LOADING
     val startEpoch = DiscussionGenerationRegistry.currentEpoch
-    val key = DiscussionKey.of(node.sourceInstanceUrl, node.sourceAuthFingerprint, node.projectId, node.mrIid)
+    val key =
+      DiscussionKey.of(node.sourceInstanceUrl, node.sourceAuthFingerprint, node.projectId, node.mrIid, node.nodeId)
     val generation = DiscussionGenerationRegistry.nextGeneration(key)
     node.loadedChildren = buildLoadingChildren(node)
     refreshNode(node)

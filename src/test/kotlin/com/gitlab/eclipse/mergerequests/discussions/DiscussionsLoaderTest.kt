@@ -57,7 +57,7 @@ private class LoaderHarness(
   )
 
   /** The same key `loadDiscussions` derives internally, for bumping generations in tests. */
-  val key = DiscussionKey.of(NODE_INSTANCE_URL, NODE_AUTH_FINGERPRINT, NODE_PROJECT_ID, NODE_MR_IID)
+  val key = DiscussionKey.of(NODE_INSTANCE_URL, NODE_AUTH_FINGERPRINT, NODE_PROJECT_ID, NODE_MR_IID, node.nodeId)
 
   val loadingChildren: List<SidebarNode> = listOf(MessageNode("loading-marker"))
   val successChildren: List<SidebarNode> = listOf(MessageNode("success-marker"))
@@ -191,6 +191,35 @@ class DiscussionsLoaderTest : DescribeSpec({
       h.outcomes shouldContainExactly listOf(LoadOutcome.Failed(cause))
       (h.outcomes.single() as LoadOutcome.Failed).cause shouldBeSameInstanceAs cause
       h.outcomesDeliveredInsideUiHop shouldContainExactly listOf(true)
+    }
+
+    it("two nodes for the same merge request complete independently: both Applied, neither superseded") {
+      // The same MR appears under "Merge requests assigned to me" AND "For current branch" as two
+      // DiscussionsSectionNodes; their keys differ only by nodeId. Real scenario: start A, start B
+      // while A's result is still queued, deliver A, deliver B — before the per-node key, B's
+      // start superseded A, which then stranded its node in LOADING forever.
+      val h = LoaderHarness(deferUi = true)
+      h.givenSuccess()
+      val nodeB = DiscussionsSectionNode(
+        sourceInstanceUrl = NODE_INSTANCE_URL,
+        sourceAuthFingerprint = NODE_AUTH_FINGERPRINT,
+        projectId = NODE_PROJECT_ID,
+        mrIid = NODE_MR_IID,
+        mrGid = "gid://gitlab/MergeRequest/99",
+        mrSha = "abc123",
+        namespaceWithPath = "group/project",
+      )
+      val outcomesA = mutableListOf<LoadOutcome>()
+      val outcomesB = mutableListOf<LoadOutcome>()
+
+      h.loader.loadDiscussions(h.node, force = false) { outcomesA += it }
+      h.loader.loadDiscussions(nodeB, force = false) { outcomesB += it }
+      h.runPendingUi()
+
+      outcomesA shouldContainExactly listOf(LoadOutcome.Applied)
+      outcomesB shouldContainExactly listOf(LoadOutcome.Applied)
+      h.node.loadState shouldBe DiscussionLoadState.LOADED
+      nodeB.loadState shouldBe DiscussionLoadState.LOADED
     }
 
     it("a superseded load delivers Superseded exactly once, inside the UI hop") {

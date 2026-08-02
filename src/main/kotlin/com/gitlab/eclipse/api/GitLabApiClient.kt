@@ -61,11 +61,17 @@ class GitLabApiClient(
   private val gson = Gson()
   private val logger by lazy { logger<GitLabApiClient>() }
 
-  fun <T> fetchListFromApi(request: ApiRequest<T>): List<T> {
+  /**
+   * When [connection] is non-null, EVERY page of the fetch is pinned to that same snapshot
+   * (URI base + Bearer credential), never re-reading the live preference store / token manager
+   * between pages — same contract as [fetchListWithinDeadline]. `connection = null` keeps the
+   * pre-existing global-reading behavior for every page, unchanged.
+   */
+  fun <T> fetchListFromApi(request: ApiRequest<T>, connection: ConnectionSnapshot? = null): List<T> {
     val all = mutableListOf<T>()
     var page = 1
     while (true) {
-      val response = sendPage(request, page)
+      val response = sendPage(request, page, connection = connection)
       val arrayType = TypeToken.getArray(request.elementType).type
       val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
       all.addAll(pageItems)

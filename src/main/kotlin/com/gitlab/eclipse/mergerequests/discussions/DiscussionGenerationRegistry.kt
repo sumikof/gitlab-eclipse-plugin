@@ -85,6 +85,19 @@ object DiscussionGenerationRegistry {
   }
 
   /**
+   * UI thread only (the sidebar's full refresh calls it where its own caches are cleared). Drops
+   * every recorded latest generation and NOTHING else: [counter] keeps its monotonic sequence
+   * (no generation number is ever reused), and [active]/[epoch] are untouched. A full refresh
+   * rebuilds the tree with new [com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode]s (new
+   * nodeIds), so the old keys could only accumulate — and any load still in flight for a
+   * detached pre-refresh node must not touch the rebuilt tree: with its entry cleared,
+   * [isLatest] fails and it reports Superseded, which is exactly right.
+   */
+  fun clearLatest() {
+    latest.clear()
+  }
+
+  /**
    * Clears [active] (and nothing else -- [epoch] is untouched). Must be called ON the UI thread:
    * the stop hook runs on an OSGi thread and therefore marshals this through `display.syncExec`
    * (`GitLabEclipseStartup.stop` -> `shutdownJobLog`). Flipping the flag on the UI thread is what

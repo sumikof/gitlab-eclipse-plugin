@@ -142,12 +142,23 @@ class DiscussionServicePagingTest : DescribeSpec({
       recorded[0].cursor shouldBe null
     }
 
-    it("stops without an infinite loop when hasNextPage is true but endCursor is null") {
-      stub(queryData(hasNextPage = true, endCursor = null))
+    it("returns fetched discussions as MISSING_CURSOR, one request, when hasNextPage=true with a null endCursor") {
+      stub(queryData(hasNextPage = true, endCursor = null, nodes = listOf(discussionDto("r1"))))
 
       val result = fetch()
 
-      result.truncation shouldBe null
+      result.truncation shouldBe TruncationReason.MISSING_CURSOR
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1")
+      verify(exactly = 1) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
+    }
+
+    it("returns fetched discussions as MISSING_CURSOR, one request, when hasNextPage=true with a blank endCursor") {
+      stub(queryData(hasNextPage = true, endCursor = "  ", nodes = listOf(discussionDto("r1"))))
+
+      val result = fetch()
+
+      result.truncation shouldBe TruncationReason.MISSING_CURSOR
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1")
       verify(exactly = 1) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
     }
 

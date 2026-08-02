@@ -52,9 +52,10 @@ class GitLabGraphQlClient(
    * A non-2xx status throws [GitLabApiException] before the body is parsed. A 2xx body with a
    * non-empty top-level `errors` array throws [GraphQlException] — even on 2xx, since GraphQL
    * reports query-syntax errors, schema mismatches, authorization failures, and resolver failures
-   * inside a 200 response. A body with no usable `data` (and no `errors`) is uninterpretable and
-   * throws [JsonSyntaxException]; a later PR treats that as *Ambiguous* (result unknown), which a
-   * forced [GraphQlException] would misrepresent.
+   * inside a 200 response. A body with no usable `data` (and no `errors`), or one whose `errors`
+   * member is present but not a JSON array, is uninterpretable and throws [JsonSyntaxException];
+   * a later PR treats that as *Ambiguous* (result unknown), which a forced [GraphQlException] —
+   * or, worse, a success — would misrepresent.
    *
    * [T] is the shape of the `data` payload, not the whole response envelope — callers declare a
    * DTO matching what their query selects under `data`.
@@ -89,14 +90,31 @@ class GitLabGraphQlClient(
     val root = parseRootObject(body)
     val hasDataKey = root.has("data")
 
-    val errors = root.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray
-    if (errors != null && !errors.isEmpty) {
-      throw GraphQlException(hasDataKey, extractErrorMessages(errors), correlationId)
-    }
+    throwIfErrorsMember(root, hasDataKey, correlationId)
 
     val dataElement = root.get("data")?.takeUnless { it.isJsonNull } ?: throw noDataException()
 
     return gson.fromJson(dataElement, type)
+  }
+
+  /**
+   * Keyed on the *presence* of `errors`, not on it being an array: a 2xx envelope carrying a
+   * non-array errors member (object, string, number, JSON null) is not a shape the GraphQL spec
+   * permits, and reading it as success would convert a failure into a success. It lands in the
+   * same [JsonSyntaxException] bucket as every other uninterpretable response (a later PR
+   * classifies that bucket as "result unknown" — the safe reading). A present but EMPTY array is
+   * still not a failure. Returns normally when there is no failure to report.
+   */
+  private fun throwIfErrorsMember(root: JsonObject, hasDataKey: Boolean, correlationId: String?) {
+    if (!root.has("errors")) return
+    val errorsElement = root.get("errors")
+    if (!errorsElement.isJsonArray) {
+      throw JsonSyntaxException("GraphQL response carried a non-array errors member")
+    }
+    val errors = errorsElement.asJsonArray
+    if (!errors.isEmpty) {
+      throw GraphQlException(hasDataKey, extractErrorMessages(errors), correlationId)
+    }
   }
 
   /**

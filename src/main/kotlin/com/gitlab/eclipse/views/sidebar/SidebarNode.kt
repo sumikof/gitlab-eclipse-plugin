@@ -216,6 +216,16 @@ class DiscussionsSectionNode(
   val mrSha: String?,
   val namespaceWithPath: String,
 ) : SidebarNode {
+  /**
+   * Unique per-instance identity, folded into [com.gitlab.eclipse.mergerequests.discussions.DiscussionKey]
+   * so two display nodes for the SAME merge request (it appears under both "Merge requests
+   * assigned to me" and "For current branch") never share a generation slot: without it, the
+   * second node's load supersedes the first's, which then — per the Superseded contract —
+   * touches nothing and strands the first node in LOADING forever. A re-load of the same node
+   * keeps superseding its own earlier load, because the id is stable for the node's lifetime.
+   */
+  val nodeId: Long = NODE_IDS.incrementAndGet()
+
   override val label: String = "Discussions"
 
   // Non-activatable: the node only expands; there is nothing to open in a browser for it.
@@ -246,6 +256,11 @@ class DiscussionsSectionNode(
 
   override val children: List<SidebarNode>
     get() = loadedChildren ?: loadingPlaceholder
+
+  companion object {
+    /** Monotonic [nodeId] source; atomic because nodes may be built off the UI thread. */
+    private val NODE_IDS = java.util.concurrent.atomic.AtomicLong()
+  }
 }
 
 /**

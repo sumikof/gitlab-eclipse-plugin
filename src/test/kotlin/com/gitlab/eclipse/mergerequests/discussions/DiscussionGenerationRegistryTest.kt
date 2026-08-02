@@ -9,8 +9,8 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
   beforeEach { DiscussionGenerationRegistry.resetForTest() }
   afterEach { DiscussionGenerationRegistry.resetForTest() }
 
-  val k1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L)
-  val k2 = DiscussionKey.of("https://a", "fp-1", 1L, 20L)
+  val k1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L, 100L)
+  val k2 = DiscussionKey.of("https://a", "fp-1", 1L, 20L, 200L)
 
   describe("nextGeneration") {
     it("assigns strictly increasing generations and records the last one as latest") {
@@ -122,10 +122,63 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
     }
   }
 
+  describe("clearLatest") {
+    it("makes a previously-latest generation no longer latest") {
+      val gen = DiscussionGenerationRegistry.nextGeneration(k1)
+      DiscussionGenerationRegistry.isLatest(k1, gen) shouldBe true
+
+      DiscussionGenerationRegistry.clearLatest()
+
+      DiscussionGenerationRegistry.isLatest(k1, gen) shouldBe false
+      DiscussionGenerationRegistry.shouldAct(k1, gen) shouldBe false
+    }
+
+    it("leaves active alone") {
+      DiscussionGenerationRegistry.nextGeneration(k1)
+
+      DiscussionGenerationRegistry.clearLatest()
+
+      DiscussionGenerationRegistry.active shouldBe true
+    }
+
+    it("leaves the counter alone: a post-clear generation exceeds every pre-clear one (no reuse)") {
+      val before = DiscussionGenerationRegistry.nextGeneration(k1)
+
+      DiscussionGenerationRegistry.clearLatest()
+      val after = DiscussionGenerationRegistry.nextGeneration(k1)
+
+      (after > before) shouldBe true
+      DiscussionGenerationRegistry.isLatest(k1, after) shouldBe true
+    }
+
+    it("leaves currentEpoch alone") {
+      val before = DiscussionGenerationRegistry.currentEpoch
+
+      DiscussionGenerationRegistry.clearLatest()
+
+      DiscussionGenerationRegistry.currentEpoch shouldBe before
+    }
+  }
+
+  describe("DiscussionKey nodeId (two display nodes for one merge request)") {
+    it("keys differing only in nodeId are distinct and track generations independently") {
+      val nodeA = DiscussionKey.of("https://a", "fp-1", 1L, 10L, 1L)
+      val nodeB = DiscussionKey.of("https://a", "fp-1", 1L, 10L, 2L)
+
+      (nodeA == nodeB) shouldBe false
+
+      val genA = DiscussionGenerationRegistry.nextGeneration(nodeA)
+      val genB = DiscussionGenerationRegistry.nextGeneration(nodeB)
+
+      DiscussionGenerationRegistry.isLatest(nodeA, genA) shouldBe true
+      DiscussionGenerationRegistry.isLatest(nodeB, genB) shouldBe true
+    }
+  }
+
   describe("DiscussionKey.of (account-switch protection)") {
     it("same instance URL with different authFingerprint produces different keys whose generations do not interfere") {
-      val accountA = DiscussionKey.of("https://a", "fp-A", 1L, 10L)
-      val accountB = DiscussionKey.of("https://a", "fp-B", 1L, 10L)
+      val accountA = DiscussionKey.of("https://a", "fp-A", 1L, 10L, 100L)
+      val accountB = DiscussionKey.of("https://a", "fp-B", 1L, 10L, 100L)
 
       (accountA == accountB) shouldBe false
 
@@ -139,8 +192,8 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
 
   describe("DiscussionKey.of (instance URL normalization)") {
     it("a trailing-slash spelling of the same instance URL normalizes to the same key as the bare form") {
-      val bare = DiscussionKey.of("https://gitlab.example.com", "fp-1", 1L, 10L)
-      val trailingSlash = DiscussionKey.of("https://gitlab.example.com/", "fp-1", 1L, 10L)
+      val bare = DiscussionKey.of("https://gitlab.example.com", "fp-1", 1L, 10L, 100L)
+      val trailingSlash = DiscussionKey.of("https://gitlab.example.com/", "fp-1", 1L, 10L, 100L)
 
       bare shouldBe trailingSlash
     }
@@ -148,15 +201,15 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
 
   describe("DiscussionKey.of (project / MR discrimination)") {
     it("different projectId values produce different keys") {
-      val p1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L)
-      val p2 = DiscussionKey.of("https://a", "fp-1", 2L, 10L)
+      val p1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L, 100L)
+      val p2 = DiscussionKey.of("https://a", "fp-1", 2L, 10L, 100L)
 
       (p1 == p2) shouldBe false
     }
 
     it("different mrIid values produce different keys") {
-      val m1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L)
-      val m2 = DiscussionKey.of("https://a", "fp-1", 1L, 20L)
+      val m1 = DiscussionKey.of("https://a", "fp-1", 1L, 10L, 100L)
+      val m2 = DiscussionKey.of("https://a", "fp-1", 1L, 20L, 100L)
 
       (m1 == m2) shouldBe false
     }

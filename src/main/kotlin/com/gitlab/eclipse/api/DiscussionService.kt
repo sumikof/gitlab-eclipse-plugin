@@ -38,8 +38,13 @@ internal data class ProjectDto(val id: String?, val mergeRequest: MergeRequestDt
  */
 internal data class DiscussionsQueryData(val project: ProjectDto?)
 
-/** Why a [DiscussionsReadResult] does not necessarily contain every discussion on the merge request. */
-enum class TruncationReason { PAGE_LIMIT, DEADLINE }
+/**
+ * Why a [DiscussionsReadResult] does not necessarily contain every discussion on the merge
+ * request. [MISSING_CURSOR] means a page said `hasNextPage = true` but supplied no `endCursor`
+ * to advance with: more pages exist, they just cannot be fetched — a truncation, never a
+ * complete fetch.
+ */
+enum class TruncationReason { PAGE_LIMIT, DEADLINE, MISSING_CURSOR }
 
 /**
  * Result of [DiscussionService.getDiscussions]. [discussions] holds everything fetched before
@@ -260,9 +265,14 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
       discussions += normalizePage(discussionConnection)
 
       val pageInfo = discussionConnection?.pageInfo
-      val endCursor = pageInfo?.endCursor
-      if (pageInfo?.hasNextPage != true || endCursor.isNullOrBlank()) {
+      if (pageInfo?.hasNextPage != true) {
         return buildResult(canCreateNote, discussions, null)
+      }
+      val endCursor = pageInfo.endCursor
+      if (endCursor.isNullOrBlank()) {
+        // The server explicitly said more pages exist but gave nothing to advance with:
+        // reporting completion here would silently present a partial list as the whole set.
+        return buildResult(canCreateNote, discussions, TruncationReason.MISSING_CURSOR)
       }
       if (page >= MAX_DISCUSSION_PAGES) {
         return buildResult(canCreateNote, discussions, TruncationReason.PAGE_LIMIT)
