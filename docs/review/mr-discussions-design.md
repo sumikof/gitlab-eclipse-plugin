@@ -39,7 +39,7 @@ Phase 1〜4 で以下の native 基盤が揃った。
 
 | # | 台帳の機能 | VSCode command | 本設計での実現 |
 |---|---|---|---|
-| F1 | コメント作成 | `gl.createComment` | スレッドへの返信 / MR 全体コメント / エディタ行からの新規 diff スレッド |
+| F1 | コメント作成 | `gl.createComment` | **🟡 一部**: スレッドへの返信 / MR 全体コメント。**エディタ行からの新規 diff スレッドは Phase 5A 対象外**（§21） |
 | F2 | スレッド解決・未解決 | `gl.resolveThread` / `gl.unresolveThread` | スレッドノードの右クリック → Resolve / Unresolve |
 | F3 | コメント削除 | `gl.deleteComment` | ノートノードの右クリック → Delete（確認ダイアログ付き） |
 | F4 | コメント編集（開始/送信/取消） | `gl.startEditingComment` 他 | ノートノードの右クリック → Edit…（本文を事前充填したダイアログ。送信 = OK、取消 = Cancel） |
@@ -47,10 +47,17 @@ Phase 1〜4 で以下の native 基盤が揃った。
 
 加えて、上記すべての前提となる**読み取り**（MR のディスカッション一覧の取得と表示）を実装する。読み取り自体は台帳に独立した行を持たないためパリティ計上はされないが、機能的には必須である。
 
+**Phase 5A のスコープ変更（Codex 設計レビュー round 6 後）。** 当初 PR-3 として計画していた「エディタ行からの新規 diff スレッド作成」は **Phase 5A の対象から外し、別サイクルで設計し直す**（§5.1 D-5、蓄積した設計事項は §21 に保全）。
+
+理由: 設計レビュー round 1〜6 で計 34 件の P1 指摘を反映したが、**直近 2 ラウンドの 9 件はすべてエディタ経路に起因**していた。エディタ経路だけがサイドバーノードを持たないため、他の全経路が前提とする入力（接続タグ・権限・再取得対象・position 値）をすべて別手段で調達する必要があり、そのたびに新たな不整合が露見した。安定している PR-1 / PR-2 を先行実装し、その知見（特に GraphQL の実接続で確認できるスキーマの実態）を得てから設計し直す方が確実である。
+
+**この結果、F1「コメント作成」は 🟡 一部となる。** 台帳 #7 の D13 は 4/5 + 一部 1 として計上する。
+
 ### 2.2 対象外
 
 | 項目 | 理由 |
 |---|---|
+| **エディタ行からの新規 diff スレッド作成（旧 PR-3）** | **Phase 5A 対象外。**設計レビューの指摘が集中したため別サイクルへ（§2.1 / §21） |
 | D9 セキュリティスキャン | 別サブシステム（§3.2）。別フェーズで扱う |
 | Issue のディスカッション | D13 は MR レビューのみを対象とする。VSCode には `getIssueDiscussionsQuery` も存在し、クエリ構造は共通なので後日追加可能 |
 | diff の old 側（削除行）へのコメント | §8.4 に記載。既知の制限として PR に明記する |
@@ -105,7 +112,7 @@ Eclipse の Compare フレームワーク（`org.eclipse.compare`）は diff エ
 | FR-1 | サイドバーの MR ノード配下でディスカッション一覧（スレッドとノート）を閲覧できる |
 | FR-2 | 既存スレッドに返信できる |
 | FR-3 | MR 全体に対して（行に紐づかない）コメントを作成できる |
-| FR-4 | MR ブランチをチェックアウトしている状態で、エディタのカーソル行に対して新規 diff スレッドを作成できる |
+| ~~FR-4~~ | ~~MR ブランチをチェックアウトしている状態で、エディタのカーソル行に対して新規 diff スレッドを作成できる~~ → **Phase 5A 対象外**（§21 に設計を保全） |
 | FR-5 | 解決可能なスレッドを解決 / 未解決にできる |
 | FR-6 | 自分が権限を持つノートを編集できる |
 | FR-7 | 自分が権限を持つノートを削除できる（確認を経る） |
@@ -137,9 +144,9 @@ Eclipse の Compare フレームワーク（`org.eclipse.compare`）は diff エ
 |---|---|---|
 | D-1 | Phase 5 を 5A（GraphQL + D13）と 5B（D9）に分割し、5A を先行する | §3.2 のとおり別サブシステムであり、GraphQL 層は 5A のゴールそのもの |
 | D-2 | UI サーフェスは**サイドバーツリーの拡張**とする | 新規依存ゼロ。Phase 3/4 で確立した実装・レビューパターンをそのまま適用でき、headless で検証できない未知数が最小 |
-| D-3 | コメント作成は「返信 + MR 全体 + エディタ行」の 3 入口とする | エディタ行方式は既存のリビジョン一致ゲートにより行ズレが原理的に発生しない（§8.3） |
+| D-3 | コメント作成は Phase 5A では「**返信 + MR 全体**」の 2 入口とする | エディタ行は当初 3 入口目として設計したが、設計レビューで指摘が集中したため別サイクルへ（§2.1 / §21） |
 | D-4 | GraphQL クライアントは**新規クラス** `GitLabGraphQlClient` とする | エラーモデルが REST と別物のため境界が自然。既存 `GitLabApiClient` を一行も変更せずに済み回帰リスクがない。同クラスは既に `@Suppress("TooManyFunctions")` を抱えており、これ以上増やさない |
-| D-5 | 実装は PR-1（読み取り基盤）/ PR-2（書き込み）/ PR-3（エディタ行）の 3 本に分割する | 各 PR が独立にレビュー・検証可能な単位になる |
+| D-5 | 実装は **PR-1（読み取り基盤）/ PR-2（書き込み）の 2 本**に分割する。エディタ行は別サイクル | 各 PR が独立にレビュー・検証可能な単位になる。エディタ行の除外理由は §2.1 |
 
 ### 5.2 制約
 
@@ -181,11 +188,11 @@ GitLabApiClient               │      POST <base>/api/graphql
                                        createNote                [PR-2]
                                        toggleResolve             [PR-2]
                                        updateNote / destroyNote   [PR-2]
-                                       createDiffNote            [PR-3]
+                                       (createDiffNote)          [対象外→§21]
                                               │
                         ┌─────────────────────┴─────────────────────┐
                         ▼                                           ▼
-             SidebarViewModel 拡張                        エディタ側ハンドラ  [PR-3]
+             SidebarViewModel 拡張                        (エディタ側ハンドラ)[対象外→§21]
              DiscussionsSectionNode                       CommentOnLineHandler
              ThreadNode / NoteNode        [PR-1]
                         │
@@ -269,21 +276,6 @@ class GitLabGraphQlClient(
 
 **知らないこと**: SWT、UI スレッド、ツリー構造。**このクラスは SWT-free であり、単体テスト可能である。**
 
-### 7.2.1 既存 REST サービスへの接続スナップショット受け渡し（PR-3 の前提）
-
-エディタ経路（§8.3）は「捕捉した 1 つの `ConnectionSnapshot` を識別子解決・in-flight キー・送信のすべてで使う」ことを要件とする（R-24）。しかし現状の既存 API はこれを満たせない。
-
-| 既存 API | 現状 | 必要な変更 |
-|---|---|---|
-| `GitLabApiClient.fetchListFromApi(request)` | `connection` 引数が無く、各要求で `captureConnection` を再実行する | `connection: ConnectionSnapshot? = null` を**追加**（既定 null で従来の挙動と完全に同一） |
-| `MergeRequestService.getLatestMrVersion(encodedProjectId, mrIid)` | 上記 `fetchListFromApi` と `fetchObject` を接続無しで呼ぶ | `connection: ConnectionSnapshot? = null` を追加し、内部の両呼び出しへ透過 |
-| `CurrentBranchMrLookup.lookup(context, branch)` | 接続引数が無く、内部の `ProjectDetailService` / `MergeRequestService` が各要求で再捕捉する | `connection: ConnectionSnapshot? = null` を追加し、内部サービスへ透過 |
-| `ProjectDetailService.getProject(encodedProjectId)` | `fetchObject` を接続無しで呼ぶ | 同上 |
-
-**これらを追加しないと R-24 の修正は実装できない。** 後段の `pinnedConnectionFor` が送信を止めても、識別子と position は既に別インスタンス／別アカウントから取得済みになりうるためである。
-
-すべて**引数の追加のみ**であり、既定値 `null` は現行の挙動（要求ごとに `captureConnection`）と完全に同一である。既存の呼び出し箇所は 1 箇所も変更しない。**この変更は §15.4 に明示する。**
-
 ### 7.3 `DiscussionGenerationRegistry`
 
 **責務**: 応答の UI 反映を最新世代に限定する。Phase 4 の `CiLintGenerationRegistry`（`src/main/kotlin/com/gitlab/eclipse/ci/lint/CiLintGenerationRegistry.kt`）の忠実なミラー。
@@ -304,8 +296,6 @@ class GitLabGraphQlClient(
 | `DiscussionsSectionNode` | **`sourceInstanceUrl` + `sourceAuthFingerprint`**、親 MR の識別子（projectId / mrIid / mrGid / mrSha / namespaceWithPath）、子スレッド、`loadState` |
 | `ThreadNode` | 上記の接続タグ + MR 識別子一式（複製）、`replyId`、`resolved`、`resolvable`、位置情報（path / line / positionType）、`userPermissions`、子ノート |
 | `NoteNode` | 上記の接続タグ + MR 識別子一式（複製）、ノート GID、`body`、著者 username、作成日時、`userPermissions`、親スレッドへの参照 |
-
-**サイドバービューは `resolveDiscussionsSection(instanceUrl, authFingerprint, projectId, mrIid): DiscussionsSectionNode?` を提供する**（§8.3.3）。エディタ経路（PR-3）はノードを持たずに書き込みを開始するため、終端処理での再取得対象をこの API で解決する。現在ツリーに存在しなければ `null` を返す。
 
 **接続タグは必須である。** `sourceInstanceUrl` と `sourceAuthFingerprint` は「そのノードが実際にどの接続で取得されたか」を表す非秘密のタグであり、後続の読み書きが同じインスタンス**かつ同じアカウント**に対してのみ行われることを保証する（§15.3）。これは既存の `PipelineNode` / `JobNode` が持つ `sourceInstanceUrl` / `sourceAuthFingerprint`（`src/main/kotlin/com/gitlab/eclipse/views/sidebar/SidebarViewModel.kt:102-114`）と同一の仕組みであり、本設計はその確立済みパターンに従う。
 
@@ -406,7 +396,7 @@ finish(result) = [UI スレッド（asyncExec）]
 
 ### 8.2 書き込み共通フロー（PR-2）
 
-**すべての書き込みがこの骨格に従う。**対象は返信・MR 全体コメント・解決切替・編集・削除に加え、**PR-3 の新規 diff スレッド作成（`createDiffNote`）も含む**（§8.3 はこの骨格の前段を差し替えたものであり、終端処理は本節を再利用する）。
+**Phase 5A のすべての書き込みがこの骨格に従う。**対象は返信・MR 全体コメント・解決切替・編集・削除。（対象外となったエディタ行コメントも、§21.2 でこの骨格の前段を差し替える形で設計してある。）
 
 ```
 [UI スレッド]
@@ -451,13 +441,13 @@ finish(result) = [UI スレッド（asyncExec）]
 | **ライフサイクルガード**（`active` / `epoch`） | プラグインが停止処理に入っていないか | **適用する。** 適用しないと、停止中にブロッキング HTTP が戻ったときに再取得やダイアログが起動し、§14.3 / R-8 の gate-first 不変条件を破る。コルーチンのキャンセルだけでは後続の非 suspend 処理を止められない |
 | **鮮度ガード**（`isLatest(key, gen)`） | この取得より新しい取得が出ていないか | **適用しない。** mutation の完了は取得結果ではない |
 
-**`startEpoch` は background 起動前の UI ターンで凍結する。** background 完了後に `registry.currentEpoch` を読んで比較しても常に一致してしまい、送信中の停止→再開を跨いだ古い mutation のダイアログや再取得が新しいライフサイクルで起動する。読み取り側（§8.1）と同じ扱いである。`gen` は mutation 側では取得しない（鮮度ガードを適用しないため）。**これは §8.3 の diff スレッド作成フローにも等しく適用される。**
+**`startEpoch` は background 起動前の UI ターンで凍結する。** background 完了後に `registry.currentEpoch` を読んで比較しても常に一致してしまい、送信中の停止→再開を跨いだ古い mutation のダイアログや再取得が新しいライフサイクルで起動する。読み取り側（§8.1）と同じ扱いである。`gen` は mutation 側では取得しない（鮮度ガードを適用しないため）。
 
 **書き込みの結果は 4 つであり、例外なくこの終端処理に合流する。** `Success` / `Definite` / `Ambiguous` / `GateRejected` のいずれも、ライフサイクルガードを通したうえで UI 処理を行う。
 
 **送信直前の検証。** `pinnedConnectionFor` を通した直後、mutation を発行する前に、`registry.active` / `registry.epoch == startEpoch` / コルーチンの `isActive()` を再検査し、いずれかが崩れていれば **mutation を発行しない**。
 
-理由: 識別子解決や `pinnedConnectionFor` の前後にはブロッキングな REST 呼び出しがありうる（特に §8.3 の G6 / G9）。その間に bundle が停止して再開すると、コルーチンのキャンセルだけでは戻った後の非 suspend 処理は止まらず、**接続が同じであれば `pinnedConnectionFor` も通ってしまう**。その結果、旧ライフサイクルの操作が新しいライフサイクルで送信され、投稿は成立するのに完了 UI は epoch ガードで破棄されるため、成功時の再取得も失敗時の本文保持も行われない。送信前に検証すれば、投稿自体が起きないので不整合が生じない。
+理由: `pinnedConnectionFor` の前後にはブロッキングな I/O がありうる（Phase 5A では接続捕捉、§21.2 のエディタ経路では加えて G6 / G9 の REST 呼び出し）。その間に bundle が停止して再開すると、コルーチンのキャンセルだけでは戻った後の非 suspend 処理は止まらず、**接続が同じであれば `pinnedConnectionFor` も通ってしまう**。その結果、旧ライフサイクルの操作が新しいライフサイクルで送信され、投稿は成立するのに完了 UI は epoch ガードで破棄されるため、成功時の再取得も失敗時の本文保持も行われない。送信前に検証すれば、投稿自体が起きないので不整合が生じない。
 
 `epoch` を background から読むために `DiscussionGenerationRegistry.epoch` を `@Volatile` とする（書き込みは UI スレッドのみ。§7.3）。
 
@@ -471,189 +461,6 @@ finish(result) = [UI スレッド（asyncExec）]
 **in-flight ガードの解放は background の `finally` で行う**（UI スレッドのブロックではない）。ライフサイクルガードで UI 処理が破棄された場合でも、`asyncExec` がそもそも実行されない場合でも、キーが確実に解放される。既存 CI ハンドラも同じ形である（`InFlightWriteGuard` の KDoc: 「releases it in the coroutine's `finally` so success, failure, and cancellation all free the target」）。
 
 **同一インスタンス/同一アカウントのゲートは HTTP 送信より前に評価する。** Phase 4 の `runCiLint` で確立した不変条件（「ゲート不成立時は API 呼び出し回数 0」をテストで実証する）を踏襲する。
-
-### 8.3 エディタ行からの新規 diff スレッド（PR-3）
-
-**本フローは §8.2 の書き込み骨格の「前段」を差し替えたものである。**識別子の解決手順とゲートだけが固有であり、**送信以降（結果の 4 分類・ライフサイクルガード・終端処理・in-flight ガードの解放）は §8.2 をそのまま再利用する。**独自の終端処理を定義しない。
-
-```
-[UI スレッド：ターン 1 — 内容のスナップショット]
-  G1: アクティブエディタが ITextEditor か
-  G2: エディタ入力が IFileEditorInput か（ワークスペース上のファイルか）
-  G3: エディタが dirty でないか（editor.isDirty() == false）
-      → dirty なら拒否（早期・親切な拒否。最終的な保証は G8 が与える）
-  ★ SNAPSHOT: (oneBasedLine, documentText, filePath) を同一ターン内で取得 ★
-     documentText = documentProvider.getDocument(input).get()
-     oneBasedLine = selection.startLine + 1   ← ★ 0 始まり → 1 始まりへ変換（§8.3.1）★
-  ダイアログで本文を受け取る（modal・nested event loop）→ Cancel なら終了
-
-[UI スレッド：ターン 2 — ダイアログ終了後、background 起動の直前]
-  ★ startEpoch = registry.currentEpoch を **ここで** 凍結する ★
-     （§8.2 と同じ位置。理由は下記「2 つの捕捉時点」）
-    → background へ（以降、エディタの状態には二度と触れない）
-
-[background：識別子の解決とゲート（このフロー固有の前段）]
-  ★ すべてを try で囲む。以下の例外も終端処理へ合流させる ★
-  conn = try { apiClient.captureConnection() }
-         catch (UnstableConnectionException) { → GateRejected として終端へ }
-     ← G5 より前に 1 回だけ捕捉。try の外に置かない（設定保存中に例外が
-       coroutine を抜けると通知も本文保持も行われず FR-8 違反になる）
-     以降の識別子解決・in-flight キー・送信のすべてがこの conn を**引数で**渡して使う
-     （§7.2.1 の接続受け渡し契約。渡せなければ各サービスが接続を再捕捉してしまう）
-  G5: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
-      （RepositoryContextResolver。0 件・複数件は拒否）
-  G6: そのリポジトリの現ブランチに対応する MR が特定できるか
-      （CurrentBranchMrLookup.lookup(context, branch, conn)。§7.2.1）
-      → MR GID / iid / projectId / mr.sha / namespaceWithPath が確定
-  G6b: 作成権限があるか（§8.3.4）
-      GetMrPermissions クエリ（§10.3）を conn 上で実行し
-      userPermissions.createNote が false なら Definite 相当として拒否
-  G7: リポジトリの HEAD sha == その MR の diff head sha か
-      （OpenMrFileHandler と同一のゲート）
-  G8: ★ snapshot.documentText == HEAD blob の内容（対象パス）★
-      JGit で HEAD ツリーから当該パスの blob を読み、捕捉した本文と厳密比較
-      → 不一致なら拒否
-  G9: ★ 最新 diff version を取得し、position を凍結する ★
-      version = MergeRequestService.getLatestMrVersion(projectId, mrIid, conn)（§7.2.1）
-        → null なら拒否
-      version.headCommitSha == G7 で確認した head sha か → 不一致なら拒否
-        （G7 の判定後に新しい version が push された場合を弾く）
-      version.diffs から対象パスのエントリを探す → 無ければ拒否
-      ★ POSITION 凍結: baseSha / headSha / startSha / newPath / oldPath ★
-  ★ in-flight ガード取得（§14.4 / §8.3.2）★
-     キー = DiscussionWriteKey(normalizeInstanceUrl(conn.instanceUrl),
-                               conn.authFingerprint,
-                               "mergeRequestLine",
-                               "{MR GID}#{newPath}:{oneBasedLine}")
-     ← conn（捕捉済み）と G6・G9（解決済み）が揃って初めて構築できる
-     → 取得できなければ「already in progress」を UI へ marshal して終了
-  ★ 再取得対象は「識別子」だけを持ち回る（§8.3.3）★
-     targetRef = (normalizeInstanceUrl(conn.instanceUrl), conn.authFingerprint,
-                  projectId, mrIid)
-     ← ★ここでノード実体を解決しない★（解決は終端の UI ターンで行う）
-  try {
-    pinned = pinnedConnectionFor(apiClient, conn.instanceUrl, conn.authFingerprint)（§15.3）
-      → null なら GateRejected として終端へ
-        （= 識別子解決中に URL / アカウントが変わった。送信しない）
-    ★ 送信直前のライフサイクル検証（§8.2）★ → 崩れていれば Aborted（送信しない）
-    createDiffNote 送信（position = G9 の凍結値、newLine = snapshot.oneBasedLine）
-    3 層のエラー検査（§11.1）→ Success / Definite / Ambiguous（§12.2）
-  } finally {
-    in-flight ガード解放
-  }
-[UI スレッド] ★ §8.2 の終端処理をそのまま使う ★
-  ライフサイクルガード（active / epoch != startEpoch）→ 破棄
-  ★ ここで初めて target = sidebar.resolveDiscussionsSection(targetRef) を解決 ★
-  Success / Definite / Ambiguous / GateRejected / Aborted の分岐（§8.2 + §8.3.3）
-```
-
-**2 つの捕捉時点を区別する。** 内容のスナップショット（ターン 1）と `startEpoch`（ターン 2）は、目的が異なるため捕捉時点も異なる。
-
-| 捕捉 | 時点 | 理由 |
-|---|---|---|
-| `(oneBasedLine, documentText)` | **ダイアログを開く前**（ターン 1） | ユーザーが「その行を見て」コマンドを起動した瞬間の内容を凍結するため。以降のエディタ操作から独立させる |
-| `startEpoch` | **ダイアログを閉じた後**（ターン 2） | ダイアログは modal で nested event loop を回すため、その間に bundle が停止→再開しうる。ターン 1 で凍結すると旧 epoch のまま新しいライフサイクルで mutation が始まり、送信はされるのに完了 UI が epoch ガードで破棄され、成功時の再取得も失敗時の本文保持も行われない |
-
-**接続はターン 2 の直後、G5 より前に 1 回だけ捕捉し、以降すべてに同じスナップショットを使う。** エディタ経路にはサイドバーノードのような接続タグが存在しないため、「どの接続を基準にするか」を最初に確定させる必要がある。捕捉が遅いと、識別子解決（G6 / G9 は API を呼ぶ）と in-flight キーと送信先が別々の接続になりうる。送信の直前に `pinnedConnectionFor(conn.instanceUrl, conn.authFingerprint)` を通すことで、識別子解決中に接続が変わっていないことを確認する。
-
-**`DiffPositionInput` の全値は G9 で凍結する。** G7 までに確定するのは MR GID・`newPath` 候補・`oneBasedLine`・MR の head SHA だけであり、`baseSha` / `startSha` / `oldPath` は MR の diff version からしか得られない。エディタ経路には `ChangedFileNode` のようにこれらを保持するノードが無いため、G9 で `MergeRequestService.getLatestMrVersion`（`src/main/kotlin/com/gitlab/eclipse/api/MergeRequestService.kt:56-68`）を呼んで取得する。取得した version の `headCommitSha` が G7 で確認した head sha と一致することを確認したうえで、position の 5 値をまとめて凍結する。一致確認は、G7 の判定後に新しい version が push された場合に古い行番号で送るのを防ぐ。
-
-### 8.3.3 再取得対象ノードの解決
-
-§8.2 の終端処理は `Success` 時と `Ambiguous` 時に `loadDiscussions(node, force = true)` を呼ぶ。しかし**エディタ経路は `DiscussionsSectionNode` を持たない。**サイドバーに当該 MR が表示されていない、または別の MR を表示している場合、対象ノードが存在しない。
-
-サイドバービューに解決 API を設ける。
-
-```kotlin
-fun resolveDiscussionsSection(
-  instanceUrl: String, authFingerprint: String, projectId: Long, mrIid: Long,
-): DiscussionsSectionNode?   // 現在ツリーに存在しなければ null
-```
-
-**解決は「送信前の background」ではなく「終端の UI ターン」で行う。** background で解決したノード実体を持ち回ると、G9 から mutation 完了までの間にサイドバー全体の更新や表示モード変更が起きた場合、**現在のツリーから切り離された旧ノード**を掴んだままになる。その状態では、`Success` の強制再取得が誰にも見えない旧ノードを更新し、`Ambiguous` ではユーザーに結果が見えないまま `Applied` が返って `[Send again]` を許してしまう。
-
-したがって background が持ち回るのは**識別子だけ**である。
-
-```kotlin
-data class DiscussionsTargetRef(
-  val instanceUrl: String,      // normalizeInstanceUrl 済み
-  val authFingerprint: String,
-  val projectId: Long,
-  val mrIid: Long,
-)
-```
-
-終端の UI ターンで、ライフサイクルガードを通過した**直後**に `resolveDiscussionsSection(targetRef)` を呼ぶ。サイドバーの状態は UI スレッド専有なので、この解決と直後の利用は同一 UI ターン内で完結し、間に更新が割り込む窓が無い。
-
-`target == null` の場合の終端処理:
-
-| 結果 | `target != null` | `target == null` |
-|---|---|---|
-| `Success` | `loadDiscussions(target, force = true)` | **成功通知のみ**（`Comment added.`）。表示すべきツリーが無いので再取得しない |
-| `Ambiguous` | §9.3（`Applied` でのみ `[Send again]`） | **最新状態を見せられない**ため §9.3 の「再読み込みが成立しなかった場合」と同じ扱い。`[Copy text]` / `[Cancel]` のみ。GitLab で確認するよう案内する |
-| `Definite` / `GateRejected` | §8.2 のとおり | 同じ（ノートに依存しない） |
-
-`target == null` で `Ambiguous` のときに `[Send again]` を出さないのは、§9.3 の原則（**ユーザーが最新状態を確認してからでなければ再送を許さない**）をそのまま適用した結果である。
-
-### 8.3.4 エディタ経路の権限確認（FR-9 の限界）
-
-§15.2 は「権限のない操作はメニューに出さない」（FR-9）を、ノードが保持する `userPermissions` を入力として実現する。**エディタ経路にはノードが無く、G6 で得る REST の `GitLabMergeRequest` にも権限フィールドが無い。**したがってエディタのコンテキストメニュー項目を、同期的に権限でフィルタすることはできない。
-
-本設計は次を確定する。
-
-1. **FR-9 のエディタ経路に対する明示的な例外**: 「GitLab > Comment on this line…」のメニュー項目は、権限の有無にかかわらず常に表示する。メニューは同期的に構築されるため、ネットワーク往復を要する権限判定を挟めない。
-2. **代わりに G6b で権限を確認する**: 識別子解決の一環として `GetMrPermissions` クエリ（§10.3）を実行し、`userPermissions.createNote` が false なら**送信せずに拒否**する。分類は Definite（サーバは要求を受け取っていないが、拒否が確定しており副作用が無いため再送しても安全）。
-3. **本文は失われない**: Definite 扱いなので §9.2 のダイアログで本文が保持される。ただし権限が無い以上 `[Retry]` は無意味なので、この拒否に限り `[Copy text]` / `[Cancel]` を出す。
-
-拒否文言: `You do not have permission to comment on this merge request.`
-
-VSCode も同じクエリで同じ判定を行っている（`canUserCommentOnMr`、`gitlab_service.ts:464-478`）。VSCode は Comments API の `commentingRangeProvider` でこの結果を使って UI を抑止できるが、Eclipse のコンテキストメニューには相当する非同期フィルタが無いため、本設計は「起動後に拒否する」形になる。**この差分は既知の制限として PR に明記する。**
-
-### 8.3.2 in-flight ガードの取得スレッド（本フローのみの例外）
-
-§14.4 は「取得は UI スレッドで background 起動の前」を原則とするが、**本フローだけはこれを満たせない。**キーに必要な MR GID は G6 で、`newPath` は G9 で初めて確定するためである。UI ターンの時点ではキーを構築できない。
-
-したがって本フローでは **background 上で、識別子解決の直後・送信の直前に取得する。**
-
-これが安全である根拠: `InFlightWriteGuard` は `ConcurrentHashMap.newKeySet<Any>()` を用い、`tryAcquire` は `Set.add` の戻り値である（`src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt:21-25`）。**取得はアトミックであり、任意のスレッドから安全に呼べる。**既存 KDoc の「UI スレッドで取得する」は、ユーザーへ即座にフィードバックを返すための慣行であって技術的な制約ではない。
-
-代償: 素早く 2 回起動した場合、両方が JGit 検査まで進んでから片方だけがガードを取得する。**無駄な検査は発生するが、`createDiffNote` が二重に送られることはない**（重複コメントの防止という目的は達成される）。UI ターンへ一度戻ってから取得し直す設計も可能だが、往復が増えるわりに防げるのは無駄な JGit 検査だけなので採らない。
-
-「already in progress」の通知は UI スレッドへ marshal する。
-
-**行の一致は「捕捉した本文が HEAD blob と一致すること」で保証する。** `dirty か` と `作業ツリーが変更されているか` という 2 つの間接指標を別々の時点で評価するのではなく、**行番号と一緒に捕捉した本文そのもの**を HEAD blob と直接比較する。
-
-この形にする理由は、間接指標では TOCTOU が閉じないためである。
-
-- G3（dirty 判定）は UI ターンで、作業ツリーの検査は background で評価される。その間にユーザーは編集を続けられる。
-- ディスク上のファイルは HEAD のままでも、エディタのバッファがカーソル行より前に行を追加していれば、捕捉した行番号は「ユーザーが見ていた内容」と対応しなくなる。
-- 逆に、捕捉時点では作業ツリーが変更されていて、background の検査時点までに revert されていた場合、作業ツリー検査は通ってしまう。
-
-**本文そのものを比較すれば、これらはすべて 1 つの判定に畳まれる。** `snapshot.documentText == HEAD blob` が成立するとき、捕捉した行番号は HEAD blob の同じ行を指し、HEAD blob = MR head 版（G7 による）なので、**`newLine = snapshot.oneBasedLine`** が確定する。比較対象は UI ターンで凍結された値であり、その後のエディタ操作に影響されない。
-
-G3 を残すのは、よくある失敗（保存し忘れ）を background に降りる前に安価かつ分かりやすく弾くためであり、正しさの根拠は G8 が単独で与える。
-
-拒否時のメッセージ:
-
-| ゲート | メッセージ |
-|---|---|
-| G3 | `Save the file before commenting on a line.` |
-| G7 | 既存 `OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE`（`src/main/kotlin/com/gitlab/eclipse/mergerequests/OpenMrFileHandler.kt:133-134`）と同一文言 |
-| G8 | `This file does not match the merge request revision; its line numbers would not line up.` |
-
-G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。**検査は対象パスの blob 1 本に限定**する。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
-
-比較は改行コードを正規化せずバイト列として厳密に行う。正規化すると、行区切りの違いで行数がずれる場合を見逃す。
-
-### 8.3.1 行番号の基数（0 始まり → 1 始まり）
-
-**Eclipse の `ITextSelection.getStartLine()` は 0 始まり、GraphQL の `newLine` は 1 始まりである。** 変換を落とすとすべての diff コメントが 1 行上に付く。
-
-**変換はスナップショット時に行い、`oneBasedLine` は最初から 1 始まりの値として保持する**（送信時に変換しない）。理由: 送信時変換にすると、値が 0 始まりのまま複数の関数を通過し、どこで変換済みかが呼び出し側から見て分からなくなる。スナップショットの時点で基数を確定させれば、以降のすべてのコードが 1 始まりとして一貫して扱える。
-
-既存コードも同じ前提に立っている。`GitLabProjectUrlResolver.anchor`（`src/main/kotlin/com/gitlab/eclipse/navigation/GitLabProjectUrlResolver.kt:153-156`）は 0 始まりの `startLine` を受け取り、URL を組み立てる時点で `"#L${startLine + 1}"` としている。本設計はこの既存パターンとは逆に「早期に変換する」方針を採る。両者が混在すると取り違えの温床になるため、**変換済みの値は `oneBasedLine` と命名し、基数を名前に含める**ことを実装時の要件とする（`cursorLine` のような基数の曖昧な名前を使わない）。
-
-**受け入れテストに先頭行（ファイルの 1 行目）を含める。** 0 始まり/1 始まりの取り違えは先頭行で最も検出しやすく（`0` と `1` の差が境界として現れる）、中間行だけのテストでは両方の実装が通ってしまう場合がある。
 
 ### 8.4 old 側（削除行）の扱い
 
@@ -832,7 +639,7 @@ query GetMrDiscussions($namespaceWithPath: ID!, $iid: String!, $afterCursor: Str
 | 解決切替 | `mutation DiscussionToggleResolve($replyId: DiscussionID!, $resolved: Boolean!) { discussionToggleResolve(input: { id: $replyId, resolve: $resolved }) { errors } }` | `gitlab_service.ts:128-134` |
 | 削除 | `mutation DeleteNote($noteId: NoteID!) { destroyNote(input: { id: $noteId }) { errors } }` | `gitlab_service.ts:137-143` |
 | 編集 | `mutation UpdateNoteBody($noteId: NoteID!, $body: String) { updateNote(input: { id: $noteId, body: $body }) { errors } }` | `gitlab_service.ts:146-152` |
-| **作成権限の確認**（§8.3.4） | `query GetMrPermissions($namespaceWithPath: ID!, $iid: String!) { project(fullPath: $namespaceWithPath) { mergeRequest(iid: $iid) { userPermissions { createNote } } } }` | `graphql/mr_permission.ts:3-14` |
+| 作成権限の確認（**§21.4**。Phase 5A 対象外） | `query GetMrPermissions($namespaceWithPath: ID!, $iid: String!) { project(fullPath: $namespaceWithPath) { mergeRequest(iid: $iid) { userPermissions { createNote } } } }` | `graphql/mr_permission.ts:3-14` |
 
 `replyId` は「返信先スレッドの `discussion.replyId`」であり、null なら新規の（行に紐づかない）スレッドになる。
 
@@ -864,7 +671,7 @@ query GetMrDiscussions($namespaceWithPath: ID!, $iid: String!, $afterCursor: Str
 
 `oldLine` は本設計では送らない（§8.4）。
 
-**3 つの sha は Eclipse 側に既に存在する。** `GitLabMrVersion`（`src/main/kotlin/com/gitlab/eclipse/api/model/GitLabMrVersion.kt:12-14`）が `headCommitSha` / `baseCommitSha` / `startCommitSha` を保持しており、Phase 3 の `MergeRequestService`（`src/main/kotlin/com/gitlab/eclipse/api/MergeRequestService.kt:59-65`）が既に取得している。ただし現在 `ChangedFileNode` は `diffHeadSha` のみを保持しているため（`SidebarNode.kt:123-131`）、base / start を PR-3 でノードまで引き回す必要がある。
+**3 つの sha は Eclipse 側に既に存在する。** `GitLabMrVersion`（`src/main/kotlin/com/gitlab/eclipse/api/model/GitLabMrVersion.kt:12-14`）が `headCommitSha` / `baseCommitSha` / `startCommitSha` を保持しており、Phase 3 の `MergeRequestService`（`src/main/kotlin/com/gitlab/eclipse/api/MergeRequestService.kt:59-65`）が既に取得している。**§10.5 全体が旧 PR-3 の前提であり、Phase 5A では使用しない**（§21 参照）。
 
 ---
 
@@ -992,7 +799,7 @@ L3 が Definite でよいのは、mutation の `errors` フィールドは「実
 
 | 操作 | 冪等か | 対策 |
 |---|---|---|
-| `createNote` / `createDiffNote` | **冪等でない**（二重送信で重複コメント） | in-flight ガード + 自動リトライ禁止 + **Ambiguous 時の再送抑止（§9.3）** |
+| `createNote`（`createDiffNote` は対象外） | **冪等でない**（二重送信で重複コメント） | in-flight ガード + 自動リトライ禁止 + **Ambiguous 時の再送抑止（§9.3）** |
 | `discussionToggleResolve` | 冪等（`resolved` は目標状態を渡す。トグルではない） | Ambiguous でも再送は安全。ただし現状を見せる方が親切なため §9.3 に合わせる |
 | `updateNote` | 冪等（同じ body を 2 回送っても結果同一） | §13 の上書き防止が別途必要 |
 | `destroyNote` | 2 回目は L3 エラー | エラーを通知して終わり（既に消えているため実害なし） |
@@ -1089,16 +896,16 @@ data class DiscussionWriteKey(
 | スレッドへの返信 / 解決切替 | `"discussion"` | `discussion.replyId` |
 | ノートの編集 / 削除 | `"note"` | note GID |
 | **MR 全体コメント作成** | `"mergeRequest"` | **MR GID**（`gid://gitlab/MergeRequest/{id}`） |
-| **新規 diff スレッド作成** | `"mergeRequestLine"` | **`"{MR GID}#{newPath}:{oneBasedLine}"`** |
+| ~~新規 diff スレッド作成~~ | ~~`"mergeRequestLine"`~~ | Phase 5A 対象外（§21.5 に保全） |
 
 - MR 全体コメントは MR GID 単位で直列化する。同一 MR への全体コメントを同時に 2 本投げる状況は UI 上ほぼ発生せず（ダイアログは 1 つずつ）、二重送信の抑止が目的として適切である。
-- 新規 diff スレッドは行単位で直列化する。MR GID 単位にすると別の行へのコメントまでブロックしてしまうため、`path:line` まで含めて粒度を細かくする。ダブルクリック抑止という目的はこの粒度でも達成される。
+- （新規 diff スレッドの行単位キーは Phase 5A 対象外。設計は §21.5 に保全）
 
 `InFlightWriteGuard.tryAcquire` は `Any` を受けるため（既存 `WriteKey` と `CreateWriteKey` が別 data class として共存しているのと同じ理屈で）、新しい data class を追加するだけで既存キーと衝突せずに共存できる。
 
 取得は UI スレッドで background 起動の**前**に行い、解放は background の `finally` で行う（§8.2）。これも既存ハンドラと同じ形である。
 
-**例外**: 新規 diff スレッド作成（§8.3）だけは、キーに必要な MR GID と `newPath` が background の識別子解決を経て初めて確定するため、UI ターンでは取得できない。このフローに限り background 上（識別子解決の直後・送信の直前）で取得する。`InFlightWriteGuard` は `ConcurrentHashMap.newKeySet` 上の `add` であり取得はアトミックなので、任意のスレッドから安全に呼べる（`src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt:21-24`）。詳細と代償は §8.3.2 に記す。
+**Phase 5A の全書き込みは UI スレッドで取得できる。**（旧 PR-3 のエディタ経路のみが例外を必要としたが、対象外となった。§21.5 に保全）
 
 ---
 
@@ -1140,8 +947,8 @@ val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sou
 
 | 対象 | 影響 |
 |---|---|
-| `GitLabApiClient` | **引数の追加のみ**（§7.2.1）。`fetchListFromApi` に `connection: ConnectionSnapshot? = null` を追加する。既定値は現行の挙動と完全に同一で、既存の呼び出し箇所は 1 箇所も変更しない。ロジックの変更は無い |
-| `MergeRequestService` / `CurrentBranchMrLookup` / `ProjectDetailService` | **引数の追加のみ**（§7.2.1）。`connection: ConnectionSnapshot? = null` を追加し内部へ透過。既定値で従来動作 |
+| `GitLabApiClient` | **変更しない**（`captureConnection` を呼ぶだけ）。※ §21.1 の引数追加は PR-3 の前提であり、Phase 5A では不要になった |
+| `MergeRequestService` / `CurrentBranchMrLookup` / `ProjectDetailService` | **変更しない**（同上） |
 | `GitLabHttpClient` | **変更しない** |
 | `SidebarNode.kt` | ノード型を追加（既存型は変更しない） |
 | `SidebarViewModel` / `SidebarContentProvider` / `SidebarLabelProvider` | 新ノード型の分岐を追加。既存分岐は変更しない |
@@ -1159,11 +966,10 @@ val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sou
 
 PR 単位で revert 可能である。
 
-- PR-3 を revert → エディタからの新規 diff スレッドのみ消える。PR-1/PR-2 は動作を続ける。
 - PR-2 を revert → 書き込みが消え、読み取りのみ残る。
 - PR-1 を revert → Discussions 節ごと消える。GraphQL クライアントも消えるが、他機能は GraphQL を使っていないため影響がない。
 
-各 PR は前の PR にのみ依存し、後の PR には依存しない。
+PR-2 は PR-1 にのみ依存する。
 
 ---
 
@@ -1179,7 +985,10 @@ PR 単位で revert 可能である。
 - **内側（notes）はページングしない**（§8.5）。参照実装にノートページング用のクエリが存在せず、実ソースで確定できないため。打ち切りは可視化する。
 - **接続ゲートはインスタンス + アカウント（authFingerprint）の両方**（§15.3）。既存 `pinnedConnectionFor` を再利用する。
 - **世代ガードは取得結果の反映にのみ適用し、mutation の完了処理には適用しない**（§8.2）。
-- **エディタ行コメントは G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲート**が揃って初めて行一致が保証される（§8.3）。
+
+> **以下、§21（旧 PR-3）に関する確定事項。** Phase 5A の実装対象ではないが、別サイクルで再導出しないよう残す。本文の要件・受け入れ条件には含まれない。
+
+- **エディタ行コメントは G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲート**が揃って初めて行一致が保証される（§21.2）。
 - **失敗は Definite / Ambiguous に分類し、Ambiguous では単純再送しない**（§9.3 / §12.2）。
 
 round 2 の指摘を受けて追加で確定した事項:
@@ -1189,7 +998,7 @@ round 2 の指摘を受けて追加で確定した事項:
 - **in-flight ガードの解放は background の `finally`** で行う（§8.2 / §14.4）。
 - **in-flight キーに操作種別を含めない。** `DiscussionWriteKey(instanceUrl, authFingerprint, targetKind, targetId)`（§14.4）。
 - **`loadDiscussions` は `LoadOutcome` の完了契約を持つ。** `Applied` でのみ `[Send again]` を出す（§8.1 / §9.3）。
-- **行一致は「捕捉した本文 == HEAD blob」で直接検証する。** dirty 判定と作業ツリー検査の組み合わせでは TOCTOU が閉じない（§8.3）。
+- **行一致は「捕捉した本文 == HEAD blob」で直接検証する。** dirty 判定と作業ツリー検査の組み合わせでは TOCTOU が閉じない（§21.2）。
 - **`GitLabGraphQlClient.execute` は `timeout: Duration` を受け取る**（§7.1 / §12.1）。
 - **残時間由来の timeout でリクエストが失敗した場合も部分結果として扱う**（§12.1）。
 
@@ -1198,7 +1007,7 @@ round 3 の指摘を受けて追加で確定した事項:
 - **`LoadOutcome` の契約はライフサイクル終了を明示的な例外とする。** それ以外では必ず 1 回呼ばれ、すべての早期終了が対応する outcome に合流する（§8.1）。
 - **世代キーは §7.3 と §8.1 で同一**（`normalizeInstanceUrl` + `authFingerprint` + `projectId` + `mrIid`）。
 - **`startEpoch` は mutation 側でも background 起動前の UI ターンで凍結する**（§8.2）。
-- **行番号はスナップショット時に `selection.startLine + 1` で 1 始まりへ変換する**（§8.3.1）。
+- **行番号はスナップショット時に `selection.startLine + 1` で 1 始まりへ変換する**（§21.6）。
 - **作成操作の in-flight キーは送信前に確定している識別子を使う**（MR GID / `{MR GID}#{newPath}:{line}`）（§14.4）。
 
 round 4 の指摘を受けて追加で確定した事項:
@@ -1206,23 +1015,23 @@ round 4 の指摘を受けて追加で確定した事項:
 - **鮮度ガードは結果の種類より先に、すべての終端結果（成功・失敗・ゲート拒否）に対して一度だけ評価する**（§8.1）。
 - **終端処理は必ず `Loading…` 表示を解消する。** 接続ゲート拒否も UI 上は失敗ノードへ置換する（§8.1）。
 - **書き込みの結果は 4 つ**（`Success` / `Definite` / `Ambiguous` / **`GateRejected`**）であり、例外なく §8.2 の終端処理に合流する。
-- **§8.3 は §8.2 の前段差し替えであり、終端処理を独自に定義しない**（`startEpoch` 凍結・4 結果分岐・ライフサイクルガードを共有）。
-- **新規 diff スレッドの in-flight ガードのみ background 上で取得する**（キーが識別子解決後にしか作れないため）。`tryAcquire` はアトミックで任意スレッドから安全（§8.3.2）。
+- **§21.2 は §8.2 の前段差し替えであり、終端処理を独自に定義しない**（`startEpoch` 凍結・4 結果分岐・ライフサイクルガードを共有）。
+- **新規 diff スレッドの in-flight ガードのみ background 上で取得する**（キーが識別子解決後にしか作れないため）。`tryAcquire` はアトミックで任意スレッドから安全（§21.5）。
 
 round 5 の指摘を受けて追加で確定した事項:
 
-- **§8.3 は UI ターンを 2 つに分ける。** 内容スナップショットはダイアログ前、`startEpoch` はダイアログ後（modal の nested event loop 中の停止→再開を検出するため）。
-- **§8.3 は G5 より前に接続を 1 回捕捉し、識別子解決・in-flight キー・送信のすべてに同じスナップショットを使う。** 送信直前に `pinnedConnectionFor` で変化がないことを確認する。
+- **§21.2 は UI ターンを 2 つに分ける。** 内容スナップショットはダイアログ前、`startEpoch` はダイアログ後（modal の nested event loop 中の停止→再開を検出するため）。
+- **§21.2 は G5 より前に接続を 1 回捕捉し、識別子解決・in-flight キー・送信のすべてに同じスナップショットを使う。** 送信直前に `pinnedConnectionFor` で変化がないことを確認する。
 - **`DiffPositionInput` の 5 値（baseSha / headSha / startSha / newPath / oldPath）は G9 で `getLatestMrVersion` から凍結する。** version の `headCommitSha` が G7 の head sha と一致することを確認する。
-- **再取得対象ノードは `resolveDiscussionsSection` で解決し、`null` の場合の終端処理を定義する**（§8.3.3）。
+- **再取得対象ノードは `resolveDiscussionsSection` で解決し、`null` の場合の終端処理を定義する**（§21.3）。
 
 round 6 の指摘を受けて追加で確定した事項:
 
-- **既存 REST サービス 4 つに `connection: ConnectionSnapshot? = null` を追加する**（§7.2.1）。これが無いと「全段で同じスナップショット」は実装できない。§15.4 に影響を明記した。
-- **最初の `captureConnection()` も `try` の内側に置き、`UnstableConnectionException` を `GateRejected` に変換する**（§8.3）。
-- **再取得対象は識別子（`DiscussionsTargetRef`）だけを持ち回り、ノード実体の解決は終端の UI ターンで行う**（§8.3.3）。
+- **既存 REST サービス 4 つに `connection: ConnectionSnapshot? = null` を追加する**（§21.1）。これが無いと「全段で同じスナップショット」は実装できない。§15.4 に影響を明記した。
+- **最初の `captureConnection()` も `try` の内側に置き、`UnstableConnectionException` を `GateRejected` に変換する**（§21.2）。
+- **再取得対象は識別子（`DiscussionsTargetRef`）だけを持ち回り、ノード実体の解決は終端の UI ターンで行う**（§21.3）。
 - **送信直前にライフサイクル検証を行い、崩れていれば mutation を発行しない**（`Aborted`）。`epoch` を `@Volatile` にする（§7.3 / §8.2）。
-- **エディタ経路は FR-9 の明示的な例外**とし、メニューは常時表示・G6b の `GetMrPermissions` で起動後に拒否する（§8.3.4）。
+- **エディタ経路は FR-9 の明示的な例外**とし、メニューは常時表示・G6b の `GetMrPermissions` で起動後に拒否する（§21.4）。
 
 ### 16.2 未決（レビューで判断したい）
 
@@ -1242,6 +1051,8 @@ round 6 の指摘を受けて追加で確定した事項:
 
 ## 17. 想定されるリスク
 
+> R-9 / R-18 / R-23〜R-30 は旧 PR-3（§21）に関するもので、**Phase 5A の実装対象ではない**。別サイクルのために残す。
+
 | # | リスク | 影響 | 緩和策 |
 |---|---|---|---|
 | R-1 | **GraphQL クエリがインスタンスのスキーマと整合しない。** headless 環境では実接続で検証できないため、クエリ文字列の誤りは CI もテストも検出できず、ユーザー実機で初めて露見する | 機能が全滅する。手戻りが最大 | クエリ/変数を持つコンポーネントは最上位モデル（`fable`）に割り当て、**読んだ実ソースのパス/行を根拠として成果物に併記させる**（記憶からの捏造防止）。加えて §10 の確定値を実装計画に埋め込み、実装者に再導出させない |
@@ -1253,7 +1064,7 @@ round 6 の指摘を受けて追加で確定した事項:
 | R-6 | 編集の TOCTOU 窓（§13） | 他者の編集を上書きする | 窓を狭める事前確認を実装。閉じられないことを既知の制限として明記 |
 | R-7 | **結果不明の失敗後に再送し、サーバが既にコミットしていた場合に重複コメントが作られる** | 重複投稿。in-flight ガードは最初の要求が完了済みのため防げない | 失敗を Definite / Ambiguous に分類し、Ambiguous では先に強制再取得してユーザーに現状を見せてから [Send again] を選ばせる（§9.3 / §12.2） |
 | R-8 | 停止処理と UI 反映の競合により、停止後に通知やダイアログが出る | 例外・ゴースト UI | §14.3 の停止順序を最初から適用 |
-| R-9 | **エディタの表示内容と MR head 版がずれた状態で行コメントを送る** | 別の行にコメントが付く、または GitLab が position を拒否する | G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲートを揃えて初めて送信する（§8.3） |
+| R-9 | **エディタの表示内容と MR head 版がずれた状態で行コメントを送る** | 別の行にコメントが付く、または GitLab が position を拒否する | G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲートを揃えて初めて送信する（§21.2） |
 | R-10 | mutation 完了処理を鮮度ガードで破棄し、成功が表示に反映されない / 失敗時に本文が失われる | FR-8・FR-10 違反 | 鮮度ガードの適用範囲を「取得結果の反映」に限定する（§8.2） |
 | R-11 | **R-10 の修正を過剰に行い、停止処理中に UI が起動する。** ブロッキング HTTP は停止後に戻りうる | 停止後のダイアログ・再取得。R-8 と同じ障害 | ライフサイクルガード（`active` / `epoch`）は mutation 完了処理にも**適用する**。外すのは鮮度ガードだけ（§8.2） |
 | R-12 | **部分成功（`data` + `errors`）を Definite と誤分類し、`[Retry]` で重複投稿する** | R-7 と同じ重複投稿が、L2 経由で再発する | L2 は `data` キーの有無で分岐。「mutation が実行されなかったことを証明できる場合だけ Definite」（§11.1 / §12.2） |
@@ -1262,17 +1073,17 @@ round 6 の指摘を受けて追加で確定した事項:
 | R-15 | **残時間由来の timeout が例外として伝播し、取得済みページと打ち切り表示が失われる** | 通常の deadline 到達が読み取り失敗として扱われる | deadline 予算由来の timeout を捕捉して部分結果を返す（§12.1） |
 | R-16 | **早期終了経路が `LoadOutcome` を返さず、§9.3 の callback が永久に呼ばれない** | Ambiguous 失敗後に本文を保持したダイアログすら出ず、入力が失われる（FR-8 違反） | すべての早期終了を対応する outcome の 1 回通知に合流させる（§8.1） |
 | R-17 | **`startEpoch` を background 完了後に読み、停止→再開を跨いだ古い mutation の UI が新しいライフサイクルで起動する** | 停止後のダイアログ・再取得（R-8 と同じ障害） | `startEpoch` は background 起動前の UI ターンで凍結する（§8.2） |
-| R-18 | **Eclipse の 0 始まり行番号を変換せず送り、全 diff コメントが 1 行上に付く** | 機能としては動くが、常に誤った行に付く。レビューとして使い物にならない | スナップショット時に `+ 1` して 1 始まりで保持し、変数名に基数を含める。先頭行を含む境界テストを置く（§8.3.1） |
+| R-18 | **Eclipse の 0 始まり行番号を変換せず送り、全 diff コメントが 1 行上に付く** | 機能としては動くが、常に誤った行に付く。レビューとして使い物にならない | スナップショット時に `+ 1` して 1 始まりで保持し、変数名に基数を含める。先頭行を含む境界テストを置く（§21.6） |
 | R-20 | **失敗結果に鮮度ガードを適用せず、古い要求の失敗が新しい要求の成功表示を上書きする** | 最新のツリーが古い失敗表示に置き換わる | 鮮度ガードを結果の種類より先に、すべての終端結果に対して評価する（§8.1） |
 | R-21 | **接続ゲート拒否で `Loading…` 表示が残る** | 通信していないのに節が永続的に Loading。再展開による再取得も促せない | 終端処理で必ずツリー表示を失敗ノードへ置換する（§8.1） |
 | R-22 | **書き込みの接続ゲート拒否が「中止」で終わり、通知も出ず本文も失われる** | FR-8 違反。ダイアログを閉じた後に接続が変わると入力が消える | `GateRejected` を書き込みの 4 番目の結果として終端処理に合流させる（§8.2） |
-| R-23 | **エディタ経路に再取得対象ノードが無く、成功後の最新化も Ambiguous 時の確認取得もできない** | FR-10 と §9.3 を満たせない | `resolveDiscussionsSection` で解決し、`null` の場合の終端処理を定義（§8.3.3） |
-| R-24 | **識別子解決中に接続が変わり、解決元・排他キー・送信先が別接続になる** | 別インスタンス/別アカウントへの送信、キーの取り違え | G5 より前に接続を 1 回捕捉して全段で共有し、送信直前に `pinnedConnectionFor` で変化なしを確認（§8.3） |
-| R-25 | **`baseSha` / `startSha` / `oldPath` の取得手順が無く position を構築できない** | 全行コメントが送信不能 | G9 で `getLatestMrVersion` から 5 値を凍結し、`headCommitSha` の一致も確認（§8.3） |
-| R-26 | **modal ダイアログ中の停止→再開を検出できず、送信はされるのに完了 UI が破棄される** | 成功時の再取得も失敗時の本文保持も行われない（FR-8 / FR-10 違反） | `startEpoch` をダイアログ終了後の UI ターンで捕捉（§8.3） |
-| R-27 | **識別子解決が接続引数を取れず、position や MR 識別子が別インスタンス／別アカウントから取得される** | 送信は止まっても、解決結果が別接続由来という不整合。R-24 の修正が実装できない | 既存 4 サービスに `connection` 引数を追加（§7.2.1） |
-| R-28 | **最初の `captureConnection()` が `try` の外にあり、例外が coroutine を抜けて本文が失われる** | FR-8 違反。通知も出ない | `try` の内側に置き `GateRejected` に変換（§8.3） |
-| R-29 | **background で解決したノード実体が、完了時には現在ツリーから切り離されている** | 誰にも見えない旧ノードを更新し、`Ambiguous` では未確認のまま `[Send again]` を許す | 識別子だけを持ち回り、終端 UI ターンで解決（§8.3.3） |
+| R-23 | **エディタ経路に再取得対象ノードが無く、成功後の最新化も Ambiguous 時の確認取得もできない** | FR-10 と §9.3 を満たせない | `resolveDiscussionsSection` で解決し、`null` の場合の終端処理を定義（§21.3） |
+| R-24 | **識別子解決中に接続が変わり、解決元・排他キー・送信先が別接続になる** | 別インスタンス/別アカウントへの送信、キーの取り違え | G5 より前に接続を 1 回捕捉して全段で共有し、送信直前に `pinnedConnectionFor` で変化なしを確認（§21.2） |
+| R-25 | **`baseSha` / `startSha` / `oldPath` の取得手順が無く position を構築できない** | 全行コメントが送信不能 | G9 で `getLatestMrVersion` から 5 値を凍結し、`headCommitSha` の一致も確認（§21.2） |
+| R-26 | **modal ダイアログ中の停止→再開を検出できず、送信はされるのに完了 UI が破棄される** | 成功時の再取得も失敗時の本文保持も行われない（FR-8 / FR-10 違反） | `startEpoch` をダイアログ終了後の UI ターンで捕捉（§21.2） |
+| R-27 | **識別子解決が接続引数を取れず、position や MR 識別子が別インスタンス／別アカウントから取得される** | 送信は止まっても、解決結果が別接続由来という不整合。R-24 の修正が実装できない | 既存 4 サービスに `connection` 引数を追加（§21.1） |
+| R-28 | **最初の `captureConnection()` が `try` の外にあり、例外が coroutine を抜けて本文が失われる** | FR-8 違反。通知も出ない | `try` の内側に置き `GateRejected` に変換（§21.2） |
+| R-29 | **background で解決したノード実体が、完了時には現在ツリーから切り離されている** | 誰にも見えない旧ノードを更新し、`Ambiguous` では未確認のまま `[Send again]` を許す | 識別子だけを持ち回り、終端 UI ターンで解決（§21.3） |
 | R-30 | **ブロッキング REST 中の停止→再開を跨いで mutation が発行される** | 投稿は成立するのに完了 UI が破棄され、再取得も本文保持も行われない | 送信直前にライフサイクル検証を行い発行しない（§8.2） |
 | R-19 | **作成操作の in-flight キーが構築できず、ガードを省略してダブルクリックで重複コメントが作られる** | R-7 と同じ重複投稿が、作成経路で再発 | 送信前に確定している識別子（MR GID / `{MR GID}#{newPath}:{line}`）をキーにする（§14.4） |
 
@@ -1282,6 +1093,8 @@ round 6 の指摘を受けて追加で確定した事項:
 
 ### 18.1 単体テスト（自動）
 
+> `§21.2` / `§21` を参照する行（position 凍結・接続共有・target 解決・権限・行番号の基数・§21.1 接続受け渡し・§21.2 の骨格再利用）は**旧 PR-3 のものであり Phase 5A の対象外**。別サイクルのために残す。
+
 | 対象 | 検証内容 |
 |---|---|
 | `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
@@ -1289,23 +1102,23 @@ round 6 の指摘を受けて追加で確定した事項:
 | **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
 | **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
 | **終端処理の共通規律**（§8.1 / §8.2） | 読み取り: **`Failed` / `GateRejected` でも鮮度ガードが先に効き**、古い要求が新しい要求の `LOADED` とツリーを上書きしないこと／`GateRejected` で `Loading…` 表示が失敗ノードへ置換されること／書き込み: **`GateRejected` が終端処理に合流し**、§11.2 の通知が出て本文が保持されること（`return` で消えないこと） |
-| **§7.2.1 接続受け渡し** | `connection` を渡した `fetchListFromApi` / `getLatestMrVersion` / `lookup` / `getProject` が、要求ごとに `captureConnection` を再実行しないこと（呼び出し回数で実証）／`null` 既定で従来と同一の挙動になること |
+| **§21.1 接続受け渡し** | `connection` を渡した `fetchListFromApi` / `getLatestMrVersion` / `lookup` / `getProject` が、要求ごとに `captureConnection` を再実行しないこと（呼び出し回数で実証）／`null` 既定で従来と同一の挙動になること |
 | **送信直前の検証**（§8.2） | `active == false` / `epoch != startEpoch` / `!isActive()` のそれぞれで **mutation が発行されないこと**（API 呼び出し回数 0 をカウンタで実証）／`Aborted` になること |
-| **§8.3 の例外合流** | 最初の `captureConnection()` が `UnstableConnectionException` を投げた場合に `GateRejected` として終端へ合流し、本文が保持されること（例外が外へ抜けないこと） |
-| **§8.3.3 target 解決時点** | 解決が終端 UI ターンで行われること／background で解決した実体を保持しないこと（`DiscussionsTargetRef` のみ持ち回る）／解決から利用まで同一 UI ターンで完結すること |
-| **§8.3.4 権限** | `userPermissions.createNote == false` で送信 0 回で拒否されること／本文が保持され `[Copy text]` / `[Cancel]` が出ること |
-| **§8.3 の position 凍結** | `getLatestMrVersion` から `baseSha` / `headSha` / `startSha` / `newPath` / `oldPath` の 5 値が凍結されること／version の `headCommitSha` != G7 head sha なら拒否されること／対象パスが version の diffs に無ければ拒否されること |
-| **§8.3 の接続共有** | 接続が G5 より前に 1 回だけ捕捉されること／識別子解決・キー・送信が同一スナップショットを使うこと／送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected` になること |
-| **§8.3.3 対象ノード解決** | `target == null` のとき Success は通知のみで再取得を発行しないこと／`target == null` かつ Ambiguous では `[Send again]` を出さないこと |
-| **§8.3 の骨格再利用** | diff スレッド作成が §8.2 と同じ 4 結果分岐・ライフサイクルガード・`startEpoch` 凍結を通ること／in-flight キーが `{MR GID}#{newPath}:{oneBasedLine}` で **background 上で**取得されること／二重起動時に `createDiffNote` が 1 回しか送られないこと |
+| **§21.2 の例外合流** | 最初の `captureConnection()` が `UnstableConnectionException` を投げた場合に `GateRejected` として終端へ合流し、本文が保持されること（例外が外へ抜けないこと） |
+| **§21.3 target 解決時点** | 解決が終端 UI ターンで行われること／background で解決した実体を保持しないこと（`DiscussionsTargetRef` のみ持ち回る）／解決から利用まで同一 UI ターンで完結すること |
+| **§21.4 権限** | `userPermissions.createNote == false` で送信 0 回で拒否されること／本文が保持され `[Copy text]` / `[Cancel]` が出ること |
+| **§21.2 の position 凍結** | `getLatestMrVersion` から `baseSha` / `headSha` / `startSha` / `newPath` / `oldPath` の 5 値が凍結されること／version の `headCommitSha` != G7 head sha なら拒否されること／対象パスが version の diffs に無ければ拒否されること |
+| **§21.2 の接続共有** | 接続が G5 より前に 1 回だけ捕捉されること／識別子解決・キー・送信が同一スナップショットを使うこと／送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected` になること |
+| **§21.3 対象ノード解決** | `target == null` のとき Success は通知のみで再取得を発行しないこと／`target == null` かつ Ambiguous では `[Send again]` を出さないこと |
+| **§21.2 の骨格再利用** | diff スレッド作成が §8.2 と同じ 4 結果分岐・ライフサイクルガード・`startEpoch` 凍結を通ること／in-flight キーが `{MR GID}#{newPath}:{oneBasedLine}` で **background 上で**取得されること／二重起動時に `createDiffNote` が 1 回しか送られないこと |
 | **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ **1 回だけ** UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／接続ゲート拒否 → `GateRejected`（`return` で終わらない）／新しい世代に破棄 → `Superseded`（`Applied` ではない）／**`active == false` / `epoch` 変化時は呼ばれないこと**（契約上の例外） |
 | **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと／**作成操作のキーが構築できること**: MR 全体コメント = MR GID、新規 diff スレッド = `{MR GID}#{newPath}:{line}`／MR 全体コメントの二重送信が抑止されること／異なる行への diff コメントは同時に進められること |
-| **行番号の基数**（§8.3.1） | `selection.startLine + 1` がスナップショット時に適用されること／**ファイル先頭行（0 始まりの 0 → 1 始まりの 1）** を含む境界ケース／送信される `newLine` が 1 始まりであること |
+| **行番号の基数**（§21.6） | `selection.startLine + 1` がスナップショット時に適用されること／**ファイル先頭行（0 始まりの 0 → 1 始まりの 1）** を含む境界ケース／送信される `newLine` が 1 始まりであること |
 | `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
 | **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
 | **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
 | **ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること（**鮮度ガードは適用されない**）／**逆に `active == false` または `epoch` 変化時は UI 処理が一切起きないこと**（ライフサイクルガードは適用される）／**その場合でも in-flight ガードが解放されていること**（background の `finally` で解放されるため） |
-| **行一致ゲート**（§8.3、SWT-free 部分） | 捕捉本文 == HEAD blob なら送信、1 バイトでも異なれば拒否／改行コードのみが異なる場合も拒否（正規化しない）／`newLine` が捕捉時のカーソル行であり、後続のエディタ操作に影響されないこと |
+| **行一致ゲート**（§21.2、SWT-free 部分） | 捕捉本文 == HEAD blob なら送信、1 バイトでも異なれば拒否／改行コードのみが異なる場合も拒否（正規化しない）／`newLine` が捕捉時のカーソル行であり、後続のエディタ操作に影響されないこと |
 | 監査ログ | 本文・トークン由来のマーカー文字列がログ行に含まれないこと（識別可能なマーカーを使う。Phase 4 PR-4 の指摘を踏まえ、引用符付きの弱い検証にしない） |
 | 位置情報 | `DiffPositionInput` の組み立て（`newLine` のみ、`oldLine` 不在） |
 
@@ -1314,7 +1127,6 @@ round 6 の指摘を受けて追加で確定した事項:
 - Discussions 節の展開・ツリー描画・truncated 表示（3 種すべて: 外側上限 / deadline / notes 打ち切り）
 - コンテキストメニューの出し分け（権限・`resolvable` による）
 - `CommentInputDialog` の複数行入力・事前充填・[Retry]/[Cancel]・[Send again]/[Cancel]
-- エディタ右クリックからの新規 diff スレッド（G1〜G9 の各ゲート）。特に **G3（未保存エディタで拒否されること）**
 - 実 GitLab インスタンスに対する全 mutation の成功（**GraphQL クエリがスキーマと整合することの唯一の検証機会**）
 - 書き込み成功後にツリーが最新化されること（FR-10）
 - 接続先アカウントを切り替えた後に、旧アカウントで取得したノードから操作できないこと（§15.3）
@@ -1369,29 +1181,31 @@ round 6 の指摘を受けて追加で確定した事項:
 14. 接続ゲートが PR-1 AC-9 と同じ強度（URL + `authFingerprint`）で書き込みにも適用される。
 15. 検証バー（§18.3）を満たす。
 
-### PR-3（エディタ行からの新規 diff スレッド）
+### ~~PR-3（エディタ行からの新規 diff スレッド）~~ — **Phase 5A 対象外**（§21）
+
+> 以下は別サイクルで設計をやり直す際の出発点として残す。**Phase 5A の受け入れ条件ではない。**
 
 1. MR ブランチをチェックアウトした状態で、エディタ右クリックから行コメントを作成できる（FR-4）。
-2. **カーソル行と本文が同一 UI ターン（ダイアログ前）でスナップショット化され**、以降の処理がエディタの状態を再参照しない（§8.3）。
-2b. **`startEpoch` がダイアログ終了後の UI ターンで捕捉される。** modal の nested event loop 中に停止→再開が起きた場合、完了 UI が破棄されずに正しく新ライフサイクルとして扱われる（§8.3）。
-2c. **接続が G5 より前に 1 回だけ捕捉され**、識別子解決・in-flight キー・送信のすべてが同一スナップショットを使う。送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected`（§8.3）。
+2. **カーソル行と本文が同一 UI ターン（ダイアログ前）でスナップショット化され**、以降の処理がエディタの状態を再参照しない（§21.2）。
+2b. **`startEpoch` がダイアログ終了後の UI ターンで捕捉される。** modal の nested event loop 中に停止→再開が起きた場合、完了 UI が破棄されずに正しく新ライフサイクルとして扱われる（§21.2）。
+2c. **接続が G5 より前に 1 回だけ捕捉され**、識別子解決・in-flight キー・送信のすべてが同一スナップショットを使う。送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected`（§21.2）。
 3. **G3（エディタが dirty）で拒否される**（早期拒否）。
 4. **G8（捕捉した本文 != HEAD blob）で拒否される。**改行コードのみが異なる場合も拒否される（正規化しない）。
 5. スナップショット取得後にエディタを編集しても、送信される `newLine` が変わらない。
-5b. **送信される `newLine` が 1 始まりである。ファイル先頭行にコメントすると `newLine = 1` になる**（§8.3.1）。
+5b. **送信される `newLine` が 1 始まりである。ファイル先頭行にコメントすると `newLine = 1` になる**（§21.6）。
 5c. **新規 diff スレッド作成の in-flight キーが `{MR GID}#{newPath}:{line}` で構築され**、ダブルクリックによる二重送信が抑止される。異なる行へのコメントは同時に進められる（§14.4）。
-6. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
-7. **`DiffPositionInput` の 5 値（`baseSha` / `headSha` / `startSha` / `newPath` / `oldPath`）が G9 で `getLatestMrVersion` から凍結される。** version の `headCommitSha` が G7 の head sha と一致しない場合、および対象パスが version の diffs に無い場合は拒否される（§8.3）。`oldLine` は送らない。
-7b. **再取得対象は `DiscussionsTargetRef`（識別子のみ）で持ち回られ、ノード実体の解決は終端 UI ターンで行われる。** `target == null`（サイドバーに当該 MR が無い）のとき、Success は通知のみで再取得を発行せず、Ambiguous は `[Send again]` を出さない（§8.3.3）。
-7c. **識別子解決（G6 / G6b / G9）が最初に捕捉した `conn` を引数で受け取る**（§7.2.1）。要求ごとの再捕捉が起きない。
-7d. **最初の `captureConnection()` の `UnstableConnectionException` が `GateRejected` として終端に合流し**、本文が保持される（§8.3）。
-7e. **G6b で `userPermissions.createNote == false` の場合、送信 0 回で拒否され**、本文を保持したまま `[Copy text]` / `[Cancel]` が出る（§8.3.4）。エディタのメニュー項目自体は常時表示される（FR-9 の明示的例外）。
+6. G5〜G9 の各ゲート不成立時に、§21.2 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
+7. **`DiffPositionInput` の 5 値（`baseSha` / `headSha` / `startSha` / `newPath` / `oldPath`）が G9 で `getLatestMrVersion` から凍結される。** version の `headCommitSha` が G7 の head sha と一致しない場合、および対象パスが version の diffs に無い場合は拒否される（§21.2）。`oldLine` は送らない。
+7b. **再取得対象は `DiscussionsTargetRef`（識別子のみ）で持ち回られ、ノード実体の解決は終端 UI ターンで行われる。** `target == null`（サイドバーに当該 MR が無い）のとき、Success は通知のみで再取得を発行せず、Ambiguous は `[Send again]` を出さない（§21.3）。
+7c. **識別子解決（G6 / G6b / G9）が最初に捕捉した `conn` を引数で受け取る**（§21.1）。要求ごとの再捕捉が起きない。
+7d. **最初の `captureConnection()` の `UnstableConnectionException` が `GateRejected` として終端に合流し**、本文が保持される（§21.2）。
+7e. **G6b で `userPermissions.createNote == false` の場合、送信 0 回で拒否され**、本文を保持したまま `[Copy text]` / `[Cancel]` が出る（§21.4）。エディタのメニュー項目自体は常時表示される（FR-9 の明示的例外）。
 8. old 側へのコメント作成が対象外であることが PR に明記される。
 9. 検証バー（§18.3）を満たす。
 
 ### Phase 5A 全体
 
-1. 台帳 #7 の D13 が 5/5 になる（U-8 の判断を経て）。
+1. 台帳 #7 の D13 が **4/5 + 一部 1** になる（F1 コメント作成 = 返信 + MR 全体のみで 🟡 一部。エディタ行は別サイクル。U-8 の判断を経て F5 は ✅）。
 2. 既存機能の振る舞いが変わっていない（既存テストの結果が変化しない）。
 3. 新規 bundle 依存が追加されていない。
 4. ディレクトリ構成が変更されていない。
@@ -1423,3 +1237,215 @@ round 6 の指摘を受けて追加で確定した事項:
 - `src/main/kotlin/com/gitlab/eclipse/ci/lint/CiLintGenerationRegistry.kt` — 世代管理の原型
 - `src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt` — 多重送信防止
 - `build.gradle.kts` — bundle 依存一覧（`org.eclipse.compare` が不在であることの根拠）
+
+
+---
+
+## 21. 付録: PR-3（エディタ行からの新規 diff スレッド）— **Phase 5A 対象外・別サイクルで設計**
+
+### 21.0 このセクションの位置づけ
+
+**本セクションの内容は Phase 5A の実装対象ではない。** Codex 設計レビュー round 1〜6 の結果、指摘の大半（直近 2 ラウンドは全件）がこのエディタ経路に起因していたため、Phase 5A を PR-1（読み取り基盤）と PR-2（書き込み）に絞り、エディタ行コメントは別サイクルで設計し直すことにした（§5.1 D-5）。
+
+ここに残すのは、6 ラウンドで確定した設計事項を将来のサイクルで再導出せずに済ませるためである。**次サイクルでは本セクションを出発点とし、改めて設計レビューを行う。**その時点では PR-1 / PR-2 の実装知見（特に GraphQL の実接続で確認できたスキーマの実態）が得られているため、より確度の高い設計ができる。
+
+以下の記述は round 6 時点のものであり、Phase 5A の本文（§1〜§20）とは**独立に**扱う。本文の要件・受け入れ条件には含まれない。
+
+### 21.1 既存 REST サービスへの接続スナップショット受け渡し（PR-3 の前提）
+
+エディタ経路（§21.2）は「捕捉した 1 つの `ConnectionSnapshot` を識別子解決・in-flight キー・送信のすべてで使う」ことを要件とする（R-24）。しかし現状の既存 API はこれを満たせない。
+
+| 既存 API | 現状 | 必要な変更 |
+|---|---|---|
+| `GitLabApiClient.fetchListFromApi(request)` | `connection` 引数が無く、各要求で `captureConnection` を再実行する | `connection: ConnectionSnapshot? = null` を**追加**（既定 null で従来の挙動と完全に同一） |
+| `MergeRequestService.getLatestMrVersion(encodedProjectId, mrIid)` | 上記 `fetchListFromApi` と `fetchObject` を接続無しで呼ぶ | `connection: ConnectionSnapshot? = null` を追加し、内部の両呼び出しへ透過 |
+| `CurrentBranchMrLookup.lookup(context, branch)` | 接続引数が無く、内部の `ProjectDetailService` / `MergeRequestService` が各要求で再捕捉する | `connection: ConnectionSnapshot? = null` を追加し、内部サービスへ透過 |
+| `ProjectDetailService.getProject(encodedProjectId)` | `fetchObject` を接続無しで呼ぶ | 同上 |
+
+**これらを追加しないと R-24 の修正は実装できない。** 後段の `pinnedConnectionFor` が送信を止めても、識別子と position は既に別インスタンス／別アカウントから取得済みになりうるためである。
+
+すべて**引数の追加のみ**であり、既定値 `null` は現行の挙動（要求ごとに `captureConnection`）と完全に同一である。既存の呼び出し箇所は 1 箇所も変更しない。**この変更は §15.4 に明示する。**
+
+
+### 21.2 エディタ行からの新規 diff スレッド（フロー）
+
+**本フローは §8.2 の書き込み骨格の「前段」を差し替えたものである。**識別子の解決手順とゲートだけが固有であり、**送信以降（結果の 4 分類・ライフサイクルガード・終端処理・in-flight ガードの解放）は §8.2 をそのまま再利用する。**独自の終端処理を定義しない。
+
+```
+[UI スレッド：ターン 1 — 内容のスナップショット]
+  G1: アクティブエディタが ITextEditor か
+  G2: エディタ入力が IFileEditorInput か（ワークスペース上のファイルか）
+  G3: エディタが dirty でないか（editor.isDirty() == false）
+      → dirty なら拒否（早期・親切な拒否。最終的な保証は G8 が与える）
+  ★ SNAPSHOT: (oneBasedLine, documentText, filePath) を同一ターン内で取得 ★
+     documentText = documentProvider.getDocument(input).get()
+     oneBasedLine = selection.startLine + 1   ← ★ 0 始まり → 1 始まりへ変換（§21.6）★
+  ダイアログで本文を受け取る（modal・nested event loop）→ Cancel なら終了
+
+[UI スレッド：ターン 2 — ダイアログ終了後、background 起動の直前]
+  ★ startEpoch = registry.currentEpoch を **ここで** 凍結する ★
+     （§8.2 と同じ位置。理由は下記「2 つの捕捉時点」）
+    → background へ（以降、エディタの状態には二度と触れない）
+
+[background：識別子の解決とゲート（このフロー固有の前段）]
+  ★ すべてを try で囲む。以下の例外も終端処理へ合流させる ★
+  conn = try { apiClient.captureConnection() }
+         catch (UnstableConnectionException) { → GateRejected として終端へ }
+     ← G5 より前に 1 回だけ捕捉。try の外に置かない（設定保存中に例外が
+       coroutine を抜けると通知も本文保持も行われず FR-8 違反になる）
+     以降の識別子解決・in-flight キー・送信のすべてがこの conn を**引数で**渡して使う
+     （§21.1 の接続受け渡し契約。渡せなければ各サービスが接続を再捕捉してしまう）
+  G5: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
+      （RepositoryContextResolver。0 件・複数件は拒否）
+  G6: そのリポジトリの現ブランチに対応する MR が特定できるか
+      （CurrentBranchMrLookup.lookup(context, branch, conn)。§21.1）
+      → MR GID / iid / projectId / mr.sha / namespaceWithPath が確定
+  G6b: 作成権限があるか（§21.4）
+      GetMrPermissions クエリ（§10.3）を conn 上で実行し
+      userPermissions.createNote が false なら Definite 相当として拒否
+  G7: リポジトリの HEAD sha == その MR の diff head sha か
+      （OpenMrFileHandler と同一のゲート）
+  G8: ★ snapshot.documentText == HEAD blob の内容（対象パス）★
+      JGit で HEAD ツリーから当該パスの blob を読み、捕捉した本文と厳密比較
+      → 不一致なら拒否
+  G9: ★ 最新 diff version を取得し、position を凍結する ★
+      version = MergeRequestService.getLatestMrVersion(projectId, mrIid, conn)（§21.1）
+        → null なら拒否
+      version.headCommitSha == G7 で確認した head sha か → 不一致なら拒否
+        （G7 の判定後に新しい version が push された場合を弾く）
+      version.diffs から対象パスのエントリを探す → 無ければ拒否
+      ★ POSITION 凍結: baseSha / headSha / startSha / newPath / oldPath ★
+  ★ in-flight ガード取得（§14.4 / §21.5）★
+     キー = DiscussionWriteKey(normalizeInstanceUrl(conn.instanceUrl),
+                               conn.authFingerprint,
+                               "mergeRequestLine",
+                               "{MR GID}#{newPath}:{oneBasedLine}")
+     ← conn（捕捉済み）と G6・G9（解決済み）が揃って初めて構築できる
+     → 取得できなければ「already in progress」を UI へ marshal して終了
+  ★ 再取得対象は「識別子」だけを持ち回る（§21.3）★
+     targetRef = (normalizeInstanceUrl(conn.instanceUrl), conn.authFingerprint,
+                  projectId, mrIid)
+     ← ★ここでノード実体を解決しない★（解決は終端の UI ターンで行う）
+  try {
+    pinned = pinnedConnectionFor(apiClient, conn.instanceUrl, conn.authFingerprint)（§15.3）
+      → null なら GateRejected として終端へ
+        （= 識別子解決中に URL / アカウントが変わった。送信しない）
+    ★ 送信直前のライフサイクル検証（§8.2）★ → 崩れていれば Aborted（送信しない）
+    createDiffNote 送信（position = G9 の凍結値、newLine = snapshot.oneBasedLine）
+    3 層のエラー検査（§11.1）→ Success / Definite / Ambiguous（§12.2）
+  } finally {
+    in-flight ガード解放
+  }
+[UI スレッド] ★ §8.2 の終端処理をそのまま使う ★
+  ライフサイクルガード（active / epoch != startEpoch）→ 破棄
+  ★ ここで初めて target = sidebar.resolveDiscussionsSection(targetRef) を解決 ★
+  Success / Definite / Ambiguous / GateRejected / Aborted の分岐（§8.2 + §21.3）
+```
+
+**2 つの捕捉時点を区別する。** 内容のスナップショット（ターン 1）と `startEpoch`（ターン 2）は、目的が異なるため捕捉時点も異なる。
+
+| 捕捉 | 時点 | 理由 |
+|---|---|---|
+| `(oneBasedLine, documentText)` | **ダイアログを開く前**（ターン 1） | ユーザーが「その行を見て」コマンドを起動した瞬間の内容を凍結するため。以降のエディタ操作から独立させる |
+| `startEpoch` | **ダイアログを閉じた後**（ターン 2） | ダイアログは modal で nested event loop を回すため、その間に bundle が停止→再開しうる。ターン 1 で凍結すると旧 epoch のまま新しいライフサイクルで mutation が始まり、送信はされるのに完了 UI が epoch ガードで破棄され、成功時の再取得も失敗時の本文保持も行われない |
+
+**接続はターン 2 の直後、G5 より前に 1 回だけ捕捉し、以降すべてに同じスナップショットを使う。** エディタ経路にはサイドバーノードのような接続タグが存在しないため、「どの接続を基準にするか」を最初に確定させる必要がある。捕捉が遅いと、識別子解決（G6 / G9 は API を呼ぶ）と in-flight キーと送信先が別々の接続になりうる。送信の直前に `pinnedConnectionFor(conn.instanceUrl, conn.authFingerprint)` を通すことで、識別子解決中に接続が変わっていないことを確認する。
+
+**`DiffPositionInput` の全値は G9 で凍結する。** G7 までに確定するのは MR GID・`newPath` 候補・`oneBasedLine`・MR の head SHA だけであり、`baseSha` / `startSha` / `oldPath` は MR の diff version からしか得られない。エディタ経路には `ChangedFileNode` のようにこれらを保持するノードが無いため、G9 で `MergeRequestService.getLatestMrVersion`（`src/main/kotlin/com/gitlab/eclipse/api/MergeRequestService.kt:56-68`）を呼んで取得する。取得した version の `headCommitSha` が G7 で確認した head sha と一致することを確認したうえで、position の 5 値をまとめて凍結する。一致確認は、G7 の判定後に新しい version が push された場合に古い行番号で送るのを防ぐ。
+
+### 21.3 再取得対象ノードの解決
+
+§8.2 の終端処理は `Success` 時と `Ambiguous` 時に `loadDiscussions(node, force = true)` を呼ぶ。しかし**エディタ経路は `DiscussionsSectionNode` を持たない。**サイドバーに当該 MR が表示されていない、または別の MR を表示している場合、対象ノードが存在しない。
+
+サイドバービューに解決 API を設ける。
+
+```kotlin
+fun resolveDiscussionsSection(
+  instanceUrl: String, authFingerprint: String, projectId: Long, mrIid: Long,
+): DiscussionsSectionNode?   // 現在ツリーに存在しなければ null
+```
+
+**解決は「送信前の background」ではなく「終端の UI ターン」で行う。** background で解決したノード実体を持ち回ると、G9 から mutation 完了までの間にサイドバー全体の更新や表示モード変更が起きた場合、**現在のツリーから切り離された旧ノード**を掴んだままになる。その状態では、`Success` の強制再取得が誰にも見えない旧ノードを更新し、`Ambiguous` ではユーザーに結果が見えないまま `Applied` が返って `[Send again]` を許してしまう。
+
+したがって background が持ち回るのは**識別子だけ**である。
+
+```kotlin
+data class DiscussionsTargetRef(
+  val instanceUrl: String,      // normalizeInstanceUrl 済み
+  val authFingerprint: String,
+  val projectId: Long,
+  val mrIid: Long,
+)
+```
+
+終端の UI ターンで、ライフサイクルガードを通過した**直後**に `resolveDiscussionsSection(targetRef)` を呼ぶ。サイドバーの状態は UI スレッド専有なので、この解決と直後の利用は同一 UI ターン内で完結し、間に更新が割り込む窓が無い。
+
+`target == null` の場合の終端処理:
+
+| 結果 | `target != null` | `target == null` |
+|---|---|---|
+| `Success` | `loadDiscussions(target, force = true)` | **成功通知のみ**（`Comment added.`）。表示すべきツリーが無いので再取得しない |
+| `Ambiguous` | §9.3（`Applied` でのみ `[Send again]`） | **最新状態を見せられない**ため §9.3 の「再読み込みが成立しなかった場合」と同じ扱い。`[Copy text]` / `[Cancel]` のみ。GitLab で確認するよう案内する |
+| `Definite` / `GateRejected` | §8.2 のとおり | 同じ（ノートに依存しない） |
+
+`target == null` で `Ambiguous` のときに `[Send again]` を出さないのは、§9.3 の原則（**ユーザーが最新状態を確認してからでなければ再送を許さない**）をそのまま適用した結果である。
+
+### 21.4 エディタ経路の権限確認（FR-9 の限界）
+
+§15.2 は「権限のない操作はメニューに出さない」（FR-9）を、ノードが保持する `userPermissions` を入力として実現する。**エディタ経路にはノードが無く、G6 で得る REST の `GitLabMergeRequest` にも権限フィールドが無い。**したがってエディタのコンテキストメニュー項目を、同期的に権限でフィルタすることはできない。
+
+本設計は次を確定する。
+
+1. **FR-9 のエディタ経路に対する明示的な例外**: 「GitLab > Comment on this line…」のメニュー項目は、権限の有無にかかわらず常に表示する。メニューは同期的に構築されるため、ネットワーク往復を要する権限判定を挟めない。
+2. **代わりに G6b で権限を確認する**: 識別子解決の一環として `GetMrPermissions` クエリ（§10.3）を実行し、`userPermissions.createNote` が false なら**送信せずに拒否**する。分類は Definite（サーバは要求を受け取っていないが、拒否が確定しており副作用が無いため再送しても安全）。
+3. **本文は失われない**: Definite 扱いなので §9.2 のダイアログで本文が保持される。ただし権限が無い以上 `[Retry]` は無意味なので、この拒否に限り `[Copy text]` / `[Cancel]` を出す。
+
+拒否文言: `You do not have permission to comment on this merge request.`
+
+VSCode も同じクエリで同じ判定を行っている（`canUserCommentOnMr`、`gitlab_service.ts:464-478`）。VSCode は Comments API の `commentingRangeProvider` でこの結果を使って UI を抑止できるが、Eclipse のコンテキストメニューには相当する非同期フィルタが無いため、本設計は「起動後に拒否する」形になる。**この差分は既知の制限として PR に明記する。**
+
+### 21.5 in-flight ガードの取得スレッド（本フローのみの例外）
+
+§14.4 は「取得は UI スレッドで background 起動の前」を原則とするが、**本フローだけはこれを満たせない。**キーに必要な MR GID は G6 で、`newPath` は G9 で初めて確定するためである。UI ターンの時点ではキーを構築できない。
+
+したがって本フローでは **background 上で、識別子解決の直後・送信の直前に取得する。**
+
+これが安全である根拠: `InFlightWriteGuard` は `ConcurrentHashMap.newKeySet<Any>()` を用い、`tryAcquire` は `Set.add` の戻り値である（`src/main/kotlin/com/gitlab/eclipse/ci/actions/InFlightWriteGuard.kt:21-25`）。**取得はアトミックであり、任意のスレッドから安全に呼べる。**既存 KDoc の「UI スレッドで取得する」は、ユーザーへ即座にフィードバックを返すための慣行であって技術的な制約ではない。
+
+代償: 素早く 2 回起動した場合、両方が JGit 検査まで進んでから片方だけがガードを取得する。**無駄な検査は発生するが、`createDiffNote` が二重に送られることはない**（重複コメントの防止という目的は達成される）。UI ターンへ一度戻ってから取得し直す設計も可能だが、往復が増えるわりに防げるのは無駄な JGit 検査だけなので採らない。
+
+「already in progress」の通知は UI スレッドへ marshal する。
+
+**行の一致は「捕捉した本文が HEAD blob と一致すること」で保証する。** `dirty か` と `作業ツリーが変更されているか` という 2 つの間接指標を別々の時点で評価するのではなく、**行番号と一緒に捕捉した本文そのもの**を HEAD blob と直接比較する。
+
+この形にする理由は、間接指標では TOCTOU が閉じないためである。
+
+- G3（dirty 判定）は UI ターンで、作業ツリーの検査は background で評価される。その間にユーザーは編集を続けられる。
+- ディスク上のファイルは HEAD のままでも、エディタのバッファがカーソル行より前に行を追加していれば、捕捉した行番号は「ユーザーが見ていた内容」と対応しなくなる。
+- 逆に、捕捉時点では作業ツリーが変更されていて、background の検査時点までに revert されていた場合、作業ツリー検査は通ってしまう。
+
+**本文そのものを比較すれば、これらはすべて 1 つの判定に畳まれる。** `snapshot.documentText == HEAD blob` が成立するとき、捕捉した行番号は HEAD blob の同じ行を指し、HEAD blob = MR head 版（G7 による）なので、**`newLine = snapshot.oneBasedLine`** が確定する。比較対象は UI ターンで凍結された値であり、その後のエディタ操作に影響されない。
+
+G3 を残すのは、よくある失敗（保存し忘れ）を background に降りる前に安価かつ分かりやすく弾くためであり、正しさの根拠は G8 が単独で与える。
+
+拒否時のメッセージ:
+
+| ゲート | メッセージ |
+|---|---|
+| G3 | `Save the file before commenting on a line.` |
+| G7 | 既存 `OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE`（`src/main/kotlin/com/gitlab/eclipse/mergerequests/OpenMrFileHandler.kt:133-134`）と同一文言 |
+| G8 | `This file does not match the merge request revision; its line numbers would not line up.` |
+
+G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。**検査は対象パスの blob 1 本に限定**する。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
+
+比較は改行コードを正規化せずバイト列として厳密に行う。正規化すると、行区切りの違いで行数がずれる場合を見逃す。
+
+### 21.6 行番号の基数（0 始まり → 1 始まり）
+
+**Eclipse の `ITextSelection.getStartLine()` は 0 始まり、GraphQL の `newLine` は 1 始まりである。** 変換を落とすとすべての diff コメントが 1 行上に付く。
+
+**変換はスナップショット時に行い、`oneBasedLine` は最初から 1 始まりの値として保持する**（送信時に変換しない）。理由: 送信時変換にすると、値が 0 始まりのまま複数の関数を通過し、どこで変換済みかが呼び出し側から見て分からなくなる。スナップショットの時点で基数を確定させれば、以降のすべてのコードが 1 始まりとして一貫して扱える。
+
+既存コードも同じ前提に立っている。`GitLabProjectUrlResolver.anchor`（`src/main/kotlin/com/gitlab/eclipse/navigation/GitLabProjectUrlResolver.kt:153-156`）は 0 始まりの `startLine` を受け取り、URL を組み立てる時点で `"#L${startLine + 1}"` としている。本設計はこの既存パターンとは逆に「早期に変換する」方針を採る。両者が混在すると取り違えの温床になるため、**変換済みの値は `oneBasedLine` と命名し、基数を名前に含める**ことを実装時の要件とする（`cursorLine` のような基数の曖昧な名前を使わない）。
+
+**受け入れテストに先頭行（ファイルの 1 行目）を含める。** 0 始まり/1 始まりの取り違えは先頭行で最も検出しやすく（`0` と `1` の差が境界として現れる）、中間行だけのテストでは両方の実装が通ってしまう場合がある。
