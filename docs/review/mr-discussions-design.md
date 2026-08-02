@@ -274,6 +274,18 @@ class GitLabGraphQlClient(
 - `system: true` のノートの除外。
 - 失敗の Definite / Ambiguous 分類（§12.2）。
 
+**戻り値型。** `getDiscussions` は discussions だけを返してはならない。§10.2 のクエリは `mergeRequest.userPermissions.createNote` も取得しており、これを `DiscussionsSectionNode.canCreateNote`（§7.4）へ渡す経路が必要なためである。
+
+```kotlin
+data class DiscussionsReadResult(
+  val canCreateNote: Boolean,              // mergeRequest.userPermissions.createNote
+  val discussions: List<GitLabDiscussion>,
+  val truncation: TruncationReason?,       // null = 全件取得（§8.5）
+)
+```
+
+**`canCreateNote` はノート単位の権限から補完できない。** ディスカッションが 0 件の MR では `discussions` が空でノート権限が 1 つも無いため、この値を戻り値に載せないと既定の `false` が残り、権限のある利用者にも MR 全体コメントの入口が出なくなる（FR-3 が満たせない）。
+
 **知らないこと**: SWT、UI スレッド、ツリー構造。**このクラスは SWT-free であり、単体テスト可能である。**
 
 ### 7.3 `DiscussionGenerationRegistry`
@@ -360,10 +372,11 @@ loadDiscussions(node, force, onOutcome)
        HTTP を発行せず finish(GateRejected) へ         ← ★ 中止するだけにしない ★
   deadline = 60 秒の wall-clock（§12.1）
   try {
-    discussions = discussionService.getDiscussions(connection, namespaceWithPath, mrIid, deadline)
+    result = discussionService.getDiscussions(connection, namespaceWithPath, mrIid, deadline)
+      → DiscussionsReadResult（canCreateNote / discussions / truncation。§7.2）
       ページングループ（§8.5）
     正規化・system ノート除外・ソート
-    finish(Applied 候補, discussions)
+    finish(Applied 候補, result)
   } catch (e) {
     finish(Failed(e))
   }
@@ -379,7 +392,8 @@ finish(result) = [UI スレッド（asyncExec）]
   ③ GateRejected → 失敗ノード表示（「接続先が変わりました」）
                    + §11.2 の通知 / loadState = FAILED / onOutcome(GateRejected)
      Failed(e)    → 失敗ノード表示 / loadState = FAILED / onOutcome(Failed(e))
-     Applied 候補 → ツリーへ反映 / loadState = LOADED / onOutcome(Applied)
+     Applied 候補 → ★ node.canCreateNote = result.canCreateNote を代入 ★
+                    ツリーへ反映 / loadState = LOADED / onOutcome(Applied)
 ```
 
 **鮮度ガードは `result` の種類より先に、すべての終端結果に対して評価する。** 成功だけに適用してはならない。同じ MR で取得 A の後に強制取得 B が始まり、B が成功してから古い A が失敗した場合、A の失敗処理が B の設定した `LOADED` と最新ツリーを `FAILED` と失敗表示で上書きする。§14.2 の「取得結果の反映には鮮度ガードを適用する」は成功・失敗の別を問わない。
@@ -1120,6 +1134,7 @@ round 6 の指摘を受けて追加で確定した事項:
 | 適用 PR | 対象 | 検証内容 |
 |---|---|---|
 | PR-1 | `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
+| PR-1 | **`canCreateNote` の受け渡し**（§7.2 / §7.4 / §8.1） | `getDiscussions` が `DiscussionsReadResult` として `canCreateNote` を返すこと／**ディスカッション 0 件の MR でも `canCreateNote = true` が保持されること**／`DiscussionsSectionNode.canCreateNote` に代入されること |
 | PR-1 | `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
 | PR-1 | **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
 | PR-2 | **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
@@ -1176,6 +1191,7 @@ round 6 の指摘を受けて追加で確定した事項:
 3. 各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡る。**残時間由来の timeout でリクエストが失敗した場合も、例外を伝播させず取得済み分 + 打ち切り表示を返す**（§12.1）。
 3b. `loadDiscussions` が `LoadOutcome`（`Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped`）を UI スレッドで 1 回だけ渡す。**すべての早期終了（読み込み済み → `Skipped`、接続ゲート拒否 → `GateRejected`）が対応する outcome に合流し、`return` だけで終わる経路が無い。**唯一の例外はライフサイクル終了（`active == false` / `epoch` 変化）で、この場合は callback を呼ばない（§8.1 の契約上の例外）。
 3c. 世代キーが `normalizeInstanceUrl(instanceUrl)` と `authFingerprint` を含む（§7.3 / §8.1 が一致）。
+3d. **`getDiscussions` が `DiscussionsReadResult` を返し、`canCreateNote` が `DiscussionsSectionNode` に保持される。ディスカッション 0 件の MR でも正しく保持される**（§7.2 / §7.4 / §15.2）。
 4. `notes.pageInfo.hasNextPage` が真のスレッドに `(more replies — open in GitLab)` 子ノードが出る。内側をページングしようとしない。
 5. サイドバーの MR ノード配下に Discussions 節が出る。展開時に遅延取得する（`loadDiscussions(force = false)`）。
 6. スレッドが `path:line` または `(overall)` のラベルで、解決状態とともに表示される。
