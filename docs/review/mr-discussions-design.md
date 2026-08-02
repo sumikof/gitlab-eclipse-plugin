@@ -422,7 +422,7 @@ finish(result) = [UI スレッド（asyncExec）]
   } finally {
     in-flight ガード解放          ← ★background の finally。UI スレッドに到達しなくても必ず解放される★
   }
-[UI スレッド（asyncExec）]  ← 書き込みの終端処理。4 つの結果すべてがここに合流する
+[UI スレッド（asyncExec）]  ← 書き込みの終端処理。5 つの結果すべてがここに合流する
   ライフサイクルガード: registry.active が false          → 破棄（UI を一切出さない）
   ライフサイクルガード: registry.currentEpoch != startEpoch → 破棄（同上）
   ★ isLatest（鮮度ガード）は適用しない ★
@@ -443,7 +443,21 @@ finish(result) = [UI スレッド（asyncExec）]
 
 **`startEpoch` は background 起動前の UI ターンで凍結する。** background 完了後に `registry.currentEpoch` を読んで比較しても常に一致してしまい、送信中の停止→再開を跨いだ古い mutation のダイアログや再取得が新しいライフサイクルで起動する。読み取り側（§8.1）と同じ扱いである。`gen` は mutation 側では取得しない（鮮度ガードを適用しないため）。
 
-**書き込みの結果は 4 つであり、例外なくこの終端処理に合流する。** `Success` / `Definite` / `Ambiguous` / `GateRejected` のいずれも、ライフサイクルガードを通したうえで UI 処理を行う。
+**書き込みの結果は 5 つであり、例外なくこの終端処理に合流する。**
+
+```kotlin
+sealed interface WriteOutcome {
+  object Success : WriteOutcome                    // mutation が成功した
+  data class Definite(val cause: Throwable) : WriteOutcome   // 拒否が確定（§12.2）
+  data class Ambiguous(val cause: Throwable) : WriteOutcome  // 結果不明（§12.2）
+  object GateRejected : WriteOutcome               // 接続ゲート不成立。送信していない（§15.3）
+  object Aborted : WriteOutcome                    // 送信直前のライフサイクル検証で中止。送信していない
+}
+```
+
+**`Aborted` を型に含めることが要件である。** 4 値の sealed 型を採用すると、送信直前のライフサイクル拒否（停止→再開を跨いだ場合）を表現できず、実装者が `GateRejected` に丸めるか例外にするしかなくなる。両者は「接続が変わった」と「ライフサイクルが変わった」という別事象であり、`GateRejected` は本文保持ダイアログを出すのに対し `Aborted` は UI を出さないのが正常なので、混同すると挙動が変わる。
+
+いずれの結果も、ライフサイクルガードを通したうえで UI 処理を行う。
 
 **送信直前の検証。** `pinnedConnectionFor` を通した直後、mutation を発行する前に、`registry.active` / `registry.epoch == startEpoch` / コルーチンの `isActive()` を再検査し、いずれかが崩れていれば **mutation を発行しない**。
 
@@ -590,6 +604,7 @@ query GetMrDiscussions($namespaceWithPath: ID!, $iid: String!, $afterCursor: Str
   project(fullPath: $namespaceWithPath) {
     id
     mergeRequest(iid: $iid) {
+      userPermissions { createNote }      # ← MR 全体コメントの出し分け用（§15.2）
       discussions(after: $afterCursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -919,7 +934,10 @@ seqlock により「URL とトークンが同一世代の組であること」�
 
 ### 15.2 認可
 
-- 表示: `note.userPermissions { resolveNote adminNote createNote }` をノードに保持し、コンテキストメニューの出し分けに使う（`PropertyTester`。既存 `CiActionPropertyTester` と同型）。
+- 表示（ノート単位の操作: 返信 / 解決切替 / 編集 / 削除）: `note.userPermissions { resolveNote adminNote createNote }` をノードに保持し、コンテキストメニューの出し分けに使う（`PropertyTester`。既存 `CiActionPropertyTester` と同型）。
+- 表示（**MR 全体コメント**）: **`mergeRequest.userPermissions { createNote }`** を `DiscussionsSectionNode` に保持して使う。
+  **ノート単位の権限では代用できない。** ディスカッションが 1 件も無い MR ではノートが存在せず `note.userPermissions` を取得できないため、そのままでは「メニューを常時表示して FR-9 に違反する」か「FR-3 の入口を提供できない」かのどちらかになる。
+  この値は **PR-1 の読み取りクエリ（§10.2）で同時に取得する**。クエリは既に `project(fullPath:).mergeRequest(iid:)` を辿っているため、そこに `userPermissions { createNote }` を 1 つ足すだけでよく、追加のラウンドトリップは発生しない。
 - 実行: 権限がないのに実行された場合は L3 エラーとして通知する（UI での抑止は最適化であり、最終的な判断はサーバ側が行う）。
 
 ### 15.3 接続ゲート（インスタンス + アカウント）
@@ -985,6 +1003,10 @@ PR-2 は PR-1 にのみ依存する。
 - **内側（notes）はページングしない**（§8.5）。参照実装にノートページング用のクエリが存在せず、実ソースで確定できないため。打ち切りは可視化する。
 - **接続ゲートはインスタンス + アカウント（authFingerprint）の両方**（§15.3）。既存 `pinnedConnectionFor` を再利用する。
 - **世代ガードは取得結果の反映にのみ適用し、mutation の完了処理には適用しない**（§8.2）。
+
+- **`Aborted` は書き込み結果の正式な 5 番目**であり、sealed 型に含める（§8.2）。`GateRejected` と丸めない。
+- **MR 全体コメントの権限は `mergeRequest.userPermissions { createNote }`** を PR-1 の読み取りクエリ（§10.2）で同時取得し `DiscussionsSectionNode` に保持する。ノート単位の権限では、ディスカッションが 0 件の MR で代用できない（§15.2）。
+- **§18.1 の各行に「適用 PR」列を持たせ**、PR-1 / PR-2 の受け入れ条件がそれぞれ自分の範囲だけで閉じるようにする。
 
 > **以下、§21（旧 PR-3）に関する確定事項。** Phase 5A の実装対象ではないが、別サイクルで再導出しないよう残す。本文の要件・受け入れ条件には含まれない。
 
@@ -1095,32 +1117,32 @@ round 6 の指摘を受けて追加で確定した事項:
 
 > `§21.2` / `§21` を参照する行（position 凍結・接続共有・target 解決・権限・行番号の基数・§21.1 接続受け渡し・§21.2 の骨格再利用）は**旧 PR-3 のものであり Phase 5A の対象外**。別サイクルのために残す。
 
-| 対象 | 検証内容 |
-|---|---|
-| `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
-| `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
-| **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
-| **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
-| **終端処理の共通規律**（§8.1 / §8.2） | 読み取り: **`Failed` / `GateRejected` でも鮮度ガードが先に効き**、古い要求が新しい要求の `LOADED` とツリーを上書きしないこと／`GateRejected` で `Loading…` 表示が失敗ノードへ置換されること／書き込み: **`GateRejected` が終端処理に合流し**、§11.2 の通知が出て本文が保持されること（`return` で消えないこと） |
-| **§21.1 接続受け渡し** | `connection` を渡した `fetchListFromApi` / `getLatestMrVersion` / `lookup` / `getProject` が、要求ごとに `captureConnection` を再実行しないこと（呼び出し回数で実証）／`null` 既定で従来と同一の挙動になること |
-| **送信直前の検証**（§8.2） | `active == false` / `epoch != startEpoch` / `!isActive()` のそれぞれで **mutation が発行されないこと**（API 呼び出し回数 0 をカウンタで実証）／`Aborted` になること |
-| **§21.2 の例外合流** | 最初の `captureConnection()` が `UnstableConnectionException` を投げた場合に `GateRejected` として終端へ合流し、本文が保持されること（例外が外へ抜けないこと） |
-| **§21.3 target 解決時点** | 解決が終端 UI ターンで行われること／background で解決した実体を保持しないこと（`DiscussionsTargetRef` のみ持ち回る）／解決から利用まで同一 UI ターンで完結すること |
-| **§21.4 権限** | `userPermissions.createNote == false` で送信 0 回で拒否されること／本文が保持され `[Copy text]` / `[Cancel]` が出ること |
-| **§21.2 の position 凍結** | `getLatestMrVersion` から `baseSha` / `headSha` / `startSha` / `newPath` / `oldPath` の 5 値が凍結されること／version の `headCommitSha` != G7 head sha なら拒否されること／対象パスが version の diffs に無ければ拒否されること |
-| **§21.2 の接続共有** | 接続が G5 より前に 1 回だけ捕捉されること／識別子解決・キー・送信が同一スナップショットを使うこと／送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected` になること |
-| **§21.3 対象ノード解決** | `target == null` のとき Success は通知のみで再取得を発行しないこと／`target == null` かつ Ambiguous では `[Send again]` を出さないこと |
-| **§21.2 の骨格再利用** | diff スレッド作成が §8.2 と同じ 4 結果分岐・ライフサイクルガード・`startEpoch` 凍結を通ること／in-flight キーが `{MR GID}#{newPath}:{oneBasedLine}` で **background 上で**取得されること／二重起動時に `createDiffNote` が 1 回しか送られないこと |
-| **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ **1 回だけ** UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／接続ゲート拒否 → `GateRejected`（`return` で終わらない）／新しい世代に破棄 → `Superseded`（`Applied` ではない）／**`active == false` / `epoch` 変化時は呼ばれないこと**（契約上の例外） |
-| **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと／**作成操作のキーが構築できること**: MR 全体コメント = MR GID、新規 diff スレッド = `{MR GID}#{newPath}:{line}`／MR 全体コメントの二重送信が抑止されること／異なる行への diff コメントは同時に進められること |
-| **行番号の基数**（§21.6） | `selection.startLine + 1` がスナップショット時に適用されること／**ファイル先頭行（0 始まりの 0 → 1 始まりの 1）** を含む境界ケース／送信される `newLine` が 1 始まりであること |
-| `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
-| **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
-| **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
-| **ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること（**鮮度ガードは適用されない**）／**逆に `active == false` または `epoch` 変化時は UI 処理が一切起きないこと**（ライフサイクルガードは適用される）／**その場合でも in-flight ガードが解放されていること**（background の `finally` で解放されるため） |
-| **行一致ゲート**（§21.2、SWT-free 部分） | 捕捉本文 == HEAD blob なら送信、1 バイトでも異なれば拒否／改行コードのみが異なる場合も拒否（正規化しない）／`newLine` が捕捉時のカーソル行であり、後続のエディタ操作に影響されないこと |
-| 監査ログ | 本文・トークン由来のマーカー文字列がログ行に含まれないこと（識別可能なマーカーを使う。Phase 4 PR-4 の指摘を踏まえ、引用符付きの弱い検証にしない） |
-| 位置情報 | `DiffPositionInput` の組み立て（`newLine` のみ、`oldLine` 不在） |
+| 適用 PR | 対象 | 検証内容 |
+|---|---|---|
+| PR-1 | `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
+| PR-1 | `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
+| PR-1 | **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡ること**（引数を捕捉して実証）／**残時間由来の timeout でリクエストが失敗した場合に、例外を伝播させず取得済み分 + 打ち切り理由を返すこと**／逆に 30 秒フルを与えた要求のタイムアウトは通常の失敗として伝播すること／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
+| PR-2 | **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L3 `errors` → **Definite**／**L2 は `data` キーの有無で分岐**: 「`data` なし + `errors` あり → Definite」「`data` あり + `errors` あり → Ambiguous」の 2 ケースを個別に持つ |
+| PR-1 / PR-2 | **終端処理の共通規律**（§8.1 / §8.2） | 読み取り: **`Failed` / `GateRejected` でも鮮度ガードが先に効き**、古い要求が新しい要求の `LOADED` とツリーを上書きしないこと／`GateRejected` で `Loading…` 表示が失敗ノードへ置換されること／書き込み: **`GateRejected` が終端処理に合流し**、§11.2 の通知が出て本文が保持されること（`return` で消えないこと） |
+| §21 | **§21.1 接続受け渡し** | `connection` を渡した `fetchListFromApi` / `getLatestMrVersion` / `lookup` / `getProject` が、要求ごとに `captureConnection` を再実行しないこと（呼び出し回数で実証）／`null` 既定で従来と同一の挙動になること |
+| PR-2 | **送信直前の検証**（§8.2） | `active == false` / `epoch != startEpoch` / `!isActive()` のそれぞれで **mutation が発行されないこと**（API 呼び出し回数 0 をカウンタで実証）／`Aborted` になること |
+| §21 | **§21.2 の例外合流** | 最初の `captureConnection()` が `UnstableConnectionException` を投げた場合に `GateRejected` として終端へ合流し、本文が保持されること（例外が外へ抜けないこと） |
+| §21 | **§21.3 target 解決時点** | 解決が終端 UI ターンで行われること／background で解決した実体を保持しないこと（`DiscussionsTargetRef` のみ持ち回る）／解決から利用まで同一 UI ターンで完結すること |
+| §21 | **§21.4 権限** | `userPermissions.createNote == false` で送信 0 回で拒否されること／本文が保持され `[Copy text]` / `[Cancel]` が出ること |
+| §21 | **§21.2 の position 凍結** | `getLatestMrVersion` から `baseSha` / `headSha` / `startSha` / `newPath` / `oldPath` の 5 値が凍結されること／version の `headCommitSha` != G7 head sha なら拒否されること／対象パスが version の diffs に無ければ拒否されること |
+| §21 | **§21.2 の接続共有** | 接続が G5 より前に 1 回だけ捕捉されること／識別子解決・キー・送信が同一スナップショットを使うこと／送信直前の `pinnedConnectionFor` が不一致なら送信 0 回で `GateRejected` になること |
+| §21 | **§21.3 対象ノード解決** | `target == null` のとき Success は通知のみで再取得を発行しないこと／`target == null` かつ Ambiguous では `[Send again]` を出さないこと |
+| §21 | **§21.2 の骨格再利用** | diff スレッド作成が §8.2 と同じ 4 結果分岐・ライフサイクルガード・`startEpoch` 凍結を通ること／in-flight キーが `{MR GID}#{newPath}:{oneBasedLine}` で **background 上で**取得されること／二重起動時に `createDiffNote` が 1 回しか送られないこと |
+| PR-1 | **完了契約**（§8.1 `LoadOutcome`） | `Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped` がそれぞれ **1 回だけ** UI スレッドで渡ること／`force = false` かつ読み込み済み → `Skipped`／接続ゲート拒否 → `GateRejected`（`return` で終わらない）／新しい世代に破棄 → `Superseded`（`Applied` ではない）／**`active == false` / `epoch` 変化時は呼ばれないこと**（契約上の例外） |
+| PR-2 | **in-flight キー**（§14.4） | `DiscussionWriteKey` が**操作種別を含まない**こと。同一ノートへの Edit と Delete が同一キーになり直列化されること／`WriteKey` / `CreateWriteKey` と衝突しないこと／**作成操作のキーが構築できること**: MR 全体コメント = MR GID、新規 diff スレッド = `{MR GID}#{newPath}:{line}`／MR 全体コメントの二重送信が抑止されること／異なる行への diff コメントは同時に進められること |
+| §21 | **行番号の基数**（§21.6） | `selection.startLine + 1` がスナップショット時に適用されること／**ファイル先頭行（0 始まりの 0 → 1 始まりの 1）** を含む境界ケース／送信される `newLine` が 1 始まりであること |
+| PR-1 | `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
+| PR-1 / PR-2 | **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
+| PR-2 | **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
+| PR-2 | **ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること（**鮮度ガードは適用されない**）／**逆に `active == false` または `epoch` 変化時は UI 処理が一切起きないこと**（ライフサイクルガードは適用される）／**その場合でも in-flight ガードが解放されていること**（background の `finally` で解放されるため） |
+| §21 | **行一致ゲート**（§21.2、SWT-free 部分） | 捕捉本文 == HEAD blob なら送信、1 バイトでも異なれば拒否／改行コードのみが異なる場合も拒否（正規化しない）／`newLine` が捕捉時のカーソル行であり、後続のエディタ操作に影響されないこと |
+| PR-1 / PR-2 | 監査ログ | 本文・トークン由来のマーカー文字列がログ行に含まれないこと（識別可能なマーカーを使う。Phase 4 PR-4 の指摘を踏まえ、引用符付きの弱い検証にしない） |
+| §21 | 位置情報 | `DiffPositionInput` の組み立て（`newLine` のみ、`oldLine` 不在） |
 
 ### 18.2 実機のみで確認する項目（PR 説明文のチェックリスト）
 
@@ -1147,7 +1169,7 @@ round 6 の指摘を受けて追加で確定した事項:
 
 ### PR-1（読み取り基盤）
 
-1. `GitLabGraphQlClient` が存在し、§18.1 の全テストが PASS する。
+1. `GitLabGraphQlClient` が存在し、**§18.1 のうち「適用 PR」が `PR-1` または `PR-1 / PR-2` の行**のテストが PASS する（`PR-2` のみ・`§21` の行は対象外）。
 2. `DiscussionService.getDiscussions` が**外側のみをページングし**、`endCursor` を次要求に渡す。ページ上限 20 と **wall-clock deadline 60 秒**の両方で打ち切り、取得済み分を返して警告を記録する（§8.5 / §12.1）。
 3. 各ページの単発 timeout が `min(30 秒, 残時間)` として `execute` に渡る。**残時間由来の timeout でリクエストが失敗した場合も、例外を伝播させず取得済み分 + 打ち切り表示を返す**（§12.1）。
 3b. `loadDiscussions` が `LoadOutcome`（`Applied` / `Superseded` / `Failed` / `GateRejected` / `Skipped`）を UI スレッドで 1 回だけ渡す。**すべての早期終了（読み込み済み → `Skipped`、接続ゲート拒否 → `GateRejected`）が対応する outcome に合流し、`return` だけで終わる経路が無い。**唯一の例外はライフサイクル終了（`active == false` / `epoch` 変化）で、この場合は callback を呼ばない（§8.1 の契約上の例外）。
@@ -1163,6 +1185,7 @@ round 6 の指摘を受けて追加で確定した事項:
 
 ### PR-2（書き込み）
 
+0. **§18.1 のうち「適用 PR」が `PR-2` または `PR-1 / PR-2` の行**のテストが PASS する（`§21` の行は対象外）。
 1. スレッドへの返信ができる（FR-2）。
 2. MR 全体コメントを作成できる（FR-3）。
 3. 解決可能なスレッドを解決・未解決にできる（FR-5）。
