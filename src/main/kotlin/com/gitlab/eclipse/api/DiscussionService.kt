@@ -1,8 +1,14 @@
 package com.gitlab.eclipse.api
 
 import com.gitlab.eclipse.api.model.DiscussionDto
+import com.gitlab.eclipse.api.model.GitLabDiscussion
 import com.gitlab.eclipse.api.model.PageInfoDto
+import com.gitlab.eclipse.api.model.toDomain
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.utils.logger
+import java.net.http.HttpTimeoutException
+import java.time.Duration
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Raw parse target for the GraphQL `MergeRequest.userPermissions` field this query selects. */
 internal data class MrPermissionsDto(val createNote: Boolean?)
@@ -32,6 +38,23 @@ internal data class ProjectDto(val id: String?, val mergeRequest: MergeRequestDt
  */
 internal data class DiscussionsQueryData(val project: ProjectDto?)
 
+/** Why a [DiscussionsReadResult] does not necessarily contain every discussion on the merge request. */
+enum class TruncationReason { PAGE_LIMIT, DEADLINE }
+
+/**
+ * Result of [DiscussionService.getDiscussions]. [discussions] holds everything fetched before
+ * [truncation] (if non-null) stopped the loop, filtered and sorted as described on
+ * [DiscussionService.getDiscussions]. [canCreateNote] is
+ * `mergeRequest.userPermissions.createNote` taken from the **first** page's response — see that
+ * method's KDoc for why a later page's value must not overwrite it. `truncation == null` means
+ * every discussion was fetched.
+ */
+data class DiscussionsReadResult(
+  val canCreateNote: Boolean,
+  val discussions: List<GitLabDiscussion>,
+  val truncation: TruncationReason?,
+)
+
 /**
  * Fetches a merge request's discussion threads over GraphQL (design phase5a-pr1). This task adds
  * only the protocol constants and identifier construction; the paging loop and deadline handling
@@ -41,6 +64,8 @@ internal data class DiscussionsQueryData(val project: ProjectDto?)
  */
 @Suppress("UnusedPrivateProperty")
 class DiscussionService(private val graphQlClient: GitLabGraphQlClient = service()) {
+
+  private val logger by lazy { logger<DiscussionService>() }
 
   companion object {
 
@@ -145,5 +170,173 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
       "iid" to mrIid.toString(),
       "afterCursor" to afterCursor,
     )
+
+    /** Cap on outer `discussions` pages fetched per call, mirroring [GitLabApiClient]'s `MAX_PAGES`. */
+    const val MAX_DISCUSSION_PAGES = 20
+
+    /** Overall wall-clock budget a caller should pass to [getDiscussions] absent a smaller test value. */
+    val DISCUSSIONS_DEADLINE: Duration = Duration.ofSeconds(60)
+
+    /** Ceiling on a single GraphQL request's timeout, independent of how much deadline budget remains. */
+    private val SINGLE_REQUEST_TIMEOUT: Duration = Duration.ofSeconds(30)
   }
+
+  /**
+   * Fetches every discussion thread on a merge request, paging the outer `discussions` connection
+   * until it is exhausted, [deadline] elapses, or [MAX_DISCUSSION_PAGES] is reached.
+   *
+   * Only the **outer** `discussions` connection is paged. Each discussion's `notes` connection
+   * also carries a `pageInfo`, but the query has no variable to advance it and the reference
+   * implementation never pages it either (it selects `notes.pageInfo` and never uses it —
+   * `out/gitlab-vscode-extension/src/desktop/gitlab/gitlab_service.ts:448-462`); inventing a
+   * note-paging query would violate this project's "protocol constants come from real source"
+   * rule. Instead a discussion whose notes were truncated server-side surfaces that via
+   * [GitLabDiscussion.hasMoreNotes]. This method never loops over notes.
+   *
+   * [clock] and [isActive] mirror [GitLabApiClient.fetchListWithinDeadline]
+   * (`GitLabApiClient.kt:112-143`): [clock] is checked at the top of every iteration against
+   * [deadline] (elapsed since the call started), and [isActive] returning `false` there throws
+   * [CancellationException] before any further request is issued. Reaching the deadline itself is
+   * not an error: the loop returns what it has with `truncation = `[TruncationReason.DEADLINE].
+   * The same outcome is produced whether the deadline is noticed at the top of the loop or as an
+   * [HttpTimeoutException] from a request whose timeout was itself capped by the remaining budget
+   * (i.e. shorter than [SINGLE_REQUEST_TIMEOUT]) — only a timeout on a request that got the full
+   * [SINGLE_REQUEST_TIMEOUT] indicates a genuinely unresponsive server and propagates unchanged.
+   * Any other exception from [graphQlClient] propagates unchanged.
+   *
+   * `mergeRequest.userPermissions.createNote` is read from the **first** page only and carried
+   * into the result regardless of later pages: a merge request with zero discussions returns no
+   * notes at all, so per-note permissions cannot answer "can this user comment", and only the
+   * envelope-level value on the first (and, for an empty MR, only) page can.
+   *
+   * Each page's discussions are normalized via [DiscussionDto.toDomain], then notes whose `system`
+   * flag is `true` (GitLab's automated activity entries) are dropped, and a discussion left with no
+   * notes after that filtering is dropped entirely. The final list — across all pages fetched
+   * before any truncation — is sorted by [GitLabDiscussion.createdAt] ascending with a stable sort;
+   * notes within a discussion are never reordered, since server order is reply order.
+   *
+   * A `null` `project` or `null` `project.mergeRequest` in the response means the merge request
+   * could not be resolved and throws [GraphQlException]; a `null` `discussions` under a present
+   * `mergeRequest` is a merge request with no discussions and is treated as a completed, empty
+   * fetch.
+   */
+  fun getDiscussions(
+    connection: ConnectionSnapshot,
+    namespaceWithPath: String,
+    mrIid: Long,
+    deadline: Duration,
+    clock: () -> Long = { System.nanoTime() },
+    isActive: () -> Boolean = { true },
+  ): DiscussionsReadResult {
+    val start = clock()
+    val discussions = mutableListOf<GitLabDiscussion>()
+    var canCreateNote = false
+    var cursor: String? = null
+    var page = 0
+
+    while (true) {
+      if (!isActive()) throw CancellationException("Cancelled during discussions fetch")
+
+      val elapsedNanos = clock() - start
+      if (elapsedNanos >= deadline.toNanos()) {
+        return buildResult(canCreateNote, discussions, TruncationReason.DEADLINE)
+      }
+
+      val timeout = requestTimeout(deadline, elapsedNanos)
+      val data = fetchPage(connection, namespaceWithPath, mrIid, cursor, timeout)
+        ?: return buildResult(canCreateNote, discussions, TruncationReason.DEADLINE)
+
+      val mergeRequest = data.project?.mergeRequest
+        ?: throw GraphQlException(
+          hasDataKey = true,
+          messages = listOf("Merge request not found in the GraphQL response"),
+        )
+
+      page++
+      if (page == 1) {
+        canCreateNote = mergeRequest.userPermissions?.createNote ?: false
+      }
+
+      val discussionConnection = mergeRequest.discussions
+      discussions += normalizePage(discussionConnection)
+
+      val pageInfo = discussionConnection?.pageInfo
+      val endCursor = pageInfo?.endCursor
+      if (pageInfo?.hasNextPage != true || endCursor.isNullOrBlank()) {
+        return buildResult(canCreateNote, discussions, null)
+      }
+      if (page >= MAX_DISCUSSION_PAGES) {
+        return buildResult(canCreateNote, discussions, TruncationReason.PAGE_LIMIT)
+      }
+      cursor = endCursor
+    }
+  }
+
+  /**
+   * Caps a single request's timeout to [SINGLE_REQUEST_TIMEOUT], or the remaining [deadline]
+   * budget, whichever is smaller.
+   */
+  private fun requestTimeout(deadline: Duration, elapsedNanos: Long): Duration {
+    val remainingNanos = deadline.toNanos() - elapsedNanos
+    return minOf(SINGLE_REQUEST_TIMEOUT, Duration.ofNanos(remainingNanos))
+  }
+
+  /**
+   * Issues one page request. Returns `null` (meaning: the deadline arrived, stop and return what
+   * was fetched) when an [HttpTimeoutException] is caught from a request that was given less than
+   * [SINGLE_REQUEST_TIMEOUT] — i.e. one whose timeout was already capped by the remaining budget.
+   * An [HttpTimeoutException] from a request given the full [SINGLE_REQUEST_TIMEOUT] is rethrown,
+   * as is every other exception.
+   */
+  private fun fetchPage(
+    connection: ConnectionSnapshot,
+    namespaceWithPath: String,
+    mrIid: Long,
+    cursor: String?,
+    timeout: Duration,
+  ): DiscussionsQueryData? = try {
+    graphQlClient.execute(
+      GET_MR_DISCUSSIONS_QUERY,
+      queryVariables(namespaceWithPath, mrIid, cursor),
+      DiscussionsQueryData::class.java,
+      connection,
+      timeout,
+    )
+  } catch (e: HttpTimeoutException) {
+    if (timeout < SINGLE_REQUEST_TIMEOUT) null else throw e
+  }
+
+  /** Normalizes one page's discussion nodes, dropping nulls and discussions left with no notes. */
+  private fun normalizePage(discussionConnection: DiscussionConnectionDto?): List<GitLabDiscussion> =
+    discussionConnection?.nodes.orEmpty().filterNotNull().mapNotNull { it.toFilteredDomain() }
+
+  /**
+   * Sorts [discussions] by [GitLabDiscussion.createdAt] ascending (stable, so equal timestamps
+   * keep server order) and logs truncation — counts only, never the query, variables, response
+   * body, note text, token, or an exception object.
+   */
+  private fun buildResult(
+    canCreateNote: Boolean,
+    discussions: List<GitLabDiscussion>,
+    truncation: TruncationReason?,
+  ): DiscussionsReadResult {
+    val sorted = discussions.sortedBy { it.createdAt }
+    if (truncation != null) {
+      logger.warn("Discussions fetch truncated: reason=$truncation, discussionsFetched=${sorted.size}")
+    }
+    return DiscussionsReadResult(canCreateNote, sorted, truncation)
+  }
+}
+
+/**
+ * Normalizes [this] via [DiscussionDto.toDomain] and then drops notes whose `system` flag is
+ * `true`, returning `null` (drop the whole discussion) when nothing is left. Filtering happens
+ * after normalization, not inside it, so [DiscussionDto.toDomain] can keep preserving `system` for
+ * its own, separate tests.
+ */
+private fun DiscussionDto.toFilteredDomain(): GitLabDiscussion? {
+  val discussion = toDomain()
+  val nonSystemNotes = discussion.notes.filterNot { it.system }
+  if (nonSystemNotes.isEmpty()) return null
+  return discussion.copy(notes = nonSystemNotes)
 }
