@@ -101,7 +101,7 @@ com.gitlab.eclipse.ci.actions
   └─ ShowMergedCiConfigHandler.kt  (新) AbstractHandler
 
 com.gitlab.eclipse
-  └─ GitLabEclipseStartup.kt         (変更=追加のみ) stop 先頭に CiLintGenerationRegistry.active=false
+  └─ GitLabEclipseStartup.kt         (変更=追加のみ) start 先頭に active=true / stop 先頭に active=false
 
 src/main/resources/plugin.xml       (変更=追加のみ) command×2 + handler×2 + submenu 項目×2
 ```
@@ -191,7 +191,10 @@ object CiLintGenerationRegistry {          // 変異/読取は UI スレッド�
 - `JobLogGenerationRegistry`(実ソース `ci/joblog/JobLogGenerationRegistry.kt`)を**忠実にミラー**: `counter` 単調増加・key ごと `latest` map・`active` は `@Volatile`(停止が別スレッドからの syncExec 経由になり得るため)。
 - 世代採番は **UI スレッド**(§8.6 の `selectActiveContext` コールバック内、context 解決後・IO launch 前)。
 - 反映/通知は UI turn 内で `shouldAct(key, myGen)` を判定してから実行(判定と実行を同一 turn=stale すり抜け防止。`DisplayJobLogHandler.reflectLatest/notifyIfLatest` と同一構造)。
-- **ライフサイクル配線(Codex round2 P1 反映)**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.active = false` を追加する。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。stop への変更は §20(既存機能への影響)に明記。
+- **ライフサイクル配線(Codex round2 P1 + round3 P2 反映)**:
+  - **stop**: `GitLabEclipseStartup.stop`(実ソース `:86-96` で既に `JobLogGenerationRegistry.active = false` を実行)の**先頭**に `CiLintGenerationRegistry.active = false` を追加。これが無いと Display 生存中の停止区間で `shouldAct` が true のままとなり、停止後の通知/エディタ open が走って AC-10 に反する。
+  - **start**: `GitLabEclipseStartup.start` の**先頭**に `CiLintGenerationRegistry.active = true` を追加。Eclipse の動的 bundle stop→start で**同一クラスローダーが維持**される場合、singleton の `active` は false のまま残り、再 activation 後の全 lint が `shouldAct=false` となって HTTP 成功後も通知/merged 表示が永久抑止される(Codex round3 P2)。start での再有効化でこれを防ぐ(注: 既存 `JobLogGenerationRegistry` は start で再有効化しておらず同型の潜在ギャップを持つが、本 PR のスコープ外。CI lint 側は正しく再有効化する)。
+  - start/stop への変更は §7 ファイル一覧・§20(既存機能への影響)に明記。stop→start ライフサイクルテストを §23 に追加。
 
 ### 8.5 `launchCiLint`(top-level・共有骨格)+ CI-lint total UI helper
 ```
@@ -220,14 +223,23 @@ private fun reflectOnUiThread(log, key, myGen, action: () -> Unit) {
         if (!CiLintGenerationRegistry.shouldAct(key, myGen)) return@asyncExec
         action()   // onLinted 本体(dialog / editor open)
       } catch (ignored: SWTException) { /* disposed mid-turn: no-op */ }
-        catch (e: Exception) { log.error(...); if (shouldAct) NotificationUtils.showOnUiThread(GENERIC) }
+        catch (e: Exception) {
+          log.error(...)
+          // fallback 通知自体が SWTException を投げ得る。sibling catch は互いを捕捉しないため
+          // 独立の try で囲み UI runnable から漏らさない(Codex round3 P2)。
+          if (CiLintGenerationRegistry.shouldAct(key, myGen)) {
+            try { NotificationUtils.showOnUiThread(GENERIC) } catch (ignored: SWTException) { /* no-op */ }
+          }
+        }
     }
   } catch (ignored: SWTException) { /* asyncExec on disposed display: no-op */ }
     catch (ignored: IllegalStateException) { /* workbench 破棄: display 取得失敗 no-op */ }
 }
-private fun notifyIfLatest(key, myGen, message) { /* 同型。isLatest 判定 → showOnUiThread */ }
+// 同型。UI runnable 内の showOnUiThread も try/catch(SWTException) で囲む。
+private fun notifyIfLatest(key, myGen, message) { /* isLatest 判定 → try{ showOnUiThread }catch(SWTException){} */ }
 ```
-- **不変条件**: これらの helper は**決して例外を投げない(total)**。`currentDisplay` getter(`PlatformUI.getWorkbench().display`)が workbench 破棄後に投げる `IllegalStateException`、および `asyncExec`/UI runnable の `SWTException` を精密 catch し、破棄時は no-op。launch の終端 catch がこの helper 経由で通知しても例外が共有 plain-Job scope へ漏れない(§19)。
+- **不変条件**: これらの helper は**決して例外を投げない(total)**。`currentDisplay` getter(`PlatformUI.getWorkbench().display`)が workbench 破棄後に投げる `IllegalStateException`、および `asyncExec`/UI runnable/fallback 通知の `SWTException` をすべて精密 catch し、破棄時は no-op。
+- **共有 scope 非 cancel の担保(2 重)**: (a) `asyncExec` の UI runnable は UI スレッドで走るため、その内部例外は元来コルーチンへ伝播しない(SWT イベントループが処理)。(b) 加えて上記のとおり UI runnable 内も total 化し、プラットフォームへの未処理例外自体も出さない。launch の終端 catch がこの helper 経由で通知しても例外が共有 plain-Job scope へ漏れない(§19・AC-10)。
 
 ### 8.6 `ValidateCiConfigHandler` / `ShowMergedCiConfigHandler`
 - `execute`(UI): `ActiveEditorContent.of(event)` で **text + source identity(§8.7)を同一 UI turn で抽出**。null → `NotificationUtils.show("GitLab: No open file.")` して return。
@@ -404,7 +416,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 
 - **`GitLabApiClient` に `postJson` を追加**(既存メソッド不変)。既存テストへの回帰なし。
 - 新規パッケージ `ci.lint` の追加のみ。既存 `ci.joblog` / `ci.actions` / `api` の既存型は不変(新規ファイル追加と plugin.xml への追加のみ)。
-- **`GitLabEclipseStartup.stop` に 1 行追加**(`CiLintGenerationRegistry.active = false`。既存 `shutdownJobLog()` と同経路・Codex round2 P1)。start は不変。既存挙動への回帰なし。
+- **`GitLabEclipseStartup.stop`/`start` に各 1 行追加**(stop: `CiLintGenerationRegistry.active = false`=既存 `shutdownJobLog()` と同経路・Codex round2 P1。start: `CiLintGenerationRegistry.active = true`=同一クラスローダー再起動での永久抑止防止・Codex round3 P2)。既存 start/stop の他処理は不変・回帰なし。
 - plugin.xml は command/handler/submenu 項目の**追加のみ**。既存の「GitLab」サブメニュー(navigation)に 2 項目を足す。
 - 新規 bundle 依存なし。
 
@@ -425,7 +437,7 @@ PR-3 の JobLog エディタトリオ(`JobLogContent`/`JobLogStorage`/`JobLogEdi
 - **`runCiLint`(安全網の要)**: `capture → gate → lint` の順序、`InstanceMismatch` 時に lint ラムダが **0 回**呼ばれること、`ConnectionUnstable`、`Failed` の分類(http/timeout/io)、`CancellationException` 伝播。
 - `buildCiLintAuditMessage`: **`Linted`(success)を含む全 outcome**で行を生成し、token/body/yaml を含まず merged は present/absent のみ、を検証。
 - `MergedYamlEditorInput`: `equals/hashCode` が key のみ依存、`exists()=false`、`getName()` が期待値。`MergedYamlKey`: 同一(instance,project,sourceId)は等価、sourceId 差で非等価。
-- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。plugin 停止で `active=false` → `shouldAct`=false。
+- **`CiLintGenerationRegistry`(指摘 #2)**: `nextGeneration` が単調増加・key の最新を更新、`isLatest/shouldAct`、**完了順逆転シナリオ**(gen1 採番→gen2 採番→gen1 で `shouldAct`=false・gen2 で true)。**ライフサイクル**: `active=false`(stop 相当)→ `shouldAct`=false、その後 `active=true`(start 相当)→ 新規 gen が再び反映される(**stop→start 再有効化**・Codex round3 P2)。
 - **`ActiveEditorContent.sourceId` 導出(指摘 #6)**: `IFileEditorInput`(mock)→ fullPath、`IURIEditorInput`(mock)→ uri、フォールバック → `name + "#" + identityHashCode`。**同名別パス → 別 sourceId**、**同一未保存入力インスタンスの 2 回抽出 → 同一 sourceId**。SWT/document 取得部は手動、input→sourceId 純ロジックは mock 入力で単体化。
 - **total helper の gating 純ロジック**: `shouldAct` 判定分岐(反映/通知の可否)を SWT 非依存部分で単体化。SWT 例外 catch(disposed display/`asyncExec`)の no-op は手動検証(§手動)。
 
