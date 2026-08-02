@@ -6,11 +6,14 @@ import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
 import kotlinx.coroutines.CancellationException
@@ -52,6 +55,12 @@ import java.net.URI
  * version and renders an "Overview" node plus its changed files (flat in LIST mode,
  * folder hierarchy in TREE mode), under the same threading discipline.
  */
+// TooManyFunctions: the discussions wiring (Task 9) adds the loader's UI-thread helpers and the
+// section lookup, pushing this class past detekt's 11-function threshold. Suppressed rather than
+// restructured: each helper closes over `viewer`/`logger`/`viewModel`, so moving them top-level
+// would mean threading those through as parameters — more code and more state to get wrong on a
+// class whose whole point is owning that widget state.
+@Suppress("TooManyFunctions")
 class GitLabSidebarView : ViewPart() {
   companion object {
     /** Must match the view id declared in plugin.xml. */
@@ -103,6 +112,41 @@ class GitLabSidebarView : ViewPart() {
   // Stored so dispose() can remove this exact instance from the shared SidebarViewState.
   private val modeListener: () -> Unit = { onModeChanged() }
 
+  /**
+   * Lazy-loads a [DiscussionsSectionNode]'s threads on expansion. Built lazily for the same two
+   * reasons as [pipelineService]/[jobService] — its `service()` constructor defaults must resolve
+   * only once the workbench (and Koin) is up — plus a third: every function injected below
+   * captures [viewer], which exists only after [createPartControl].
+   *
+   * **None of the injected functions may throw.** The loader calls them inside its terminal
+   * branch, past the point where exactly one `onOutcome` call is guaranteed, so an exception
+   * escaping a builder, [refreshNode] or [notify] would abort that branch and strand the callback
+   * — the one thing [DiscussionsLoader]'s completion contract promises cannot happen. Each is
+   * therefore made total by [guarded]: a disposed control is checked before it is touched, and
+   * anything else that can fail (notably the notification popup, which needs an active window) is
+   * caught and logged with `exceptionType=` only — never the exception object, which can carry a
+   * token in its message.
+   */
+  private val discussionsLoader by lazy {
+    DiscussionsLoader(
+      runInBackground = { block -> guarded("runInBackground", Unit) { coroutineScope.launch { block() } } },
+      runOnUi = { block -> runOnDiscussionsUiThread(block) },
+      buildChildren = { node, result ->
+        guarded("buildChildren", emptyList()) { viewModel.buildDiscussionChildren(node, result) }
+      },
+      buildFailureChildren = { _, gateRejected ->
+        guarded("buildFailureChildren", emptyList()) { viewModel.buildDiscussionFailureChildren(gateRejected) }
+      },
+      buildLoadingChildren = {
+        guarded("buildLoadingChildren", emptyList()) { viewModel.buildDiscussionLoadingChildren() }
+      },
+      refreshNode = { node ->
+        guarded("refreshNode", Unit) { if (!viewer.control.isDisposed) viewer.refresh(node) }
+      },
+      notify = { message -> guarded("notify", Unit) { NotificationUtils.show(message) } },
+    )
+  }
+
   override fun createPartControl(parent: Composite) {
     viewer = TreeViewer(parent, SWT.SINGLE or SWT.H_SCROLL or SWT.V_SCROLL)
     viewer.contentProvider = SidebarContentProvider()
@@ -135,6 +179,18 @@ class GitLabSidebarView : ViewPart() {
     viewer.addTreeListener(
       object : ITreeViewerListener {
         override fun treeExpanded(event: TreeExpansionEvent) {
+          // Discussions section: fetch on first expansion and after a failed one (a retry), but
+          // never while a fetch is in flight — collapsing and re-expanding mid-load must not
+          // start a redundant second fetch — and never when already LOADED, which is both the
+          // loader's own behavior for force = false and what keeps re-expansion cheap.
+          val section = event.element as? DiscussionsSectionNode
+          if (section != null) {
+            val state = section.loadState
+            if (state == DiscussionLoadState.NOT_LOADED || state == DiscussionLoadState.FAILED) {
+              discussionsLoader.loadDiscussions(section, force = false, onOutcome = {})
+            }
+            return
+          }
           val node = event.element as? MergeRequestNode ?: return
           if (node.loadedChildren == null) loadMrChildren(node)
         }
@@ -403,9 +459,12 @@ class GitLabSidebarView : ViewPart() {
     val control = viewer.control
     if (control.isDisposed) return
     if (mrVersionCache.containsKey(cacheKey)) {
+      // Captured on the cache-hit path too (a cheap in-memory read): passing nulls here would
+      // silently cost a cached MR its Discussions section on every re-expansion.
+      val tags = captureConnectionTags()
       control.display.asyncExec {
         if (control.isDisposed) return@asyncExec
-        applyMrChildren(node, Result.success(mrVersionCache[cacheKey]))
+        applyMrChildren(node, Result.success(mrVersionCache[cacheKey]), tags.first, tags.second)
       }
       return
     }
@@ -422,6 +481,9 @@ class GitLabSidebarView : ViewPart() {
         versionResult.exceptionOrNull()?.let {
           logger.error("Failed to load changed files for merge request !${node.mr.iid}.", it)
         }
+        // Reduced to its two non-secret fields right here, off the UI thread: the snapshot itself
+        // holds the token and must never be carried into the UI block below.
+        val tags = captureConnectionTags()
         if (!control.isDisposed) {
           control.display.asyncExec {
             if (control.isDisposed) return@asyncExec
@@ -430,7 +492,7 @@ class GitLabSidebarView : ViewPart() {
             // drop the result rather than poisoning the fresh mrVersionCache with it.
             if (!refreshState.isCurrent(generation)) return@asyncExec
             versionResult.onSuccess { version -> mrVersionCache[cacheKey] = version }
-            applyMrChildren(node, versionResult)
+            applyMrChildren(node, versionResult, tags.first, tags.second)
           }
         }
       } catch (e: CancellationException) {
@@ -446,11 +508,100 @@ class GitLabSidebarView : ViewPart() {
    * raced the fetch never paints children built for a stale mode (same rule as
    * [applyCompose]). A failed [versionResult] is applied but not cached, so a later full
    * refresh (which rebuilds the node) retries the fetch.
+   *
+   * [sourceInstanceUrl]/[sourceAuthFingerprint] are the non-secret tags of the connection the
+   * children were built under ([captureConnectionTags]); they are stamped on the node's
+   * [DiscussionsSectionNode] so a later write can refuse to send when instance OR account has
+   * changed underneath it. Both `null` (capture failed) means no Discussions section at all,
+   * which is deliberate — see `SidebarViewModel.buildMrChildren`.
    */
-  private fun applyMrChildren(node: MergeRequestNode, versionResult: Result<GitLabMrVersion?>) {
-    node.loadedChildren = viewModel.buildMrChildren(node.url, versionResult, viewState.mode)
+  private fun applyMrChildren(
+    node: MergeRequestNode,
+    versionResult: Result<GitLabMrVersion?>,
+    sourceInstanceUrl: String?,
+    sourceAuthFingerprint: String?,
+  ) {
+    node.loadedChildren =
+      viewModel.buildMrChildren(node.url, versionResult, viewState.mode, node.mr, sourceInstanceUrl, sourceAuthFingerprint)
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
+  }
+
+  /**
+   * The live connection's two non-secret tags, or `(null, null)` when it could not be captured
+   * ([com.gitlab.eclipse.api.UnstableConnectionException] from a settings change in progress, or
+   * a failure reading the stored credential). The [com.gitlab.eclipse.api.ConnectionSnapshot]
+   * itself never leaves this function: it holds the token.
+   */
+  private fun captureConnectionTags(): Pair<String?, String?> =
+    runCatching { apiClient.captureConnection() }
+      .map { snapshot -> snapshot.instanceUrl to snapshot.authFingerprint }
+      .getOrElse { null to null }
+
+  /**
+   * UI thread only. Runs [block] on the SWT UI thread, dropping it when the viewer's control (or
+   * the whole Display, at workbench shutdown) is disposed — a disposed widget must never be
+   * touched, and a dropped block simply means there is no tree left to paint into. Total by
+   * construction: both the scheduling and the block itself are wrapped by [guarded], so nothing
+   * thrown here can escape into [DiscussionsLoader].
+   */
+  private fun runOnDiscussionsUiThread(block: () -> Unit) {
+    guarded("runOnUi", Unit) {
+      val control = viewer.control
+      if (control.isDisposed) return@guarded
+      control.display.asyncExec {
+        if (control.isDisposed) return@asyncExec
+        guarded("uiStep", Unit) { block() }
+      }
+    }
+  }
+
+  /**
+   * Runs [block], returning [fallback] if it throws. The audit line names the injected step and
+   * carries `exceptionType=<class name>` only — never the exception object, the token, the auth
+   * fingerprint, or any note text.
+   */
+  private fun <T> guarded(operation: String, fallback: T, block: () -> T): T =
+    try {
+      block()
+    } catch (e: Exception) {
+      logger.error("Discussions UI step failed: operation=$operation exceptionType=${e.javaClass.name}")
+      fallback
+    }
+
+  /**
+   * UI thread only (it reads [viewer]'s current input, which is UI-thread-confined). Finds the
+   * [DiscussionsSectionNode] currently in the tree for the given merge request on the given
+   * connection, or `null` when the tree holds no such section — e.g. the sidebar was refreshed,
+   * the MR node was never expanded, or the connection changed since the node was built.
+   *
+   * All four values must match, and the instance URLs are compared through
+   * [normalizeInstanceUrl] on both sides — the same normalization the connection gate uses, so a
+   * trailing-slash difference cannot cause a miss. The fingerprint is compared exactly: the same
+   * URL with a different credential is a different account, and a URL-only check would let a
+   * write address the wrong one.
+   *
+   * **Deliberately unused in this PR** — the next PR's write actions call it to re-fetch the
+   * affected section after a create/reply/resolve. Do not delete it as dead code.
+   */
+  internal fun resolveDiscussionsSection(
+    instanceUrl: String,
+    authFingerprint: String,
+    projectId: Long,
+    mrIid: Long,
+  ): DiscussionsSectionNode? {
+    if (!::viewer.isInitialized || viewer.control.isDisposed) return null
+    val normalizedInstanceUrl = normalizeInstanceUrl(instanceUrl)
+    return (viewer.input as? List<*>)
+      .orEmpty()
+      .filterIsInstance<SidebarNode>()
+      .flatMap(::collectDiscussionsSections)
+      .firstOrNull {
+        normalizeInstanceUrl(it.sourceInstanceUrl) == normalizedInstanceUrl &&
+          it.sourceAuthFingerprint == authFingerprint &&
+          it.projectId == projectId &&
+          it.mrIid == mrIid
+      }
   }
 
   override fun setFocus() {
@@ -489,3 +640,12 @@ internal fun remapExpandedElements(expanded: List<Any>, newInput: List<SidebarNo
       else -> element
     }
   }
+
+/**
+ * Every [DiscussionsSectionNode] at or under [node], depth-first. Recursion stops at a section
+ * itself (a section's own children are threads, never further sections), and reading
+ * [SidebarNode.children] of a not-yet-loaded node is safe: it yields that node's stable
+ * "Loading…" placeholder rather than triggering a fetch. UI thread only, like its caller.
+ */
+private fun collectDiscussionsSections(node: SidebarNode): List<DiscussionsSectionNode> =
+  if (node is DiscussionsSectionNode) listOf(node) else node.children.flatMap(::collectDiscussionsSections)
