@@ -119,7 +119,9 @@ Eclipse の Compare フレームワーク（`org.eclipse.compare`）は diff エ
 |---|---|
 | NFR-1 | すべてのネットワーク呼び出しは UI スレッド外で行う |
 | NFR-2 | すべての呼び出しは接続スナップショットに pin される（URL とトークンが同一世代の組であることが保証される） |
-| NFR-3 | 書き込みは、スナップショットが「表示元と同一インスタンス」であることを確認してから送信する |
+| NFR-3 | 読み取り・書き込みとも、スナップショットが「表示元と同一インスタンス**かつ同一アカウント**（`authFingerprint` 一致）」であることを確認してから送信する |
+| NFR-3b | 取得処理は wall-clock deadline（60 秒）で有界であり、超過時は取得済み分と打ち切り表示を返す |
+| NFR-3c | サーバのコミット有無を判定できない失敗の後に、同じ mutation を自動でも単純な再試行でも再送しない |
 | NFR-4 | ログ・監査出力にトークン、リクエストボディ、コメント本文、例外オブジェクト本体を含めない |
 | NFR-5 | 応答の UI 反映は最新世代のもののみとし、古い応答が後着しても上書きしない |
 | NFR-6 | ページングは有界であり、打ち切り時はユーザーから見て分かる |
@@ -269,11 +271,13 @@ class GitLabGraphQlClient(
 
 | ノード | 保持する情報 |
 |---|---|
-| `DiscussionsSectionNode` | 親 MR の識別子（instanceUrl / projectId / mrIid / mrGid / mrSha / namespaceWithPath）、子スレッド、読み込み状態 |
-| `ThreadNode` | `replyId`、`resolved`、`resolvable`、位置情報（path / line / positionType）、`userPermissions`、子ノート |
-| `NoteNode` | ノート GID、`body`、著者 username、作成日時、`userPermissions`、親スレッドへの参照 |
+| `DiscussionsSectionNode` | **`sourceInstanceUrl` + `sourceAuthFingerprint`**、親 MR の識別子（projectId / mrIid / mrGid / mrSha / namespaceWithPath）、子スレッド、`loadState` |
+| `ThreadNode` | 上記の接続タグ + MR 識別子一式（複製）、`replyId`、`resolved`、`resolvable`、位置情報（path / line / positionType）、`userPermissions`、子ノート |
+| `NoteNode` | 上記の接続タグ + MR 識別子一式（複製）、ノート GID、`body`、著者 username、作成日時、`userPermissions`、親スレッドへの参照 |
 
-**設計上の注意**: Phase 3 の `ChangedFileNode` は「ハンドラが選択ノードから親 MR まで遡れない」ため必要な情報を自ノードに複製している（`SidebarNode.kt:118-132` の KDoc を参照）。同じ制約が本設計にも当てはまるため、`ThreadNode` / `NoteNode` にも書き込みに必要な識別子一式を複製して持たせる。
+**接続タグは必須である。** `sourceInstanceUrl` と `sourceAuthFingerprint` は「そのノードが実際にどの接続で取得されたか」を表す非秘密のタグであり、後続の読み書きが同じインスタンス**かつ同じアカウント**に対してのみ行われることを保証する（§15.3）。これは既存の `PipelineNode` / `JobNode` が持つ `sourceInstanceUrl` / `sourceAuthFingerprint`（`src/main/kotlin/com/gitlab/eclipse/views/sidebar/SidebarViewModel.kt:102-114`）と同一の仕組みであり、本設計はその確立済みパターンに従う。
+
+**設計上の注意**: Phase 3 の `ChangedFileNode` は「ハンドラが選択ノードから親 MR まで遡れない」ため必要な情報を自ノードに複製している（`SidebarNode.kt:118-132` の KDoc を参照）。同じ制約が本設計にも当てはまるため、`ThreadNode` / `NoteNode` にも接続タグと書き込みに必要な識別子一式を複製して持たせる。
 
 ### 7.5 `CommentInputDialog`
 
@@ -289,31 +293,37 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
 
 ### 8.1 読み取り（PR-1）
 
-`DiscussionsSectionNode` が展開されたとき、初回のみ取得する（遅延取得）。
+読み取りの入口は **`loadDiscussions(node, force: Boolean)` の 1 つ**とする。`force = false` は遅延取得（節の展開時。既に読み込み済みなら何もしない）、`force = true` は無条件取得（書き込み成功後の再取得。§8.2）。
 
 ```
+loadDiscussions(node, force)
+
 [UI スレッド]
-  ユーザーが Discussions 節を展開
-    → 既に読み込み済みなら何もしない
-    → startEpoch = registry.currentEpoch を捕捉
-    → gen = registry.nextGeneration(key)
-    → 節を「Loading…」表示に切り替え
+  if (!force && node.loadState == LOADED) return      ← force=true はこの分岐を通らない
+  node.loadState = LOADING                            ← UI スレッド専有なので原子的
+  startEpoch = registry.currentEpoch
+  gen        = registry.nextGeneration(key)
+  節を「Loading…」表示に切り替え
     → background へ
 [background]
-  connection = graphQlClient.captureConnection()
-  同一インスタンスゲート: sameConfiguredInstance(node.instanceUrl, connection.instanceUrl)
-    → 不一致なら中止（読み取りでも他インスタンスに問い合わせない）
-  discussions = discussionService.getDiscussions(connection, namespaceWithPath, mrIid)
+  connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
+    → null（URL 不一致 / 資格情報不一致 / 接続不安定）なら中止し HTTP を発行しない（§15.3）
+  deadline = 60 秒の wall-clock（§12.1）
+  discussions = discussionService.getDiscussions(connection, namespaceWithPath, mrIid, deadline)
     ページングループ（§8.5）
   正規化・system ノート除外・ソート
 [UI スレッド（asyncExec）]
   ガード: registry.active が false → 破棄
   ガード: registry.currentEpoch != startEpoch → 破棄
   ガード: !registry.isLatest(key, gen) → 破棄
-  ツリーへ反映
+  ツリーへ反映 / node.loadState = LOADED
 ```
 
-失敗時は節を「Failed to load discussions — see the Error Log」ノードに置き換え、同じ世代ガードを通す。
+`key` は（`normalizeInstanceUrl(sourceInstanceUrl)`, `sourceAuthFingerprint`, `projectId`, `mrIid`）から作る。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）と同じく、URL と資格情報フィンガープリントの**両方**をキーに織り込む。
+
+失敗時は節を「Failed to load discussions — see the Error Log」ノードに置き換え、`loadState` を `FAILED`（= 次回展開時に再取得する）に戻し、同じ世代ガードを通す。
+
+**設計上の注意**: `loadState` は UI スレッド専有であり、`@Volatile` にしない。読み書きがすべて UI スレッド上で起きるため、チェックと更新の間に他スレッドが割り込む窓が存在しない。
 
 ### 8.2 書き込み共通フロー（PR-2）
 
@@ -325,21 +335,29 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
   権限チェック（メニュー出し分けで既に済んでいるが、実行時にも再確認）
   入力が必要な操作はダイアログを開く → Cancel なら終了
   in-flight ガード取得（キー = 操作種別 + 対象 ID）→ 取得できなければ「already in progress」通知
-  startEpoch / gen を捕捉
     → background へ
 [background]
-  connection = captureConnection()
-  同一インスタンスゲート（送信前に評価する。ここを通らなければ HTTP を一度も発行しない）
+  connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
+    → null なら中止し HTTP を発行しない（§15.3）
   GraphQL mutation 送信
-  3 層のエラー検査（§11.1）
-[UI スレッド（asyncExec）]
-  世代ガード（§8.1 と同じ 3 つ）
-  成功 → 当該 MR の Discussions 節のみ再取得（§8.1 のフローを再入）
-  失敗 → §9 の再試行フロー、または通知
-  finally: in-flight ガード解放
+  3 層のエラー検査（§11.1）→ 結果を Definite / Ambiguous / Success に分類（§12.2）
+[UI スレッド（asyncExec）] ★世代ガードを通さない★
+  in-flight ガード解放
+  Success   → loadDiscussions(node, force = true)（§8.1。ここで初めて世代管理に入る）
+  Definite  → §9 の再試行ダイアログ（本文保持・[Retry] / [Cancel]）
+  Ambiguous → §9.3 の結果確認フロー（本文保持・自動再送しない）
 ```
 
-**重要**: 同一インスタンスゲートは HTTP 送信より前に評価する。Phase 4 の `runCiLint` で確立した不変条件（「ゲート不成立時は API 呼び出し回数 0」をテストで実証する）を踏襲する。
+**世代ガードは mutation の完了処理に適用しない。** 適用してよいのは「取得結果をツリーへ反映する箇所」だけである（§8.1 の末尾および §14.2）。
+
+理由: 世代ガードの目的は「古い**取得**結果が新しい取得結果を上書きしないこと」であり、mutation の完了は取得結果ではない。送信中にユーザーが同じ MR を更新すると新しい generation が発行されるため、mutation の完了処理を世代ガードの内側に置くと、
+
+- サーバで成功しているのに再取得が発行されず、表示が古いままになる（FR-10 違反）。しかも先行した更新取得が mutation のコミット前に完了していると、古い状態が確定して残る。
+- 失敗時に再試行ダイアログが出ず、ユーザーが入力した本文が失われる（FR-8 違反）。
+
+したがって **in-flight ガード解放・成功時の強制再取得・失敗時の本文保持は、世代にかかわらず必ず実行する。**
+
+**同一インスタンス/同一アカウントのゲートは HTTP 送信より前に評価する。** Phase 4 の `runCiLint` で確立した不変条件（「ゲート不成立時は API 呼び出し回数 0」をテストで実証する）を踏襲する。
 
 ### 8.3 エディタ行からの新規 diff スレッド（PR-3）
 
@@ -347,26 +365,46 @@ JFace の `InputDialog` は単一行 `Text` のみであり、コメント本文
 [UI スレッド]
   G1: アクティブエディタが ITextEditor か
   G2: エディタ入力が IFileEditorInput か（ワークスペース上のファイルか）
-  G3: カーソル行番号を取得（1 始まりへ変換）
+  G3: エディタが dirty でないか（editor.isDirty() == false）
+      → dirty なら拒否（未保存の編集で行番号が本文とずれるため）
+  G4: カーソル行番号を取得（1 始まりへ変換）
   ダイアログで本文を受け取る → Cancel なら終了
     → background へ
 [background]
-  G4: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
+  G5: そのファイルを含むワークスペースリポジトリがちょうど 1 つに定まるか
       （RepositoryContextResolver。0 件・複数件は拒否）
-  G5: そのリポジトリの現ブランチに対応する MR が特定できるか
+  G6: そのリポジトリの現ブランチに対応する MR が特定できるか
       （CurrentBranchMrLookup）
-  G6: リポジトリの HEAD sha == その MR の diff head sha か
+  G7: リポジトリの HEAD sha == その MR の diff head sha か
       （OpenMrFileHandler と同一のゲート）
-  G7: 対象ファイルの MR 相対パスが、その MR の diff の newPath に含まれるか
-  connection = captureConnection() / 同一インスタンスゲート
+  G8: 対象パスが HEAD に対して未変更か
+      （JGit: Git(repo).status().addPath(relPath).call() が当該パスに
+        変更・ステージ・未追跡を報告しないこと）
+      → 変更ありなら拒否（作業ツリーの改変で行番号がずれるため）
+  G9: 対象ファイルの MR 相対パスが、その MR の diff の newPath に含まれるか
+  connection = pinnedConnectionFor(...)（§15.3）
   createDiffNote 送信（position は §10 の DiffPositionInput）
-[UI スレッド]
-  世代ガード → 成功なら Discussions 節を再取得
+[UI スレッド] ★世代ガードを通さない（§8.2）★
+  Success → loadDiscussions(node, force = true)
+  失敗    → §9 のフロー
 ```
 
-**G6 が本設計の要である。** このゲートが成立するとき、エディタに表示されているファイルの内容は MR の head 版そのものである。したがって**カーソル行 = diff の `newLine`** が推測なしに確定し、行ズレ補正が原理的に不要になる。
+**行の一致は G3・G7・G8 の 3 つが同時に成立して初めて保証される。** いずれか 1 つでも欠けると、エディタが表示している内容と MR head 版の内容が食い違い、カーソル行を `newLine` として送ると別の行にコメントが付くか、GitLab 側で position が拒否される。
 
-G6 不成立時のメッセージは既存 `OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE`（`src/main/kotlin/com/gitlab/eclipse/mergerequests/OpenMrFileHandler.kt:133-134`）と同一文言を使い、ユーザーから見た挙動を既存機能と揃える。
+- **G7 のみでは不十分**である。HEAD sha が一致していても、作業ツリーに未コミットの変更があればファイルの内容と行番号はずれる（→ G8 が必要）。
+- **G7 + G8 でも不十分**である。エディタに未保存の編集があれば、ディスク上の内容と表示中の内容がずれる（→ G3 が必要）。
+
+3 つがすべて成立するとき、エディタに表示されている内容 = ディスク上の内容 = HEAD の blob = MR head 版 となり、**カーソル行 = diff の `newLine`** が推測なしに確定する。この場合に限り行ズレ補正が不要になる。
+
+拒否時のメッセージ:
+
+| ゲート | メッセージ |
+|---|---|
+| G3 | `Save the file before commenting on a line.` |
+| G7 | 既存 `OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE`（`src/main/kotlin/com/gitlab/eclipse/mergerequests/OpenMrFileHandler.kt:133-134`）と同一文言 |
+| G8 | `This file has uncommitted changes; its line numbers no longer match the merge request.` |
+
+G8 の JGit 呼び出しはブロッキングであり、必ず background 側で行う（既存 `OpenCreateNewMrHandler.kt:85` が `Git(repo).status().call().hasUncommittedChanges()` を background で使っているのと同じ扱い）。本設計では**対象パスに限定**した検査とする。リポジトリ全体の clean を要求すると、無関係なファイルの編集中にコメントできなくなり実用に耐えないため。
 
 ### 8.4 old 側（削除行）の扱い
 
@@ -376,17 +414,28 @@ old 側へのコメント作成は**対象外**とし、PR に既知の制限と
 
 ### 8.5 ページング
 
-GraphQL のページングは二重構造である。
+GraphQL の応答には 2 つの `pageInfo` が現れるが、**本設計がページングするのは外側の 1 つだけ**である。
 
-1. `project.mergeRequest.discussions.pageInfo` — スレッドのページング
-2. 各 `discussion.notes.pageInfo` — スレッド内ノートのページング
+| 位置 | 扱い |
+|---|---|
+| `project.mergeRequest.discussions.pageInfo` | **ページングする。** `hasNextPage` が真なら `endCursor` を `$afterCursor` に渡して次ページを取得する |
+| 各 `discussion.notes.pageInfo` | **ページングしない。** `hasNextPage` を読み取り、真ならそのスレッドに打ち切り表示を出す |
 
-両方にループ上限を設ける。既存 REST の `MAX_PAGES = 20`（`GitLabApiClient.kt:290`）に倣い、それぞれ上限に達したら以下を行う。
+**内側（notes）をページングしない理由。** §10.2 のクエリの `notes` フィールドには `after` 引数がなく、変数も外側の `$afterCursor` しか存在しないため、このクエリ 1 本ではノートの次ページへ進めない。ノートをページングするには「discussion ID と notes カーソルを受け取る別クエリ」が必要になるが、**参照実装にそのクエリは存在しない**（VSCode も外側のみを再帰でページングし、`notes.pageInfo` は取得するだけで使っていない。`gitlab_service.ts:452-459`）。
 
-- `logger.warn` に打ち切りを記録（件数のみ。本文は出さない）
-- ツリーに「(truncated — see GitLab for the full discussion)」ノードを追加
+プロジェクト制約「プロトコル定数は実装前に実ソースで確定する」に照らすと、実ソースに存在しないクエリを設計時に創作することはできない。したがって本設計は**内側をページングしないことを確定仕様とし、代わりに打ち切りを可視化する**。これは参照実装の挙動（超過分を黙って落とす）より厳密である。
 
-**打ち切りを黙って行わない**ことを要件とする（NFR-6）。
+打ち切りの扱い:
+
+| 条件 | 動作 |
+|---|---|
+| 外側が `MAX_DISCUSSION_PAGES = 20` に到達（`GitLabApiClient.MAX_PAGES` に倣う） | `logger.warn`（件数のみ）+ 節の末尾に `(truncated — open the merge request in GitLab to see all discussions)` ノード |
+| 外側が §12.1 の deadline に到達 | 同上（打ち切り理由は timeout）。取得済み分は表示する |
+| あるスレッドの `notes.pageInfo.hasNextPage` が真 | そのスレッドの末尾に `(more replies — open in GitLab)` 子ノード |
+
+**打ち切りを黙って行わない**ことを要件とする（NFR-6）。上記 3 つの打ち切りはいずれもツリー上に現れ、ユーザーが「全部見えている」と誤認しない。
+
+**将来の拡張余地**: GitLab の GraphQL スキーマが `Discussion.notes(after:)` を直接引ける形を提供している場合は内側もページング可能になるが、それは実インスタンスのスキーマで確認できてからの判断とする（§16 U-10）。
 
 ---
 
@@ -400,17 +449,47 @@ VSCode の `gl.retryFailedComment` / `gl.cancelFailedComment` は Comments API �
 
 ツリー + ダイアログの設計に楽観プレースホルダは存在しない。しかし**満たすべき本質的要件は同一である**: ユーザーが入力した本文を、送信失敗によって失わせない。
 
+ただし「失敗」を一括で再送可能として扱ってはならない。**サーバがコミットしたか判定できる失敗と、できない失敗を分ける**（§12.2 の分類）。
+
+### 9.2 確定拒否（Definite）の場合
+
+サーバが要求を**受理して拒否した**ことが確定している失敗。L2（GraphQL `errors`）、L3（mutation ペイロードの `errors`）、HTTP 4xx が該当する。この場合サーバ側に副作用は無いので、同じ本文の再送は安全である。
+
 ```
-送信失敗
+送信失敗（Definite）
   → CommentInputDialog を再度開く
       初期本文 = 直前に入力された本文（そのまま保持）
-      エラー表示 = 失敗理由（サーバ由来のメッセージ、またはジェネリックな文言）
+      エラー表示 = 失敗理由
       ボタン = [Retry] / [Cancel]
   → Retry: 同じ本文で §8.2 のフローを再入
   → Cancel: 何もせず閉じる（本文は破棄される。ユーザーの明示的な選択）
 ```
 
-これにより FR-8 が満たされる。台帳 #7 では F5 を実装済みとして計上する。**この読み替えは設計上の判断であり、レビューで妥当性を確認したい点である。**
+### 9.3 結果不明（Ambiguous）の場合
+
+**サーバがコミット済みか判定できない**失敗。タイムアウト、接続断、レスポンス解析失敗、HTTP 5xx が該当する。この状態で同じ mutation をそのまま再送すると、サーバが既にコミットしていた場合に**重複コメントが作られる**。`createNote` / `createDiffNote` には冪等キーが無く（§12.3）、in-flight ガードは最初の要求が既に完了しているため防げない。
+
+したがって **Ambiguous では [Retry] を出さない。**
+
+```
+送信失敗（Ambiguous）
+  → まず loadDiscussions(node, force = true) を実行し、サーバの現在状態を取り込む
+  → 取り込み完了後にダイアログを開く
+      初期本文 = 直前に入力された本文（保持）
+      表示     = 「送信結果を確認できませんでした。最新の状態を再読み込みしました。
+                  上のスレッドに反映されていない場合のみ、送信し直してください。」
+      ボタン   = [Send again] / [Cancel]
+  → Send again: ユーザーが最新状態を見た上での明示的な判断。§8.2 を再入
+  → Cancel: 閉じる
+```
+
+再読み込みを**先に**行うのが要点である。ユーザーは「自分のコメントが既に付いているかどうか」を見てから判断できるため、重複投稿はユーザーが最新状態を確認した上での意図的な操作に限られる。
+
+再読み込み自体が失敗した場合は、その旨を表示したうえで [Send again] を**出さない**（[Copy text] / [Cancel] のみ）。状態を確認できないまま再送を促さない。
+
+### 9.4 パリティ上の位置づけ
+
+以上により FR-8 が満たされる。台帳 #7 では F5 を実装済みとして計上する。**この読み替えは設計上の判断であり、レビューで妥当性を確認したい点である**（§16 U-8）。
 
 ---
 
@@ -566,28 +645,55 @@ Phase 4 の Codex レビューで確定した規律を最初から適用する�
 
 ## 12. タイムアウト・リトライ・冪等性
 
-### 12.1 タイムアウト
+### 12.1 タイムアウト（確定要件）
 
-既存 REST と同じ 30 秒（`GitLabApiClient.REQUEST_TIMEOUT_SECONDS`、`GitLabApiClient.kt:292`）を GraphQL にも適用する。ページングループ全体に対する上限は、既存 `fetchListWithinDeadline`（同 :112-143）と同型の deadline を設ける。
+**単発リクエスト**: 30 秒。既存 REST の `GitLabApiClient.REQUEST_TIMEOUT_SECONDS`（`GitLabApiClient.kt:292`）と同値。
 
-**未決**: ページング全体の deadline を PR-1 で入れるか、単発タイムアウトのみで足りるとするか（§16 U-6）。
+**取得処理全体（wall-clock deadline）**: **60 秒**。ページングを伴う取得 1 回（= `loadDiscussions` の 1 呼び出し）の総時間上限とする。既存 `fetchListWithinDeadline`（同 :112-143）と同型の実装とし、以下を満たす。
 
-### 12.2 リトライ
+```
+start = clock()
+ループ先頭（各ページ取得の前）で:
+  1. キャンセル判定: isActive() が false → CancellationException
+  2. 残時間 = deadline - (clock() - start)
+     残時間 <= 0 → 打ち切り（GitLabApiTimeoutException ではなく
+                   「取得済み分 + 打ち切り表示」で返す。§8.5）
+  3. この 1 リクエストの timeout = min(30 秒, 残時間)
+```
 
-**自動リトライは行わない。** すべての書き込みが副作用を持ち、GraphQL mutation に冪等キーがないため、自動再送は二重投稿を起こしうる。再試行は §9 のとおり**ユーザーの明示的な操作**に限る。
+**単発 30 秒 + ページ上限 20 だけでは総時間が有界にならない**（最悪 20 × 30 = 600 秒）。60 秒の wall-clock deadline を置くことで、ユーザーが節を何度も開き直しても長時間ジョブが積み上がらない。残時間を単発 timeout に反映することで、deadline 直前に 30 秒待つことも防ぐ。
 
-読み取りについても自動リトライは行わない（ユーザーが節を再展開すればよい）。
+本設計は内側（notes）をページングしない（§8.5）ため、ネストしたループによる要求数の増殖は起きない。ループは外側 1 段のみである。
+
+この deadline は **PR-1 の確定要件**であり、未決事項ではない。
+
+### 12.2 失敗の分類とリトライ
+
+**自動リトライは一切行わない。** すべての書き込みが副作用を持ち、GraphQL mutation に冪等キーがないため、自動再送は二重投稿を起こす。
+
+再送の可否は失敗の種類で決まる。**すべての失敗を「ユーザーが明示的に押したから安全」として扱ってはならない。**
+
+| 分類 | 該当する失敗 | サーバ状態 | 再送 |
+|---|---|---|---|
+| **Definite**（確定拒否） | L2 GraphQL `errors`、L3 mutation ペイロード `errors`、HTTP 4xx | コミットされていないことが確定 | **安全**。§9.2 の [Retry] を出す |
+| **Ambiguous**（結果不明） | タイムアウト、`IOException`（接続断）、レスポンス解析失敗、HTTP 5xx | **判定不能。**コミット済みかもしれない | **危険**。§9.3 のとおり、先に強制再取得してユーザーに現状を見せ、[Send again] を明示的に選ばせる |
+
+実装上は `GitLabApiTimeoutException` / `IOException` / JSON 解析例外 / HTTP 5xx を Ambiguous、それ以外の `GitLabApiException`（4xx）と `GraphQlException` を Definite に分類する。**分類のテストを単体テストに含める**（§18.1）。
+
+読み取りについても自動リトライは行わない（ユーザーが節を再展開すればよい）。読み取りは副作用が無いため分類は不要。
 
 ### 12.3 冪等性
 
 | 操作 | 冪等か | 対策 |
 |---|---|---|
-| `createNote` / `createDiffNote` | **冪等でない**（二重送信で重複コメント） | in-flight ガード + 自動リトライ禁止 |
-| `discussionToggleResolve` | 冪等（`resolved` は目標状態を渡す。トグルではない） | 追加対策不要 |
+| `createNote` / `createDiffNote` | **冪等でない**（二重送信で重複コメント） | in-flight ガード + 自動リトライ禁止 + **Ambiguous 時の再送抑止（§9.3）** |
+| `discussionToggleResolve` | 冪等（`resolved` は目標状態を渡す。トグルではない） | Ambiguous でも再送は安全。ただし現状を見せる方が親切なため §9.3 に合わせる |
 | `updateNote` | 冪等（同じ body を 2 回送っても結果同一） | §13 の上書き防止が別途必要 |
 | `destroyNote` | 2 回目は L3 エラー | エラーを通知して終わり（既に消えているため実害なし） |
 
 `discussionToggleResolve` の引数が `resolve: Boolean`（トグルではなく目標状態）である点は mutation 名から誤解しやすいため、実装時に明示的にコメントを残す。
+
+**冪等な操作（`discussionToggleResolve` / `updateNote` / `destroyNote`）については、Ambiguous でも重複の実害が無い。**それでも §9.3 の「先に再取得して現状を見せる」フローに揃えるのは、ユーザーから見た挙動を操作ごとに分岐させないためである。
 
 ---
 
@@ -662,9 +768,26 @@ seqlock により「URL とトークンが同一世代の組であること」�
 - 表示: `note.userPermissions { resolveNote adminNote createNote }` をノードに保持し、コンテキストメニューの出し分けに使う（`PropertyTester`。既存 `CiActionPropertyTester` と同型）。
 - 実行: 権限がないのに実行された場合は L3 エラーとして通知する（UI での抑止は最適化であり、最終的な判断はサーバ側が行う）。
 
-### 15.3 同一インスタンスゲート
+### 15.3 接続ゲート（インスタンス + アカウント）
 
-**読み取り・書き込みの両方**で、ノードが由来する `instanceUrl` と現在の接続スナップショットの `instanceUrl` を正規化して比較し、不一致なら HTTP を発行しない。Phase 4 で確立した `sameConfiguredInstance` / `normalizeInstanceUrl` を再利用する。
+**読み取り・書き込みの両方**で、既存 `pinnedConnectionFor`（`src/main/kotlin/com/gitlab/eclipse/ci/actions/WriteAction.kt:60-74`）をそのまま用いる。
+
+```kotlin
+val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
+  ?: return  // 通知して終了。HTTP は一度も発行しない
+```
+
+このヘルパは 1 回の `captureConnection()` で比較値と pin 対象の両方を得たうえで、以下を**すべて**要求する。
+
+1. `normalizeInstanceUrl(snapshot.instanceUrl) == normalizeInstanceUrl(nodeInstanceUrl)` — インスタンス一致
+2. `snapshot.authFingerprint == nodeAuthFingerprint` — **アカウント一致**
+3. `UnstableConnectionException` が出ない — 設定が安定している
+
+**URL だけの比較では不十分である。** 同じ GitLab URL のままトークンだけが別アカウントに切り替わった場合、旧アカウントで取得した本文・権限・対象 ID に対する操作が新アカウントの資格情報で送信される。新アカウントにも権限があればサーバ側の認可は通ってしまうため、UI の実行時権限再確認では防げず、意図しないアカウントによる編集・削除が成立する。
+
+この経路は Phase 4 で既に特定され封鎖されている（`pinnedConnectionFor` の KDoc: 「Rejects a changed instance url (FR-8), **a changed credential on the same url (9A)**」）。本設計は同じヘルパを再利用することでこれを継承する。
+
+同じ理由から、世代管理のキーにも `authFingerprint` を織り込む（§8.1）。既存 `JobLogKey.of`（`src/main/kotlin/com/gitlab/eclipse/ci/joblog/JobLogKey.kt:17-19`）が `normalizeInstanceUrl(instanceUrl) + "\n" + authFingerprint` をハッシュしているのと同じ扱いである。アカウントが切り替わったのに世代キーが同一だと、旧アカウントで発行した取得の応答が新アカウントの表示に反映されうる。
 
 ### 15.4 既存機能への影響
 
@@ -704,6 +827,12 @@ PR 単位で revert 可能である。
 
 - §10 のすべてのプロトコル定数（エンドポイント・クエリ・mutation・GID 形式・`DiffPositionInput`）は参照実装の実ソースから確定した。行番号を併記している。
 - Eclipse 側 DTO に必要フィールドが揃っていること（§10.4 / §10.5）はソースを読んで確認した。
+- **ページング全体の deadline = 60 秒**（§12.1）。Codex レビュー round 1 の指摘を受けて確定要件とした（旧 U-6 を削除）。
+- **内側（notes）はページングしない**（§8.5）。参照実装にノートページング用のクエリが存在せず、実ソースで確定できないため。打ち切りは可視化する。
+- **接続ゲートはインスタンス + アカウント（authFingerprint）の両方**（§15.3）。既存 `pinnedConnectionFor` を再利用する。
+- **世代ガードは取得結果の反映にのみ適用し、mutation の完了処理には適用しない**（§8.2）。
+- **エディタ行コメントは G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲート**が揃って初めて行一致が保証される（§8.3）。
+- **失敗は Definite / Ambiguous に分類し、Ambiguous では単純再送しない**（§9.3 / §12.2）。
 
 ### 16.2 未決（レビューで判断したい）
 
@@ -714,10 +843,10 @@ PR 単位で revert 可能である。
 | U-3 | `system: true` のノートを除外する方針 | 除外する（レビュー用途でノイズになる） | 除外すると「alice が assignee を変更」等の履歴が見えなくなる。それが許容されるかは利用者判断 |
 | U-4 | ディスカッションの取得タイミング | 節の展開時に遅延取得。自動更新なし | MR ノードの展開時に先読みする案もある。応答性とリクエスト数のトレードオフ |
 | U-5 | クエリで要求するフィールドの絞り込み。`avatarUrl` / `bodyHtml` は不要（§2.2）だが、`author.name` / `author.webUrl` / `note.url` も不要か | `username` / `body` / `createdAt` / `id` / `system` / `userPermissions` / `position` のみ要求し、他は落とす | 落としすぎると後で機能追加時にクエリ変更が必要になる。過剰に取ると応答が重くなる |
-| U-6 | ページングループ全体の deadline を設けるか | 単発 30 秒 + ループ上限 20 で足りるとする | 最悪 20 ページ × 30 秒 = 10 分理論値。UI は background なのでブロックしないが、ユーザーから見て終わらない |
-| U-7 | `ThreadNode` / `NoteNode` に複製して持たせる識別子の範囲（§7.4） | 書き込みに必要な最小集合（instanceUrl / projectId / mrIid / mrGid / mrSha / namespaceWithPath / replyId / noteId） | 複製が多いとノード生成コストとメモリが増え、少ないとハンドラが親を辿れず失敗する |
+| U-7 | `ThreadNode` / `NoteNode` に複製して持たせる識別子の範囲（§7.4） | 接続タグ（sourceInstanceUrl / sourceAuthFingerprint）+ 書き込みに必要な最小集合（projectId / mrIid / mrGid / mrSha / namespaceWithPath / replyId / noteId） | 複製が多いとノード生成コストとメモリが増え、少ないとハンドラが親を辿れず失敗する |
 | U-8 | §9 の「失敗コメント再試行」の読み替えを、台帳 #7 で F5 実装済みとして計上してよいか | 計上する（本質的要件 FR-8 を満たすため） | パリティ計数の一貫性に関わる。UI 機構が異なるため、厳密には同一機能ではない |
 | U-9 | 台帳 #7 の D9 の記述誤り（§3.2） | 本設計の範囲外。Phase 5B 着手時、または独立に訂正する | 本設計で訂正すると設計書がコミット対象になるため、issue 側で行う必要がある |
+| U-10 | ノート（内側）のページングを将来対応するか（§8.5） | PR-1 では対応しない。打ち切りを可視化するに留める | GitLab の GraphQL スキーマが `Discussion.notes(after:)` を直接引ける形を提供しているかは実インスタンスでしか確認できない。確認できた時点で別途判断する |
 
 ---
 
@@ -727,12 +856,15 @@ PR 単位で revert 可能である。
 |---|---|---|---|
 | R-1 | **GraphQL クエリがインスタンスのスキーマと整合しない。** headless 環境では実接続で検証できないため、クエリ文字列の誤りは CI もテストも検出できず、ユーザー実機で初めて露見する | 機能が全滅する。手戻りが最大 | クエリ/変数を持つコンポーネントは最上位モデル（`fable`）に割り当て、**読んだ実ソースのパス/行を根拠として成果物に併記させる**（記憶からの捏造防止）。加えて §10 の確定値を実装計画に埋め込み、実装者に再導出させない |
 | R-2 | L2/L3 のエラー検査漏れにより、失敗が成功として表示される | ユーザーがコメントできたと誤認し、実際には投稿されていない | 3 層すべての検査を単体テストで実証する（各層について「失敗が例外になる」テストを個別に持つ） |
-| R-3 | 同一インスタンスゲートの評価が HTTP 送信より後になり、他インスタンスにトークンが送られる | 資格情報の漏洩 | Phase 4 と同じく「ゲート不成立時は API 呼び出し回数 0」をカウンタで実証するテストを置く |
+| R-3 | 接続ゲートの評価が HTTP 送信より後になり、他インスタンスにトークンが送られる | 資格情報の漏洩 | Phase 4 と同じく「ゲート不成立時は API 呼び出し回数 0」をカウンタで実証するテストを置く |
+| R-3b | **同一 URL のままアカウントだけが切り替わり、旧アカウントで取得した対象を新アカウントの資格情報で操作する** | 意図しないアカウントによる編集・削除。新アカウントに権限があればサーバ認可も通るため検知されない | 既存 `pinnedConnectionFor` を再利用し、URL と `authFingerprint` の両方一致を要求する。世代キーにも fingerprint を含める（§15.3）。**URL のみのゲートはこのリスクを緩和しない** |
 | R-4 | 監査ログ経由でのトークン・コメント本文の漏洩 | 情報漏洩 | §11.3 の規律。加えて Phase 4 PR-4 と同様、「ログ出力に本文由来のマーカー文字列が含まれない」ことをテストで実証する |
-| R-5 | ツリーのノード数がスレッド数 × ノート数で増大し、描画が重くなる | UI 応答性の劣化 | ページング上限による有界化 + 打ち切り表示（§8.5） |
+| R-5 | ツリーのノード数がスレッド数 × ノート数で増大し、描画が重くなる | UI 応答性の劣化 | ページング上限 + wall-clock deadline による有界化 + 打ち切り表示（§8.5 / §12.1） |
 | R-6 | 編集の TOCTOU 窓（§13） | 他者の編集を上書きする | 窓を狭める事前確認を実装。閉じられないことを既知の制限として明記 |
-| R-7 | 二重送信による重複コメント | ユーザーから見て不快、削除の手間 | in-flight ガード + 自動リトライ禁止（§12.2） |
+| R-7 | **結果不明の失敗後に再送し、サーバが既にコミットしていた場合に重複コメントが作られる** | 重複投稿。in-flight ガードは最初の要求が完了済みのため防げない | 失敗を Definite / Ambiguous に分類し、Ambiguous では先に強制再取得してユーザーに現状を見せてから [Send again] を選ばせる（§9.3 / §12.2） |
 | R-8 | 停止処理と UI 反映の競合により、停止後に通知やダイアログが出る | 例外・ゴースト UI | §14.3 の停止順序を最初から適用 |
+| R-9 | **エディタの表示内容と MR head 版がずれた状態で行コメントを送る** | 別の行にコメントが付く、または GitLab が position を拒否する | G3（非 dirty）+ G7（HEAD 一致）+ G8（対象パス未変更）の 3 ゲートを揃えて初めて送信する（§8.3） |
+| R-10 | mutation 完了処理を世代ガードで破棄し、成功が表示に反映されない / 失敗時に本文が失われる | FR-8・FR-10 違反 | 世代ガードの適用範囲を「取得結果の反映」に限定する（§8.2） |
 
 ---
 
@@ -743,19 +875,26 @@ PR 単位で revert 可能である。
 | 対象 | 検証内容 |
 |---|---|
 | `GitLabGraphQlClient` | URI 組み立て（`/api/graphql` であること、トレイリングスラッシュ処理）／L1 非 2xx → 例外／L2 `errors` 非空 → 例外／接続 pin（URL・トークンがスナップショット由来であること）／タイムアウト伝播／リクエスト本文が `{"query","variables"}` 形であること |
-| `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別／二重ページングと上限打ち切り |
-| `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避） |
-| 同一インスタンスゲート | 不一致時に API 呼び出し回数が 0 であること（カウンタで実証） |
+| `DiscussionService` | クエリ変数の組み立て（`iid` が文字列であること）／GID 組み立て（`id` を使い `iid` を使わないこと）／`namespaceWithPath` の導出（`#` と `!` の両方）／L3 ペイロード `errors` 非空 → 例外／DTO 正規化（null フィールドの既定値）／`system` ノート除外／`positionType` 判別 |
+| **ページング**（§8.5 / §12.1） | 外側の `hasNextPage` → `endCursor` を次要求の `$afterCursor` に渡すこと／ページ上限 20 で打ち切り、取得済み分を返し警告を出すこと／**wall-clock deadline 60 秒で打ち切ること**（注入クロックで実証）／**各ページの単発 timeout が `min(30 秒, 残時間)` になること**／`notes.pageInfo.hasNextPage` が真のスレッドに打ち切りフラグが立つこと／内側をページングしようとしないこと（要求回数で実証） |
+| **失敗分類**（§12.2） | `GitLabApiTimeoutException` / `IOException` / JSON 解析失敗 / HTTP 5xx → **Ambiguous**／HTTP 4xx / L2 `errors` / L3 `errors` → **Definite**。分類ごとに 1 ケース以上 |
+| `DiscussionGenerationRegistry` | `CiLintGenerationRegistryTest` と同等の 13 ケース（完了順逆転・per-key 独立・停止区間・epoch・ABA 回避）／**キーが `authFingerprint` を含み、同一 URL でアカウントが違えば別キーになること** |
+| **接続ゲート**（§15.3） | URL 不一致時に API 呼び出し回数が 0 であること／**同一 URL・`authFingerprint` 不一致時にも 0 であること**（カウンタで実証）／`UnstableConnectionException` → null → 呼び出し 0 |
+| **書き込み後の再取得**（§8.2 / FR-10） | mutation 成功時に `loadDiscussions(force = true)` 経路で**実際に HTTP 取得が発行されること**（`loadState == LOADED` でも抑止されないこと） |
+| **世代ガードの適用範囲**（§8.2） | mutation 送信中に generation が進んでも、①in-flight ガードが解放される ②成功時の再取得が発行される ③失敗時に本文が保持されダイアログ入力が渡される — の 3 点が成立すること |
 | 監査ログ | 本文・トークン由来のマーカー文字列がログ行に含まれないこと（識別可能なマーカーを使う。Phase 4 PR-4 の指摘を踏まえ、引用符付きの弱い検証にしない） |
 | 位置情報 | `DiffPositionInput` の組み立て（`newLine` のみ、`oldLine` 不在） |
+| **行一致ゲート**（§8.3、SWT-free 部分） | G7 のみ成立・G8 不成立（対象パスに未コミット変更）→ 拒否されること／G8 成立時のみ送信されること。エディタ dirty 判定（G3）は実機検証（§18.2） |
 
 ### 18.2 実機のみで確認する項目（PR 説明文のチェックリスト）
 
-- Discussions 節の展開・ツリー描画・truncated 表示
+- Discussions 節の展開・ツリー描画・truncated 表示（3 種すべて: 外側上限 / deadline / notes 打ち切り）
 - コンテキストメニューの出し分け（権限・`resolvable` による）
-- `CommentInputDialog` の複数行入力・事前充填・Retry/Cancel
-- エディタ右クリックからの新規 diff スレッド（G1〜G7 の各ゲート）
-- 実 GitLab インスタンスに対する全 mutation の成功
+- `CommentInputDialog` の複数行入力・事前充填・[Retry]/[Cancel]・[Send again]/[Cancel]
+- エディタ右クリックからの新規 diff スレッド（G1〜G9 の各ゲート）。特に **G3（未保存エディタで拒否されること）**
+- 実 GitLab インスタンスに対する全 mutation の成功（**GraphQL クエリがスキーマと整合することの唯一の検証機会**）
+- 書き込み成功後にツリーが最新化されること（FR-10）
+- 接続先アカウントを切り替えた後に、旧アカウントで取得したノードから操作できないこと（§15.3）
 - 停止→再開後の挙動
 
 ### 18.3 検証バー（既存踏襲）
@@ -774,13 +913,16 @@ PR 単位で revert 可能である。
 ### PR-1（読み取り基盤）
 
 1. `GitLabGraphQlClient` が存在し、§18.1 の全テストが PASS する。
-2. `DiscussionService.getDiscussions` が二重ページングを行い、上限で打ち切り、警告を記録する。
-3. サイドバーの MR ノード配下に Discussions 節が出る。展開時に遅延取得する。
-4. スレッドが `path:line` または `(overall)` のラベルで、解決状態とともに表示される。
-5. `system` ノートが表示されない。
-6. 取得失敗時に失敗ノードが表示され、Error Log に本文・トークンを含まない記録が残る。
-7. 同一インスタンス不一致時に HTTP が発行されない。
-8. 検証バー（§18.3）を満たす。
+2. `DiscussionService.getDiscussions` が**外側のみをページングし**、`endCursor` を次要求に渡す。ページ上限 20 と **wall-clock deadline 60 秒**の両方で打ち切り、取得済み分を返して警告を記録する（§8.5 / §12.1）。
+3. 各ページの単発 timeout が `min(30 秒, 残時間)` になる。
+4. `notes.pageInfo.hasNextPage` が真のスレッドに `(more replies — open in GitLab)` 子ノードが出る。内側をページングしようとしない。
+5. サイドバーの MR ノード配下に Discussions 節が出る。展開時に遅延取得する（`loadDiscussions(force = false)`）。
+6. スレッドが `path:line` または `(overall)` のラベルで、解決状態とともに表示される。
+7. `system` ノートが表示されない。
+8. 取得失敗時に失敗ノードが表示され、`loadState` が `FAILED` に戻り、Error Log に本文・トークンを含まない記録が残る。
+9. **接続ゲート**（§15.3）: インスタンス不一致時も、同一 URL でのアカウント（`authFingerprint`）不一致時も、HTTP が一度も発行されない。
+10. 世代キーが `authFingerprint` を含み、同一 URL でアカウントが異なれば別キーになる。
+11. 検証バー（§18.3）を満たす。
 
 ### PR-2（書き込み）
 
@@ -790,18 +932,23 @@ PR 単位で revert 可能である。
 4. ノートを編集できる。§13 の事前確認により、表示後に変更されたノートの編集は拒否される（FR-6）。
 5. ノートを確認ダイアログを経て削除できる（FR-7）。
 6. 権限のない操作がメニューに出ない（FR-9）。
-7. 送信失敗時、本文を保持したダイアログが Retry / Cancel とともに再提示される（FR-8）。
-8. 同一操作の二重送信が in-flight ガードで抑止される。
-9. 書き込み成功後、当該 MR の Discussions 節のみが再取得される（FR-10）。
-10. 検証バー（§18.3）を満たす。
+7. **Definite 失敗**時、本文を保持したダイアログが [Retry] / [Cancel] とともに再提示される（FR-8 / §9.2）。
+8. **Ambiguous 失敗**時、[Retry] を出さず、先に強制再取得を行ってから本文を保持したダイアログを [Send again] / [Cancel] で提示する（§9.3）。再取得自体が失敗した場合は [Send again] を出さない。
+9. 同一操作の二重送信が in-flight ガードで抑止される。
+10. **書き込み成功後、`loadState == LOADED` であっても再取得の HTTP が実際に発行され**、当該 MR の Discussions 節が最新化される（FR-10 / §8.2）。
+11. **mutation 送信中に generation が進んでも**、in-flight ガードの解放・成功時の再取得・失敗時の本文保持がいずれも実行される（§8.2）。
+12. 接続ゲートが PR-1 AC-9 と同じ強度（URL + `authFingerprint`）で書き込みにも適用される。
+13. 検証バー（§18.3）を満たす。
 
 ### PR-3（エディタ行からの新規 diff スレッド）
 
 1. MR ブランチをチェックアウトした状態で、エディタ右クリックから行コメントを作成できる（FR-4）。
-2. G4〜G7 の各ゲート不成立時に、既存機能と同一文言で拒否される。
-3. `DiffPositionInput` が `newLine` のみを含み、3 つの sha が MR の diff version 由来である。
-4. old 側へのコメント作成が対象外であることが PR に明記される。
-5. 検証バー（§18.3）を満たす。
+2. **G3（エディタが dirty）で拒否される。**
+3. **G8（対象パスに未コミット変更がある）で拒否される。**
+4. G5〜G9 の各ゲート不成立時に、§8.3 の表に定めた文言で拒否される（G7 は既存 `OpenMrFileHandler` と同一文言）。
+5. `DiffPositionInput` が `newLine` のみを含み、3 つの sha が MR の diff version 由来である。
+6. old 側へのコメント作成が対象外であることが PR に明記される。
+7. 検証バー（§18.3）を満たす。
 
 ### Phase 5A 全体
 
