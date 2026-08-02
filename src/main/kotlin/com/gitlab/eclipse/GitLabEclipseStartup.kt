@@ -16,6 +16,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.plugins.pluginModule
+import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.telemetry.telemetryModule
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.workspaceModule
@@ -40,11 +41,11 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
 
-    // Invalidate any CI lint generations left in `latest` by a previous stop (stop lets
-    // in-flight lints finish) so their stale notifications/merged YAML cannot reapply.
+    // Invalidate any CI lint / discussion generations left in `latest` by a previous stop (stop
+    // lets in-flight work finish) so their stale results cannot reapply.
     // Runs after the state-dir property is set so a degraded-path log4j2 touch here
     // (this warn) cannot pin a misconfigured log location for the whole session.
-    activateCiLint()
+    activateGenerationRegistries()
 
     // Best-effort: allow Basic proxy auth over HTTPS CONNECT tunnels for the native REST
     // client. Read-once in java.net.http; reliable activation needs the eclipse.ini VM arg
@@ -118,6 +119,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
             // SWTException — both caught as no-ops), and the command handlers are unregistered
             // once the bundle stops, so nothing reads `active` after a display-less stop.
             CiLintGenerationRegistry.onDeactivate()
+            // Same reasoning as above: every discussion reflect runnable runs on the UI thread
+            // and gates on `active`, so the flip must happen here, not as a bare off-thread write.
+            DiscussionGenerationRegistry.onDeactivate()
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()
             MergedYamlEditorOpener.disposeAtShutdown()
@@ -132,22 +136,23 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     }
   }
 
-  private fun activateCiLint() {
+  private fun activateGenerationRegistries() {
     try {
       val display = PlatformUI.getWorkbench().display
       if (!display.isDisposed) {
         display.syncExec {
           try {
             CiLintGenerationRegistry.onActivate()
+            DiscussionGenerationRegistry.onActivate()
           } catch (_: SWTException) {
-            /* Display disposed mid-activation: registry stays at its initial fresh state. */
+            /* Display disposed mid-activation: registries stay at their initial fresh state. */
           }
         }
       }
     } catch (e: Exception) {
-      // First start may run before the workbench/display exists; the registry's initial
+      // First start may run before the workbench/display exists; each registry's initial
       // state (active=true, epoch=0, empty latest) is already fresh. Never let start throw.
-      logger<GitLabEclipseStartup>().warn("CI lint activation skipped: workbench/display unavailable.", e)
+      logger<GitLabEclipseStartup>().warn("Generation registry activation skipped: workbench/display unavailable.", e)
     }
   }
 }
