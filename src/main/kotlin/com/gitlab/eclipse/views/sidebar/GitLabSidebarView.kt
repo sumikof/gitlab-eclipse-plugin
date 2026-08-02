@@ -104,6 +104,19 @@ class GitLabSidebarView : ViewPart() {
   // versions while the several incremental composes of one refresh keep sharing it.
   private val mrVersionCache = mutableMapOf<Pair<Long, Long>, GitLabMrVersion?>()
 
+  // The two non-secret connection tags each cached diff version was actually fetched over, keyed
+  // exactly like mrVersionCache and cleared with it (UI thread only). Recorded once on the fetch
+  // path — where the capture already happens off the UI thread — so the cache-hit path never has
+  // to capture: `captureConnection` reads the token, and for an expired OAuth credential that
+  // performs a SYNCHRONOUS refresh request (OAuthTokenProvider.getToken -> refreshTokenIfExpired),
+  // which on the UI thread freezes the workbench. Correctness, not just cost: the tags exist to
+  // record which instance AND which account the cached data came from, so re-capturing later
+  // would stamp the node with whatever connection is configured now and hide the very mismatch
+  // they are meant to expose. Deliberately a separate map: mrVersionCache's value type is part of
+  // the existing cache-hit contract (`containsKey` distinguishes "fetched null" from "not
+  // fetched") and is left untouched.
+  private val mrConnectionTagsCache = mutableMapOf<Pair<Long, Long>, Pair<String?, String?>>()
+
   // MR nodes with a version fetch in flight (UI thread only; identity-keyed since
   // MergeRequestNode does not override equals), so collapse/re-expand while a fetch is
   // running does not start a duplicate fetch.
@@ -143,7 +156,11 @@ class GitLabSidebarView : ViewPart() {
       refreshNode = { node ->
         guarded("refreshNode", Unit) { if (!viewer.control.isDisposed) viewer.refresh(node) }
       },
-      notify = { message -> guarded("notify", Unit) { NotificationUtils.show(message) } },
+      // showOnUiThread, not show: `show` only SCHEDULES the popup in a later asyncExec runnable,
+      // which would run outside this guard and send any failure to SWT's default handler instead
+      // of producing the exceptionType= audit line. The loader calls `notify` on the UI thread
+      // already, so opening the popup synchronously here keeps it inside the guard.
+      notify = { message -> guarded("notify", Unit) { NotificationUtils.showOnUiThread(message) } },
     )
   }
 
@@ -219,6 +236,8 @@ class GitLabSidebarView : ViewPart() {
     // compose — so the next expansion re-fetches new diffs while this one refresh's
     // several incremental composes keep sharing the cache.
     mrVersionCache.clear()
+    // Cleared with the versions it labels: a tag must never outlive the cached data it describes.
+    mrConnectionTagsCache.clear()
     fetchJob?.cancel()
     fetchJob = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
@@ -459,9 +478,10 @@ class GitLabSidebarView : ViewPart() {
     val control = viewer.control
     if (control.isDisposed) return
     if (mrVersionCache.containsKey(cacheKey)) {
-      // Captured on the cache-hit path too (a cheap in-memory read): passing nulls here would
-      // silently cost a cached MR its Discussions section on every re-expansion.
-      val tags = captureConnectionTags()
+      // Read, never re-captured: capturing here would run on the UI thread (see
+      // mrConnectionTagsCache). A cache entry without stored tags yields (null, null), which
+      // buildMrChildren already renders as "no Discussions section" rather than a wrong one.
+      val tags = mrConnectionTagsCache[cacheKey] ?: (null to null)
       control.display.asyncExec {
         if (control.isDisposed) return@asyncExec
         applyMrChildren(node, Result.success(mrVersionCache[cacheKey]), tags.first, tags.second)
@@ -492,6 +512,9 @@ class GitLabSidebarView : ViewPart() {
             // drop the result rather than poisoning the fresh mrVersionCache with it.
             if (!refreshState.isCurrent(generation)) return@asyncExec
             versionResult.onSuccess { version -> mrVersionCache[cacheKey] = version }
+            // Stored under the same condition as the version itself, so the two can never
+            // disagree: a failed fetch caches neither, and a later expansion re-fetches both.
+            if (versionResult.isSuccess) mrConnectionTagsCache[cacheKey] = tags
             applyMrChildren(node, versionResult, tags.first, tags.second)
           }
         }
@@ -528,6 +551,11 @@ class GitLabSidebarView : ViewPart() {
   }
 
   /**
+   * **Background thread only.** `captureConnection` reads the stored token, and an expired OAuth
+   * credential refreshes it over HTTP synchronously on the calling thread; on the UI thread that
+   * freezes the workbench. Callers that need tags on the UI thread read [mrConnectionTagsCache]
+   * instead — which is also the truthful value there, since it labels the data being shown.
+   *
    * The live connection's two non-secret tags, or `(null, null)` when it could not be captured
    * ([com.gitlab.eclipse.api.UnstableConnectionException] from a settings change in progress, or
    * a failure reading the stored credential). The [com.gitlab.eclipse.api.ConnectionSnapshot]
