@@ -95,13 +95,20 @@ class DiscussionsLoader(
    * Background stage: gate first, then fetch. A null from [pinnedConnectionFor] (instance URL
    * changed, credential changed on the same URL, or settings mid-change — it already swallows
    * `UnstableConnectionException`) means gate-rejected and **no HTTP is issued at all**.
-   * [CancellationException] is rethrown, never converted into a failure — swallowing it breaks
-   * scope cancellation (see `GitLabSidebarView`'s background blocks).
+   *
+   * The `try` wraps the **entire** body, gate included: `captureConnection` inside
+   * [pinnedConnectionFor] can throw beyond `UnstableConnectionException` (e.g. from the
+   * secure-storage token read), and an escaping throw would strand the node in `LOADING` with
+   * `onOutcome` never called — the exact abandonment the completion contract forbids. Every
+   * exception therefore funnels into [FetchOutcome.Failed], except [CancellationException],
+   * which is rethrown, never converted into a failure — swallowing it breaks scope cancellation
+   * (see `GitLabSidebarView`'s background blocks).
    */
-  private fun fetchInBackground(node: DiscussionsSectionNode): FetchOutcome {
+  private fun fetchInBackground(node: DiscussionsSectionNode): FetchOutcome = try {
     val connection = pinnedConnectionFor(apiClient, node.sourceInstanceUrl, node.sourceAuthFingerprint)
-      ?: return FetchOutcome.GateRejected
-    return try {
+    if (connection == null) {
+      FetchOutcome.GateRejected
+    } else {
       FetchOutcome.Fetched(
         discussionService.getDiscussions(
           connection,
@@ -110,11 +117,11 @@ class DiscussionsLoader(
           DiscussionService.DISCUSSIONS_DEADLINE,
         ),
       )
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      FetchOutcome.Failed(e)
     }
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    FetchOutcome.Failed(e)
   }
 
   /**

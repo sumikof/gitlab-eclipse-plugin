@@ -236,6 +236,31 @@ class DiscussionsLoaderTest : DescribeSpec({
       h.outcomes shouldContainExactly listOf(LoadOutcome.GateRejected)
       h.verifyNoFetchIssued()
     }
+
+    it("a non-UnstableConnectionException from captureConnection funnels into Failed and clears the placeholder") {
+      val h = LoaderHarness()
+      val cause = IllegalStateException("secure storage read failed")
+      every { h.apiClient.captureConnection() } throws cause
+
+      h.load()
+
+      h.outcomes shouldContainExactly listOf(LoadOutcome.Failed(cause))
+      (h.outcomes.single() as LoadOutcome.Failed).cause shouldBeSameInstanceAs cause
+      h.outcomesDeliveredInsideUiHop shouldContainExactly listOf(true)
+      h.verifyNoFetchIssued()
+      h.node.loadState shouldBe DiscussionLoadState.FAILED
+      h.node.loadedChildren shouldBeSameInstanceAs h.failureChildren
+    }
+
+    it("CancellationException from captureConnection propagates and delivers no outcome") {
+      val h = LoaderHarness()
+      every { h.apiClient.captureConnection() } throws CancellationException("cancelled during capture")
+
+      shouldThrow<CancellationException> { h.load() }
+
+      h.outcomes.shouldBeEmpty()
+      h.verifyNoFetchIssued()
+    }
   }
 
   describe("freshness guard ordering (evaluated before any branch on the result)") {
