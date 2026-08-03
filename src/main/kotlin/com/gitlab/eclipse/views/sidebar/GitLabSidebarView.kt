@@ -15,6 +15,7 @@ import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
+import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
@@ -646,6 +647,19 @@ class GitLabSidebarView : ViewPart() {
           it.projectId == projectId &&
           it.mrIid == mrIid
       }
+  }
+
+  /**
+   * UI thread only. Re-fetches [section] after a discussion write and reports the load's outcome
+   * to [onOutcome] (design FR-10 / AC-11).
+   *
+   * `force = true` is the requirement, not an optimization: after a successful write the section
+   * is already `LOADED`, so a non-forced load would return [LoadOutcome.Skipped] without fetching
+   * anything and leave the user looking at a stale thread — and, on the ambiguous-outcome path,
+   * would withhold the `[Send again]` that only an `Applied` reload may offer.
+   */
+  internal fun reloadDiscussions(section: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
+    discussionsLoader.loadDiscussions(section, force = true, onOutcome)
   }
 
   override fun setFocus() {
