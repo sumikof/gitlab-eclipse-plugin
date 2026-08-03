@@ -52,15 +52,23 @@ class CommentInputDialog(
 
   override fun createDialogArea(parent: Composite): Control {
     val container = super.createDialogArea(parent) as Composite
+    // Both labels need an explicit widthHint: in a GridLayout a SWT.WRAP label's preferred width is
+    // its whole text on one line, so without the hint a long errorMessage (the "result could not be
+    // confirmed…" text runs ~120 chars) would set the dialog's initial width instead of wrapping,
+    // and shrinking the dialog would clip it rather than reflow it.
     if (errorMessage != null) {
       Label(container, SWT.WRAP).apply {
         text = errorMessage
-        layoutData = GridData(SWT.FILL, SWT.CENTER, true, false)
+        layoutData = GridData(SWT.FILL, SWT.CENTER, true, false).apply {
+          widthHint = convertWidthInCharsToPixels(TEXT_WIDTH_IN_CHARS)
+        }
       }
     }
     Label(container, SWT.WRAP).apply {
       text = prompt
-      layoutData = GridData(SWT.FILL, SWT.CENTER, true, false)
+      layoutData = GridData(SWT.FILL, SWT.CENTER, true, false).apply {
+        widthHint = convertWidthInCharsToPixels(TEXT_WIDTH_IN_CHARS)
+      }
     }
     val text = Text(container, SWT.MULTI or SWT.WRAP or SWT.V_SCROLL or SWT.BORDER)
     // Without explicit hints a multi-line Text collapses to a single line.
@@ -107,6 +115,8 @@ class CommentInputDialog(
 /**
  * A comment body is submittable when it has non-whitespace content. Whitespace-only input is not
  * a comment: GitLab would reject it and the round trip is wasted. Trimming follows Kotlin's
- * [String.trim] ([Char.isWhitespace]), under which U+00A0 NO-BREAK SPACE counts as content.
+ * [String.trim] ([Char.isWhitespace]), which is `Character.isWhitespace(c) || Character.isSpaceChar(c)`
+ * — so U+00A0 NO-BREAK SPACE is trimmed too, and an NBSP-only body is not submittable. That is the
+ * behaviour we want: GitLab renders such a comment as blank.
  */
 internal fun isSubmittable(body: String): Boolean = body.trim().isNotEmpty()
