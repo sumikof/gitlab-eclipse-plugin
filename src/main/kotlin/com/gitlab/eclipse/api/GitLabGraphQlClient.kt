@@ -40,7 +40,6 @@ private fun correlationId(response: java.net.http.HttpResponse<String>): String?
  */
 class GitLabGraphQlClient(
   private val httpClient: GitLabHttpClient = service(),
-  private val apiClient: GitLabApiClient = service(),
 ) {
   private val gson = Gson()
 
@@ -132,13 +131,6 @@ class GitLabGraphQlClient(
       if (!element.isJsonObject) return@mapNotNull null
       element.asJsonObject.get("message")?.takeIf { it.isJsonPrimitive }?.asString
     }
-
-  /**
-   * Delegates to [GitLabApiClient.captureConnection]; the seqlock logic lives in one place only.
-   * No production caller today — the discussions read path pins its connection through a different
-   * helper — but it exists for the write path in the follow-up PR, so do not delete it as dead code.
-   */
-  fun captureConnection(): ConnectionSnapshot = apiClient.captureConnection()
 
   companion object {
     /** Inclusive bounds of the HTTP 2xx (successful) status class. */

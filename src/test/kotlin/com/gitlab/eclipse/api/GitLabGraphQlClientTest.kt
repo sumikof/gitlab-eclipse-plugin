@@ -70,8 +70,7 @@ class GitLabGraphQlClientTest : DescribeSpec({
   val http = mockk<GitLabHttpClient>()
   val tokens = mockk<GitLabTokenProviderManager>()
   val prefs = mockk<ScopedPreferenceStore>()
-  val apiClient = GitLabApiClient(http, tokens, prefs)
-  val client = GitLabGraphQlClient(http, apiClient)
+  val client = GitLabGraphQlClient(http)
   val gson = Gson()
   val timeout = Duration.ofSeconds(CUSTOM_TIMEOUT_SECONDS)
 
@@ -407,19 +406,6 @@ class GitLabGraphQlClientTest : DescribeSpec({
       shouldThrow<IOException> {
         client.execute("query", emptyMap(), SamplePayload::class.java, connection, timeout)
       }
-    }
-  }
-
-  describe("captureConnection") {
-    it("delegates to apiClient.captureConnection() exactly once and returns its result") {
-      val mockApiClient = mockk<GitLabApiClient>()
-      val delegatingClient = GitLabGraphQlClient(http, mockApiClient)
-      every { mockApiClient.captureConnection() } returns connection
-
-      val result = delegatingClient.captureConnection()
-
-      result shouldBe connection
-      verify(exactly = 1) { mockApiClient.captureConnection() }
     }
   }
 })

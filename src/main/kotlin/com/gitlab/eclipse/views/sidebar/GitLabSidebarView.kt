@@ -15,6 +15,7 @@ import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
+import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
@@ -614,38 +615,46 @@ class GitLabSidebarView : ViewPart() {
     }
 
   /**
-   * UI thread only (it reads [viewer]'s current input, which is UI-thread-confined). Finds the
+   * UI thread only (it reads [viewer]'s current input, which is UI-thread-confined). **Every**
    * [DiscussionsSectionNode] currently in the tree for the given merge request on the given
-   * connection, or `null` when the tree holds no such section — e.g. the sidebar was refreshed,
-   * the MR node was never expanded, or the connection changed since the node was built.
+   * connection, in tree order; empty when the tree holds no such section — e.g. the sidebar was
+   * refreshed, the MR node was never expanded, or the connection changed since the node was built.
    *
-   * All four values must match, and the instance URLs are compared through
-   * [normalizeInstanceUrl] on both sides — the same normalization the connection gate uses, so a
-   * trailing-slash difference cannot cause a miss. The fingerprint is compared exactly: the same
-   * URL with a different credential is a different account, and a URL-only check would let a
-   * write address the wrong one.
+   * Plural on purpose: one merge request can appear under BOTH "Merge requests assigned to me"
+   * and "For current branch", so the (instance, account, project, iid) tuple identifies a merge
+   * request but NOT a single node — see [DiscussionsSectionNode.nodeId]. The post-write re-fetch
+   * must refresh all of them, because it cannot tell which one the user is looking at, and
+   * refreshing only one would let the anti-duplicate `[Send again]` prompt claim a thread was
+   * reloaded when it was not.
    *
-   * **Deliberately unused in this PR** — the next PR's write actions call it to re-fetch the
-   * affected section after a create/reply/resolve. Do not delete it as dead code.
+   * Matching is delegated to the pure [selectDiscussionsSections] so it stays reachable from the
+   * headless tests.
    */
-  internal fun resolveDiscussionsSection(
+  internal fun resolveDiscussionsSections(
     instanceUrl: String,
     authFingerprint: String,
     projectId: Long,
     mrIid: Long,
-  ): DiscussionsSectionNode? {
-    if (!::viewer.isInitialized || viewer.control.isDisposed) return null
-    val normalizedInstanceUrl = normalizeInstanceUrl(instanceUrl)
-    return (viewer.input as? List<*>)
+  ): List<DiscussionsSectionNode> {
+    if (!::viewer.isInitialized || viewer.control.isDisposed) return emptyList()
+    val sections = (viewer.input as? List<*>)
       .orEmpty()
       .filterIsInstance<SidebarNode>()
       .flatMap(::collectDiscussionsSections)
-      .firstOrNull {
-        normalizeInstanceUrl(it.sourceInstanceUrl) == normalizedInstanceUrl &&
-          it.sourceAuthFingerprint == authFingerprint &&
-          it.projectId == projectId &&
-          it.mrIid == mrIid
-      }
+    return selectDiscussionsSections(sections, instanceUrl, authFingerprint, projectId, mrIid)
+  }
+
+  /**
+   * UI thread only. Re-fetches [section] after a discussion write and reports the load's outcome
+   * to [onOutcome] (design FR-10 / AC-11).
+   *
+   * `force = true` is the requirement, not an optimization: after a successful write the section
+   * is already `LOADED`, so a non-forced load would return [LoadOutcome.Skipped] without fetching
+   * anything and leave the user looking at a stale thread — and, on the ambiguous-outcome path,
+   * would withhold the `[Send again]` that only an `Applied` reload may offer.
+   */
+  internal fun reloadDiscussions(section: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
+    discussionsLoader.loadDiscussions(section, force = true, onOutcome)
   }
 
   override fun setFocus() {
@@ -759,6 +768,34 @@ internal fun mrBelongsToInstance(mrWebUrl: String?, instanceUrl: String): Boolea
  */
 private fun collectDiscussionsSections(node: SidebarNode): List<DiscussionsSectionNode> =
   if (node is DiscussionsSectionNode) listOf(node) else node.children.flatMap(::collectDiscussionsSections)
+
+/**
+ * Every section in [sections] that belongs to the given merge request on the given connection,
+ * in the order given (= tree order at the call site).
+ *
+ * All four values must match. The instance URLs are compared through [normalizeInstanceUrl] on
+ * both sides — the same normalization the connection gate uses, so a trailing-slash difference
+ * cannot cause a miss — and [instanceUrl] is normalized once rather than per candidate. The
+ * fingerprint is compared exactly: the same URL with a different credential is a different
+ * account, and a URL-only check would let a write address the wrong one.
+ *
+ * Pure and SWT-free so the headless tests can reach it.
+ */
+internal fun selectDiscussionsSections(
+  sections: List<DiscussionsSectionNode>,
+  instanceUrl: String,
+  authFingerprint: String,
+  projectId: Long,
+  mrIid: Long,
+): List<DiscussionsSectionNode> {
+  val normalizedInstanceUrl = normalizeInstanceUrl(instanceUrl)
+  return sections.filter {
+    normalizeInstanceUrl(it.sourceInstanceUrl) == normalizedInstanceUrl &&
+      it.sourceAuthFingerprint == authFingerprint &&
+      it.projectId == projectId &&
+      it.mrIid == mrIid
+  }
+}
 
 /**
  * The [DiscussionsSectionNode.nodeId]s of every section at or under [nodes]: the set a full
