@@ -39,6 +39,11 @@ class ApiModuleTest : DescribeSpec({
       app.koin.get<DiscussionService>() shouldBeSameInstanceAs app.koin.get<DiscussionService>()
     }
 
+    it("resolves DiscussionWriteService as the same single instance on repeated lookups") {
+      val app = koinApplication { modules(externalsModule(), apiModule) }
+      app.koin.get<DiscussionWriteService>() shouldBeSameInstanceAs app.koin.get<DiscussionWriteService>()
+    }
+
     it("satisfies DiscussionService's service() constructor default from the global Koin context") {
       startKoin { modules(externalsModule(), apiModule) }
       try {

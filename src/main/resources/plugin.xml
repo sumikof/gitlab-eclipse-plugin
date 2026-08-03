@@ -271,6 +271,42 @@
                 name="Restart GitLab Language Server"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ReplyToThread"
+                name="Reply"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CommentOnMergeRequest"
+                name="Comment on Merge Request"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ResolveThread"
+                name="Resolve Thread"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.UnresolveThread"
+                name="Unresolve Thread"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.EditNote"
+                name="Edit Comment"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.DeleteNote"
+                name="Delete Comment"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -674,6 +710,36 @@
                 commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
                 class="com.gitlab.eclipse.handlers.RestartLanguageServerHandler"
         />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ReplyToThread"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.ReplyToThreadHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CommentOnMergeRequest"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.CommentOnMergeRequestHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ResolveThread"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.ThreadResolveHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.UnresolveThread"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.ThreadResolveHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.EditNote"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.EditNoteHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.DeleteNote"
+                class="com.gitlab.eclipse.mergerequests.discussions.actions.DeleteNoteHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -683,6 +749,14 @@
                 namespace="com.gitlab.eclipse.node"
                 properties="canRetry,canCancel,canPlay"
                 class="com.gitlab.eclipse.views.sidebar.CiActionPropertyTester">
+        </propertyTester>
+
+        <propertyTester
+                id="com.gitlab.eclipse.node.discussionActionPropertyTester"
+                type="com.gitlab.eclipse.views.sidebar.SidebarNode"
+                namespace="com.gitlab.eclipse.node"
+                properties="canReplyToThread,canResolveThread,canUnresolveThread,canEditNote,canDeleteNote,canCommentOnMergeRequest"
+                class="com.gitlab.eclipse.views.sidebar.DiscussionActionPropertyTester">
         </propertyTester>
     </extension>
 
@@ -1104,6 +1178,96 @@
                     <with variable="activeMenuSelection">
                         <iterate ifEmpty="false">
                             <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.ReplyToThread"
+                    label="Reply">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.ThreadNode"/>
+                                <test property="com.gitlab.eclipse.node.canReplyToThread"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.ResolveThread"
+                    label="Resolve Thread">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.ThreadNode"/>
+                                <test property="com.gitlab.eclipse.node.canResolveThread"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.UnresolveThread"
+                    label="Unresolve Thread">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.ThreadNode"/>
+                                <test property="com.gitlab.eclipse.node.canUnresolveThread"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.EditNote"
+                    label="Edit Comment">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.NoteNode"/>
+                                <test property="com.gitlab.eclipse.node.canEditNote"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.DeleteNote"
+                    label="Delete Comment">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.NoteNode"/>
+                                <test property="com.gitlab.eclipse.node.canDeleteNote"/>
+                            </and>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.CommentOnMergeRequest"
+                    label="Comment on Merge Request">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <and>
+                                <instanceof value="com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode"/>
+                                <test property="com.gitlab.eclipse.node.canCommentOnMergeRequest"/>
+                            </and>
                         </iterate>
                     </with>
                 </visibleWhen>
