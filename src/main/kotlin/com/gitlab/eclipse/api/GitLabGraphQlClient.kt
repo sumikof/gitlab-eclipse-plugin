@@ -40,13 +40,6 @@ private fun correlationId(response: java.net.http.HttpResponse<String>): String?
  */
 class GitLabGraphQlClient(
   private val httpClient: GitLabHttpClient = service(),
-  // Unused by this class today: the `captureConnection` delegate it existed for is gone (the write
-  // path pins its connection through `pinnedConnectionFor`, which also compares the instance URL
-  // and the auth fingerprint). Kept because it is part of the published constructor shape — the Koin
-  // definition in ApiModule and the existing tests both pass it — and dropping it would be an
-  // unrelated API change in a review-fix commit. Hence the suppression: detekt's UnusedPrivateProperty
-  // is right about the fact and wrong about the remedy.
-  @Suppress("UnusedPrivateProperty") private val apiClient: GitLabApiClient = service(),
 ) {
   private val gson = Gson()
 

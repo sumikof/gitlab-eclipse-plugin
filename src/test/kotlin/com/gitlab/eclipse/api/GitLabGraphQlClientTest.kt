@@ -70,8 +70,7 @@ class GitLabGraphQlClientTest : DescribeSpec({
   val http = mockk<GitLabHttpClient>()
   val tokens = mockk<GitLabTokenProviderManager>()
   val prefs = mockk<ScopedPreferenceStore>()
-  val apiClient = GitLabApiClient(http, tokens, prefs)
-  val client = GitLabGraphQlClient(http, apiClient)
+  val client = GitLabGraphQlClient(http)
   val gson = Gson()
   val timeout = Duration.ofSeconds(CUSTOM_TIMEOUT_SECONDS)
 
