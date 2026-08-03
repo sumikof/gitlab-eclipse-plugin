@@ -48,6 +48,35 @@ class MergeRequestServiceVersionTest : DescribeSpec({
       }
     }
 
+    it("threads a given ConnectionSnapshot into BOTH the versions list fetch and the detail fetch") {
+      val apiClient = mockk<GitLabApiClient>()
+      val service = MergeRequestService(apiClient)
+      val connection = ConnectionSnapshot("https://pinned.example.com", "tok-123", "fp", 1L)
+      val latestWithDiffs = GitLabMrVersion(id = 42, headCommitSha = "head42")
+      every {
+        apiClient.fetchListFromApi(any<ApiRequest<GitLabMrVersion>>(), connection)
+      } returns listOf(GitLabMrVersion(id = 42))
+      every {
+        apiClient.fetchObject(
+          "/projects/1/merge_requests/7/versions/42",
+          type = GitLabMrVersion::class.java,
+          connection = connection,
+        )
+      } returns latestWithDiffs
+
+      val result = service.getLatestMrVersion("1", 7, connection)
+
+      result shouldBe latestWithDiffs
+      verify(exactly = 1) { apiClient.fetchListFromApi(any<ApiRequest<GitLabMrVersion>>(), connection) }
+      verify(exactly = 1) {
+        apiClient.fetchObject(
+          "/projects/1/merge_requests/7/versions/42",
+          type = GitLabMrVersion::class.java,
+          connection = connection,
+        )
+      }
+    }
+
     it("returns null and does not fetch the version detail when the versions list is empty") {
       val apiClient = mockk<GitLabApiClient>()
       val service = MergeRequestService(apiClient)

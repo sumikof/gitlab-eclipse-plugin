@@ -1,14 +1,19 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.CiHttpStatus
+import com.gitlab.eclipse.api.DiscussionService
+import com.gitlab.eclipse.api.DiscussionsReadResult
+import com.gitlab.eclipse.api.model.GitLabDiscussion
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.api.model.GitLabNote
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiAction
 import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.configErrorMessage
 
 private const val NO_ISSUES_MESSAGE = "No issues assigned to you."
@@ -24,12 +29,54 @@ private const val JOBS_LOAD_FAILED_MESSAGE = "Failed to load jobs"
 private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
 private const val PIPELINE_UNAVAILABLE_MESSAGE = "Unable to load pipeline"
 
+/** Shown under a [DiscussionsSectionNode] whose merge request has no (non-system) discussions. */
+private const val NO_DISCUSSIONS_MESSAGE = "No discussions"
+
+/**
+ * Last child of a [ThreadNode] whose notes were truncated server-side
+ * ([GitLabDiscussion.hasMoreNotes]): this project never pages within a thread, so the marker is
+ * what keeps the omission visible instead of silently dropping the remaining replies.
+ */
+private const val MORE_REPLIES_MESSAGE = "(more replies — open in GitLab)"
+
+/**
+ * Last child of a [DiscussionsSectionNode] whose fetch stopped early (page cap or deadline —
+ * one wording for both, since the user's remedy is the same). Silent truncation is forbidden: a
+ * user must never believe they are seeing every discussion when they are not.
+ */
+private const val DISCUSSIONS_TRUNCATED_MESSAGE = "(truncated — open the merge request in GitLab to see all discussions)"
+
+/**
+ * Failure children of a [DiscussionsSectionNode] when the load itself failed. Deliberately
+ * generic about the cause: the failure can come from the fetch OR from reading the stored
+ * credential before any request was issued, so it must not read as though the server were at
+ * fault. Carries no exception detail — that lives in the Error Log, never in the tree.
+ */
+private const val DISCUSSIONS_LOAD_FAILED_MESSAGE = "Failed to load discussions — see the Error Log."
+
+/**
+ * Failure children of a [DiscussionsSectionNode] rejected by the connection gate (the instance
+ * URL or the credential changed under the node): no request was ever sent, so this wording asks
+ * for a refresh rather than reporting an error.
+ */
+private const val DISCUSSIONS_CONNECTION_CHANGED_MESSAGE = "Connection changed — refresh the view."
+
+/** Audit prefix for a merge request rendered without its Discussions section (see [SidebarViewModel]). */
+private const val DISCUSSIONS_SECTION_OMITTED_MESSAGE = "Discussions section omitted:"
+
 /**
  * Pure composition logic for the sidebar's two query roots ("Issues assigned to me",
  * "Merge requests assigned to me"): turns the raw fetch results into [SidebarNode]s,
  * grouping by project in [SidebarViewMode.TREE] and isolating each root's failure from
  * the other's.
  */
+// TooManyFunctions: the discussions builders (Task 9) push this class past detekt's 11-function
+// threshold. Suppressed rather than restructured: the file's own top-level function count is at
+// 10 of the same threshold, so moving these helpers out (the trick used by failureChildren /
+// currentBranchChildren below) would only move the finding, and splitting the class would change
+// every existing call site — both worse than one documented suppression on a pure, stateless
+// composition class whose functions are deliberately small and independent.
+@Suppress("TooManyFunctions")
 class SidebarViewModel {
 
   fun buildRoots(
@@ -130,13 +177,23 @@ class SidebarViewModel {
    * web page) followed by the changed files of its latest diff version, composed per
    * [mode]. A failed [versionResult] renders the same config-aware error message as the
    * query roots; a `null` version (MR with no diff versions) renders "No changed files".
+   *
+   * A [DiscussionsSectionNode] is inserted between the two (Overview → Discussions → changed
+   * files) when — and only when — [mr] and both source-connection tags are supplied and the merge
+   * request's `references.full` yields a namespace path. The three trailing parameters default to
+   * `null` so the pre-existing three-argument call shape keeps producing exactly today's children;
+   * see [discussionsSectionChildren] for what each omission means.
    */
   fun buildMrChildren(
     webUrl: String,
     versionResult: Result<GitLabMrVersion?>,
     mode: SidebarViewMode,
+    mr: GitLabMergeRequest? = null,
+    sourceInstanceUrl: String? = null,
+    sourceAuthFingerprint: String? = null,
   ): List<SidebarNode> =
     listOf(OverviewNode(webUrl)) +
+      discussionsSectionChildren(mr, sourceInstanceUrl, sourceAuthFingerprint) +
       versionResult.fold(
         onSuccess = { version -> buildChangedFileNodes(version, mode, webUrl) },
         onFailure = { error -> failureChildren(error) },
@@ -178,6 +235,144 @@ class SidebarViewModel {
       }
     return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl)
   }
+
+  /**
+   * The [DiscussionsSectionNode] for [mr], or no children at all when it cannot be addressed
+   * safely. Three omissions, all of them "render today's children unchanged" rather than an error
+   * row, because none of them is something the user did wrong:
+   *
+   * - [mr] `null` — a caller that predates the section (the three-argument overload shape);
+   * - either connection tag `null` — the connection could not be captured, so the node could not
+   *   record which instance AND which account its data came from; a later write compares both
+   *   against the live connection, and a section tagged with a guess would defeat that check;
+   * - `mr.references?.full` `null` — [DiscussionService.namespaceWithPath] has no input, and the
+   *   GraphQL query is addressed by namespace path, not by project id.
+   *
+   * [DiscussionService.mrGid] is built from `mr.id`, never `mr.iid`: they are different numbers
+   * and the GID form requires the global id, so the wrong one would address a different merge
+   * request on every write in the next PR.
+   *
+   * The audit lines carry a fixed reason token only — never the reference, the instance URL, or
+   * the auth fingerprint — and the logger acquisition itself is guarded because this class is
+   * pure, unit-tested code that must stay callable with no Eclipse bundle around it.
+   */
+  private fun discussionsSectionChildren(
+    mr: GitLabMergeRequest?,
+    sourceInstanceUrl: String?,
+    sourceAuthFingerprint: String?,
+  ): List<SidebarNode> {
+    if (mr == null) return emptyList()
+    if (sourceInstanceUrl == null || sourceAuthFingerprint == null) {
+      logDiscussionsSectionOmitted("connectionTagsUnavailable")
+      return emptyList()
+    }
+    val references = mr.references?.full
+    if (references == null) {
+      logDiscussionsSectionOmitted("mergeRequestReferenceUnavailable")
+      return emptyList()
+    }
+    return listOf(
+      DiscussionsSectionNode(
+        sourceInstanceUrl = sourceInstanceUrl,
+        sourceAuthFingerprint = sourceAuthFingerprint,
+        projectId = mr.projectId,
+        mrIid = mr.iid,
+        mrGid = DiscussionService.mrGid(mr.id),
+        mrSha = mr.sha,
+        namespaceWithPath = DiscussionService.namespaceWithPath(references),
+      ),
+    )
+  }
+
+  /** Logs one omission reason, never failing the caller when no Eclipse log is available. */
+  private fun logDiscussionsSectionOmitted(reason: String) {
+    runCatching { logger<SidebarViewModel>().warn("$DISCUSSIONS_SECTION_OMITTED_MESSAGE reason=$reason") }
+  }
+
+  /**
+   * Children of an expanded [DiscussionsSectionNode]: one [ThreadNode] per fetched discussion,
+   * each holding its notes as [NoteNode]s in server order (which is reply order).
+   *
+   * Every truncation the fetch reports is made visible, because a user must never believe they
+   * are seeing everything when they are not: a thread whose notes were cut short gets
+   * [MORE_REPLIES_MESSAGE] as its last child, and a section whose fetch stopped at the page cap
+   * or at the deadline gets [DISCUSSIONS_TRUNCATED_MESSAGE] as its last child — the same wording
+   * for either [com.gitlab.eclipse.api.TruncationReason], since the user's remedy is identical.
+   *
+   * With no threads to show (no discussions, or every discussion defensively skipped) the section
+   * renders [NO_DISCUSSIONS_MESSAGE]; a truncation marker still follows it, so "nothing here" and
+   * "we stopped early" can never be confused for one another.
+   */
+  fun buildDiscussionChildren(node: DiscussionsSectionNode, result: DiscussionsReadResult): List<SidebarNode> {
+    val threads = result.discussions.mapNotNull { discussion -> buildThreadNode(node, discussion) }
+    val children = threads.ifEmpty { listOf(MessageNode(NO_DISCUSSIONS_MESSAGE)) }
+    if (result.truncation == null) return children
+    return children + MessageNode(DISCUSSIONS_TRUNCATED_MESSAGE)
+  }
+
+  /**
+   * One [ThreadNode] for [discussion], carrying [node]'s connection tags and MR identifiers
+   * verbatim. A thread's [GitLabNote.position] and [GitLabNote.permissions] come from its **first**
+   * note because a thread is anchored where it was opened and replies carry no position of their
+   * own. A discussion with no notes cannot reach here (the fetch drops those), but is skipped
+   * rather than crashing the whole subtree if one ever does.
+   */
+  private fun buildThreadNode(node: DiscussionsSectionNode, discussion: GitLabDiscussion): ThreadNode? {
+    val firstNote = discussion.notes.firstOrNull() ?: return null
+    val notes = discussion.notes.map { note -> buildNoteNode(node, discussion.replyId, note) }
+    return ThreadNode(
+      sourceInstanceUrl = node.sourceInstanceUrl,
+      sourceAuthFingerprint = node.sourceAuthFingerprint,
+      projectId = node.projectId,
+      mrIid = node.mrIid,
+      mrGid = node.mrGid,
+      mrSha = node.mrSha,
+      namespaceWithPath = node.namespaceWithPath,
+      replyId = discussion.replyId,
+      resolved = discussion.resolved,
+      resolvable = discussion.resolvable,
+      position = firstNote.position,
+      permissions = firstNote.permissions,
+      children = if (discussion.hasMoreNotes) notes + MessageNode(MORE_REPLIES_MESSAGE) else notes,
+    )
+  }
+
+  /**
+   * One [NoteNode] for [note] under the thread identified by [replyId] — the *enclosing thread's*
+   * reply handle, not the note's own id, which is how a note-level action addresses its thread
+   * without a parent pointer (tree selections are flat).
+   */
+  private fun buildNoteNode(node: DiscussionsSectionNode, replyId: String, note: GitLabNote): NoteNode =
+    NoteNode(
+      sourceInstanceUrl = node.sourceInstanceUrl,
+      sourceAuthFingerprint = node.sourceAuthFingerprint,
+      projectId = node.projectId,
+      mrIid = node.mrIid,
+      mrGid = node.mrGid,
+      mrSha = node.mrSha,
+      namespaceWithPath = node.namespaceWithPath,
+      noteGid = note.id,
+      replyId = replyId,
+      body = note.body,
+      authorUsername = note.authorUsername,
+      createdAt = note.createdAt,
+      permissions = note.permissions,
+    )
+
+  /**
+   * Failure children of a [DiscussionsSectionNode]. [gateRejected] `true` is the connection gate
+   * (instance URL or credential changed, nothing was sent) and asks for a refresh; `false` is
+   * everything else — including a failure to read the stored credential, which is why the wording
+   * blames neither the server nor the user.
+   */
+  fun buildDiscussionFailureChildren(gateRejected: Boolean): List<SidebarNode> =
+    listOf(MessageNode(if (gateRejected) DISCUSSIONS_CONNECTION_CHANGED_MESSAGE else DISCUSSIONS_LOAD_FAILED_MESSAGE))
+
+  /**
+   * Placeholder children shown while a discussions fetch is in flight, reusing the one shared
+   * [LOADING_MESSAGE] constant — there is deliberately no second ellipsis string in this plugin.
+   */
+  fun buildDiscussionLoadingChildren(): List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
 }
 
 /**

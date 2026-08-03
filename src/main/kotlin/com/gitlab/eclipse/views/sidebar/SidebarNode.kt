@@ -3,6 +3,8 @@ package com.gitlab.eclipse.views.sidebar
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.model.GitLabNotePermissions
+import com.gitlab.eclipse.api.model.GitLabNotePosition
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiStatus
 
@@ -181,4 +183,193 @@ class JobNode(
   override val label: String = "${job.name ?: "(job)"} · ${CiStatus.displayName(job.status, job.allowFailure ?: false)}"
   override val children: List<SidebarNode> = emptyList()
   override val activationUrl: String? = job.webUrl
+}
+
+/**
+ * Lazy-load state of a [DiscussionsSectionNode]'s children.
+ *
+ * UI-thread-confined: like the node's other mutable state, this is only ever read and written
+ * on the SWT UI thread, so no memory-visibility annotation or lock is needed.
+ */
+enum class DiscussionLoadState { NOT_LOADED, LOADING, LOADED, FAILED }
+
+/**
+ * Expandable "Discussions" section under a [MergeRequestNode]: its [ThreadNode] children are
+ * fetched lazily on first expansion, and until then a stable "Loading…" placeholder renders,
+ * which also makes `SidebarContentProvider.hasChildren` report `true` so the expander (twistie)
+ * shows before anything is loaded — the same discipline [MergeRequestNode] follows.
+ *
+ * Carries the merge request's identifiers ([projectId], [mrIid], [mrGid], [mrSha],
+ * [namespaceWithPath]) and the non-secret source-connection tags ([sourceInstanceUrl] +
+ * [sourceAuthFingerprint], the instance **and** account the data was actually fetched over),
+ * duplicated onto the node because JFace tree selections are flat — `getParent` returns null,
+ * so a context-menu handler cannot walk from a selected node back up to its merge request.
+ * A later write compares both tags against the live connection and refuses to send when either
+ * differs. Never log [sourceAuthFingerprint]: it identifies a credential.
+ */
+class DiscussionsSectionNode(
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+  val projectId: Long,
+  val mrIid: Long,
+  val mrGid: String,
+  val mrSha: String?,
+  val namespaceWithPath: String,
+) : SidebarNode {
+  /**
+   * Unique per-instance identity, folded into [com.gitlab.eclipse.mergerequests.discussions.DiscussionKey]
+   * so two display nodes for the SAME merge request (it appears under both "Merge requests
+   * assigned to me" and "For current branch") never share a generation slot: without it, the
+   * second node's load supersedes the first's, which then — per the Superseded contract —
+   * touches nothing and strands the first node in LOADING forever. A re-load of the same node
+   * keeps superseding its own earlier load, because the id is stable for the node's lifetime.
+   */
+  val nodeId: Long = NODE_IDS.incrementAndGet()
+
+  override val label: String = "Discussions"
+
+  // Non-activatable: the node only expands; there is nothing to open in a browser for it.
+  override val activationUrl: String? = null
+
+  /**
+   * Whether the current user may add a note to this merge request, as reported by the fetch.
+   * Written by the view on the SWT UI thread only (same discipline as [loadedChildren]).
+   */
+  var canCreateNote: Boolean = false
+
+  /**
+   * Lazy-load progress of [loadedChildren]. Written by the view on the SWT UI thread only:
+   * every read and write happens on the single serial UI thread, so there is no window between
+   * a check and an update and therefore no need for `@Volatile` or synchronization.
+   */
+  var loadState: DiscussionLoadState = DiscussionLoadState.NOT_LOADED
+
+  /**
+   * Lazily-loaded children, written by the view on the SWT UI thread only (same discipline as
+   * [MergeRequestNode.loadedChildren]). `null` = not loaded yet.
+   */
+  var loadedChildren: List<SidebarNode>? = null
+
+  // One stable instance: JFace tracks tree elements by identity, so returning a fresh
+  // MessageNode from every children read would churn the widget mapping.
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
+
+  override val children: List<SidebarNode>
+    get() = loadedChildren ?: loadingPlaceholder
+
+  companion object {
+    /** Monotonic [nodeId] source; atomic because nodes may be built off the UI thread. */
+    private val NODE_IDS = java.util.concurrent.atomic.AtomicLong()
+  }
+}
+
+/**
+ * One discussion thread under a [DiscussionsSectionNode], expanding into its [NoteNode]s.
+ *
+ * [replyId] is the thread's reply handle (how a reply addresses this thread), [position] its
+ * diff anchor (null for a comment on the merge request as a whole), and [permissions] what the
+ * current user may do with the thread's first note. The connection tags and MR identifiers are
+ * duplicated here for the same reason as on [DiscussionsSectionNode]: tree selections are flat.
+ * Never log [sourceAuthFingerprint].
+ */
+class ThreadNode(
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+  val projectId: Long,
+  val mrIid: Long,
+  val mrGid: String,
+  val mrSha: String?,
+  val namespaceWithPath: String,
+  val replyId: String,
+  val resolved: Boolean,
+  val resolvable: Boolean,
+  val position: GitLabNotePosition?,
+  val permissions: GitLabNotePermissions,
+  override val children: List<SidebarNode>,
+) : SidebarNode {
+  override val label: String = threadLocationLabel(position) + threadResolutionSuffix(resolved, resolvable)
+}
+
+/**
+ * Leaf node for a single note (comment) inside a [ThreadNode].
+ *
+ * [replyId] is the *enclosing thread's* id — that is how a note-level action addresses its
+ * thread without a parent pointer. It is deliberately not an object reference to the
+ * [ThreadNode]: nodes are rebuilt on every refresh and a back-reference would keep a stale tree
+ * alive. Connection tags and MR identifiers are duplicated for the flat-selection reason
+ * documented on [DiscussionsSectionNode]. Never log [sourceAuthFingerprint] or [body].
+ */
+class NoteNode(
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+  val projectId: Long,
+  val mrIid: Long,
+  val mrGid: String,
+  val mrSha: String?,
+  val namespaceWithPath: String,
+  val noteGid: String,
+  val replyId: String,
+  val body: String,
+  val authorUsername: String,
+  val createdAt: String,
+  val permissions: GitLabNotePermissions,
+) : SidebarNode {
+  override val label: String = noteNodeLabel(authorUsername, body)
+  override val children: List<SidebarNode> = emptyList()
+  override val activationUrl: String? = null
+}
+
+/** Label shown for a thread that is not anchored to a diff line. */
+private const val THREAD_OVERALL_LABEL = "(overall)"
+
+/** Maximum length of the one-line note summary rendered in the tree, before the ellipsis. */
+private const val NOTE_SUMMARY_MAX_LENGTH = 120
+
+/** Matches a run of whitespace, collapsed to a single space in a [NoteNode]'s one-line summary. */
+private val whitespaceRun = Regex("\\s+")
+
+/**
+ * Location part of a [ThreadNode]'s label: the new-side path/line when the thread is anchored
+ * there, else the old-side path/line (comments on deleted lines are readable even though
+ * creating them is not supported), else [THREAD_OVERALL_LABEL].
+ */
+private fun threadLocationLabel(position: GitLabNotePosition?): String {
+  if (position == null) return THREAD_OVERALL_LABEL
+  val newPath = position.newPath
+  if (newPath != null) {
+    return if (position.newLine != null) "$newPath:${position.newLine}" else newPath
+  }
+  val oldPath = position.oldPath
+  if (oldPath != null) {
+    return if (position.oldLine != null) "$oldPath:${position.oldLine}" else oldPath
+  }
+  return THREAD_OVERALL_LABEL
+}
+
+/**
+ * Resolution suffix of a [ThreadNode]'s label, using the same `·` separator as [PipelineNode]
+ * and [JobNode]. An unresolvable thread has no resolution state to report, so it gets no suffix.
+ */
+private fun threadResolutionSuffix(resolved: Boolean, resolvable: Boolean): String = when {
+  !resolvable -> ""
+  resolved -> " · Resolved"
+  else -> " · Unresolved"
+}
+
+/**
+ * `"@author: summary"`, where the summary is the note body reduced to one line for the tree:
+ * first line only, whitespace runs collapsed, trimmed, and truncated with an ellipsis (U+2026)
+ * past [NOTE_SUMMARY_MAX_LENGTH]. A blank body yields just `"@author"`, with no trailing colon.
+ */
+private fun noteNodeLabel(authorUsername: String, body: String): String {
+  val firstLine = body.takeWhile { it != '\n' && it != '\r' }
+  val collapsed = firstLine.replace(whitespaceRun, " ").trim()
+  if (collapsed.isEmpty()) return "@$authorUsername"
+  val summary =
+    if (collapsed.length > NOTE_SUMMARY_MAX_LENGTH) {
+      collapsed.take(NOTE_SUMMARY_MAX_LENGTH) + "…"
+    } else {
+      collapsed
+    }
+  return "@$authorUsername: $summary"
 }

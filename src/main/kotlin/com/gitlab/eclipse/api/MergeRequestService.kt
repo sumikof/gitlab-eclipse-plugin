@@ -52,18 +52,29 @@ class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
    * (gitlab_service.ts:344-350): list versions (newest first, no diffs), then fetch
    * the first entry's full detail (which includes diffs). Returns `null` if the MR
    * has no versions.
+   *
+   * When [connection] is non-null, BOTH requests are pinned to that same snapshot, so a
+   * settings change between them cannot split the pair across instances or accounts — and the
+   * caller can truthfully tag the result with the connection it was fetched over. `null` keeps
+   * the pre-existing per-request global-reading behavior, unchanged.
    */
-  fun getLatestMrVersion(encodedProjectId: String, mrIid: Long): GitLabMrVersion? {
+  fun getLatestMrVersion(
+    encodedProjectId: String,
+    mrIid: Long,
+    connection: ConnectionSnapshot? = null,
+  ): GitLabMrVersion? {
     val versions = apiClient.fetchListFromApi(
       ApiRequest(
         path = "/projects/$encodedProjectId/merge_requests/$mrIid/versions",
         elementType = GitLabMrVersion::class.java,
       ),
+      connection = connection,
     )
     val latest = versions.firstOrNull() ?: return null
     return apiClient.fetchObject(
       "/projects/$encodedProjectId/merge_requests/$mrIid/versions/${latest.id}",
       type = GitLabMrVersion::class.java,
+      connection = connection,
     )
   }
 }

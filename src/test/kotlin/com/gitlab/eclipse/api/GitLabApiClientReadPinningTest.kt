@@ -21,7 +21,8 @@ import java.time.Duration
 
 /**
  * Covers the GET-path connection pinning added on top of [GitLabApiClient.captureConnection]:
- * an optional [ConnectionSnapshot] threaded through [GitLabApiClient.fetchObject] and
+ * an optional [ConnectionSnapshot] threaded through [GitLabApiClient.fetchObject],
+ * [GitLabApiClient.fetchListFromApi] and
  * [GitLabApiClient.fetchListWithinDeadline] must, when non-null, source the URI base and Bearer
  * credential from the snapshot instead of the live preference store / token manager (design
  * "8B"), and every page of a paginated fetch must reuse the SAME snapshot rather than re-reading
@@ -87,6 +88,35 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
 
       captured.captured.uri().toString() shouldBe "https://global.example.com/api/v4/user?"
       captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer global-token"
+    }
+  }
+
+  describe("fetchListFromApi") {
+    it("pins EVERY page to the same connection, ignoring mid-fetch global pref/token changes") {
+      val requests = mutableListOf<HttpRequest>()
+      val pages = listOf(
+        response("""[{"id":1}]""", nextPage = "2"),
+        response("""[{"id":2}]""", nextPage = ""),
+      )
+      var call = 0
+      every { http.send(capture(requests)) } answers {
+        val page = pages[call]
+        call++
+        // Mutate the globals BETWEEN pages: a real settings change mid-fetch must not leak
+        // into a later page's request when the fetch is pinned to a connection.
+        every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://changed-$call.example.com"
+        every { tokens.getToken() } returns "changed-token-$call"
+        page
+      }
+
+      val result = client.fetchListFromApi(req(), connection)
+
+      result shouldBe listOf(Item(1), Item(2))
+      requests shouldHaveSize 2
+      requests.forEach { request ->
+        request.uri().toString() shouldStartWith "https://pinned.example.com/api/v4/jobs?"
+        request.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
+      }
     }
   }
 

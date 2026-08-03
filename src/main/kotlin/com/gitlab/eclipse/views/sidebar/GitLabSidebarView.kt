@@ -1,16 +1,21 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
+import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
 import kotlinx.coroutines.CancellationException
@@ -52,6 +57,12 @@ import java.net.URI
  * version and renders an "Overview" node plus its changed files (flat in LIST mode,
  * folder hierarchy in TREE mode), under the same threading discipline.
  */
+// TooManyFunctions: the discussions wiring (Task 9) adds the loader's UI-thread helpers and the
+// section lookup, pushing this class past detekt's 11-function threshold. Suppressed rather than
+// restructured: each helper closes over `viewer`/`logger`/`viewModel`, so moving them top-level
+// would mean threading those through as parameters — more code and more state to get wrong on a
+// class whose whole point is owning that widget state.
+@Suppress("TooManyFunctions")
 class GitLabSidebarView : ViewPart() {
   companion object {
     /** Must match the view id declared in plugin.xml. */
@@ -89,11 +100,32 @@ class GitLabSidebarView : ViewPart() {
   // ever fetched — onModeChanged then starts the first refresh instead of recomposing.
   private var currentSlots: RefreshSlots? = null
 
-  // Latest MR diff version per (projectId, iid), UI thread only. Survives mode toggles —
-  // re-expanding an MR re-composes its children in the new mode without re-fetching — and
-  // is cleared at the start of a full refresh, so refreshed sidebars pick up new diff
-  // versions while the several incremental composes of one refresh keep sharing it.
-  private val mrVersionCache = mutableMapOf<Pair<Long, Long>, GitLabMrVersion?>()
+  // Latest MR diff version per merge request, UI thread only. Keyed by [mrCacheKey]: the MR's
+  // web URL — globally unique across instances — rather than the numeric (projectId, iid) pair,
+  // which is unique only WITHIN one instance: two instances can each hold a project 42 with an
+  // MR !7, and under the numeric key a settings change racing a refresh could hand one
+  // instance's cached diff version (and connection tags below) to the other's node. Within
+  // a single instance the web URL is one-to-one with the numeric pair, so this changes
+  // nothing there. An MR whose web URL is missing at runtime falls back to a per-MR numeric
+  // key instead of the one degenerate URL value all such MRs would otherwise share — see
+  // [mrCacheKey] for why that fallback is safe. Survives mode toggles — re-expanding an MR
+  // re-composes its children in the new mode without re-fetching — and is cleared at the
+  // start of a full refresh, so refreshed sidebars pick up new diff versions while the
+  // several incremental composes of one refresh keep sharing it.
+  private val mrVersionCache = mutableMapOf<String, GitLabMrVersion?>()
+
+  // The two non-secret connection tags each cached diff version was actually fetched over, keyed
+  // exactly like mrVersionCache and cleared with it (UI thread only). Recorded once on the fetch
+  // path — where the capture already happens off the UI thread — so the cache-hit path never has
+  // to capture: `captureConnection` reads the token, and for an expired OAuth credential that
+  // performs a SYNCHRONOUS refresh request (OAuthTokenProvider.getToken -> refreshTokenIfExpired),
+  // which on the UI thread freezes the workbench. Correctness, not just cost: the tags exist to
+  // record which instance AND which account the cached data came from, so re-capturing later
+  // would stamp the node with whatever connection is configured now and hide the very mismatch
+  // they are meant to expose. Deliberately a separate map: mrVersionCache's value type is part of
+  // the existing cache-hit contract (`containsKey` distinguishes "fetched null" from "not
+  // fetched") and is left untouched.
+  private val mrConnectionTagsCache = mutableMapOf<String, Pair<String?, String?>>()
 
   // MR nodes with a version fetch in flight (UI thread only; identity-keyed since
   // MergeRequestNode does not override equals), so collapse/re-expand while a fetch is
@@ -102,6 +134,45 @@ class GitLabSidebarView : ViewPart() {
 
   // Stored so dispose() can remove this exact instance from the shared SidebarViewState.
   private val modeListener: () -> Unit = { onModeChanged() }
+
+  /**
+   * Lazy-loads a [DiscussionsSectionNode]'s threads on expansion. Built lazily for the same two
+   * reasons as [pipelineService]/[jobService] — its `service()` constructor defaults must resolve
+   * only once the workbench (and Koin) is up — plus a third: every function injected below
+   * captures [viewer], which exists only after [createPartControl].
+   *
+   * **None of the injected functions may throw.** The loader calls them inside its terminal
+   * branch, past the point where exactly one `onOutcome` call is guaranteed, so an exception
+   * escaping a builder, [refreshNode] or [notify] would abort that branch and strand the callback
+   * — the one thing [DiscussionsLoader]'s completion contract promises cannot happen. Each is
+   * therefore made total by [guarded]: a disposed control is checked before it is touched, and
+   * anything else that can fail (notably the notification popup, which needs an active window) is
+   * caught and logged with `exceptionType=` only — never the exception object, which can carry a
+   * token in its message.
+   */
+  private val discussionsLoader by lazy {
+    DiscussionsLoader(
+      runInBackground = { block -> guarded("runInBackground", Unit) { coroutineScope.launch { block() } } },
+      runOnUi = { block -> runOnDiscussionsUiThread(block) },
+      buildChildren = { node, result ->
+        guarded("buildChildren", emptyList()) { viewModel.buildDiscussionChildren(node, result) }
+      },
+      buildFailureChildren = { _, gateRejected ->
+        guarded("buildFailureChildren", emptyList()) { viewModel.buildDiscussionFailureChildren(gateRejected) }
+      },
+      buildLoadingChildren = {
+        guarded("buildLoadingChildren", emptyList()) { viewModel.buildDiscussionLoadingChildren() }
+      },
+      refreshNode = { node ->
+        guarded("refreshNode", Unit) { if (!viewer.control.isDisposed) viewer.refresh(node) }
+      },
+      // showOnUiThread, not show: `show` only SCHEDULES the popup in a later asyncExec runnable,
+      // which would run outside this guard and send any failure to SWT's default handler instead
+      // of producing the exceptionType= audit line. The loader calls `notify` on the UI thread
+      // already, so opening the popup synchronously here keeps it inside the guard.
+      notify = { message -> guarded("notify", Unit) { NotificationUtils.showOnUiThread(message) } },
+    )
+  }
 
   override fun createPartControl(parent: Composite) {
     viewer = TreeViewer(parent, SWT.SINGLE or SWT.H_SCROLL or SWT.V_SCROLL)
@@ -135,6 +206,18 @@ class GitLabSidebarView : ViewPart() {
     viewer.addTreeListener(
       object : ITreeViewerListener {
         override fun treeExpanded(event: TreeExpansionEvent) {
+          // Discussions section: fetch on first expansion and after a failed one (a retry), but
+          // never while a fetch is in flight — collapsing and re-expanding mid-load must not
+          // start a redundant second fetch — and never when already LOADED, which is both the
+          // loader's own behavior for force = false and what keeps re-expansion cheap.
+          val section = event.element as? DiscussionsSectionNode
+          if (section != null) {
+            val state = section.loadState
+            if (state == DiscussionLoadState.NOT_LOADED || state == DiscussionLoadState.FAILED) {
+              discussionsLoader.loadDiscussions(section, force = false, onOutcome = {})
+            }
+            return
+          }
           val node = event.element as? MergeRequestNode ?: return
           if (node.loadedChildren == null) loadMrChildren(node)
         }
@@ -163,6 +246,18 @@ class GitLabSidebarView : ViewPart() {
     // compose — so the next expansion re-fetches new diffs while this one refresh's
     // several incremental composes keep sharing the cache.
     mrVersionCache.clear()
+    // Cleared with the versions it labels: a tag must never outlive the cached data it describes.
+    mrConnectionTagsCache.clear()
+    // A full refresh rebuilds every DiscussionsSectionNode of THIS view's tree (new instances,
+    // new nodeIds), so this view's old keys could only accumulate as dead entries — and any of
+    // this view's in-flight loads must not touch its rebuilt tree; dropping exactly those keys
+    // makes them report Superseded. Scoped to the nodes this view is about to replace because
+    // the registry is process-wide and another workbench window's sidebar owns its own keys:
+    // clearing those too would make that view's in-flight load report Superseded with no newer
+    // load coming, stranding its section in LOADING (the expansion listener skips LOADING).
+    DiscussionGenerationRegistry.clearLatestFor(
+      collectDiscussionSectionNodeIds((viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()),
+    )
     fetchJob?.cancel()
     fetchJob = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
@@ -399,13 +494,20 @@ class GitLabSidebarView : ViewPart() {
    * path so the tree is never mutated re-entrantly from inside the expand event.
    */
   private fun loadMrChildren(node: MergeRequestNode) {
-    val cacheKey = node.mr.projectId to node.mr.iid
+    val cacheKey = mrCacheKey(node.mr.webUrl, node.mr.projectId, node.mr.iid)
     val control = viewer.control
     if (control.isDisposed) return
     if (mrVersionCache.containsKey(cacheKey)) {
+      // Read, never re-captured: capturing here would run on the UI thread (see
+      // mrConnectionTagsCache). Validated all the same: the web-URL key already makes a
+      // cross-instance hit impossible, but applying the same membership check as the fetch
+      // path keeps this branch self-evidently unable to reuse tags for a foreign MR. A cache
+      // entry without stored tags — or one failing the check — yields (null, null), which
+      // buildMrChildren already renders as "no Discussions section" rather than a wrong one.
+      val tags = validatedCacheTags(mrConnectionTagsCache[cacheKey], node.mr.webUrl)
       control.display.asyncExec {
         if (control.isDisposed) return@asyncExec
-        applyMrChildren(node, Result.success(mrVersionCache[cacheKey]))
+        applyMrChildren(node, Result.success(mrVersionCache[cacheKey]), tags.first, tags.second)
       }
       return
     }
@@ -414,14 +516,25 @@ class GitLabSidebarView : ViewPart() {
     coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch (see refresh()).
       try {
+        // ONE snapshot for the whole fetch, captured BEFORE it: the version fetch is pinned to
+        // this connection and the tags below are derived from the same snapshot, so the node can
+        // never be stamped with a connection its data did not come from (a capture after the
+        // fetch would read whatever is configured THEN, hiding the very mismatch the connection
+        // gate compares against). A failed capture (settings mid-change, credential read error)
+        // yields null: the fetch falls back to the per-request capture inside the client, and
+        // the tags stay (null, null) — rendered as "no Discussions section", exactly as before.
+        val snapshot = runCatching { apiClient.captureConnection() }.getOrNull()
         val versionResult = runCatching {
           // REST accepts a numeric project id directly, so no URL encoding is needed.
-          mergeRequestService.getLatestMrVersion(node.mr.projectId.toString(), node.mr.iid)
+          mergeRequestService.getLatestMrVersion(node.mr.projectId.toString(), node.mr.iid, snapshot)
         }
         // Logged here so the error message the node renders has a matching Error Log entry.
         versionResult.exceptionOrNull()?.let {
           logger.error("Failed to load changed files for merge request !${node.mr.iid}.", it)
         }
+        // Reduced to the two non-secret fields right here, off the UI thread: the snapshot itself
+        // holds the token and must never be carried into the UI block below.
+        val tags = sourceTagsFor(snapshot, node.mr.webUrl)
         if (!control.isDisposed) {
           control.display.asyncExec {
             if (control.isDisposed) return@asyncExec
@@ -430,7 +543,10 @@ class GitLabSidebarView : ViewPart() {
             // drop the result rather than poisoning the fresh mrVersionCache with it.
             if (!refreshState.isCurrent(generation)) return@asyncExec
             versionResult.onSuccess { version -> mrVersionCache[cacheKey] = version }
-            applyMrChildren(node, versionResult)
+            // Stored under the same condition as the version itself, so the two can never
+            // disagree: a failed fetch caches neither, and a later expansion re-fetches both.
+            if (versionResult.isSuccess) mrConnectionTagsCache[cacheKey] = tags
+            applyMrChildren(node, versionResult, tags.first, tags.second)
           }
         }
       } catch (e: CancellationException) {
@@ -446,11 +562,90 @@ class GitLabSidebarView : ViewPart() {
    * raced the fetch never paints children built for a stale mode (same rule as
    * [applyCompose]). A failed [versionResult] is applied but not cached, so a later full
    * refresh (which rebuilds the node) retries the fetch.
+   *
+   * [sourceInstanceUrl]/[sourceAuthFingerprint] are the non-secret tags of the connection the
+   * children were actually fetched over (the pinned snapshot in [loadMrChildren]); they are
+   * stamped on the node's
+   * [DiscussionsSectionNode] so a later write can refuse to send when instance OR account has
+   * changed underneath it. Both `null` (capture failed) means no Discussions section at all,
+   * which is deliberate — see `SidebarViewModel.buildMrChildren`.
    */
-  private fun applyMrChildren(node: MergeRequestNode, versionResult: Result<GitLabMrVersion?>) {
-    node.loadedChildren = viewModel.buildMrChildren(node.url, versionResult, viewState.mode)
+  private fun applyMrChildren(
+    node: MergeRequestNode,
+    versionResult: Result<GitLabMrVersion?>,
+    sourceInstanceUrl: String?,
+    sourceAuthFingerprint: String?,
+  ) {
+    node.loadedChildren =
+      viewModel.buildMrChildren(node.url, versionResult, viewState.mode, node.mr, sourceInstanceUrl, sourceAuthFingerprint)
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
+  }
+
+  /**
+   * UI thread only. Runs [block] on the SWT UI thread, dropping it when the viewer's control (or
+   * the whole Display, at workbench shutdown) is disposed — a disposed widget must never be
+   * touched, and a dropped block simply means there is no tree left to paint into. Total by
+   * construction: both the scheduling and the block itself are wrapped by [guarded], so nothing
+   * thrown here can escape into [DiscussionsLoader].
+   */
+  private fun runOnDiscussionsUiThread(block: () -> Unit) {
+    guarded("runOnUi", Unit) {
+      val control = viewer.control
+      if (control.isDisposed) return@guarded
+      control.display.asyncExec {
+        if (control.isDisposed) return@asyncExec
+        guarded("uiStep", Unit) { block() }
+      }
+    }
+  }
+
+  /**
+   * Runs [block], returning [fallback] if it throws. The audit line names the injected step and
+   * carries `exceptionType=<class name>` only — never the exception object, the token, the auth
+   * fingerprint, or any note text.
+   */
+  private fun <T> guarded(operation: String, fallback: T, block: () -> T): T =
+    try {
+      block()
+    } catch (e: Exception) {
+      logger.error("Discussions UI step failed: operation=$operation exceptionType=${e.javaClass.name}")
+      fallback
+    }
+
+  /**
+   * UI thread only (it reads [viewer]'s current input, which is UI-thread-confined). Finds the
+   * [DiscussionsSectionNode] currently in the tree for the given merge request on the given
+   * connection, or `null` when the tree holds no such section — e.g. the sidebar was refreshed,
+   * the MR node was never expanded, or the connection changed since the node was built.
+   *
+   * All four values must match, and the instance URLs are compared through
+   * [normalizeInstanceUrl] on both sides — the same normalization the connection gate uses, so a
+   * trailing-slash difference cannot cause a miss. The fingerprint is compared exactly: the same
+   * URL with a different credential is a different account, and a URL-only check would let a
+   * write address the wrong one.
+   *
+   * **Deliberately unused in this PR** — the next PR's write actions call it to re-fetch the
+   * affected section after a create/reply/resolve. Do not delete it as dead code.
+   */
+  internal fun resolveDiscussionsSection(
+    instanceUrl: String,
+    authFingerprint: String,
+    projectId: Long,
+    mrIid: Long,
+  ): DiscussionsSectionNode? {
+    if (!::viewer.isInitialized || viewer.control.isDisposed) return null
+    val normalizedInstanceUrl = normalizeInstanceUrl(instanceUrl)
+    return (viewer.input as? List<*>)
+      .orEmpty()
+      .filterIsInstance<SidebarNode>()
+      .flatMap(::collectDiscussionsSections)
+      .firstOrNull {
+        normalizeInstanceUrl(it.sourceInstanceUrl) == normalizedInstanceUrl &&
+          it.sourceAuthFingerprint == authFingerprint &&
+          it.projectId == projectId &&
+          it.mrIid == mrIid
+      }
   }
 
   override fun setFocus() {
@@ -489,3 +684,88 @@ internal fun remapExpandedElements(expanded: List<Any>, newInput: List<SidebarNo
       else -> element
     }
   }
+
+/**
+ * The two non-secret connection tags to stamp on a merge request node's children, or
+ * `(null, null)` — rendered as "no Discussions section" — when there is nothing truthful to
+ * stamp: no snapshot was captured, or the merge request does not belong to the captured
+ * instance. The MR came from an earlier list fetch that may have run under a DIFFERENT
+ * connection, and tagging foreign data with the live connection would make the connection gate
+ * pass and send the MR's identifiers to the wrong instance or account.
+ */
+private fun sourceTagsFor(snapshot: ConnectionSnapshot?, mrWebUrl: String?): Pair<String?, String?> =
+  if (snapshot != null && mrBelongsToInstance(mrWebUrl, snapshot.instanceUrl)) {
+    snapshot.instanceUrl to snapshot.authFingerprint
+  } else {
+    null to null
+  }
+
+/**
+ * The connection tags to reuse on [GitLabSidebarView.loadMrChildren]'s cache-hit path, or
+ * `(null, null)` — rendered as "no Discussions section" — when nothing is cached or the cached
+ * instance does not own [mrWebUrl] under [mrBelongsToInstance]. The web-URL cache key already
+ * makes a cross-instance hit impossible; this is the same membership check the fetch path
+ * applies via [sourceTagsFor], repeated here as defence in depth so the hit branch is safe on
+ * its own terms rather than safe only by an argument about the key.
+ */
+private fun validatedCacheTags(cached: Pair<String?, String?>?, mrWebUrl: String?): Pair<String?, String?> {
+  val cachedInstanceUrl = cached?.first ?: return null to null
+  return if (mrBelongsToInstance(mrWebUrl, cachedInstanceUrl)) cached else null to null
+}
+
+/**
+ * The key under which [GitLabSidebarView]'s `mrVersionCache` and `mrConnectionTagsCache` store one
+ * merge request's entries: the MR's [webUrl] when usable (globally unique, so two instances can
+ * never share a key), otherwise the numeric fallback `"mr-id:<projectId>/<mrIid>"`.
+ * [com.gitlab.eclipse.api.model.GitLabMergeRequest] declares `webUrl` non-null, but Gson builds it
+ * through `Unsafe` and skips the constructor, so a response without `web_url` leaves it null (or
+ * blank) at runtime regardless — and keying every such MR by that one degenerate value would make
+ * them all share a single entry, rendering one MR's cached changed files under another. The
+ * fallback restores a per-MR key, and cannot collide with a URL key: a real web URL always begins
+ * with a scheme, which `mr-id:<digits>/...` never does.
+ *
+ * The fallback is deliberately NOT instance-qualified — there is nothing truthful to qualify it
+ * with — so a cross-instance collision on it remains possible in principle, exactly as under the
+ * numeric key this fallback restores. That only ever affects the version cache: the tags path is
+ * separately protected, because [mrBelongsToInstance] rejects a null or blank web URL, so a
+ * fallback-keyed MR always gets `(null, null)` tags and renders WITHOUT a Discussions section. Do
+ * not "simplify" the fallback into the sole key on that argument — the URL key is what keeps one
+ * instance's diff versions out of another instance's nodes. Pure and SWT-free so the headless
+ * tests can reach it.
+ */
+internal fun mrCacheKey(webUrl: String?, projectId: Long, mrIid: Long): String =
+  if (webUrl.isNullOrBlank()) "mr-id:$projectId/$mrIid" else webUrl
+
+/**
+ * Whether a merge request whose web URL is [mrWebUrl] belongs to the instance at [instanceUrl]:
+ * the web URL must start with the normalized instance URL followed by a `/` boundary, so
+ * `https://gitlab.example.com` never matches `https://gitlab.example.com.attacker.test/...`.
+ * A null or blank [mrWebUrl] fails the check ([com.gitlab.eclipse.api.model.GitLabMergeRequest]
+ * declares `webUrl` non-null, but Gson builds it through `Unsafe` and a key missing from the
+ * response leaves it null regardless). Pure and SWT-free so the headless tests can reach it.
+ */
+internal fun mrBelongsToInstance(mrWebUrl: String?, instanceUrl: String): Boolean {
+  if (mrWebUrl.isNullOrBlank()) return false
+  val normalized = normalizeInstanceUrl(instanceUrl)
+  if (normalized.isBlank()) return false
+  return mrWebUrl.startsWith("$normalized/")
+}
+
+/**
+ * Every [DiscussionsSectionNode] at or under [node], depth-first. Recursion stops at a section
+ * itself (a section's own children are threads, never further sections), and reading
+ * [SidebarNode.children] of a not-yet-loaded node is safe: it yields that node's stable
+ * "Loading…" placeholder rather than triggering a fetch. UI thread only, like its caller.
+ */
+private fun collectDiscussionsSections(node: SidebarNode): List<DiscussionsSectionNode> =
+  if (node is DiscussionsSectionNode) listOf(node) else node.children.flatMap(::collectDiscussionsSections)
+
+/**
+ * The [DiscussionsSectionNode.nodeId]s of every section at or under [nodes]: the set a full
+ * refresh hands to [DiscussionGenerationRegistry.clearLatestFor], so it invalidates exactly the
+ * keys owned by the tree that refresh is about to replace — never another window's. Walking
+ * [SidebarNode.children] is a pure read on every node type (an unloaded node yields its stable
+ * "Loading…" placeholder, never a fetch). Pure and SWT-free so the headless tests can reach it.
+ */
+internal fun collectDiscussionSectionNodeIds(nodes: List<SidebarNode>): Set<Long> =
+  nodes.flatMap(::collectDiscussionsSections).mapTo(mutableSetOf()) { it.nodeId }
