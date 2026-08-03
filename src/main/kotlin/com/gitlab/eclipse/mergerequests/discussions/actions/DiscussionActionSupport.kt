@@ -270,6 +270,13 @@ internal fun showCopyTextDialog(window: IWorkbenchWindow?, title: String, messag
  * Background thread. Runs one write through the connection gate + pre-send lifecycle re-check and
  * emits at most one secret-free audit line for its outcome (design §16). [key] supplies only its
  * `targetKind`; the target id is deliberately never logged.
+ *
+ * [startEpoch] is the epoch of **this attempt**: handlers must forward the value
+ * [DiscussionWriteLauncher.launch] passes to their write lambda, never one they captured when the
+ * command was invoked. A `[Retry]` / `[Send again]` re-entry re-freezes the epoch, and re-sending
+ * with the original one would make the pre-send re-check below always report
+ * [DiscussionWriteOutcome.Aborted] — which produces no UI, so the text the user just confirmed
+ * would disappear silently.
  */
 internal fun auditedDiscussionWrite(
   apiClient: GitLabApiClient,

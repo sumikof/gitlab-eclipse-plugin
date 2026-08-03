@@ -80,6 +80,10 @@ class DiscussionWriteOutcomeTest : DescribeSpec({
       classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Ambiguous>()
     }
 
+    // Load-bearing for the write path, not just for malformed JSON: DiscussionWriteService throws
+    // JsonSyntaxException when a mutation's payload object is absent, precisely so that case lands
+    // here as Ambiguous. A missing payload does not prove the mutation never ran, so [Retry] — the
+    // Definite affordance — could post the comment twice.
     it("classifies JsonSyntaxException as Ambiguous") {
       val cause = JsonSyntaxException("malformed")
       classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Ambiguous>()

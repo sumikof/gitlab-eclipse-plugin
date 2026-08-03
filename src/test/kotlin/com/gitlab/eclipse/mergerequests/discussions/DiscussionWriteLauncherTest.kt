@@ -6,6 +6,7 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import kotlinx.coroutines.CancellationException
@@ -38,12 +39,18 @@ private fun assertGuardReleased(key: DiscussionWriteKey) {
 @Suppress("TooGenericExceptionThrown")
 private fun throwRuntime(message: String): Nothing = throw RuntimeException(message)
 
-/** Records every body passed to `write` and returns [results] in order, repeating the last. */
+/**
+ * Records every body **and every startEpoch** passed to `write`, and returns [results] in order,
+ * repeating the last. The epochs are recorded because a `[Retry]` / `[Send again]` must send with
+ * the epoch re-frozen at re-entry time, not the one the first attempt started with.
+ */
 private class WriteSpy(vararg results: DiscussionWriteOutcome) {
   val bodies = mutableListOf<String>()
+  val epochs = mutableListOf<Long>()
   private val queue = ArrayDeque(results.toList())
-  val fn: (String) -> DiscussionWriteOutcome = { body ->
+  val fn: (String, Long) -> DiscussionWriteOutcome = { body, startEpoch ->
     bodies += body
+    epochs += startEpoch
     if (queue.size > 1) queue.removeFirst() else queue.first()
   }
 }
@@ -79,9 +86,19 @@ private class LauncherHarness(deferUi: Boolean = false) {
    */
   var reloadOutcome: LoadOutcome? = null
 
+  /**
+   * When non-null, the `runOnUi` **scheduling call itself** throws this instead of accepting the
+   * task — what `Display.asyncExec` does once the display is disposed. The terminal body never
+   * runs in that case, so its own handling cannot see the throwable.
+   */
+  var uiSchedulingFailure: Throwable? = null
+
   val launcher = DiscussionWriteLauncher(
     runInBackground = { task -> task() },
-    runOnUi = { task -> if (deferUi) pendingUi += task else task() },
+    runOnUi = { task ->
+      uiSchedulingFailure?.let { throw it }
+      if (deferUi) pendingUi += task else task()
+    },
     reload = { onOutcome ->
       reloadCount++
       reloadOutcome?.let { onOutcome(it) }
@@ -99,7 +116,7 @@ private class LauncherHarness(deferUi: Boolean = false) {
     log = { logs += it },
   )
 
-  fun launch(key: DiscussionWriteKey, body: String, write: (String) -> DiscussionWriteOutcome) {
+  fun launch(key: DiscussionWriteKey, body: String, write: (String, Long) -> DiscussionWriteOutcome) {
     launcher.launch(key, body, DiscussionGenerationRegistry.currentEpoch, write)
   }
 
@@ -193,7 +210,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       val key = keyFor("release-throw")
       val h = LauncherHarness()
 
-      h.launch(key, "b") { throwRuntime("boom") }
+      h.launch(key, "b") { _, _ -> throwRuntime("boom") }
 
       assertGuardReleased(key)
     }
@@ -521,6 +538,59 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       assertGuardReleased(key)
     }
 
+    it("the first attempt's write receives exactly the startEpoch passed to launch") {
+      val key = keyFor("epoch-passed-through")
+      val h = LauncherHarness()
+      val write = WriteSpy(DiscussionWriteOutcome.Success)
+
+      // An arbitrary epoch, deliberately not the registry's: this asserts pass-through, not that
+      // the launcher re-reads the registry. (The terminal is discarded by the lifecycle guard as a
+      // result, which is exactly the defect being guarded against downstream.)
+      h.launcher.launch(key, "first draft", 4242L, write.fn)
+
+      write.epochs shouldContainExactly listOf(4242L)
+      assertGuardReleased(key)
+    }
+
+    it("the [Retry] re-entry sends with the epoch frozen at retry time, not the original one") {
+      val key = keyFor("retry-sends-new-epoch")
+      val h = LauncherHarness()
+      val write = WriteSpy(DiscussionWriteOutcome.Definite(RuntimeException()), DiscussionWriteOutcome.Success)
+      val originalEpoch = DiscussionGenerationRegistry.currentEpoch
+
+      h.launch(key, "first draft", write.fn)
+      // Stop→restart while the [Retry] dialog is open.
+      DiscussionGenerationRegistry.onDeactivate()
+      DiscussionGenerationRegistry.onActivate()
+      val newEpoch = DiscussionGenerationRegistry.currentEpoch
+      h.lastRetryCallback!!.invoke("edited draft")
+
+      newEpoch shouldNotBe originalEpoch
+      // The argument value, not just the call count: sending the stale epoch would make the
+      // pre-send lifecycle check abort — and Aborted shows no UI, so the confirmed text would
+      // vanish silently.
+      write.epochs shouldContainExactly listOf(originalEpoch, newEpoch)
+      assertGuardReleased(key)
+    }
+
+    it("the [Send again] re-entry sends with the epoch frozen at click time, not the original one") {
+      val key = keyFor("send-again-sends-new-epoch")
+      val h = LauncherHarness()
+      h.reloadOutcome = LoadOutcome.Applied
+      val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
+      val originalEpoch = DiscussionGenerationRegistry.currentEpoch
+
+      h.launch(key, "first draft", write.fn)
+      DiscussionGenerationRegistry.onDeactivate()
+      DiscussionGenerationRegistry.onActivate()
+      val newEpoch = DiscussionGenerationRegistry.currentEpoch
+      h.lastSendAgainCallback!!.invoke("edited draft")
+
+      newEpoch shouldNotBe originalEpoch
+      write.epochs shouldContainExactly listOf(originalEpoch, newEpoch)
+      assertGuardReleased(key)
+    }
+
     it("the [Send again] re-entry re-acquires the guard: a key held at click time rejects the re-send") {
       val key = keyFor("send-again-reacquires")
       val h = LauncherHarness()
@@ -546,7 +616,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       val h = LauncherHarness()
 
       shouldThrow<CancellationException> {
-        h.launch(key, "my comment") { throw CancellationException("cancelled") }
+        h.launch(key, "my comment") { _, _ -> throw CancellationException("cancelled") }
       }
 
       // In particular it was NOT classified Ambiguous: no reload, no prompt, no notify.
@@ -559,7 +629,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.Applied // would drive [Send again] if the outcome were wrongly Ambiguous
 
-      h.launch(key, "my typed text") { throwRuntime("SECRET-MARKER boom") }
+      h.launch(key, "my typed text") { _, _ -> throwRuntime("SECRET-MARKER boom") }
 
       // Definite flow, not the Ambiguous reload-then-[Send again] flow:
       h.retryPrompts shouldContainExactly listOf(DiscussionWriteLauncher.DEFINITE_MESSAGE to "my typed text")
@@ -576,11 +646,60 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       val key = keyFor("body-never-logged")
       val h = LauncherHarness()
 
-      h.launch(key, "SECRET-MARKER-BODY") { throwRuntime("boom") }
+      h.launch(key, "SECRET-MARKER-BODY") { _, _ -> throwRuntime("boom") }
 
       // Sanity: the logging path really ran — the cleanliness assertion is not vacuous.
       h.logs.size shouldBe 1
       h.logs.forEach { it shouldNotContain "SECRET-MARKER-BODY" }
+    }
+  }
+
+  describe("UI scheduling failure containment") {
+    // The shared Koin CoroutineScope is CoroutineScope(Dispatchers.IO) — a plain Job, not a
+    // SupervisorJob (utils/WorkspaceModule.kt:22). A throwable escaping the background block would
+    // therefore cancel that scope for the whole session, taking the sidebar fetches, CI commands
+    // and job-log loading down with it. Losing one completion dialog is the lesser harm.
+    it("a runOnUi that throws does not propagate out of launch: no UI effect, and the key is released") {
+      val key = keyFor("ui-scheduling-failure")
+      val h = LauncherHarness()
+      h.uiSchedulingFailure = IllegalStateException("Display is disposed")
+      h.reloadOutcome = LoadOutcome.Applied
+
+      h.launch(key, "my typed text", WriteSpy(DiscussionWriteOutcome.Success).fn)
+
+      h.assertNoUiEffects()
+      assertGuardReleased(key)
+    }
+
+    it("a runOnUi that throws logs the scheduling failure with the type only, and never the body") {
+      val key = keyFor("ui-scheduling-failure-log")
+      val h = LauncherHarness()
+      h.uiSchedulingFailure = IllegalStateException("Display is disposed SECRET-MARKER")
+
+      h.launch(key, "SECRET-MARKER-BODY", WriteSpy(DiscussionWriteOutcome.Success).fn)
+
+      h.logs.size shouldBe 1
+      h.logs.single() shouldContain "outcome=uiSchedulingFailed"
+      h.logs.single() shouldContain "exceptionType=IllegalStateException"
+      h.logs.single() shouldNotContain "SECRET-MARKER"
+      // The write itself succeeded, so the escaped-throwable marker must NOT appear: the body
+      // never ran, only the scheduling call failed.
+      h.logs.single() shouldNotContain "outcome=escapedThrowable"
+    }
+
+    it("a runOnUi that throws CancellationException DOES propagate: structured concurrency needs it") {
+      val key = keyFor("ui-scheduling-cancellation")
+      val h = LauncherHarness()
+      h.uiSchedulingFailure = CancellationException("display hop cancelled")
+
+      shouldThrow<CancellationException> {
+        h.launch(key, "my typed text", WriteSpy(DiscussionWriteOutcome.Success).fn)
+      }
+
+      h.assertNoUiEffects()
+      assertGuardReleased(key)
+      // Cancellation is rethrown, never logged as a scheduling failure.
+      h.logs.shouldBeEmpty()
     }
   }
 })

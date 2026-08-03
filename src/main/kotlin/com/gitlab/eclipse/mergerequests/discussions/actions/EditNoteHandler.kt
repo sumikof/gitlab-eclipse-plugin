@@ -92,8 +92,10 @@ class EditNoteHandler : AbstractHandler() {
         EDIT_TITLE,
         retryErrorMessage = { message -> editRetryMessage(lastOutcome.get(), message) },
       )
-      launcher.launch(key, body, startEpoch) { attemptBody ->
-        auditedDiscussionWrite(apiClient, logger, "editNote", target, key, startEpoch) { connection ->
+      launcher.launch(key, body, startEpoch) { attemptBody, attemptEpoch ->
+        // attemptEpoch, not the captured startEpoch: a [Retry] re-entry re-freezes it, and sending
+        // with the stale one would abort the confirmed edit with no UI at all.
+        auditedDiscussionWrite(apiClient, logger, "editNote", target, key, attemptEpoch) { connection ->
           // Pre-check first, in the same lambda, against the DISPLAYED body.
           writeService.assertNoteUnchanged(connection, node.projectId, node.mrIid, node.noteGid, node.body)
           writeService.updateNote(connection, node.noteGid, attemptBody)

@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.api
 
+import com.google.gson.JsonSyntaxException
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -201,12 +202,15 @@ class DiscussionWriteServiceTest : DescribeSpec({
         e.messages shouldBe listOf("boom")
       }
 
-      it("treats a null mutation payload as a failure with empty messages, never as success") {
+      // A missing payload is Ambiguous, NOT Definite: a 2xx response carrying no payload object
+      // does not prove the mutation never ran, so offering [Retry] could post the comment twice.
+      // JsonSyntaxException is what classifyWriteFailure maps to Ambiguous.
+      it("throws JsonSyntaxException — never DiscussionMutationException — when the mutation payload is absent") {
         case.stub(null)
 
-        val e = shouldThrow<DiscussionMutationException> { case.call() }
+        val e = shouldThrow<JsonSyntaxException> { case.call() }
 
-        e.messages shouldBe emptyList()
+        e.message shouldBe DiscussionWriteService.MISSING_PAYLOAD_MESSAGE
       }
     }
   }

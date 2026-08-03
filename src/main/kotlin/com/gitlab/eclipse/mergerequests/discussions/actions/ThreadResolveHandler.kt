@@ -79,9 +79,11 @@ class ThreadResolveHandler : AbstractHandler() {
     // The write key omits the action on purpose, so a resolve and an unresolve of the same thread
     // serialize against each other instead of racing.
     discussionWriteLauncher(coroutineScope, logger, window, target, RESOLVE_TITLE)
-      .launch(key, "", startEpoch) { _ ->
+      .launch(key, "", startEpoch) { _, attemptEpoch ->
         val action = if (resolved) "resolveThread" else "unresolveThread"
-        auditedDiscussionWrite(apiClient, logger, action, target, key, startEpoch) { connection ->
+        // attemptEpoch, not the captured startEpoch: a [Retry] re-entry re-freezes it, and sending
+        // with the stale one would abort the retry with no UI at all.
+        auditedDiscussionWrite(apiClient, logger, action, target, key, attemptEpoch) { connection ->
           // `resolved` is a target state, never a flip of the node's current value.
           writeService.toggleResolve(connection, node.replyId, resolved = resolved)
         }

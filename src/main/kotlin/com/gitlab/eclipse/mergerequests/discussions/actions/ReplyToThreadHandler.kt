@@ -55,9 +55,11 @@ class ReplyToThreadHandler : AbstractHandler() {
       // Frozen after the dialog closes but still on this UI thread, in the same turn as launch().
       val startEpoch = DiscussionGenerationRegistry.currentEpoch
       discussionWriteLauncher(coroutineScope, logger, window, target, REPLY_TITLE)
-        .launch(key, body, startEpoch) { attemptBody ->
-          // attemptBody, not body: a [Retry] re-entry may carry edited text.
-          auditedDiscussionWrite(apiClient, logger, "replyToThread", target, key, startEpoch) { connection ->
+        .launch(key, body, startEpoch) { attemptBody, attemptEpoch ->
+          // attemptBody / attemptEpoch, not the captured body and startEpoch: a [Retry] re-entry
+          // may carry edited text, and it re-freezes the epoch — sending with the captured one
+          // would abort the retry silently after a stop→restart.
+          auditedDiscussionWrite(apiClient, logger, "replyToThread", target, key, attemptEpoch) { connection ->
             writeService.createNote(
               connection,
               node.mrGid,

@@ -2,6 +2,7 @@ package com.gitlab.eclipse.api
 
 import com.gitlab.eclipse.api.model.GitLabRestNote
 import com.gitlab.eclipse.inject.service
+import com.google.gson.JsonSyntaxException
 import java.time.Duration
 
 /**
@@ -53,9 +54,8 @@ fun restIdFromGid(gid: String): String? = NOTE_GID_TAIL.matchEntire(gid)?.groupV
  * Issues the four MR-discussion write mutations (create note / toggle resolve / update note /
  * delete note) over GraphQL. Owns the mutation constants and their variable-map builders, and
  * performs the L3 payload inspection: every write goes through [requireNoPayloadErrors], which
- * throws [DiscussionMutationException] when the mutation payload's own `errors` array is
- * non-empty — or when the payload object is missing entirely, because a response that carries no
- * payload for the mutation field cannot substantiate that the write happened.
+ * distinguishes a payload the server explicitly refused from a payload that is missing entirely —
+ * see that function for why the two must never be collapsed.
  *
  * [DiscussionMutationException] is deliberately NOT a [GraphQlException]:
  * `classifyWriteFailure` treats [DiscussionMutationException] as Definite (the server states it
@@ -168,16 +168,38 @@ class DiscussionWriteService(
   }
 
   /**
-   * The L3 check every write goes through. A `null` [payload] is a failure, not a success: if
-   * the server returned no payload object for the mutation field, the write cannot be claimed to
-   * have happened. `null` elements inside `errors` are dropped rather than stringified.
+   * The L3 check every write goes through. Both failure modes are failures, but they are **not the
+   * same failure**, and the difference decides whether the user is offered `[Retry]`:
+   *
+   * - **Payload missing** (`payload == null`) → [JsonSyntaxException] with a constant message,
+   *   which `classifyWriteFailure` maps to **Ambiguous**. A 2xx response that carries no payload
+   *   object for the mutation field proves *nothing* about whether the mutation ran: the server may
+   *   well have committed the note and only the response came back incomplete (a proxy truncation,
+   *   a schema/field-name drift, an unexpected `null` from Gson). Classifying it Definite would
+   *   offer `[Retry]` and let the user post the same comment twice. Ambiguous instead routes them
+   *   through the forced re-fetch, so `[Send again]` is only reachable after they have seen the
+   *   current state. The message is a **constant** on purpose: no server text may reach it, because
+   *   GitLab's error strings can echo the submitted comment body.
+   * - **Payload present with a non-empty `errors` array** → [DiscussionMutationException], which
+   *   maps to **Definite**. Here the server explicitly stated it executed the mutation and refused
+   *   it, so there is no side effect and `[Retry]` is provably safe.
+   * - **Payload present with an empty or absent `errors` array** → success.
+   *
+   * `null` elements inside `errors` are dropped rather than stringified.
    */
   private fun requireNoPayloadErrors(payload: MutationPayloadDto?) {
-    val messages = payload?.errors?.filterNotNull().orEmpty()
-    if (payload == null || messages.isNotEmpty()) throw DiscussionMutationException(messages)
+    if (payload == null) throw JsonSyntaxException(MISSING_PAYLOAD_MESSAGE)
+    val messages = payload.errors?.filterNotNull().orEmpty()
+    if (messages.isNotEmpty()) throw DiscussionMutationException(messages)
   }
 
   companion object {
+
+    /**
+     * The [JsonSyntaxException] message used when a mutation's payload object is absent. Constant
+     * and server-free by construction — see [requireNoPayloadErrors].
+     */
+    const val MISSING_PAYLOAD_MESSAGE = "GraphQL response carried no payload for the mutation field"
 
     /**
      * The `CreateNote` GraphQL mutation.

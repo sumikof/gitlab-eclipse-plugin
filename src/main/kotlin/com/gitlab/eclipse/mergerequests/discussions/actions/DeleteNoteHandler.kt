@@ -51,8 +51,10 @@ class DeleteNoteHandler : AbstractHandler() {
     val key = DiscussionWriteKey.forNote(node.sourceInstanceUrl, node.sourceAuthFingerprint, node.noteGid)
     val startEpoch = DiscussionGenerationRegistry.currentEpoch
     discussionWriteLauncher(coroutineScope, logger, window, target, DELETE_TITLE)
-      .launch(key, "", startEpoch) { _ ->
-        auditedDiscussionWrite(apiClient, logger, "deleteNote", target, key, startEpoch) { connection ->
+      .launch(key, "", startEpoch) { _, attemptEpoch ->
+        // attemptEpoch, not the captured startEpoch: a [Retry] re-entry re-freezes it, and sending
+        // with the stale one would abort the retry with no UI at all.
+        auditedDiscussionWrite(apiClient, logger, "deleteNote", target, key, attemptEpoch) { connection ->
           writeService.destroyNote(connection, node.noteGid)
         }
       }

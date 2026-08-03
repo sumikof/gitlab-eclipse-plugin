@@ -60,14 +60,22 @@ class DiscussionWriteLauncher(
    * Starts one write. Must be called on the UI thread, with [startEpoch] frozen from
    * [DiscussionGenerationRegistry.currentEpoch] in that same UI turn. [body] is `""` for
    * operations with no text input (resolve, delete); those use [notify] instead of the prompt
-   * dialogs, because there is nothing to preserve (design §11.2). [write] takes the body as a
-   * parameter so a `[Retry]` / `[Send again]` re-entry can send **edited** text.
+   * dialogs, because there is nothing to preserve (design §11.2).
+   *
+   * [write] receives **both** the body and the epoch of the attempt that is running:
+   * - the body, so a `[Retry]` / `[Send again]` re-entry can send **edited** text;
+   * - the epoch, so the re-entry's pre-send lifecycle check compares against the epoch [relaunch]
+   *   just re-froze rather than the one the first attempt started with. A callback that closed over
+   *   its own epoch would, after a stop→restart while the dialog was open, always compare stale,
+   *   always return [DiscussionWriteOutcome.Aborted] — and Aborted shows no UI at all, so the text
+   *   the user explicitly confirmed would vanish silently. Handlers must pass the parameter
+   *   straight through and never capture an epoch of their own.
    */
   fun launch(
     key: DiscussionWriteKey,
     body: String,
     startEpoch: Long,
-    write: (body: String) -> DiscussionWriteOutcome,
+    write: (body: String, startEpoch: Long) -> DiscussionWriteOutcome,
   ) {
     if (!InFlightWriteGuard.tryAcquire(key)) {
       notify(ALREADY_IN_PROGRESS_MESSAGE)
@@ -75,7 +83,7 @@ class DiscussionWriteLauncher(
     }
     runInBackground {
       val outcome = try {
-        write(body)
+        write(body, startEpoch)
       } catch (e: CancellationException) {
         // Rethrown, never turned into an outcome: swallowing it would hide a cancelled
         // coroutine from its caller. The finally below still releases the key.
@@ -104,10 +112,53 @@ class DiscussionWriteLauncher(
         // would leak the key forever and permanently block this target from further writes.
         InFlightWriteGuard.release(key)
       }
+      scheduleTerminal(key, body, startEpoch, outcome, write)
+    }
+  }
+
+  /**
+   * Hands the terminal to the UI thread, containing anything the **scheduling call itself** throws.
+   *
+   * In production [runOnUi] is `currentDisplay.asyncExec { … }`
+   * (`actions/DiscussionActionSupport.kt`), and scheduling onto a disposed SWT `Display` throws
+   * `SWTException` / `IllegalStateException` from the *scheduling* call — outside the terminal body,
+   * so the terminal's own handling can never see it. Left uncontained, that throwable escapes this
+   * coroutine into the shared Koin [kotlinx.coroutines.CoroutineScope], which is built as
+   * `CoroutineScope(Dispatchers.IO)` (`utils/WorkspaceModule.kt:22`) — a plain `Job`, **not** a
+   * `SupervisorJob`. One uncaught child exception therefore cancels that scope permanently for the
+   * rest of the session, taking down every other consumer with it: sidebar fetches, CI commands,
+   * job-log loading. That blast radius, not the lost dialog, is what this catch exists for — **do
+   * not "simplify" it away.**
+   *
+   * Cancellation is deliberately rethrown: structured concurrency depends on it propagating, and
+   * swallowing it would hide a cancelled coroutine from its caller (the same rule as the write
+   * call above).
+   *
+   * Containment is safe here precisely because the in-flight guard was already released in the
+   * background block's `finally`, which runs before this call: swallowing a scheduling failure
+   * cannot leak a key and cannot block this target from further writes.
+   */
+  private fun scheduleTerminal(
+    key: DiscussionWriteKey,
+    body: String,
+    startEpoch: Long,
+    outcome: DiscussionWriteOutcome,
+    write: (String, Long) -> DiscussionWriteOutcome,
+  ) {
+    try {
       runOnUi {
         // Lifecycle guard only. NO freshness/isLatest guard here — see the class KDoc.
         if (!registryActive() || registryEpoch() != startEpoch) return@runOnUi
         applyTerminal(key, body, outcome, write)
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Throwable) {
+      // Label + exceptionType only, and wrapped: a failing logger must never derail anything —
+      // the same rule already applied to the escaped-throwable log above and in
+      // `auditedDiscussionWrite`.
+      runCatching {
+        log("discussionWrite outcome=uiSchedulingFailed exceptionType=${e.javaClass.simpleName}")
       }
     }
   }
@@ -117,7 +168,7 @@ class DiscussionWriteLauncher(
     key: DiscussionWriteKey,
     body: String,
     outcome: DiscussionWriteOutcome,
-    write: (String) -> DiscussionWriteOutcome,
+    write: (String, Long) -> DiscussionWriteOutcome,
   ) {
     when (outcome) {
       DiscussionWriteOutcome.Success -> reload { }
@@ -142,7 +193,11 @@ class DiscussionWriteLauncher(
    * (and a callback that is never invoked) leaves the user without the current state, so the
    * text is only preserved, never re-sendable from here.
    */
-  private fun applyAmbiguous(key: DiscussionWriteKey, body: String, write: (String) -> DiscussionWriteOutcome) {
+  private fun applyAmbiguous(
+    key: DiscussionWriteKey,
+    body: String,
+    write: (String, Long) -> DiscussionWriteOutcome,
+  ) {
     reload { loadOutcome ->
       if (loadOutcome is LoadOutcome.Applied) {
         if (body.isEmpty()) {
@@ -165,8 +220,15 @@ class DiscussionWriteLauncher(
    * The guard is re-acquired (never skipped on a second attempt), and `startEpoch` is re-frozen
    * from [registryEpoch] at this moment — the click happens in a new UI turn, possibly after a
    * stop→restart, and reusing the original epoch would get the new attempt's terminal discarded.
+   *
+   * The freshly frozen epoch reaches the send itself because [launch] passes it to [write] as an
+   * argument; nothing here (and nothing in a handler) may capture an epoch instead.
    */
-  private fun relaunch(key: DiscussionWriteKey, newBody: String, write: (String) -> DiscussionWriteOutcome) {
+  private fun relaunch(
+    key: DiscussionWriteKey,
+    newBody: String,
+    write: (String, Long) -> DiscussionWriteOutcome,
+  ) {
     launch(key, newBody, registryEpoch(), write)
   }
 

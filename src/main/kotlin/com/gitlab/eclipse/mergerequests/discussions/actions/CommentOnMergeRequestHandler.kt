@@ -53,8 +53,10 @@ class CommentOnMergeRequestHandler : AbstractHandler() {
     promptForBody(window, COMMENT_TITLE, COMMENT_DIALOG_PROMPT, "", null, IDialogConstants.OK_LABEL) { body ->
       val startEpoch = DiscussionGenerationRegistry.currentEpoch
       discussionWriteLauncher(coroutineScope, logger, window, target, COMMENT_TITLE)
-        .launch(key, body, startEpoch) { attemptBody ->
-          auditedDiscussionWrite(apiClient, logger, "commentOnMergeRequest", target, key, startEpoch) { connection ->
+        .launch(key, body, startEpoch) { attemptBody, attemptEpoch ->
+          // attemptEpoch, not the captured startEpoch: a [Retry] / [Send again] re-entry re-freezes
+          // it, and sending with the stale one would abort the confirmed re-send with no UI.
+          auditedDiscussionWrite(apiClient, logger, "commentOnMergeRequest", target, key, attemptEpoch) { connection ->
             writeService.createNote(
               connection,
               node.mrGid,
