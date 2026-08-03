@@ -40,9 +40,11 @@ internal data class DiscussionsQueryData(val project: ProjectDto?)
 
 /**
  * Why a [DiscussionsReadResult] does not necessarily contain every discussion on the merge
- * request. [MISSING_CURSOR] means a page said `hasNextPage = true` but supplied no `endCursor`
- * to advance with: more pages exist, they just cannot be fetched — a truncation, never a
- * complete fetch.
+ * request. [MISSING_CURSOR] means a page said `hasNextPage = true` but supplied nothing usable
+ * to advance with: no `endCursor` at all, or one this fetch has already requested with (a
+ * non-advancing cursor — re-sending it would fetch the same page over and over, duplicating
+ * every discussion on it until the page cap). Either way more pages exist, they just cannot be
+ * fetched — a truncation, never a complete fetch.
  */
 enum class TruncationReason { PAGE_LIMIT, DEADLINE, MISSING_CURSOR }
 
@@ -187,7 +189,8 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
 
   /**
    * Fetches every discussion thread on a merge request, paging the outer `discussions` connection
-   * until it is exhausted, [deadline] elapses, or [MAX_DISCUSSION_PAGES] is reached.
+   * until it is exhausted, [deadline] elapses, [MAX_DISCUSSION_PAGES] is reached, or a page fails
+   * to supply a usable next cursor ([TruncationReason.MISSING_CURSOR]).
    *
    * Only the **outer** `discussions` connection is paged. Each discussion's `notes` connection
    * also carries a `pageInfo`, but the query has no variable to advance it and the reference
@@ -237,6 +240,12 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
     var canCreateNote = false
     var cursor: String? = null
     var page = 0
+    // Every cursor a page has been requested with, seeded with the first page's null. A returned
+    // endCursor already in here cannot advance the fetch: re-sending it — whether an immediate
+    // repeat or a longer cycle (A -> B -> A) — would fetch the same page again and again,
+    // appending duplicate discussions until MAX_DISCUSSION_PAGES. Detected below, before the
+    // cursor is ever re-sent, and treated exactly like a missing cursor.
+    val usedCursors = mutableSetOf<String?>(null)
 
     while (true) {
       if (!isActive()) throw CancellationException("Cancelled during discussions fetch")
@@ -272,6 +281,12 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
       if (endCursor.isNullOrBlank()) {
         // The server explicitly said more pages exist but gave nothing to advance with:
         // reporting completion here would silently present a partial list as the whole set.
+        return buildResult(canCreateNote, discussions, TruncationReason.MISSING_CURSOR)
+      }
+      if (!usedCursors.add(endCursor)) {
+        // A cursor this fetch has already requested with does not advance it: the same page
+        // would be fetched (and its discussions appended) again on every iteration up to the
+        // page cap. Stop with what was gathered instead, as for a missing cursor.
         return buildResult(canCreateNote, discussions, TruncationReason.MISSING_CURSOR)
       }
       if (page >= MAX_DISCUSSION_PAGES) {

@@ -100,16 +100,18 @@ class GitLabSidebarView : ViewPart() {
   // ever fetched — onModeChanged then starts the first refresh instead of recomposing.
   private var currentSlots: RefreshSlots? = null
 
-  // Latest MR diff version per merge-request web URL, UI thread only. Keyed by web URL —
-  // globally unique across instances — rather than the numeric (projectId, iid) pair, which
-  // is unique only WITHIN one instance: two instances can each hold a project 42 with an
+  // Latest MR diff version per merge request, UI thread only. Keyed by [mrCacheKey]: the MR's
+  // web URL — globally unique across instances — rather than the numeric (projectId, iid) pair,
+  // which is unique only WITHIN one instance: two instances can each hold a project 42 with an
   // MR !7, and under the numeric key a settings change racing a refresh could hand one
   // instance's cached diff version (and connection tags below) to the other's node. Within
   // a single instance the web URL is one-to-one with the numeric pair, so this changes
-  // nothing there. Survives mode toggles — re-expanding an MR re-composes its children in
-  // the new mode without re-fetching — and is cleared at the start of a full refresh, so
-  // refreshed sidebars pick up new diff versions while the several incremental composes of
-  // one refresh keep sharing it.
+  // nothing there. An MR whose web URL is missing at runtime falls back to a per-MR numeric
+  // key instead of the one degenerate URL value all such MRs would otherwise share — see
+  // [mrCacheKey] for why that fallback is safe. Survives mode toggles — re-expanding an MR
+  // re-composes its children in the new mode without re-fetching — and is cleared at the
+  // start of a full refresh, so refreshed sidebars pick up new diff versions while the
+  // several incremental composes of one refresh keep sharing it.
   private val mrVersionCache = mutableMapOf<String, GitLabMrVersion?>()
 
   // The two non-secret connection tags each cached diff version was actually fetched over, keyed
@@ -492,7 +494,7 @@ class GitLabSidebarView : ViewPart() {
    * path so the tree is never mutated re-entrantly from inside the expand event.
    */
   private fun loadMrChildren(node: MergeRequestNode) {
-    val cacheKey = node.mr.webUrl
+    val cacheKey = mrCacheKey(node.mr.webUrl, node.mr.projectId, node.mr.iid)
     val control = viewer.control
     if (control.isDisposed) return
     if (mrVersionCache.containsKey(cacheKey)) {
@@ -710,6 +712,29 @@ private fun validatedCacheTags(cached: Pair<String?, String?>?, mrWebUrl: String
   val cachedInstanceUrl = cached?.first ?: return null to null
   return if (mrBelongsToInstance(mrWebUrl, cachedInstanceUrl)) cached else null to null
 }
+
+/**
+ * The key under which [GitLabSidebarView]'s `mrVersionCache` and `mrConnectionTagsCache` store one
+ * merge request's entries: the MR's [webUrl] when usable (globally unique, so two instances can
+ * never share a key), otherwise the numeric fallback `"mr-id:<projectId>/<mrIid>"`.
+ * [com.gitlab.eclipse.api.model.GitLabMergeRequest] declares `webUrl` non-null, but Gson builds it
+ * through `Unsafe` and skips the constructor, so a response without `web_url` leaves it null (or
+ * blank) at runtime regardless — and keying every such MR by that one degenerate value would make
+ * them all share a single entry, rendering one MR's cached changed files under another. The
+ * fallback restores a per-MR key, and cannot collide with a URL key: a real web URL always begins
+ * with a scheme, which `mr-id:<digits>/...` never does.
+ *
+ * The fallback is deliberately NOT instance-qualified — there is nothing truthful to qualify it
+ * with — so a cross-instance collision on it remains possible in principle, exactly as under the
+ * numeric key this fallback restores. That only ever affects the version cache: the tags path is
+ * separately protected, because [mrBelongsToInstance] rejects a null or blank web URL, so a
+ * fallback-keyed MR always gets `(null, null)` tags and renders WITHOUT a Discussions section. Do
+ * not "simplify" the fallback into the sole key on that argument — the URL key is what keeps one
+ * instance's diff versions out of another instance's nodes. Pure and SWT-free so the headless
+ * tests can reach it.
+ */
+internal fun mrCacheKey(webUrl: String?, projectId: Long, mrIid: Long): String =
+  if (webUrl.isNullOrBlank()) "mr-id:$projectId/$mrIid" else webUrl
 
 /**
  * Whether a merge request whose web URL is [mrWebUrl] belongs to the instance at [instanceUrl]:

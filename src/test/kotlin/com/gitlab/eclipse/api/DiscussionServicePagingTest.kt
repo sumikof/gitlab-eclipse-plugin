@@ -162,6 +162,49 @@ class DiscussionServicePagingTest : DescribeSpec({
       verify(exactly = 1) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
     }
 
+    it("stops with MISSING_CURSOR after two calls when a page returns the same cursor it was requested with") {
+      stub(
+        queryData(hasNextPage = true, endCursor = "cursor-a", nodes = listOf(discussionDto("r1"))),
+        // Page 2 is requested with cursor-a and reports cursor-a again: re-sending it would
+        // re-fetch this same page (duplicating its discussions) up to the page cap.
+        queryData(hasNextPage = true, endCursor = "cursor-a", nodes = listOf(discussionDto("r2"))),
+      )
+
+      val result = fetch()
+
+      result.truncation shouldBe TruncationReason.MISSING_CURSOR
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1", "r2")
+      verify(exactly = 2) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
+    }
+
+    it("stops with MISSING_CURSOR and no duplicated discussions on a cursor cycle (A -> B -> A)") {
+      stub(
+        queryData(hasNextPage = true, endCursor = "cursor-a", nodes = listOf(discussionDto("r1"))),
+        queryData(hasNextPage = true, endCursor = "cursor-b", nodes = listOf(discussionDto("r2"))),
+        queryData(hasNextPage = true, endCursor = "cursor-a", nodes = listOf(discussionDto("r3"))),
+      )
+
+      val result = fetch()
+
+      result.truncation shouldBe TruncationReason.MISSING_CURSOR
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1", "r2", "r3")
+      verify(exactly = 3) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
+    }
+
+    it("still pages a normally advancing cursor sequence to completion with truncation == null") {
+      val recorded = stub(
+        queryData(hasNextPage = true, endCursor = "cursor-1", nodes = listOf(discussionDto("r1"))),
+        queryData(hasNextPage = true, endCursor = "cursor-2", nodes = listOf(discussionDto("r2"))),
+        queryData(hasNextPage = false, nodes = listOf(discussionDto("r3"))),
+      )
+
+      val result = fetch()
+
+      result.truncation shouldBe null
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1", "r2", "r3")
+      recorded.map { it.cursor } shouldContainExactly listOf(null, "cursor-1", "cursor-2")
+    }
+
     it("stops at MAX_DISCUSSION_PAGES, calling execute exactly 20 times, with truncation == PAGE_LIMIT") {
       val pages = (1..DiscussionService.MAX_DISCUSSION_PAGES).map { page ->
         queryData(hasNextPage = true, endCursor = "cursor-$page", nodes = listOf(discussionDto("r$page")))
