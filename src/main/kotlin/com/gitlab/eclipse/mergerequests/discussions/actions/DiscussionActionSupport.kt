@@ -101,15 +101,21 @@ internal fun discussionWriteLauncher(
 )
 
 /**
- * UI thread only. Force-reloads the discussions section the write targeted, resolving it from the
- * tree **now** rather than capturing it when the command was invoked: the sidebar may have been
- * refreshed while the write was in flight, and a captured node would refresh something no longer
- * on screen.
+ * UI thread only. Force-reloads **every** discussions section the write targeted, resolving them
+ * from the tree **now** rather than capturing them when the command was invoked: the sidebar may
+ * have been refreshed while the write was in flight, and a captured node would refresh something no
+ * longer on screen.
  *
- * When the window, the view, or the section is gone, [onOutcome] is deliberately **not** invoked.
- * The launcher already reads a never-invoked reload callback as "the current state was not shown
- * to the user", which is exactly right here — it then only preserves the typed text instead of
- * offering a `[Send again]` that could duplicate a comment.
+ * All matching sections are reloaded because one merge request can be displayed twice (under "Merge
+ * requests assigned to me" and under "For current branch"), and there is no reliable way to tell
+ * which of the two the user acted from — `DiscussionsSectionNode.nodeId` is per instance and a
+ * refresh replaces the nodes. Reloading all of them guarantees the one the user is looking at is
+ * among them.
+ *
+ * When the window, the view, or the section list is gone, [onOutcome] is deliberately **not**
+ * invoked. The launcher already reads a never-invoked reload callback as "the current state was not
+ * shown to the user", which is exactly right here — it then only preserves the typed text instead
+ * of offering a `[Send again]` that could duplicate a comment.
  */
 private fun reloadDiscussionsFor(
   window: IWorkbenchWindow?,
@@ -117,13 +123,65 @@ private fun reloadDiscussionsFor(
   onOutcome: (LoadOutcome) -> Unit,
 ) {
   val view = findSidebarViewIn(window) ?: return
-  val section = view.resolveDiscussionsSection(
+  val sections = view.resolveDiscussionsSections(
     target.instanceUrl,
     target.authFingerprint,
     target.projectId,
     target.mrIid,
-  ) ?: return
-  view.reloadDiscussions(section, onOutcome)
+  )
+  reloadAllSections(sections, { section, report -> view.reloadDiscussions(section, report) }, onOutcome)
+}
+
+/**
+ * Starts [reload] for every section and reports a single aggregated [LoadOutcome] to [onOutcome]
+ * once **all** of them have reported. Reports nothing at all for an empty [sections] — the caller's
+ * contract is that a never-invoked callback means "the user was not shown the current state".
+ *
+ * Everything here runs on the UI thread: the launcher calls the reload from inside its `runOnUi`
+ * block and [com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader] delivers its outcomes
+ * on the UI thread too. The counter and the result slots are therefore plain, non-atomic fields on
+ * purpose — **do not** add locks, atomics or `@Volatile`; there is no second thread to guard
+ * against, and adding one would only hide that fact.
+ *
+ * If a section's callback is never invoked (shutdown), [onOutcome] is never invoked either — the
+ * same, deliberate behaviour as the single-section path it replaces. A section that reports twice
+ * is ignored the second time, so [onOutcome] can never fire twice.
+ */
+internal fun <S> reloadAllSections(
+  sections: List<S>,
+  reload: (S, (LoadOutcome) -> Unit) -> Unit,
+  onOutcome: (LoadOutcome) -> Unit,
+) {
+  if (sections.isEmpty()) return
+  val collected = arrayOfNulls<LoadOutcome>(sections.size)
+  var pending = sections.size
+  sections.forEachIndexed { index, section ->
+    reload(section) { outcome ->
+      if (collected[index] == null) {
+        collected[index] = outcome
+        pending--
+        if (pending == 0) onOutcome(aggregateReloadOutcomes(collected.filterNotNull()))
+      }
+    }
+  }
+}
+
+/**
+ * The outcome to report for a set of per-section reloads: [LoadOutcome.Applied] only when **every**
+ * section applied, otherwise the first non-`Applied` outcome in order.
+ *
+ * `Applied` is the only outcome that unlocks the launcher's `[Send again]` prompt, so it must mean
+ * *every* place the user could be looking at now shows the server's state. A mixed list must fall
+ * through to the copy-text dead end instead: telling a user their thread was reloaded when one of
+ * its two displays is still stale is exactly what makes them post a duplicate comment.
+ *
+ * Total by construction, including the empty list — which maps to [LoadOutcome.Skipped], never
+ * `Applied`, because "nothing was reloaded" must not unlock a re-send. That case is unreachable
+ * from [reloadAllSections], which returns without reporting for an empty section list.
+ */
+internal fun aggregateReloadOutcomes(outcomes: List<LoadOutcome>): LoadOutcome {
+  if (outcomes.isEmpty()) return LoadOutcome.Skipped
+  return outcomes.firstOrNull { it != LoadOutcome.Applied } ?: LoadOutcome.Applied
 }
 
 /**
