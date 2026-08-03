@@ -132,7 +132,7 @@ uis = new NotificationType(m7c)
 | 404 | `Real-time SAST scan is not available on your [GitLab instance version](https://docs.gitlab.com/api/projects/#real-time-security-scan).` |
 | 500(既定) | `Real-time SAST scan failed with an unknown error. Check your network connection, reload your IDE, and try again ` |
 
-**文言に Markdown リンクが埋め込まれている**点に注意(§11.3)。
+**これらの LS 側文言は本設計では表示にも記録にも使わない**(§11.4 でクライアント側の固定文言へ置き換える)。文言に Markdown リンクが埋め込まれていることは、LS の `error` が「そのまま画面に出す前提で作られていない」ことの傍証でもある。
 
 **P3. LS 側の Diagnostic 写像**
 
@@ -184,7 +184,7 @@ source   = "gitlab_security_scan"
   |   SecurityScanLauncher (SWTフリー core)       |
   |   RunSecurityScanHandler                      |
   |   SecurityScanSaveListener                    |
-  |   SecurityScanRequestRegistry (path -> source)|
+  |   SecurityScanInFlightRegistry (single-flight)|
   |   SecurityScanStatusReporter                  |
   +---------------------------------------------+
         |  $/gitlab/security/remoteSecurityScan
@@ -242,9 +242,28 @@ source   = "gitlab_security_scan"
 | `SecurityScanLauncher` | ゲート判定と通知送信。**SWT フリーの `runSecurityScan(...)` を core として持つ**(Phase 4 の `runCiLint` / `runCreatePipeline` と同型) |
 | `RunSecurityScanHandler` | コマンドハンドラ。UI スレッドでアクティブエディタを解決し core に渡す |
 | `SecurityScanSaveListener` | `IPartListener2` + `IElementStateListener`。保存(dirty → clean)を検出して core を呼ぶ |
-| `SecurityScanRequestRegistry` | 送信した `path -> source` の対応表(応答に `source` が含まれないため) |
+| `SecurityScanInFlightRegistry` | パス単位の single-flight と coalescing、および要求タイムアウトの管理(§13.2 / §13.4) |
 | `SecurityScanStatusReporter` | 応答の分類・通知の抑制・監査ログ |
 | `SecurityScanParams` / `SecurityScanResponse` | ワイヤ DTO |
+
+### 8.2.1 保存の検出方式(Codex round1-P2 により未決 U-8 を確定)
+
+**採用: `IElementStateListener` の `elementDirtyStateChanged(element, isDirty = false)`。** エディタのドキュメントプロバイダに登録し、dirty → clean の遷移を保存とみなす。さらに「保存された element がアクティブエディタの入力であるとき」だけ発火させる(VSCode の `onDidSaveActiveTextDocument` と同じ絞り込み。Save All で多数のファイルが一斉スキャンされるのを防ぐ)。バンドル `org.eclipse.ui.workbench.texteditor` は既に依存にある。
+
+- **却下**: `IResourceChangeListener` — git チェックアウトや `refreshLocal(DEPTH_INFINITE)` でも発火し、無関係なスキャンを大量に誘発する
+- **却下**: 保存コマンドへの `IExecutionListener` — プログラム的な保存を取りこぼす
+
+**File > Revert は保存として扱わない(確定)。** 当初は「リバート時に 1 回余分なスキャンが走るが実害なし」としていたが、本機能は**ファイル全文を外部の GitLab インスタンスへ送信する opt-in 機能**であり、利用者は設定文言「Scan file on save」から**自分が保存した時だけ送信される**と理解する。保存していない操作で送信するのは同意範囲を超えるため、余分な通信を実害なしとは扱えない。
+
+実現方法: `IElementStateListener` の `elementContentAboutToBeReplaced(element)` / `elementContentReplaced(element)` でリバート中であることを識別し、**そのシーケンス内で発生する dirty → clean 遷移をスキャン対象から除外する**。
+
+```
+elementContentAboutToBeReplaced(e)  -> revertingElements.add(e)
+elementDirtyStateChanged(e, false)  -> e が revertingElements に含まれるならスキャンしない
+elementContentReplaced(e)           -> revertingElements.remove(e)
+```
+
+`elementContentReplaced` が呼ばれない異常系に備え、`elementContentAboutToBeReplaced` からの経過が一定を超えたエントリは次回の判定時に破棄する(集合が伸び続けないようにする)。
 
 ### 8.3 変更する既存ファイル
 
@@ -255,7 +274,8 @@ source   = "gitlab_security_scan"
 | `GitLabLanguageServer.kt` | `runSecurityScan` の `@JsonNotification` 追加 | 追加のみ |
 | `GitLabLanguageServerConfigurationParams.kt` | `securityScannerOptions` フィールドと `SecurityScannerOptions` 型 | 追加のみ |
 | `GitLabLanguageServerProcessProvider.kt` | `stopLocked()` に `onServerStopped()` 呼び出しを追加 | 追加のみ |
-| `PreferenceConstants.kt` / `PreferenceInitializer.kt` / `GitLabPreferencePage.kt` | 設定 2 件 | 追加のみ |
+| `PreferenceConstants.kt` / `PreferenceInitializer.kt` | 設定 2 件の定数と既定値 | 追加のみ |
+| `GitLabPreferencePage.kt` | チェックボックス 2 件の追加、および `performOk()` への「有効 → 無効の遷移検出」呼び出しの追加(§17.1) | 追加のみ |
 | `LanguageServerModule.kt`(または新規モジュール) | Koin 登録 | 追加のみ |
 | `GitLabEclipseStartup.kt` | 起動時 activate / 停止時 deactivate | 追加のみ |
 | `plugin.xml` | marker 型・command・handler・menu | 追加のみ |
@@ -282,10 +302,14 @@ uri = file.locationURI.toASCIIString()      // didOpen と逐語的に同一の�
 トークン未設定 -> 中止 (source=command のときのみ通知)
   |
   v
-SecurityScanRequestRegistry.record(DiagnosticUri.normalize(uri), source)
+SecurityScanInFlightRegistry.offer(DiagnosticUri.normalize(uri), source)
+  |- 既に in-flight -> Pending に畳み込んで終了(送信しない。§13.4)
+  v (coroutineScope・捕捉した server プロキシを使用)
+ConnectionConfigGeneration の seqlock 下で設定を読む(不安定なら中止・§15.1)
   |
-  v (coroutineScope)
-languageServer?.runSecurityScan(SecurityScanParams(uri, source))
+  v
+server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
+server.runSecurityScan(SecurityScanParams(uri, source))
 ```
 
 **対応表のキーについて。** LS は応答の `filePath` を `sh(n.uri).path`、すなわち**ドキュメント URI の decode 済み path** から作る。これは `DiagnosticUri.normalize` の戻り値と同一の値になる。したがって送信側は正規化済みパスをキーにして記録し、受信側は `res.filePath` をそのまま(念のため同じ正規化を通したうえで)引き当てる。
@@ -334,18 +358,21 @@ CoreException は捕捉してログ。Job の外へ例外を出さない
 [lsp4j リスナースレッド]  securityScanResponse(res)
   |
   v
-source = SecurityScanRequestRegistry.consume(normalize(res.filePath)) ?: SAVE   // 不明なら fail-quiet
-  |
+source = SecurityScanInFlightRegistry.complete(normalize(res.filePath))
+  |- 対応する in-flight が無い(再起動跨ぎ等) -> 監査行のみ残して終了(通知しない)
   v
 分類:
   status == 200 -> Success(findings = res.results?.size ?: 0)
-  status != 200 -> Failure(status, res.error)
+  status != 200 -> Failure(status)          // res.error は使わない(§11.4)
   |
   v
-監査ログ(§14) — error 本文は出さない
+監査ログ(§16.2) — error 本文・絶対パスを出さない
   |
   v
-通知(§11.2 の表に従う。抑制判定は SecurityScanStatusReporter が保持)
+通知(§11.3 の表 + §11.4 の固定文言。抑制状態は SecurityScanStatusReporter が保持)
+  |
+  v
+Pending があれば 1 件だけ送信(§13.4)
 ```
 
 ---
@@ -386,13 +413,21 @@ object DiagnosticMarkerAttributes {
 }
 
 object DiagnosticGenerationRegistry {
-  @Volatile var active: Boolean
+  @Volatile var active: Boolean          // バンドルの生存。LS 停止では落とさない(§14.2.1)
   val currentEpoch: Long
-  fun nextGeneration(key: String): Long
+
+  /** suspend 中、または active でないときは null を返す(= その診断は破棄) */
+  fun nextGeneration(key: String): Long?
   fun shouldApply(key: String, generation: Long, capturedEpoch: Long): Boolean
-  fun onActivate()
-  fun onDeactivate()
-  fun onServerStopped()
+
+  fun onActivate()                       // バンドル起動
+  fun onDeactivate()                     // バンドル停止: active = false
+  fun onServerStopped()                  // LS 停止: epoch++ / latest 破棄(active は不変)
+
+  /** 層 2 が呼ぶ。epoch を進めるだけで、セキュリティ固有の概念は持たない(§17.1) */
+  fun invalidateAll(): Long
+  fun suspend()
+  fun resume()
 }
 ```
 
@@ -453,21 +488,71 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 | `IMarker.LINE_NUMBER` | `max(0, range.start.line) + 1`(LSP は 0 始まり、IMarker は 1 始まり) |
 | `com.gitlab.eclipse.diagnosticSource` | `diagnostic.source`(欠落時は属性を設定しない) |
 | `com.gitlab.eclipse.diagnosticCode` | `diagnostic.code` の文字列表現(欠落時は設定しない) |
+| `com.gitlab.eclipse.diagnosticEpoch` | **その marker を生成した適用処理の epoch(`Long` を `String` 化)。必須。** §12 の二段階置換と §14.2 の掃除の判定に使う |
 
 **`CHAR_START` / `CHAR_END` は設定しない。** 文字オフセットは行・桁からは求まらず、`IDocument` かファイル内容の読み込みを要する。編集中のバッファとディスク内容は一致しないため、Job スレッドから正しい値を出せない。`LINE_NUMBER` のみでも Problems ビューと縦ルーラには表示され、F4(ダブルクリックで該当行へ)も成立する。**トレードオフ: エディタ内の範囲下線は出ず行単位の表示となる**(VSCode は範囲表示)。
 
 **クランプ**: `range` が null、`line` が負、`character` が負のいずれの場合も例外にせず既定値へ丸める。P3 のとおり LS は負の `character` を出しうる。
 
-### 11.3 エラー文言の整形
+### 11.3 通知ポリシー(確定表)
 
-LS の文言には Markdown リンクが含まれる。Eclipse の通知はプレーンテキストであるため、`[text](url)` → `text (url)` に変換する純関数を通す。ネストしないパターンのみを対象とし、マッチしない場合は原文をそのまま返す。
+**Codex round1 の指摘により追加。**従来この表は本文に存在せず、§9.3 が実在しない表を参照していた。
+
+`source` × `outcome` の全組み合わせを次のとおり確定する。ここに無い組み合わせは存在しない。
+
+| source | outcome | 通知 | 文言 | 抑制キー | 抑制の解除条件 |
+|---|---|---|---|---|---|
+| `COMMAND` | 成功・検出 N>0 | 出す | `GitLab security scan: N issue(s) found. See the Problems view.` | なし(常に出す) | — |
+| `COMMAND` | 成功・検出 0 | 出す | `GitLab security scan: no issues found.` | なし(常に出す) | — |
+| `COMMAND` | 失敗 | 出す | §11.4 の固定文言 | なし(常に出す) | — |
+| `COMMAND` | タイムアウト | 出す | `GitLab security scan: no response from the language server.` | なし(常に出す) | — |
+| `SAVE` | 成功(件数を問わず) | **出さない** | — | — | 結果は Problems ビューに出る |
+| `SAVE` | 失敗 | **状態が変化したときのみ**出す | §11.4 の固定文言 | `(正規化パス, status)` | 同一パスで `status` が変わる / 成功が挟まる / LS 再起動 / 設定の再有効化 |
+| `SAVE` | タイムアウト | **出さない** | — | — | 監査行にのみ残す |
+
+**`COMMAND` を一切抑制しない理由**: 明示操作には必ず可視の応答を返す(F6)。抑制すると「コマンドを押したのに何も起きない」が発生する。
+
+**`SAVE` の失敗抑制の状態**は `(正規化パス) -> 直近の status` を保持する `Map` で表現し、成功時と LS 再起動時と設定再有効化時にエントリを消す。抑制は**時間ベースではない**(時間ベースにすると「直したのに再通知されない」窓が生まれるため)。
+
+### 11.4 エラー文言(クライアント側の固定文言)
+
+**Codex round1-P1(秘匿)の指摘により方針変更。**LS が返す `error` 文字列は**表示にも記録にも一切使わない**。LS 側の該当コードは固定文言だけでなく `e instanceof Error && (o = e.message)` の経路を持ち、ネットワーク層や認証層の例外メッセージ(= 資格情報や URL を含みうる)がそのまま入る。画面・スクリーンショット・画面共有への露出は Error Log への出力と同じく秘匿事故であるため、**`status` から引くクライアント側 allowlist へ変換する**。
+
+| status | 表示文言 |
+|---|---|
+| 401 | `GitLab security scan failed: authentication failed. Your token may be invalid or expired. Re-authenticate in the GitLab preferences.` |
+| 403 | `GitLab security scan failed: the real-time scan is not available for this project or namespace.` |
+| 404 | `GitLab security scan failed: the real-time scan is not available on this GitLab instance (requires GitLab 17.5.0 or later).` |
+| 上記以外 / 欠落 | `GitLab security scan failed (status <status>). See the Error Log for details.` |
+
+文言はクライアント側で持つため Markdown リンクは含まれない(従来ここに置いていた `[text](url)` 整形の純関数は**不要になったため削除する**)。`status` は整数のみで、`error` 本文は通知にも Error Log にも渡さない。
 
 ---
 
 ## 12. トランザクション境界
 
-- **marker の全置換が唯一のトランザクション境界**である。1 つの `WorkspaceJob` の中で「削除 → 生成」を行う。`WorkspaceJob` はワークスペース操作を 1 つのバッチにまとめ、リソース変更イベントを終了時にまとめて発火する。
-- 途中で `CoreException` が発生した場合、**ロールバックはしない**。すでに削除された marker は戻らず、生成途中の marker は残る。これは受容する設計判断であり、理由は (a) marker は派生データであり再スキャンで完全に再構築できる、(b) 部分的な結果でも「削除だけ成功した」状態(= 何も表示されない)に留まり、誤った検出結果を表示することはない、ため。
+**Codex round1-P2 の指摘により「削除 → 生成」から二段階置換へ変更。**
+
+当初は 1 つの `WorkspaceJob` の中で「旧 marker を削除 → 新 marker を生成」する順序としていたが、生成の途中で `CoreException` が起きると**一部の検出結果だけが Problems ビューに残り、利用者はそれを完全なスキャン結果と誤認する**。「誤った検出結果を表示することはない」という当初の根拠は、失敗位置が削除直後の場合しか成立していなかった。
+
+### 12.1 二段階置換(確定手順)
+
+1 つの `WorkspaceJob`(rule = 対象ファイル群)の中で、次の順に行う。
+
+1. `epochNew` = この適用処理の epoch(§14.2)
+2. **生成フェーズ**: すべての diagnostic について marker を生成し、`com.gitlab.eclipse.diagnosticEpoch = epochNew` を付与する
+3. **切替フェーズ**: 生成が全件成功した場合にのみ、`diagnosticEpoch != epochNew` の自分の型の marker を削除する
+4. **失敗時**: 生成フェーズで `CoreException` が起きたら、**`diagnosticEpoch == epochNew` の marker をすべて削除して中止する**。旧 marker はそのまま残る
+
+これにより、観測可能な状態は「**完全な旧世代**」か「**完全な新世代**」の二択になり、部分的な集合は表示されない。`diagnostics` が空配列の場合も同じ手順で、生成 0 件 → 旧世代削除、となり整合する。
+
+### 12.2 ロールバックの限界(明示)
+
+切替フェーズ(手順 3)の削除中に `CoreException` が起きた場合、旧世代の一部が残り新世代と混在しうる。これは**受容する**。理由は (a) この状態でも表示される marker はすべて実在した検出結果であり、捏造された結果ではない、(b) 次回のスキャンで完全に再構築される、(c) 削除失敗を補償する削除を再試行しても同じ理由で失敗する公算が高い、ため。**この限界を §24 のリスク表に記載する。**
+
+### 12.3 その他
+
+- `WorkspaceJob` はワークスペース操作を 1 つのバッチにまとめ、リソース変更イベントを終了時にまとめて発火する。
 - REST 呼び出しは LS 側で完結しており、クライアント側にトランザクション境界は無い。
 
 ---
@@ -481,22 +566,66 @@ LS の文言には Markdown リンクが含まれる。Eclipse の通知はプ�
 | `DiagnosticUri.normalize` 失敗 | debug ログ、破棄。ユーザーには出さない |
 | `DiagnosticFileResolver` が 0 件 | debug ログ、破棄。ワークスペース外のファイルは marker を持てない |
 | `WorkspaceJob` 内の `CoreException` | 捕捉してログ。Job の status は `Status.OK_STATUS` を返し、**プラットフォームのエラーダイアログを出さない** |
-| 応答 `status != 200` | §11.2 の通知ポリシーに従う |
+| 応答 `status != 200` | §11.3 の通知ポリシー表と §11.4 の固定文言に従う |
 | `runSecurityScan` 送信時の例外 | 捕捉してログ。**共有 `CoroutineScope` は plain `Job` であり、未捕捉例外 1 つでセッション中すべての非同期処理が停止する**(Phase 5A の教訓)。送信呼び出しは必ず try/catch で囲む |
 | `publishDiagnostics` ハンドラ内の例外 | 捕捉してログ。lsp4j リスナースレッドへ例外を伝播させない |
+| `suspend()` 中に届いた診断 | 採番せず破棄。debug ログのみ(§17.1) |
+| 対応する in-flight が無い応答 | 監査行のみ残し、通知しない(§9.3) |
 
-### 13.2 タイムアウト
+### 13.2 要求タイムアウト
 
-クライアント側にタイムアウトは設けない。理由は、スキャンは通知(fire-and-forget)であり応答を待つ `CompletableFuture` を持たないため、タイムアウトすべき対象が存在しないこと。応答が永久に来ない場合は「通知が出ないだけ」で、marker も変化せず、リソースリークは `SecurityScanRequestRegistry` のエントリ 1 件に留まる(§13.4)。
+**Codex round1-P1 の指摘により追加(当初は「タイムアウト不要」としていた)。**
+
+§6.1 P2 のとおり、LS は次の 3 経路で**応答を返さずに return する**。
+
+- 手順 2: 対象 URI のドキュメントが LS のストアに無い
+- 手順 6: 設定ゲート(`remoteSecurityScans` / `securityScannerOptions.enabled`)が偽
+- 手順 8: 応答の `vulnerabilities` が null または非配列
+
+したがって fire-and-forget であっても、クライアント側には「送信してから応答が来るまで」という論理的な待機対象が実在する。タイムアウトが無いと、**明示コマンドを実行しても永久に何も起きず、ユーザーは成功と失敗を区別できない**(F6 違反)。
+
+**確定仕様**:
+
+- 送信時に `deadline = 送信時刻 + SCAN_RESPONSE_TIMEOUT`(既定 **60 秒**)を記録する
+- 期限切れの検出は、**次のスキャン送信時**と**応答受信時**の掃除(sweep)で行う。加えて `SecurityScanInFlightRegistry` が単一の遅延タスクを持ち、最も近い deadline で起床する
+- 期限切れ時: in-flight スロットを**解放**し、`source == COMMAND` なら §11.3 のタイムアウト文言を通知し、監査行に `outcome=timeout` を残す
+- **スロット解放はタイムアウトの必須要件**である。解放しないと、応答の来なかったパスが §13.4 の single-flight で永久に塞がる
+
+タイマ起床は共有 `CoroutineScope` を使わず、`org.eclipse.core.runtime.jobs.Job` の `schedule(delay)` で行う(共有スコープは plain `Job` であり、未捕捉例外がセッション全体を止めるため)。
 
 ### 13.3 リトライ
 
 自動リトライは行わない。ユーザーが再度コマンドを実行するか、再保存することが再試行である。
 
-### 13.4 冪等性
+### 13.4 単一飛行(single-flight)と冪等性
 
-- **スキャン自体は冪等**である(分析であり、サーバ側の状態を変えない)。したがって **in-flight ガードは設けない**(Phase 4 の CI lint と同じ判断)。同一ファイルへの並行スキャンが起きても、世代レジストリにより「最後に到着した診断だけが marker になる」。
-- `SecurityScanRequestRegistry` は同一 path への上書きを許す。応答時に `consume` して除去する。**応答が来なかったエントリは残留する**ため、上限(例: 直近 64 件の LRU)を設けて無制限成長を防ぐ。LS 再起動時にクリアする。
+**Codex round1-P1 ×2 の指摘により方針変更(当初は「in-flight ガードを設けない」としていた)。**
+
+当初の設計は世代を**診断の受信時**に採番していたため、次の欠陥があった。
+
+- **欠陥 1(結果の逆転)**: 同一ファイルに対して旧内容のスキャン A と新内容のスキャン B が並行し、B の診断が先・A の診断が後に到着すると、A が「最新世代」と判定されて**新しい結果を古い結果で上書きする**。連続保存だけで発生し、次のスキャンまで古い脆弱性結果が表示され続ける。`publishDiagnostics` には相関 ID が無いため、受信時採番では原理的に区別できない。
+- **欠陥 2(source の取り違え)**: `path -> source` の上書き方式では、同一ファイルへの command と save が重なると、先に返った応答が後から記録された source を consume し、残りは `SAVE` 扱いになる。コマンドの失敗通知が抑制され、監査行の source も誤る。
+
+**確定仕様: パス単位の single-flight + 最新要求への coalescing。**
+
+`SecurityScanInFlightRegistry` は正規化パスをキーに、次を保持する。
+
+```
+InFlight(source: SecurityScanSource, sentAt: Long, deadline: Long)
+Pending(source: SecurityScanSource)     // 実行中に届いた後続要求(最大 1 件)
+```
+
+- 送信要求が来たとき、そのパスが **in-flight でなければ送信**して `InFlight` を記録する
+- **in-flight であれば送信せず `Pending` に畳み込む**。既に `Pending` がある場合は上書きするが、**`source` は「より強い方」を採る**(`COMMAND` > `SAVE`)。コマンドの明示操作が保存に飲み込まれて無通知になるのを防ぐため
+- 応答受信・タイムアウトのいずれでも `InFlight` を解放し、`Pending` があれば**その時点で 1 件だけ送信する**
+
+これにより、あるパスについて未応答の要求は常に高々 1 件となり、
+(a) 診断の到着順 = 要求順 となって欠陥 1 が消え、
+(b) 応答と要求が 1 対 1 に対応して欠陥 2 が消える。
+
+**冪等性についての整理**: スキャン自体はサーバ側の状態を変えない冪等な分析であり、二重送信が破壊的な副作用を生むことはない。single-flight を課す理由は副作用の防止ではなく、**相関 ID が無いプロトコルの下で結果の順序と対応付けを回復するため**である(Phase 4 の CI lint に in-flight ガードを設けなかった判断とは、目的が異なる)。
+
+`Pending` はパスあたり高々 1 件、`InFlight` は必ずタイムアウトで解放されるため、レジストリは無制限に成長しない(当初案の LRU は不要になったので採用しない)。LS 再起動・設定無効化の際は全エントリを破棄する。
 
 ---
 
@@ -513,6 +642,7 @@ LS の文言には Markdown リンクが含まれる。Eclipse の通知はプ�
 | 世代の採番 | lsp4j リスナースレッド |
 | marker の適用 | `WorkspaceJob` のワーカスレッド |
 | 通知の表示 | UI スレッド(`NotificationUtils` 経由) |
+| 要求タイムアウトの起床 | `org.eclipse.core.runtime.jobs.Job`(共有 `CoroutineScope` を使わない・§13.2) |
 
 ### 14.2 全順序化の根拠(既存レジストリとの設計差)
 
@@ -526,9 +656,26 @@ LS の文言には Markdown リンクが含まれる。Eclipse の通知はプ�
 これにより、次が構造的に保証される。
 
 1. 適用 Job が gate を通過して marker を書いている最中に、削除 Job が割り込むことはない(ルールが衝突するため、プラットフォームが直列化する)。
-2. 停止手順を「(a) `active = false` → (b) 削除 Job を schedule」の順にすると、(a) の後に**開始する**適用 Job は `shouldApply` で false を見て何もせず、(a) の時点で**実行中の**適用 Job は削除 Job に先行して完了する。どちらの順序でも「最終的に marker は残らない」が成立する。
+2. **バンドル停止**の手順を「(a) `active = false` → (b) 全削除 Job を schedule」の順にすると、(a) の後に**開始する**適用 Job は `shouldApply` で false を見て何もせず、(a) の時点で**実行中の**適用 Job は削除 Job に先行して完了する。どちらの順序でも「最終的に marker は残らない」が成立する。
 
-**この論証が本設計における最重要の不変条件であり、レビューの主眼としたい。**
+### 14.2.1 LS 停止・再起動の扱い(Codex round1-P1 により全面改訂)
+
+当初は「停止手順」を LS 停止とバンドル停止で書き分けておらず、そこに実欠陥があった。**両者は別物として確定する。**
+
+まず事実確認として、`GitLabLanguageServerProcessProvider.restart()` は `stopLocked()` → `startLocked()` を呼ぶだけでバンドルは再起動しない。当初設計は LS 停止時に `active` を落とさないため、「新 LS の診断が `shouldApply` で恒久的に破棄される」という事象は起きない。**しかし別の実欠陥が存在する**: LS 停止時に schedule した**全削除 Job(ルートルール)が、新 LS の診断を適用した Job より後に走ると、新しい marker を消してしまう**。Job の実行順序は FIFO で保証されないため、これは現実に起こりうる。
+
+**確定仕様: 掃除は「epoch による選択削除」にする。**
+
+- すべての marker は生成時に `com.gitlab.eclipse.diagnosticEpoch` を持つ(§11.2)
+- **LS 停止(`stopLocked()`)**: `active` は落とさない。`epoch` を進め、in-flight レジストリと `latest` を破棄し、**「`diagnosticEpoch != 現在の epoch` の marker を削除する」Job** を schedule する
+- **LS 起動(`startLocked()` 成功後)**: 追加の activate は不要。epoch は停止時に既に進んでおり、新 LS の診断はその新 epoch で適用される
+- **バンドル停止**: `active = false` の後、**epoch を問わず全削除**する Job を schedule する
+
+選択削除にすることで、停止時に schedule された掃除 Job が遅れて実行されても、**新 epoch で作られた marker は削除対象に入らない**。これが順序保証の代わりとなり、Job の実行順に依存しない正しさが得られる。
+
+なお `active` を LS 停止で落とさないのは意図的である。落とすと、再起動完了後に誰かが戻さねばならず、「戻す前に届いた診断が捨てられる」窓と「戻した後に古い削除 Job が走る」窓の両方を新たに作ってしまう。epoch 単調増加だけで扱うほうが状態が少ない。
+
+**§14.2 と §14.2.1 の論証が本設計における最重要の不変条件であり、レビューの主眼としたい。**
 
 ### 14.3 世代とデータ構造
 
@@ -552,7 +699,30 @@ LS の文言には Markdown リンクが含まれる。Eclipse の通知はプ�
 
 - スキャンの REST 呼び出しは **LS が行う**。トークンは既存の `didChangeConfiguration` 経路で LS へ渡されており、本機能で新たにトークンを扱う箇所は無い。
 - クライアント側では「トークンが設定されているか」だけを判定して早期中止する(ユーザー体験のため。認可の実体ではない)。
-- **クロスインスタンス送信の懸念は本機能には該当しない。** Phase 4 / 5A の `ConnectionSnapshot` / `pinnedConnectionFor` による接続固定は、クライアントが自ら REST を叩く経路のための機構である。本機能ではクライアントが GitLab へ直接リクエストを送らないため、接続固定の対象が存在しない。**ただしこれは「LS が現在の設定に従う」ことに依存しており、設定変更中にスキャンを投げると LS 側で新旧どちらの設定が使われるかは決定できない。** この点は §22 の未決事項 U-6 として明示する。
+### 15.1 送信先インスタンスの一致(Codex round1-P1 により未決 U-6 を確定)
+
+当初は「クライアントが GitLab へ直接リクエストを送らないので接続固定の対象が無い」と整理し、設定変更との競合を未決のままにしていた。**これは実装へ進められる状態ではなかった。**
+
+具体的な欠陥は次のとおり。`GitLabPreferencePage.performOk()` が呼ぶ `sendConfiguration()` と、本機能のスキャン通知は、**いずれも共有 `CoroutineScope`(`Dispatchers.IO`、複数スレッド)へ投入される**。したがってインスタンス URL やトークンを変更した直後にスキャンを実行すると、スキャン通知が設定変更通知を追い越して LS に届き、**ファイル全文が変更前の GitLab インスタンスへ送信されうる**。逆順であればゲートで黙って破棄され、F6 に反する。発生確率は低いが、影響は「利用者のソースコードが意図しない宛先へ渡る」ことであり、Phase 4 / 5A で確立した基準(**severity は発生確率ではなく影響範囲で決める**)では P1 に相当する。
+
+**確定仕様: スキャン通知の直前に、同一コルーチン内で設定を同期的に再送する。**
+
+```
+[スキャン送信コルーチン]
+  1. ConnectionConfigGeneration の seqlock 下で設定値を読む(既存 captureConnection と同じ手順)
+     - 世代が奇数(更新中) / 読み取り前後で世代が変化 -> 規定回数リトライ後、送信を中止して
+       COMMAND なら「設定の更新中です。もう一度実行してください」を通知
+  2. server.didChangeConfiguration(その設定)      <- 同じコルーチン、同じ server プロキシ
+  3. server.runSecurityScan(params)                <- 直後に同じコルーチンで送信
+```
+
+同一コルーチン内の逐次呼び出しであり、かつ lsp4j は同一プロキシへの書き込みを直列化するため、**LS は必ず「設定 → スキャン」の順に受け取る**。これによりそのスキャンが使う設定は手順 1 で読んだ値であることが確定する。
+
+- `server` は**呼び出し時点で捕捉したプロキシ**を最後まで使う(既存の `sendConfiguration(server)` / `sendOpenTabs(server)` と同じ規律。再起動で新プロキシに差し替わっても、この送信は旧サーバに留まって無害に終わる)
+- 追加の `didChangeConfiguration` は LS 側で `onConfigChange` を呼ぶだけで冪等であり、同じ内容が二重に届いても副作用は無い
+- seqlock の読み取りは既存の `ConnectionConfigGeneration` をそのまま使う。**新機構は導入しない**
+
+**受け入れ条件**: 「`didChangeConfiguration` が `runSecurityScan` より前に、同一 mock サーバ上で呼ばれること」を headless テストで順序検証する(§21.1)。
 - スキャンは**ファイル全文を GitLab インスタンスへ送信する**。この事実を設定の説明文に明記し、既定を無効とすることで明示的なオプトインを要求する(F7)。
 
 ---
@@ -587,12 +757,36 @@ securityScan source=command|save outcome=success|failure httpStatus=<int|-> find
 
 | 症状 | 復旧 |
 |---|---|
-| Problems ビューに古い検出結果が残る | LS を再起動(既存コマンド `gl.restartLanguageServer`)。`onServerStopped()` が全 marker を削除する |
-| marker が表示されない | (1) 設定が有効か、(2) 対象ファイルがワークスペース内でエディタに開かれているか、(3) Error Log の監査行で `outcome` を確認 |
-| スキャンが常に失敗する | 監査行の `httpStatus` で切り分け(401 = 認証、403 = プロジェクト/ネームスペース、404 = インスタンスバージョン、500 = 不明) |
-| 通知が出続ける | 設定を無効化する。無効化すると以後スキャンは送信されず、既存 marker は次の LS 停止時に消える |
+| Problems ビューに古い検出結果が残る | LS を再起動(既存コマンド `gl.restartLanguageServer`)。§14.2.1 の選択削除で旧 epoch の marker が消える |
+| marker が表示されない | (1) 設定が有効か、(2) 対象ファイルがワークスペース内でエディタに開かれているか、(3) Error Log の監査行で `outcome` を確認(`timeout` なら LS がドキュメントを保持していない可能性) |
+| スキャンが常に失敗する | 監査行の `httpStatus` で切り分け(401 = 認証、403 = プロジェクト/ネームスペース、404 = インスタンスバージョン、その他 = 不明) |
+| 通知が出続ける | 設定を無効化する。§17.1 のとおり以後の送信は止まり、既存 marker も即座に消える |
 
-**設定を無効化しても既存 marker は即座には消えない**点は仕様である(明示的な削除コマンドは設けない)。これを §22 の未決事項 U-7 とし、レビューで是非を問う。
+### 17.1 設定を無効化したときの失効(Codex round1-P1 により未決 U-7 を確定)
+
+当初は「無効化しても既存 marker は残る」を仕様としていたが、これは 2 つの点で不十分だった。
+
+1. 停止した機能の結果が、現役の問題として Problems ビューに残り続ける
+2. **より重い問題**: 無効化の直前に LS 側のゲートを通過したスキャンが、無効化の**後**に `publishDiagnostics` を送ってくる。単に無効化時へ削除 Job を足すだけでは、その遅延診断が削除の後で**新しい marker を作ってしまう**
+
+**確定仕様: 無効化を epoch の境界として扱う。**
+
+設定が有効 → 無効へ**遷移した**とき(値が同じなら何もしない)、次を順に行う。
+
+1. `DiagnosticGenerationRegistry.invalidateAll()` を呼ぶ = **epoch を進める**
+2. in-flight レジストリ(§13.4)と `SAVE` 失敗抑制の状態(§11.3)を破棄する
+3. `diagnosticEpoch != 現在の epoch` の marker を削除する Job を schedule する(§14.2.1 と同じ選択削除)
+
+遅延診断は epoch を進める**前**に採番できないため、到着時に採番される epoch は新 epoch となり、手順 3 の削除対象から外れる。したがって遅延診断だけは marker を作りうる。これを塞ぐため、**層 2 が層 1 に対して「無効化後は当面の診断を受け付けない」ことを表明する必要がある**。
+
+**層の分離を保つための取り決め**(Codex の指摘どおり、どの層が判定するかを明示する):
+
+- **層 1(汎用)** は「有効/無効」というセキュリティ固有の概念を持たない。代わりに `DiagnosticGenerationRegistry.suspend()` / `resume()` を公開する。`suspend()` 中に到着した診断は採番されず破棄される
+- **層 2(セキュリティ)** が、設定の遷移を観測して `invalidateAll()` と `suspend()` を呼ぶ。`resume()` は設定が再び有効化されたときに呼ぶ
+
+これにより層 1 はセキュリティ非依存のまま、「いつ止めるか」の判断は層 2 が持つ。
+
+遷移の観測点は `GitLabPreferencePage.performOk()` とする(既に `sendConfiguration()` を呼んでいる箇所)。プラグインには `IPropertyChangeListener` が一切存在しないため、リスナー機構を新設せず既存の明示的な再送経路に相乗りする。**チェックボックスの追加とは別メソッドへの追加変更**である。
 
 ---
 
@@ -637,10 +831,16 @@ securityScan source=command|save outcome=success|failure httpStatus=<int|-> find
 |---|---|
 | `DiagnosticUri` | `file:/a/b` と `file:///a/b` が同一キーになる / パーセントエンコードのデコード / Windows の `/C:/` 整形とドライブレター大文字化 / 非 file スキーム / 不正 URI で null |
 | `DiagnosticMarkerAttributes` | severity 4 値の写像と未指定 / **負の line・character のクランプ** / 改行と連続空白の畳み込み / 空メッセージ / `source`・`code` の有無 |
-| `DiagnosticGenerationRegistry` | 追い越し(古い世代が false)/ epoch 不一致で false / `active=false` で false / `onServerStopped` で epoch が進み `latest` が消える |
-| `runSecurityScan`(SWT フリー core) | **設定 OFF で `send` が 0 回** / トークン無しで 0 回 / `source=save` のとき通知が 0 回 / `source=command` のとき通知が 1 回 / 正常時に `send` が 1 回で params が期待どおり |
-| 応答の分類 | `status=200` → Success と findings 件数 / `status!=200` → Failure / `filePath` 不明時に `save` へ倒れる / 抑制(同一 path・同一 status の連続で 2 回目が出ない・status 変化で出る) |
-| Markdown 整形 | `[text](url)` → `text (url)` / リンクなしは原文のまま / 不完全な記法は原文のまま |
+| `DiagnosticGenerationRegistry` | 追い越し(古い世代が false)/ epoch 不一致で false / `active=false` で false / `onServerStopped` で epoch が進み `latest` が消え **`active` は真のまま** / `suspend()` 中は `nextGeneration` が null / `resume()` で復帰 / `invalidateAll()` が epoch を進める |
+| `runSecurityScan`(SWT フリー core) | **設定 OFF で `send` が 0 回**(通知も監査も 0 回)/ トークン無しで 0 回 / `uri=null` で 0 回 / `source=save` のとき通知が 0 回 / `source=command` のとき通知が 1 回 / 正常時に `send` が 1 回で params が期待どおり / **ゲート評価順が `enabled` → `uri` → `hasToken`** |
+| **送信順序(A9)** | `didChangeConfiguration` が `runSecurityScan` より前に、**同一 mock サーバ**上で呼ばれること(MockK の `verifyOrder`)/ seqlock が不安定なとき両方とも 0 回 |
+| **single-flight(§13.4)** | in-flight 中の後続要求で `send` が増えないこと / 応答後に Pending が 1 件だけ送られること / Pending の source が `SAVE` → `COMMAND` に格上げされること / **応答が要求と逆順に来ても source を取り違えないこと** |
+| **タイムアウト(§13.2)** | 期限切れでスロットが解放されること / `COMMAND` は通知 1 回・`SAVE` は 0 回 / 監査行が `outcome=timeout` になること / 解放後に Pending が送信されること |
+| **二段階置換(§12)** | 生成途中の `CoreException` で**新 epoch の marker が 0 件になり旧 marker が残る**こと / 全件成功時にのみ旧 epoch が消えること / 空 diagnostics で旧 epoch が消えること |
+| **epoch 選択削除(§14.2.1)** | 旧 epoch の掃除 Job が遅れて走っても**新 epoch の marker を消さない**こと |
+| **無効化の失効(A10・§17.1)** | 無効化後に到着した診断が marker を作らないこと / 無効化で既存 marker が消えること / 再有効化で復帰すること |
+| 応答の分類 | `status=200` → Success と findings 件数 / `status!=200` → Failure / **対応する in-flight が無い応答では通知が 0 回**(監査のみ)/ 抑制(同一 path・同一 status の連続で 2 回目が出ない・status 変化で出る・成功が挟まると解除) |
+| 固定文言(§11.4) | 401 / 403 / 404 / その他 の写像 / **`error` 本文が戻り値のどこにも現れないこと** |
 | 監査行 | `error` 本文・絶対パス・トークンが含まれないこと |
 | `GitLabLanguageServerClient` | 既存の `GenericEndpoint` パターンで `textDocument/publishDiagnostics` と `$/gitlab/security/remoteSecurityScan/response` がディスパッチされること(`LoggingKotestExtension` が必要) |
 
@@ -673,9 +873,13 @@ PR 本文にチェックリストとして記載する。
 3. **`didOpen` で送った URI 文字列と `publishDiagnostics` で返ってきた URI 文字列をバイト単位で比較**(U-1 の確定)
 4. 再スキャンで結果が置き換わること(累積しないこと)
 5. LS を再起動して Problems ビューから消えること
-6. 保存でスキャンが走ること / Save All では走らないこと
-7. 401 / 404 のいずれかを意図的に起こし、通知が出て Error Log に本文が出ないこと
+6. 保存でスキャンが走ること / Save All では走らないこと / **File > Revert では走らないこと**
+7. 401 / 404 のいずれかを意図的に起こし、固定文言の通知が出て Error Log に `error` 本文が出ないこと
 8. Problems ビューの項目をダブルクリックして該当行が開くこと
+9. **設定を無効化すると既存 marker が消えること**、および無効化直後に遅れて診断が届いても marker が復活しないこと
+10. **インスタンス URL を変更した直後にスキャンしても、変更前のインスタンスへ送信されないこと**(LS のログまたはインスタンス側のアクセス記録で確認)
+11. **エディタに開いていないファイル**に対してコマンドを実行し、60 秒後に「応答なし」の通知が出ること(タイムアウト経路)
+12. 連続保存を素早く繰り返し、**Problems ビューの内容が最後の保存に対応する**こと(古い結果で上書きされないこと)
 
 ---
 
@@ -684,13 +888,19 @@ PR 本文にチェックリストとして記載する。
 | # | 条件 | 検証方法 |
 |---|---|---|
 | A1 | 設定を変更しなければ、本変更前と観測可能な振る舞いが一致する | `remoteSecurityScans=false` が送出されることのテスト + 実機 21.4-1 |
-| A2 | 対象テストが PASS し、**全体の失敗数が 36 のまま** | `./gradlew build` |
+| A2 | 対象テストが PASS し、**失敗したテストの「集合」がベース(`develop`)と完全一致** | 下記 A2 補足 |
 | A3 | 変更ファイルの detekt 指摘が 0 | `./gradlew detekt` |
 | A4 | **新規依存が無い** | `build.gradle.kts` と生成 MANIFEST の diff が空であることを提示 |
 | A5 | plugin.xml の 3-way id 一致と marker 型名一致を件数で報告 | §21.3 |
 | A6 | 診断適用が UI スレッドを使わないこと | コードレビューでの経路確認 |
 | A7 | Error Log に診断本文・`error` 本文・絶対パスが出ないこと | 単体テスト + 実機 21.4-7 |
 | A8 | ディレクトリ構成・ビルドシステムの変更が無いこと | diff の提示 |
+| A9 | `didChangeConfiguration` が `runSecurityScan` より**前**に同一サーバ上で呼ばれること | §21.1 の順序検証テスト |
+| A10 | 設定を無効化した後、遅れて届いた診断が marker を作らないこと | §21.1 の epoch 失効テスト |
+
+**A2 補足(Codex round1-P2 を縮小受理)。**指摘のとおり「失敗数 36」という条件は、新規リグレッションが 1 件増える一方で既知失敗が 1 件たまたま直る/スキップされる場合に相殺されて素通りする。ただし提案された「既知失敗をテスト ID の allowlist としてリポジトリに固定する」は、**全フェーズ共通のベースライン(#20・CLAUDE.md)を変更するリポジトリ全体の運用変更**であり、本機能の設計で単独に決めるべきものではない。
+
+そこで本 PR では運用を変えずに検証だけを強化する。ベースと変更後の双方で `build/test-results/test/*.xml` から**失敗したテストの完全修飾名の集合**を抽出し、`diff` で**集合の一致**を確認する(件数の一致ではなく)。新規に失敗したテストと、消失した既知失敗の**どちらも不合格**として扱う。allowlist のファイル化はリポジトリ運用の課題として follow-up issue に切り出す。
 
 ---
 
@@ -705,9 +915,7 @@ PR 本文にチェックリストとして記載する。
 | U-3 | `results[]` の要素の正確な形 | **marker には使わない**(marker は Diagnostic のみから作る)。通知の件数表示にのみ使うため影響は限定的 | 実機 |
 | U-4 | 改行の個数(`\n` か `\n\n` か) | 畳み込むため**影響しない** | — |
 | U-5 | Windows での `locationURI` の形とドライブレターの大小 | `DiagnosticUri` の正規化規則が正しいかに影響する | Windows 実機 |
-| U-6 | 設定変更中にスキャンを投げた場合、LS 側で新旧どちらの設定が使われるか | 理論上、旧インスタンスの設定でスキャンが走る窓がありうる。ただしリクエストを送るのは LS であり、クライアントは接続を固定できない | **レビューで方針を問う** |
-| U-7 | 設定を無効化したときに既存 marker を即座に消すべきか | 現設計では消えない(次の LS 停止まで残る)。明示的な削除コマンドを設けるかどうか | **レビューで方針を問う** |
-| U-8 | `IElementStateListener` が File > Revert でも発火する点を許容するか | リバート時に 1 回余分なスキャンが走る(実害は無いが通信が発生する) | **レビューで方針を問う** |
+**U-6 / U-7 / U-8 は Codex round1 の指摘を受けて確定済みとし、未決から外した。**それぞれ §15.1 / §17.1 / §8.2.1 を参照。未決のまま実装へ進めると、送信先の不一致・停止済み機能の結果表示・同意範囲外の送信という実害に直結するため、未決として残すのは不適切だった。
 
 ---
 
@@ -720,7 +928,9 @@ PR 本文にチェックリストとして記載する。
 | K3 | 共有 `CoroutineScope`(plain `Job`)の汚染 | 高 | 送信・通知のスケジューリング呼び出しをすべて try/catch で封じ込める(Phase 5A の教訓) |
 | K4 | ワークスペースロックの競合による遅延 | 中 | 正しさはスケジューリングルールで保たれる。遅延は受容し、§14.5 に明記 |
 | K5 | 保存のたびにファイル全文が送信される | 中 | 既定を無効にし、設定説明文に明記する。デバウンスは VSCode パリティのため入れない |
-| K6 | `SecurityScanRequestRegistry` の残留エントリ | 低 | 上限つき LRU + LS 再起動時クリア(§13.4) |
+| K6 | `SecurityScanInFlightRegistry` の残留エントリ | 低 | 要求タイムアウトで必ず解放(§13.2)+ LS 再起動・無効化時に全破棄。Pending はパスあたり高々 1 件 |
+| K8 | **§12.2 の限界**: 切替フェーズの削除中に `CoreException` が起きると旧世代の一部が残り新世代と混在する | 中 | 表示されるのはすべて実在した検出結果であり捏造ではない。次回スキャンで再構築される。再試行しても同じ理由で失敗する公算が高いため補償はしない |
+| K9 | スキャンごとに `didChangeConfiguration` を 1 回追加送信する(§15.1) | 低 | LS 側は `onConfigChange` を呼ぶだけで冪等。保存のたびに 1 通増えるが、直後に送るファイル全文に比べれば無視できる |
 | K7 | 既存の `publishDiagnostics` ログを削除することで、既存の運用手順が壊れる | 低 | 当該ログは no-op のデバッグ出力であり、機能として依存されていない |
 
 ---
@@ -731,9 +941,13 @@ PR 本文にチェックリストとして記載する。
 
 SDD のタスク分割は実装計画(フェーズ issue #13 へのコメント)で確定する。おおよその境界は次のとおり。
 
-1. `DiagnosticUri` / `DiagnosticMarkerAttributes` / `DiagnosticGenerationRegistry`(純ロジック・TDD)
-2. `DiagnosticFileResolver` / `DiagnosticMarkerService` / `publishDiagnostics` 実装
-3. 設定 2 件 + `securityScannerOptions` + `remoteSecurityScans` の配線
-4. `SecurityScanLauncher` core + DTO + `/response` ハンドラ + 通知・監査
-5. `RunSecurityScanHandler` / `SecurityScanSaveListener` / plugin.xml 配線
-6. `GitLabEclipseStartup` / `stopLocked` のライフサイクル結線
+1. `DiagnosticUri` / `DiagnosticMarkerAttributes` / `DiagnosticGenerationRegistry`(epoch・suspend/resume・invalidateAll を含む。純ロジック・TDD)
+2. `DiagnosticFileResolver` / `DiagnosticMarkerService`(**§12 の二段階置換** + §14.2.1 の epoch 選択削除)/ `publishDiagnostics` 実装
+3. 設定 2 件 + `securityScannerOptions` + `remoteSecurityScans` の配線 + §17.1 の遷移検出
+4. `SecurityScanInFlightRegistry`(**single-flight + coalescing + タイムアウト**。純ロジック・TDD)
+5. `SecurityScanLauncher` core(**§15.1 の設定先送り順序**を含む)+ DTO + `/response` ハンドラ
+6. `SecurityScanStatusReporter`(§11.3 の通知表 + §11.4 の固定文言 + 抑制 + 監査行)
+7. `RunSecurityScanHandler` / `SecurityScanSaveListener`(**Revert 除外**)/ plugin.xml 配線
+8. `GitLabEclipseStartup` / `stopLocked` のライフサイクル結線
+
+Codex round1 の反映により、当初 6 分割で見積もっていた範囲が 8 分割相当へ増えている。特に 4 と 6 は当初「レジストリ 1 つ」「通知の分岐」程度に見積もっていたが、いずれも独立した不変条件を持つため単独タスクとする。
