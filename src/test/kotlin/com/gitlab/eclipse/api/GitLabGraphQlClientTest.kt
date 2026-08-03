@@ -409,17 +409,4 @@ class GitLabGraphQlClientTest : DescribeSpec({
       }
     }
   }
-
-  describe("captureConnection") {
-    it("delegates to apiClient.captureConnection() exactly once and returns its result") {
-      val mockApiClient = mockk<GitLabApiClient>()
-      val delegatingClient = GitLabGraphQlClient(http, mockApiClient)
-      every { mockApiClient.captureConnection() } returns connection
-
-      val result = delegatingClient.captureConnection()
-
-      result shouldBe connection
-      verify(exactly = 1) { mockApiClient.captureConnection() }
-    }
-  }
 })

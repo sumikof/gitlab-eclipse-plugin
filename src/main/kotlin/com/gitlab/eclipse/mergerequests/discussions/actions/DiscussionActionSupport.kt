@@ -1,3 +1,11 @@
+// TooManyFunctions: splitting the reload path into a resolve step (reloadResolvedSections) and a
+// fan-out step (reloadAllSections) is what makes the "always report exactly once on a live session"
+// property testable in this headless container, and it puts the file at detekt's 11-function
+// threshold. Suppressed rather than restructured: these are the shared bindings all five discussion
+// handlers depend on for their anti-duplicate-post guarantees, and scattering them across files to
+// satisfy a count would make that contract harder to see, not easier.
+@file:Suppress("TooManyFunctions")
+
 package com.gitlab.eclipse.mergerequests.discussions.actions
 
 import com.gitlab.eclipse.api.ConnectionSnapshot
@@ -89,7 +97,13 @@ internal fun discussionWriteLauncher(
   runInBackground = { block -> scope.launch { block() } },
   runOnUi = { block -> currentDisplay.asyncExec { block() } },
   reload = { onOutcome -> reloadDiscussionsFor(window, target, onOutcome) },
-  notify = { message -> NotificationUtils.show(message) },
+  // showOnUiThread, not show: `show` only SCHEDULES the popup in a later asyncExec runnable, so it
+  // would land in a different UI turn than the lifecycle guard that authorised it and could pop up
+  // after onDeactivate. Every launcher `notify` call site is already on the UI thread (the guard
+  // rejection in `launch`, and the terminal inside `runOnUi`), so opening it synchronously keeps
+  // the decision and the popup in the SAME UI turn — the same reason the read path's loader
+  // binding in GitLabSidebarView uses showOnUiThread.
+  notify = { message -> NotificationUtils.showOnUiThread(message) },
   promptRetry = { message, body, onRetry ->
     promptForBody(window, dialogTitle, RETRY_PROMPT, body, retryErrorMessage(message), RETRY_LABEL, onRetry)
   },
@@ -112,30 +126,66 @@ internal fun discussionWriteLauncher(
  * refresh replaces the nodes. Reloading all of them guarantees the one the user is looking at is
  * among them.
  *
- * When the window, the view, or the section list is gone, [onOutcome] is deliberately **not**
- * invoked. The launcher already reads a never-invoked reload callback as "the current state was not
- * shown to the user", which is exactly right here — it then only preserves the typed text instead
- * of offering a `[Send again]` that could duplicate a comment.
+ * When the window, the view, or the section list is gone, [onOutcome] is invoked with
+ * [LoadOutcome.Skipped] rather than left un-invoked. A never-invoked callback is
+ * [com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader]'s way of saying "we are shutting
+ * down", and the launcher answers it by showing nothing at all — no notification, no copy-text
+ * dialog. That is wrong here: the session is alive (the launcher's lifecycle guard passed in this
+ * same UI turn, which is also what makes invoking the callback safe), and the realistic reason for
+ * an empty section list is that the user refreshed the sidebar while the write was in flight, so
+ * the rebuilt MR nodes are unexpanded and own no `DiscussionsSectionNode`. Staying silent there
+ * would leave an Ambiguous write unreported and discard the text the user typed. `Skipped` is
+ * non-`Applied`, so it can never unlock the `[Send again]` that might duplicate a comment; it
+ * routes to the "could not be confirmed" message plus the text-preserving copy dialog.
  */
 private fun reloadDiscussionsFor(
   window: IWorkbenchWindow?,
   target: DiscussionWriteTarget,
   onOutcome: (LoadOutcome) -> Unit,
+) = reloadResolvedSections(
+  findSidebarViewIn(window),
+  { view ->
+    view.resolveDiscussionsSections(target.instanceUrl, target.authFingerprint, target.projectId, target.mrIid)
+  },
+  { view, section, report -> view.reloadDiscussions(section, report) },
+  onOutcome,
+)
+
+/**
+ * Resolves the sections to reload out of [view] and hands them to [reloadAllSections], reporting
+ * [LoadOutcome.Skipped] when there is nothing to reload — either because [view] is `null` (no
+ * window, or the sidebar is closed) or because it resolves no section at all.
+ *
+ * Generic and free of every workbench type on purpose: `GitLabSidebarView` cannot be instantiated
+ * in this headless container, so this is where the "always report exactly once on a live session"
+ * property is actually pinned by tests.
+ *
+ * Reports **exactly once** on every path: the two `Skipped` returns are terminal, and
+ * [reloadAllSections] is only reached with a non-empty list, where it reports exactly once itself.
+ */
+internal fun <V, S> reloadResolvedSections(
+  view: V?,
+  resolveSections: (V) -> List<S>,
+  reload: (V, S, (LoadOutcome) -> Unit) -> Unit,
+  onOutcome: (LoadOutcome) -> Unit,
 ) {
-  val view = findSidebarViewIn(window) ?: return
-  val sections = view.resolveDiscussionsSections(
-    target.instanceUrl,
-    target.authFingerprint,
-    target.projectId,
-    target.mrIid,
-  )
-  reloadAllSections(sections, { section, report -> view.reloadDiscussions(section, report) }, onOutcome)
+  if (view == null) {
+    onOutcome(LoadOutcome.Skipped)
+    return
+  }
+  val sections = resolveSections(view)
+  if (sections.isEmpty()) {
+    onOutcome(LoadOutcome.Skipped)
+    return
+  }
+  reloadAllSections(sections, { section, report -> reload(view, section, report) }, onOutcome)
 }
 
 /**
  * Starts [reload] for every section and reports a single aggregated [LoadOutcome] to [onOutcome]
- * once **all** of them have reported. Reports nothing at all for an empty [sections] — the caller's
- * contract is that a never-invoked callback means "the user was not shown the current state".
+ * once **all** of them have reported. Reports nothing at all for an empty [sections]; the empty
+ * case is handled one level up, by [reloadResolvedSections], which reports [LoadOutcome.Skipped]
+ * for it and never calls this function with an empty list.
  *
  * Everything here runs on the UI thread: the launcher calls the reload from inside its `runOnUi`
  * block and [com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader] delivers its outcomes
@@ -218,7 +268,7 @@ internal fun showCopyTextDialog(window: IWorkbenchWindow?, title: String, messag
 
 /**
  * Background thread. Runs one write through the connection gate + pre-send lifecycle re-check and
- * emits exactly one secret-free audit line for its outcome (design §16). [key] supplies only its
+ * emits at most one secret-free audit line for its outcome (design §16). [key] supplies only its
  * `targetKind`; the target id is deliberately never logged.
  */
 internal fun auditedDiscussionWrite(
@@ -237,8 +287,17 @@ internal fun auditedDiscussionWrite(
     startEpoch,
     mutate = mutate,
   )
-  log.info(
-    discussionAuditMessage(action, target.instanceUrl, target.projectId, target.mrIid, key.targetKind, outcome),
-  )
+  // The audit line must never be load-bearing. [DiscussionWriteLauncher] classifies ANY throwable
+  // escaping this function as Definite — "nothing was transmitted, [Retry] is safe" — and that
+  // premise only holds while nothing AFTER the mutation can throw. This call runs after the
+  // mutation may already have committed, so a failing logger would offer `[Retry]` for a comment
+  // that is possibly already posted (and would report a Success as a rejection). Losing one audit
+  // line is the strictly lesser harm, so the throwable is contained and the outcome returned
+  // unchanged. Do not "improve" this into a rethrow.
+  runCatching {
+    log.info(
+      discussionAuditMessage(action, target.instanceUrl, target.projectId, target.mrIid, key.targetKind, outcome),
+    )
+  }
   return outcome
 }
