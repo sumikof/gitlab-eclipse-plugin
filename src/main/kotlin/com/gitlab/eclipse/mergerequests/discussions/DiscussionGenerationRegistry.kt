@@ -85,16 +85,22 @@ object DiscussionGenerationRegistry {
   }
 
   /**
-   * UI thread only (the sidebar's full refresh calls it where its own caches are cleared). Drops
-   * every recorded latest generation and NOTHING else: [counter] keeps its monotonic sequence
-   * (no generation number is ever reused), and [active]/[epoch] are untouched. A full refresh
-   * rebuilds the tree with new [com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode]s (new
-   * nodeIds), so the old keys could only accumulate — and any load still in flight for a
-   * detached pre-refresh node must not touch the rebuilt tree: with its entry cleared,
-   * [isLatest] fails and it reports Superseded, which is exactly right.
+   * UI thread only (a sidebar's full refresh calls it where its own caches are cleared). Drops
+   * the recorded latest generation of exactly the keys whose [DiscussionKey.nodeId] is in
+   * [nodeIds], and NOTHING else: [counter] keeps its monotonic sequence (no generation number is
+   * ever reused), [active]/[epoch] are untouched, and every other key stays latest. That scoping
+   * matters because this registry is process-wide while a workbench can hold several windows,
+   * each with its own sidebar view: the caller passes the nodeIds of the
+   * [com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode]s in the tree IT is about to
+   * replace, so another view's in-flight load still applies instead of reporting Superseded
+   * with no newer load coming (which would strand its section in LOADING forever). For the
+   * caller's own detached pre-refresh nodes, clearing is exactly right: their old keys could
+   * only accumulate, and a load still in flight for one of them must not touch the rebuilt
+   * tree — with its entry cleared, [isLatest] fails and it reports Superseded.
    */
-  fun clearLatest() {
-    latest.clear()
+  fun clearLatestFor(nodeIds: Set<Long>) {
+    if (nodeIds.isEmpty()) return
+    latest.keys.removeAll { it.nodeId in nodeIds }
   }
 
   /**

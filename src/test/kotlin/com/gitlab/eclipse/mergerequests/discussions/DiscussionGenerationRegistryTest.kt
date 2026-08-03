@@ -122,21 +122,42 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
     }
   }
 
-  describe("clearLatest") {
-    it("makes a previously-latest generation no longer latest") {
+  describe("clearLatestFor") {
+    it("makes a listed node's previously-latest generation no longer latest") {
       val gen = DiscussionGenerationRegistry.nextGeneration(k1)
       DiscussionGenerationRegistry.isLatest(k1, gen) shouldBe true
 
-      DiscussionGenerationRegistry.clearLatest()
+      DiscussionGenerationRegistry.clearLatestFor(setOf(k1.nodeId))
 
       DiscussionGenerationRegistry.isLatest(k1, gen) shouldBe false
       DiscussionGenerationRegistry.shouldAct(k1, gen) shouldBe false
     }
 
+    it("removes ONLY the listed nodeIds: another node's latest generation stays intact") {
+      val g1 = DiscussionGenerationRegistry.nextGeneration(k1)
+      val g2 = DiscussionGenerationRegistry.nextGeneration(k2)
+
+      DiscussionGenerationRegistry.clearLatestFor(setOf(k1.nodeId))
+
+      DiscussionGenerationRegistry.isLatest(k1, g1) shouldBe false
+      DiscussionGenerationRegistry.isLatest(k2, g2) shouldBe true
+      DiscussionGenerationRegistry.shouldAct(k2, g2) shouldBe true
+    }
+
+    it("an empty set is a no-op: every latest generation stays latest") {
+      val g1 = DiscussionGenerationRegistry.nextGeneration(k1)
+      val g2 = DiscussionGenerationRegistry.nextGeneration(k2)
+
+      DiscussionGenerationRegistry.clearLatestFor(emptySet())
+
+      DiscussionGenerationRegistry.isLatest(k1, g1) shouldBe true
+      DiscussionGenerationRegistry.isLatest(k2, g2) shouldBe true
+    }
+
     it("leaves active alone") {
       DiscussionGenerationRegistry.nextGeneration(k1)
 
-      DiscussionGenerationRegistry.clearLatest()
+      DiscussionGenerationRegistry.clearLatestFor(setOf(k1.nodeId))
 
       DiscussionGenerationRegistry.active shouldBe true
     }
@@ -144,7 +165,7 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
     it("leaves the counter alone: a post-clear generation exceeds every pre-clear one (no reuse)") {
       val before = DiscussionGenerationRegistry.nextGeneration(k1)
 
-      DiscussionGenerationRegistry.clearLatest()
+      DiscussionGenerationRegistry.clearLatestFor(setOf(k1.nodeId))
       val after = DiscussionGenerationRegistry.nextGeneration(k1)
 
       (after > before) shouldBe true
@@ -154,7 +175,7 @@ class DiscussionGenerationRegistryTest : DescribeSpec({
     it("leaves currentEpoch alone") {
       val before = DiscussionGenerationRegistry.currentEpoch
 
-      DiscussionGenerationRegistry.clearLatest()
+      DiscussionGenerationRegistry.clearLatestFor(setOf(k1.nodeId))
 
       DiscussionGenerationRegistry.currentEpoch shouldBe before
     }
