@@ -153,13 +153,18 @@ class DiscussionWriteService(
     expectedBody: String,
   ) {
     val restId = restIdFromGid(noteGid) ?: throw IllegalArgumentException("Unrecognized note id")
-    val fetched = apiClient.fetchObject(
+    // Declared nullable on purpose: fetchObject's return type is a non-null generic, but it is
+    // produced by Gson.fromJson, which yields null for an empty or literal-null 2xx body and
+    // bypasses Kotlin's null checks entirely (follow-up #47). Treating an absent object the same
+    // way as an absent body keeps this fail-closed: we cannot prove the note is unchanged, so we
+    // refuse the edit rather than overwriting whatever is really there.
+    val fetched: GitLabRestNote? = apiClient.fetchObject(
       "/projects/$projectId/merge_requests/$mrIid/notes/$restId",
       emptyMap(),
       GitLabRestNote::class.java,
       connection,
     )
-    if (fetched.body != expectedBody) throw NoteChangedException()
+    if (fetched?.body != expectedBody) throw NoteChangedException()
   }
 
   /**

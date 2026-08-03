@@ -91,7 +91,7 @@ class DiscussionEditPreCheckTest : DescribeSpec({
       service.assertNoteUnchanged(connection, 7, 3, noteGid, "hello")
 
       r.path.captured shouldBe "/projects/7/merge_requests/3/notes/12345"
-      r.connection.captured shouldBe connection
+      r.connection.captured shouldBeSameInstanceAs connection
       verify(exactly = 1) {
         apiClient.fetchObject(any(), any(), eq(GitLabRestNote::class.java), any())
       }
@@ -126,6 +126,20 @@ class DiscussionEditPreCheckTest : DescribeSpec({
 
       shouldThrow<NoteChangedException> {
         service.assertNoteUnchanged(connection, 7, 3, noteGid, "")
+      }
+    }
+
+    it("throws when Gson yields no note object at all, rather than failing with an NPE") {
+      // fetchObject's return type is a non-null generic, but Gson.fromJson produces null for an
+      // empty or literal-null 2xx body and bypasses Kotlin's null checks (follow-up #47). An NPE
+      // here would be classified Ambiguous and would wrongly warn the user that they may have
+      // already posted; the fail-closed answer is "the note is not provably unchanged".
+      every {
+        apiClient.fetchObject(any(), any(), eq(GitLabRestNote::class.java), any())
+      } returns erasedNull()
+
+      shouldThrow<NoteChangedException> {
+        service.assertNoteUnchanged(connection, 7, 3, noteGid, "hello")
       }
     }
 
@@ -164,3 +178,12 @@ class DiscussionEditPreCheckTest : DescribeSpec({
     }
   }
 })
+
+/**
+ * Produces a null typed as a non-null `T`. Casting to an unbounded type parameter is unchecked and
+ * erased, so no null check is emitted — which is exactly how Gson smuggles a null through
+ * `fetchObject`'s non-null generic return type at runtime. This lets the test reproduce that
+ * situation, which no ordinary Kotlin expression can express.
+ */
+@Suppress("UNCHECKED_CAST")
+private fun <T> erasedNull(): T = null as T
