@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.api
 
+import com.gitlab.eclipse.api.model.GitLabRestNote
 import com.gitlab.eclipse.inject.service
 import java.time.Duration
 
@@ -39,6 +40,15 @@ internal data class UpdateNoteData(val updateNote: MutationPayloadDto?)
  */
 internal data class DestroyNoteData(val destroyNote: MutationPayloadDto?)
 
+private val NOTE_GID_TAIL = Regex("""^gid://gitlab/[A-Za-z]+/(\d+)$""")
+
+/**
+ * Extracts the numeric REST id from a GraphQL global id, e.g. `gid://gitlab/Note/12345` → `"12345"`.
+ * Returns null when the input is not a well-formed numeric-tailed GID. The type segment varies
+ * (`Note`, `DiffNote`, …), so it is matched loosely and only the trailing id is taken.
+ */
+fun restIdFromGid(gid: String): String? = NOTE_GID_TAIL.matchEntire(gid)?.groupValues?.get(1)
+
 /**
  * Issues the four MR-discussion write mutations (create note / toggle resolve / update note /
  * delete note) over GraphQL. Owns the mutation constants and their variable-map builders, and
@@ -60,7 +70,10 @@ internal data class DestroyNoteData(val destroyNote: MutationPayloadDto?)
  * This class logs nothing: note bodies must never reach logs, and GitLab's payload error strings
  * can echo the submitted body.
  */
-class DiscussionWriteService(private val graphQlClient: GitLabGraphQlClient = service()) {
+class DiscussionWriteService(
+  private val graphQlClient: GitLabGraphQlClient = service(),
+  private val apiClient: GitLabApiClient = service(),
+) {
 
   /**
    * Creates a note: a reply to the discussion identified by [replyId], or — when [replyId] is
@@ -125,6 +138,28 @@ class DiscussionWriteService(private val graphQlClient: GitLabGraphQlClient = se
       WRITE_TIMEOUT,
     )
     requireNoPayloadErrors(data.destroyNote)
+  }
+
+  /**
+   * Design §13. Fetches the note over REST and refuses the edit when the server's body differs from
+   * [expectedBody]. Narrows — but cannot close — the TOCTOU window, because GitLab's `updateNote`
+   * has no optimistic locking.
+   */
+  fun assertNoteUnchanged(
+    connection: ConnectionSnapshot,
+    projectId: Long,
+    mrIid: Long,
+    noteGid: String,
+    expectedBody: String,
+  ) {
+    val restId = restIdFromGid(noteGid) ?: throw IllegalArgumentException("Unrecognized note id")
+    val fetched = apiClient.fetchObject(
+      "/projects/$projectId/merge_requests/$mrIid/notes/$restId",
+      emptyMap(),
+      GitLabRestNote::class.java,
+      connection,
+    )
+    if (fetched.body != expectedBody) throw NoteChangedException()
   }
 
   /**
@@ -212,8 +247,16 @@ mutation DeleteNote(${'$'}noteId: NoteID!) {
 
     /**
      * Assembles the `CreateNote` variable map. `replyId = null` means an MR-level comment (a
-     * new, non-line-anchored thread) and the key must still be present with a null value so the
-     * variable is bound; the same holds for a null [mergeRequestDiffHeadSha].
+     * new, non-line-anchored thread); the key is kept in the map (rather than omitted) for shape
+     * stability and testability, and the same holds for a null [mergeRequestDiffHeadSha].
+     * [GitLabGraphQlClient] serializes with a default `Gson()` (`GitLabGraphQlClient.kt:45,72`),
+     * and Gson's default serializer **drops null map entries from the wire**, so a null `replyId`
+     * (or `mergeRequestDiffHeadSha`) is never transmitted and the corresponding GraphQL variable
+     * ends up unbound — matching the reference's `undefined`, which `JSON.stringify` drops the
+     * same way (`gitlab_service.ts:531-532`). An unbound nullable variable with no default makes
+     * the input field absent, which is exactly what "an MR-level comment" (or "no diff head sha")
+     * means. **Nothing here may be "fixed" by enabling `serializeNulls`**: doing so would start
+     * transmitting an explicit null `discussionId`, changing the meaning of the request.
      *
      * Evidence for the key names:
      * `out/gitlab-vscode-extension/src/desktop/gitlab/gitlab_service.ts:528-533`.

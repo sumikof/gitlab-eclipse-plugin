@@ -21,7 +21,11 @@ import java.time.Duration
  */
 class DiscussionWriteServiceTest : DescribeSpec({
   val graphQlClient = mockk<GitLabGraphQlClient>()
-  val service = DiscussionWriteService(graphQlClient)
+  // apiClient is passed explicitly (never exercised by these tests, which predate task 3's
+  // assertNoteUnchanged) because the constructor's default is `service()`, which throws outside a
+  // started Koin context — the same reason GitLabGraphQlClientTest always supplies both of its
+  // service()-defaulted constructor args explicitly.
+  val service = DiscussionWriteService(graphQlClient, mockk<GitLabApiClient>())
 
   beforeEach { clearMocks(graphQlClient) }
 

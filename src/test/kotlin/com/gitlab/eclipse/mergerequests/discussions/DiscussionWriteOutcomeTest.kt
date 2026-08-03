@@ -4,6 +4,7 @@ import com.gitlab.eclipse.api.DiscussionMutationException
 import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.GitLabApiTimeoutException
 import com.gitlab.eclipse.api.GraphQlException
+import com.gitlab.eclipse.api.NoteChangedException
 import com.google.gson.JsonSyntaxException
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -56,6 +57,11 @@ class DiscussionWriteOutcomeTest : DescribeSpec({
 
     it("classifies DiscussionMutationException as Definite") {
       val cause = DiscussionMutationException(listOf("Note body is too long"))
+      classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Definite>()
+    }
+
+    it("classifies NoteChangedException as Definite") {
+      val cause = NoteChangedException()
       classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Definite>()
     }
 

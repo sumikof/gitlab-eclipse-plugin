@@ -4,6 +4,7 @@ import com.gitlab.eclipse.api.DiscussionMutationException
 import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.GitLabApiTimeoutException
 import com.gitlab.eclipse.api.GraphQlException
+import com.gitlab.eclipse.api.NoteChangedException
 import com.google.gson.JsonSyntaxException
 import java.io.IOException
 
@@ -52,6 +53,9 @@ private const val CLIENT_ERROR_MAX = 499
  */
 fun classifyWriteFailure(cause: Throwable): DiscussionWriteOutcome = when (cause) {
   is DiscussionMutationException -> DiscussionWriteOutcome.Definite(cause)
+  // The edit pre-check (design §13) refused locally before any mutation was issued, so retrying
+  // is provably safe: nothing was sent.
+  is NoteChangedException -> DiscussionWriteOutcome.Definite(cause)
   is GraphQlException ->
     if (cause.hasDataKey) DiscussionWriteOutcome.Ambiguous(cause) else DiscussionWriteOutcome.Definite(cause)
   is GitLabApiException ->
