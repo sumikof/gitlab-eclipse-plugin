@@ -17,6 +17,7 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
 
@@ -167,6 +168,11 @@ class DiscussionWriteFlowTest : DescribeSpec({
       outcome shouldBe DiscussionWriteOutcome.Success
       mutateCalls shouldBe 1
       seenSnapshot shouldBeSameInstanceAs matchingSnapshot
+      // Pins that mutate receives the snapshot from the ONE gate capture, never a second,
+      // re-captured one: the stub returns the same instance on every call, so a regression that
+      // called `mutate(apiClient.captureConnection())` would still pass the identity assertion
+      // above but fail this count.
+      verify(exactly = 1) { apiClient.captureConnection() }
     }
   }
 
@@ -268,6 +274,26 @@ class DiscussionWriteFlowTest : DescribeSpec({
         nodeUrl,
         nodeFingerprint,
         startEpoch = DiscussionGenerationRegistry.currentEpoch,
+      ) { mutateCalls += 1 }
+
+      outcome shouldBe DiscussionWriteOutcome.Aborted
+      mutateCalls shouldBe 0
+    }
+
+    it("aborts on a stale epoch using the real registryEpoch default (not a constant 0L)") {
+      // Proves registryEpoch's default reads DiscussionGenerationRegistry.currentEpoch rather
+      // than a constant { 0L }: resetForTest() leaves the epoch at 0, so onActivate() here
+      // advances it past 0 while startEpoch stays 0L. A constant-0L default would see
+      // registryEpoch() == startEpoch and return Success; only a real, advanced epoch aborts.
+      stubCapture(matchingSnapshot)
+      DiscussionGenerationRegistry.onActivate() // epoch: 0 -> 1; afterEach resetForTest() restores it
+      var mutateCalls = 0
+
+      val outcome = runDiscussionWrite(
+        apiClient,
+        nodeUrl,
+        nodeFingerprint,
+        startEpoch = 0L,
       ) { mutateCalls += 1 }
 
       outcome shouldBe DiscussionWriteOutcome.Aborted
