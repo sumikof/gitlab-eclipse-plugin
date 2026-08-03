@@ -26,6 +26,11 @@ sealed interface LoadOutcome {
    */
   object GateRejected : LoadOutcome
 
-  /** The node was already `LOADED` and `force` was false, so no fetch was started. */
+  /**
+   * No fetch was started. Two producers: the node was already `LOADED` and `force` was false, or
+   * the post-write reload found nothing to reload on a live session (the sidebar view is gone, or a
+   * refresh mid-write left the merge request with no expanded discussions section). Both mean the
+   * caller has NOT been shown the server's current state, which is why this is not `Applied`.
+   */
   object Skipped : LoadOutcome
 }

@@ -84,7 +84,12 @@ class DiscussionWriteLauncher(
         // Secret discipline: label + exceptionType only. Never cause.message (GraphQlException
         // interpolates server strings that can echo the submitted body), never responseBody,
         // never the exception object, never the body.
-        log("discussionWrite outcome=escapedThrowable exceptionType=${e.javaClass.simpleName}")
+        // Wrapped for the same reason auditedDiscussionWrite wraps its audit line: a failing logger
+        // must never derail outcome delivery. Unwrapped, a throw here escapes this catch, and the
+        // terminal never runs -- no [Retry], and the text the user typed is lost.
+        runCatching {
+          log("discussionWrite outcome=escapedThrowable exceptionType=${e.javaClass.simpleName}")
+        }
         // Definite, NOT Ambiguous: runDiscussionWrite already classifies everything that can go
         // wrong at or after the mutation and rethrows cancellation, so the only way a throwable
         // escapes it is from the connection gate — i.e. BEFORE anything was transmitted.
