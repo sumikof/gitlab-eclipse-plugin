@@ -330,6 +330,10 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.launch(key, "", WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException())).fn)
 
       h.notifications shouldContainExactly listOf(DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE)
+      // Asserted explicitly rather than left implicit in the message choice: resolve and delete have
+      // no text to preserve, but they must still be shown the refreshed thread before being told the
+      // result is unconfirmed.
+      h.reloadCount shouldBe 1
       h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
       h.retryPrompts.shouldBeEmpty()
@@ -343,6 +347,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.launch(key, "", WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException())).fn)
 
       h.notifications shouldContainExactly listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE)
+      h.reloadCount shouldBe 1
       h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
     }
