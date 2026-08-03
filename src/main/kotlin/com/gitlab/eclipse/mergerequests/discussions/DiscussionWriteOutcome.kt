@@ -31,14 +31,21 @@ private const val CLIENT_ERROR_MAX = 499
  * `[Retry]` is safe) or [DiscussionWriteOutcome.Ambiguous] (cannot be proven either way,
  * `[Retry]` risks a duplicate comment) (design §12.2).
  *
+ * Callers **must** rethrow `kotlinx.coroutines.CancellationException` before calling this
+ * function, as [classifyWrite][com.gitlab.eclipse.ci.actions.classifyWrite] and
+ * [DiscussionsLoader][com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader] already do.
+ * This function deliberately does not special-case it: silently mapping a cancellation to an
+ * outcome would hide a cancelled coroutine from its caller.
+ *
  * The branch order is load-bearing:
- * - `HttpTimeoutException` **is an** `IOException`, so the timeout branches must be checked
- *   before the `IOException` branch, or a timeout would be misclassified by the wrong branch
- *   (here both classify Ambiguous, but the order still documents the subtype relationship for
- *   any future branch that would depend on it).
- * - The unknown default (`else`) is always Ambiguous, never Definite: "Definite" means we can
- *   prove from the response that the mutation did not execute. If we cannot prove it, offering
- *   `[Retry]` would let the user post a duplicate comment.
+ * - `java.net.http.HttpTimeoutException` **is an** `IOException` and is intentionally caught by
+ *   the `IOException` branch (both classify Ambiguous), rather than given its own branch.
+ * - [GitLabApiTimeoutException] and [JsonSyntaxException] have explicit branches for readability
+ *   only; both would reach the same result (Ambiguous) via `else` if their branches were removed.
+ * - The genuinely order-critical property is that no branch above the `IOException` branch is a
+ *   supertype of `IOException`, and that the `else` default is always Ambiguous, never Definite:
+ *   "Definite" means we can prove from the response that the mutation did not execute. If we
+ *   cannot prove it, offering `[Retry]` would let the user post a duplicate comment.
  * - [GraphQlException] (L2) splits on `hasDataKey`: `data` key absent means the request never
  *   entered the execution phase, so it is Definite. `data` key present with errors means a
  *   partial success is possible, so it is Ambiguous.

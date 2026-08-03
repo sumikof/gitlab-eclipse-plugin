@@ -24,6 +24,16 @@ class DiscussionWriteOutcomeTest : DescribeSpec({
       classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Definite>()
     }
 
+    it("classifies GitLabApiException(499) as Definite") {
+      val cause = GitLabApiException(499, "client limit", null)
+      classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Definite>()
+    }
+
+    it("classifies GitLabApiException(399) as Ambiguous") {
+      val cause = GitLabApiException(399, "odd", null)
+      classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Ambiguous>()
+    }
+
     it("classifies GitLabApiException(502) as Ambiguous") {
       val cause = GitLabApiException(502, "bad gateway", null)
       classifyWriteFailure(cause).shouldBeInstanceOf<DiscussionWriteOutcome.Ambiguous>()
