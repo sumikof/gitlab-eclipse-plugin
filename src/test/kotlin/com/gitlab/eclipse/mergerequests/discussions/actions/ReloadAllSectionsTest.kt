@@ -2,6 +2,7 @@ package com.gitlab.eclipse.mergerequests.discussions.actions
 
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
@@ -134,6 +135,26 @@ class ReloadAllSectionsTest : DescribeSpec({
       callbacks[1](LoadOutcome.Superseded)
 
       reported shouldContainExactly listOf(LoadOutcome.Applied)
+    }
+
+    it("ignores a duplicate report that arrives before the sibling has reported") {
+      // The dangerous ordering. Without the per-slot guard the duplicate decrements the pending
+      // counter a second time, driving it to zero while section "b" is still stale, and the
+      // aggregate reports Applied — which is exactly what unlocks [Send again] and would invite a
+      // duplicate comment. The trailing-duplicate case above passes even without the guard, so it
+      // does not pin this.
+      val reported = mutableListOf<LoadOutcome>()
+      val callbacks = mutableListOf<(LoadOutcome) -> Unit>()
+
+      reloadAllSections(listOf("a", "b"), { _, report -> callbacks += report }, { reported += it })
+      callbacks[0](LoadOutcome.Applied)
+      callbacks[0](LoadOutcome.Applied)
+
+      reported.shouldBeEmpty()
+
+      callbacks[1](LoadOutcome.Superseded)
+
+      reported shouldContainExactly listOf(LoadOutcome.Superseded)
     }
 
     it("reports as soon as the only section reports, synchronously if that is how it reports") {

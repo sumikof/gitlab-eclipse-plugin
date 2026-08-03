@@ -645,24 +645,6 @@ class GitLabSidebarView : ViewPart() {
   }
 
   /**
-   * The FIRST section in tree order for the given merge request on the given connection, or `null`
-   * when there is none. Implemented on top of [resolveDiscussionsSections] so the two can never
-   * drift apart.
-   *
-   * Kept for callers that genuinely need a single node, but note that it is NOT the right resolver
-   * for the post-write re-fetch — the merge request can own two sections, and this returns whichever
-   * comes first in tree order, which need not be the one the user acted from. That path uses the
-   * plural resolver via `DiscussionActionSupport.reloadDiscussionsFor`.
-   */
-  internal fun resolveDiscussionsSection(
-    instanceUrl: String,
-    authFingerprint: String,
-    projectId: Long,
-    mrIid: Long,
-  ): DiscussionsSectionNode? =
-    resolveDiscussionsSections(instanceUrl, authFingerprint, projectId, mrIid).firstOrNull()
-
-  /**
    * UI thread only. Re-fetches [section] after a discussion write and reports the load's outcome
    * to [onOutcome] (design FR-10 / AC-11).
    *
