@@ -331,7 +331,10 @@ round3 までは記録を送信の**前**に済ませ、失敗時に取り消し
 - **「未送信であることが確定している」経路でだけ `abort(token)` を呼ぶ**(§9.1.1)。`abort` は `Idle` に戻して `Pending` を進め、**タイムアウトも `Draining` も起こさない**
 - `armTimeout(token)` は送信成功後に**応答期限を起動するだけ**。対象 entry が無い、または別要求に置き換わっていれば**何もしない**
 
-**`armTimeout` / `abort` はパスではなく要求トークンで対象を特定する(Codex round6-P1)。**round5 の反映ではパスだけをキーにしていたが、これは誤りだった。A の応答が先に `complete` され、`Pending` の B が**同じパスの新しい `InFlight`** になった後に、A 側の遅れた `armTimeout` や例外処理の `abort` が **B に作用してしまう**。特に「送信後に例外となったが応答は届いていた」という順序では、A の `abort` が B を未送信扱いで解除し、**明示要求 B を失わせる**。round5 の返信でこの順序を「安全に扱える」と述べたのは誤りである。
+**`armTimeout` / `abort` はパスではなく要求トークンで対象を特定する(Codex round6-P1)。**round5 の反映ではパスだけをキーにしていたが、これは誤りだった。A の応答が先に `complete` され、`Pending` の B が**同じパスの新しい `InFlight`** になった後に、A 側の遅れた `armTimeout` や例外処理の `abort` が **B に作用してしまう**。round5 の返信でこの順序を「安全に扱える」と述べたのは誤りである。
+
+具体的に残るのは `armTimeout` の経路である。A を送信 → 応答が即座に届いて `complete` → `Pending` の B が昇格して新しい `InFlight` → そこへ A の `armTimeout` が遅れて走る、という順序があり、**B に A の期限を設定してしまう**。
+(`abort` については、§9.1.1 で `runSecurityScan` の例外を Ambiguous として `abort` しないと定めたため、`abort` は「送信を試みていない」経路からしか呼ばれず、その時点で応答が届いていることはない。それでも**トークン照合は両方に課す**。将来 `abort` の呼び出し元が増えたときに同じ穴を再び開けないための防御である。)
 
 `abort` と `complete` の競合そのものは、両者とも §14.6 の単一モニタの下で実行され先着が entry を消すため安全だが、**それだけでは「後続の別要求に作用しない」ことを保証できない**。したがって `armTimeout` / `abort` は、ロック下で **`entry.requestId == token.requestId` を確認したときだけ**状態を変更する。
 
@@ -459,7 +462,8 @@ source = SecurityScanInFlightRegistry.complete(normalize(res.filePath))
 通知(§11.3 の表 + §11.4 の固定文言。抑制状態は SecurityScanStatusReporter が保持)
   |
   v
-Pending があれば 1 件だけ送信(§13.4)
+CompletionResult.promoted があれば、そのトークンで §9.1 の送信ルーチンを実行(§9.1.2)
+  |    // 送信は共有 CoroutineScope へ委譲する(リスナースレッドで書き込まない)
 ```
 
 ---
