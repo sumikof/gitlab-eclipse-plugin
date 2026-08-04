@@ -467,6 +467,8 @@ round16 では無効化だけを `Mutex` 内へ移したが、**それも不十�
   v  coroutineScope.launch { outboundMutex.withLock { ... } }   // UI スレッドはブロックしない
   無効化のとき: applied = suspendSource(source, seq)     // ★ 順序判定と更新は API 内で原子的に
                applied == false -> 何もしない(追い越された古い遷移)
+               settingsSeq.get() != seq -> **破壊的手順を行わない**(後続の遷移が控えている)
+                                            // ★ round20-P2。marker 削除・clear を巻き込ませない
                1. (suspendSource が適用済み)
                2. CommandWaiters.clear(epoch) + SAVE 失敗抑制の破棄
                3. watermark = 現在の generation カウンタ値を **この区間で捕捉**   // ★ round17-P2
@@ -483,10 +485,19 @@ round16 では無効化だけを `Mutex` 内へ移したが、**それも不十�
 - **順序番号により、`Mutex` の待ち行列で入れ替わった古い遷移は適用されない**。UI スレッドでの採番順が唯一の正順である
 - 遷移が送信の**後**に順序づけられた場合、そのスキャン 1 回は送信されるが、それは**利用者が操作する前に発火した要求**であり、同意の範囲内である
 - UI スレッドは `launch` するだけでブロックしない(`Mutex` は `kotlinx.coroutines.sync.Mutex` であり、UI スレッドから `withLock` を呼ぶと `runBlocking` が必要になるため、必ずコルーチンへ委譲する)
+- **破壊的手順は「自分が最新の遷移であるとき」だけ行う(Codex round20-P2)。**`suspendSource` が適用されたからといって、`clear` / watermark 捕捉 / marker 削除まで無条件に完走させてはならない。無効化 D と再有効化 E の Job がどちらも未開始のうちに送信 Job が先行し、収束(`reconcileSource`)で有効へ戻して新しい診断が generation N を得た後、D → E の順に実行されると、**D の watermark に N が含まれ、再有効化後の marker が削除される**。
+
+  そこで `suspendSource` 適用の直後(同じ `Mutex` 区間)に **`settingsSeq.get() != seq` を確認し、真なら破壊的手順(2・3 と marker 削除)を行わない**。後続の遷移がその時点の最終状態に責任を持つ。`sourceEpoch` の偶奇だけは適用済みなので、診断の受理可否は正しく保たれる。
 - **`watermark` は `Mutex` の保護区間で捕捉する(round17-P2)。**marker I/O の `schedule` は保持時間を延ばさないため `Mutex` の外でよいが、**watermark の読み取りまで外へ出すと**、手順 2 の完了後・watermark 取得前に再有効化されて新しい診断が generation N を得た場合、その N が古い削除 Job の watermark に含まれ、**再有効化後の marker まで `generation <= watermark` で削除される**。§17.1.1 の保護が成立しなくなる
 - **未開始の遷移をログだけで放置しない(Codex round18-P2)。**共有スコープがキャンセル済みなどで**有効化 Job が開始されない**と、直前の無効化で奇数になった `sourceEpoch` が永久に停止したままになる。設定値は既に `true` なので以後の `performOk` は遷移を検出せず、**スキャン送信は再開しても診断だけがすべて破棄され続ける**。
 
-  したがって **`sourceEpoch` の停止状態は、次の送信時に現在の設定へ収束させる**。§9.1.1 (a) の `Mutex` 内の再確認で `SECURITY_SCAN_ENABLED` を読む際、`isSuspended(source)` と突き合わせ、食い違っていれば **`reconcileSource(source, desiredSuspended)`** を呼ぶ。同じ収束処理を `onActivate()`(バンドル起動)でも行う。
+  したがって **`sourceEpoch` の停止状態は、次の送信要求の時点で現在の設定へ収束させる**。
+
+  **収束は §9.1 の最初のゲート(`SECURITY_SCAN_ENABLED == false` で終了)より前に置く(Codex round20-P2)。**未開始だった遷移が**無効化**だった場合、設定値は既に `false` なので、ゲートより後に収束を置くと**到達しない**。その間 `sourceEpoch` は稼働中のままで遅延診断も受理されうる。当初 (a) の `Mutex` 内に置いていたが、それでは無効化方向の収束が次回起動まで遅れる。
+
+  確定仕様: `runSecurityScan` core の**先頭**(ゲート判定より前)で、現在の `SECURITY_SCAN_ENABLED` と `isSuspended(source)` を突き合わせ、食い違っていれば **`reconcileSource(source, desiredSuspended)`** を呼ぶ。同じ収束処理を `onActivate()`(バンドル起動)でも行う。
+
+  `reconcileSource` は CAS による偶奇合わせだけで、送信も通知も監査も行わない。したがってゲートより前に置いても「設定 OFF のときは何も起きない」という §9.1 の性質は保たれる(`Mutex` も取らない)。
 
   **収束は `settingsSeq` を消費しない(Codex round19-P1)。**当初は収束処理から `suspendSource(source, seq)` / `resumeSource(source, seq)` を呼ぶ想定だったが、**それでは保留中の設定遷移 Job の後続処理を奪ってしまう**。無効化で `settingsSeq = S` が採番された後、遷移 Job より先に送信コルーチンが `Mutex` を取得して `suspendSource(source, S)` を適用すると、`lastAppliedSeq` が S まで進む。送信経路は §17.1 の `CommandWaiters.clear` / 抑制状態の破棄 / watermark の捕捉 / marker 削除を行わないのに、後から動く本来の遷移 Job は同じ S を `applied = false` と判定して**全手順を省略する**。結果として無効化後も既存 marker と別 `COMMAND` の待機が残る。
 
@@ -1255,7 +1266,8 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | **期限起動前の終了経路(§9.1.1)** | `entered=true` の後に `Mutex` 待ちでキャンセルされた場合 / 送信呼び出しが例外を投げた場合のいずれでも、**期限未起動の待機が `invokeOnCompletion` で解決され、永久に残らないこと**(round15-P2 の回帰テスト) |
 | **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2)/ **再確認と送信の間に遷移が割り込めないこと**(round16-P1) |
 | **設定遷移の順序(§9.1.1)** | **`Mutex` の待ち行列で無効化と有効化が入れ替わっても、`settingsSeq` により古い遷移が適用されないこと**(= 有効なのに診断だけ恒久停止、が起きないこと)(round17-P1 の回帰テスト)/ **順序判定と `lastAppliedSeq` の更新が遷移 API の内側だけで行われ、初回の遷移が no-op にならないこと**(round18-P2 の回帰テスト) |
-| **遷移未開始からの収束(§9.1.1)** | 有効化 Job が開始されなかった場合でも、**次の送信時の再確認で `reconcileSource` により診断が復帰すること** / `onActivate()` でも収束すること(round18-P2)/ **収束が `lastAppliedSeq` を進めず、保留中の遷移 Job が後から `clear` / watermark / marker 削除まで完走すること**(round19-P1 の回帰テスト) |
+| **遷移未開始からの収束(§9.1.1)** | 有効化 Job が開始されなかった場合でも、次のスキャン要求で `reconcileSource` により診断が復帰すること(round18-P2)/ **無効化 Job が開始されなかった場合でも、設定 OFF のままスキャン要求が来れば収束に到達すること**(ゲートより前に置く。round20-P2 の回帰テスト)/ `onActivate()` でも収束すること / **収束が `lastAppliedSeq` を進めず、保留中の遷移 Job が後から完走すること**(round19-P1) |
+| **古い遷移の破壊的手順(§9.1.1)** | **無効化 D と再有効化 E が未開始のうちに収束で有効へ戻り新診断が generation N を得た後、D が実行されても N の marker を削除しないこと**(`settingsSeq.get() != seq` で破壊的手順を省略)(round20-P2 の回帰テスト) |
 | **応答の消費と報告の原子性(§9.3)** | `settle` が**単一操作**であり、フローに独立した `consumeOldest` 呼び出しが無いこと(round19-P2)/ 消費の直後に `onServerStopped` が入っても **`COMMAND` が無通知にならないこと**(round18-P2)/ ロック区間に入る前に epoch 不一致なら**待機を消費せず** `Rejected` を返し停止側の `clear` が通知すること |
 | **watermark の捕捉位置(§9.1.1 / §17.1)** | **手順 2 の後・`Mutex` 解放前に捕捉されること** / 再有効化後の診断の generation が watermark に含まれず、その marker が削除されないこと(round17-P2 の回帰テスト) |
 
@@ -1362,7 +1374,7 @@ PR 本文にチェックリストとして記載する。
 | L5 | エディタ内の範囲下線は出ず、行単位の marker のみ | §11.2。`CHAR_START` / `CHAR_END` を設定しないため |
 | L6 | 切替フェーズの削除失敗時に旧世代の一部が残り新世代と混在しうる | §12.2 |
 | L7 | ワークスペース外のファイル・インメモリエディタはスキャン対象外 | §9.1。`didOpen` を送っていないため LS が黙って return する |
-| L8 | 設定遷移の適用コルーチンが開始されなかった場合、`sourceEpoch` の是正が**次のスキャン送信または次回起動まで遅れる**(その間、無効化したのに古い marker が残りうる) | §9.1.1 (b)。共有 `CoroutineScope` がキャンセル済みのときにのみ起こる。収束処理により恒久化はしない |
+| L8 | 設定遷移の適用コルーチンが開始されなかった場合、`sourceEpoch` の是正が**次のスキャン要求または次回起動まで遅れる**。また **marker の除去は次の掃除(LS 停止時の epoch 選択削除、または次の無効化遷移)まで遅れる** | §9.1.1 (b)。共有 `CoroutineScope` がキャンセル済みのときにのみ起こる。収束処理はゲートより前に置くので有効化・無効化のどちらの方向でも到達する |
 
 **L1〜L3 は、single-flight 機構を採らないという設計判断(§9.1.1)の直接の帰結である。**これらを排除するには、相関 ID を持たないプロトコルの上で要求・応答の 1 対 1 対応を作る状態機械が必要になるが、それは VSCode 版が持たない不変条件であり、パリティ要件ではない。
 
