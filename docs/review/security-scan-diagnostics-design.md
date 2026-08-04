@@ -303,20 +303,20 @@ uri = file.locationURI.toASCIIString()      // didOpen と逐語的に同一の�
 トークン未設定 -> 中止 (source=command のときのみ通知)
   |
   v
-SecurityScanInFlightRegistry.reserve(DiagnosticUri.normalize(uri), source)
+token = SecurityScanInFlightRegistry.reserve(DiagnosticUri.normalize(uri), source)
   |- Idle でない -> Pending に畳み込んで終了(送信しない。§13.4)
   v (coroutineScope・捕捉した server プロキシを使用・§15.1 の Mutex 下)
 ConnectionConfigGeneration の seqlock 下で設定を読む
-  |- 不安定 -> **registry.abort(path)** して中止(COMMAND なら通知)
+  |- 不安定 -> **registry.abort(token)** して中止(COMMAND なら通知)
   v
 server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
-  |- 例外 -> **registry.abort(path)** して中止
+  |- 例外 -> **registry.abort(token)** して中止
   v
 server.runSecurityScan(SecurityScanParams(uri, source))
-  |- 例外 -> **registry.abort(path)** して中止
+  |- 例外 -> **registry.abort(token)** して中止
   v
-registry.armTimeout(path)                      // 応答期限(§13.2)を起動するだけ
-  |- 既に応答済みで entry が無い -> 何もしない(no-op)
+registry.armTimeout(token)                     // 応答期限(§13.2)を起動するだけ
+  |- entry が無い / 別要求に置き換わっている -> 何もしない(no-op)
 ```
 
 **`reserve` は即座に `InFlight` にする。`armTimeout` は期限を起動するだけである(Codex round4-P2 / round5-P2 の両方を満たす形)。**
@@ -325,12 +325,14 @@ round3 までは記録を送信の**前**に済ませ、失敗時に取り消し
 
 **確定仕様**:
 
-- `reserve(path, source)` は**その場で `InFlight` にする**。予約と応答待ちを別状態にしない
+- `reserve(path, source)` は**その場で `InFlight` にする**。予約と応答待ちを別状態にしない。戻り値として **`ScanRequestToken(path, requestId)`** を返す(`requestId` は単調増加)
 - したがって `reserve` の直後に応答が届いても `complete` は正常に処理できる
-- **送信が確定していない全経路で `abort(path)` を呼ぶ**。`abort` は `Idle` に戻して `Pending` を進め、**タイムアウトも `Draining` も起こさない**(要求が届いていないことが確定しているため)
-- `armTimeout(path)` は送信成功後に**応答期限を起動するだけ**。既に応答が届いて entry が消えていれば**何もしない**
+- **送信が確定していない全経路で `abort(token)` を呼ぶ**。`abort` は `Idle` に戻して `Pending` を進め、**タイムアウトも `Draining` も起こさない**(要求が届いていないことが確定しているため)
+- `armTimeout(token)` は送信成功後に**応答期限を起動するだけ**。対象 entry が無い、または別要求に置き換わっていれば**何もしない**
 
-`abort` と `complete` が競合しないのは、両者とも §14.6 の単一モニタの下で実行され、先に実行されたほうが entry を消すためである。`abort` が後になった場合は entry が無いので no-op となる(送信例外が起きたが応答は届いていた、という順序も安全に扱える)。
+**`armTimeout` / `abort` はパスではなく要求トークンで対象を特定する(Codex round6-P1)。**round5 の反映ではパスだけをキーにしていたが、これは誤りだった。A の応答が先に `complete` され、`Pending` の B が**同じパスの新しい `InFlight`** になった後に、A 側の遅れた `armTimeout` や例外処理の `abort` が **B に作用してしまう**。特に「送信後に例外となったが応答は届いていた」という順序では、A の `abort` が B を未送信扱いで解除し、**明示要求 B を失わせる**。round5 の返信でこの順序を「安全に扱える」と述べたのは誤りである。
+
+`abort` と `complete` の競合そのものは、両者とも §14.6 の単一モニタの下で実行され先着が entry を消すため安全だが、**それだけでは「後続の別要求に作用しない」ことを保証できない**。したがって `armTimeout` / `abort` は、ロック下で **`entry.requestId == token.requestId` を確認したときだけ**状態を変更する。
 
 **対応表のキーについて。** LS は応答の `filePath` を `sh(n.uri).path`、すなわち**ドキュメント URI の decode 済み path** から作る。これは `DiagnosticUri.normalize` の戻り値と同一の値になる。したがって送信側は正規化済みパスをキーにして記録し、受信側は `res.filePath` をそのまま(念のため同じ正規化を通したうえで)引き当てる。
 
@@ -582,6 +584,10 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 | `SAVE` | タイムアウト | **出さない** | — | — | 監査行にのみ残す |
 | `COMMAND` | LS 停止で `Pending` を破棄 | 出す | `GitLab security scan: the scan was cancelled because the language server restarted. Run the scan again.`(§13.4.1) | なし(常に出す) | — |
 | `SAVE` | LS 停止で `Pending` を破棄 | **出さない** | — | — | 監査行にのみ残す |
+| `COMMAND` | LS 停止で **`InFlight`** を破棄 | 出す | 上と同じ文言(§13.4.1) | なし(常に出す) | — |
+| `SAVE` | LS 停止で **`InFlight`** を破棄 | **出さない** | — | — | 監査行にのみ残す |
+| `COMMAND` | LS 停止で **`Draining`** を破棄 | **出さない** | — | — | `Draining` に入った時点でタイムアウト通知済み。二重通知になるため出さない |
+| `SAVE` | LS 停止で **`Draining`** を破棄 | **出さない** | — | — | 監査行にのみ残す |
 
 **`COMMAND` を一切抑制しない理由**: 明示操作には必ず可視の応答を返す(F6)。抑制すると「コマンドを押したのに何も起きない」が発生する。
 
@@ -960,7 +966,7 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled 
 | `failure` | `status != 200` の応答を受領 |
 | `timeout` | 応答期限(§13.2)を超過 |
 | `late` | `timeout` を記録した後に応答が到着した(§13.2 のドレイン終了) |
-| `cancelled` | LS 停止により未送信の `Pending` を破棄した(§13.4.1) |
+| `cancelled` | LS 停止により状態を破棄した。**`Pending`(未送信)/ `InFlight`(送信済み・応答待ち)/ `Draining`(タイムアウト済み)の 3 状態すべてに用いる**(§13.4.1) |
 
 トークン・本文・診断内容を含まない。既存の `writeAuditMessage`(`WriteAction.kt:80-104`)/ `discussionAuditMessage`(`DiscussionWriteFlow.kt:90-116`)と同じ規律に従う。ログ呼び出し自体も `runCatching` で包み、ログの失敗が処理を壊さないようにする(Phase 5A の教訓)。
 
@@ -1097,6 +1103,7 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled 
 | **接続 epoch(§14.6)** | 旧接続の `publishDiagnostics` / `securityScanResponse` が新 epoch の状態に触れないこと(round4-P1 の回帰テスト) |
 | **送信前失敗の解除(§9.1)** | seqlock 不安定・`didChangeConfiguration` 例外・`runSecurityScan` 例外のいずれでも `Idle` に戻り、**タイムアウトも `Draining` も発生しない**こと / `Pending` が進むこと(round4-P2 の回帰テスト) |
 | **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が no-op になり `Draining` に固定されないこと(round5-P2 の回帰テスト) |
+| **要求トークンの照合(§9.1)** | A の応答 → `Pending` の B が新 `InFlight` → **A の遅れた `abort` が B を解除しないこと** / **A の遅れた `armTimeout` が B に期限を設定しないこと**(round6-P1 の回帰テスト) |
 | **停止フックの冪等性(§14.2.1)** | `stopLocked()` と `onExit()` の両方から呼ばれても epoch が二重に進まず通知も二重に出ないこと / **`onExit()` だけ(クラッシュ)でも marker が消え epoch が進むこと**(round5-P2 の回帰テスト) |
 | **`suspend`/`resume` の冪等性(§17.1.1)** | `suspendSource` を 2 回連続で呼んでも**再有効化されない**こと / `resumeSource` の連続でも停止しないこと / 並行呼び出しで状態が反転しないこと(round5-P2 の回帰テスト) |
 | **epoch 照合の原子性(§14.6)** | 照合の直後に `onServerStopped()` が走っても、旧接続の `complete` / 適用が新しい状態に触れないこと(round5-P1 の回帰テスト。単一モニタ下での「照合してから実行」を検証) |
