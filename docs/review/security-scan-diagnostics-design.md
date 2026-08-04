@@ -385,8 +385,8 @@ object CommandWaiters {                    // 正規化パス -> 待機 id の F
   /** COMMAND 送信時。待機 id を払い出す(epoch 不一致なら null) */
   fun add(path: String, connectionEpoch: Long): Long?
 
-  /** 応答受信時。最も古い待機を 1 件除去して true(どの要求の応答かは区別できない = L2) */
-  fun consumeOldest(path: String, connectionEpoch: Long): Boolean
+  /** 応答受信時。COMMAND / NO_WAITER / EPOCH_MISMATCH を区別して返す(§9.3) */
+  fun consumeOldest(path: String, connectionEpoch: Long): WaiterMatch
 
   /** 期限切れ・送信失敗・未開始時。**自分の待機 id だけ**を除去する */
   fun consumeById(waiterId: Long, connectionEpoch: Long): Boolean
@@ -397,7 +397,8 @@ object CommandWaiters {                    // 正規化パス -> 待機 id の F
 ```
 
 - **パスごとの待機 id の列だけを持ち、世代・接続トークン・送信キューは持たない**
-- 応答受信時に `consumeOldest(path, epoch)` が `true` を返せば `COMMAND` として扱い、`false` なら `SAVE` として扱う(L2 の取り違えはここで生じるが受容する)
+- 応答受信時に `consumeOldest(path, epoch)` が `COMMAND` を返せばコマンド起動として扱い、`NO_WAITER` なら `SAVE` として扱う(L2 の取り違えはここで生じるが受容する)
+- **`EPOCH_MISMATCH` は `SAVE` ではない。**旧接続の応答であり、コールバック全体を終了する(§9.3)。`false` の 2 値にすると、旧接続の失敗通知が再起動後に表示され、停止時にクリアした `SAVE` 失敗抑制状態を旧応答が再設定して新接続の同 status 通知を抑制しうる(Codex round16-P2)
 - 送信失敗時・タイムアウト時・LS 停止時・設定無効化時に除去する
 
 **接続 epoch を全操作に渡す(Codex round13-P1)。**`consume` が epoch を受け取らないと、旧接続の応答が §9.3 の入口検査を通過した直後に LS 停止と新接続の `add` が入った場合、**旧応答が新しい `COMMAND` の待機を消費**してしまう。§14.6 が要求する「照合から状態変更までの原子性」を、single-flight 撤廃後の新 API で再び破ることになる。したがって `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear` はいずれも `connectionEpoch` を受け取り、**§14.6 と同じロックの下で照合してから実行する**。epoch が一致しなければ何もせず `false`(または `null`)を返す。
@@ -447,9 +448,31 @@ job?.invokeOnCompletion { _ ->
 
 起動処理が `enabled == true` を確認した後、待機を登録する前に設定の無効化が `clear` を完了すると、その起動処理は `clear` の後に新しい待機を登録して送信を続行できる。無効化済みなので LS は黙って return し、**無効化した後になって 60 秒後のタイムアウト通知が出る**。
 
-**確定仕様: `Mutex` の中で設定を再確認する。**§15.1 の seqlock 下で設定値を読む際に `SECURITY_SCAN_ENABLED` も読み、**偽なら送信せず `consumeById` で待機を除去して終了する**(通知はしない。利用者自身が無効化した直後であり、通知は不要かつ誤解を招く)。
+**確定仕様は 2 つで 1 組である。**
 
-これは §15.1 の「送信直前に設定を読んで先に送る」手順に 1 つ条件を足すだけで実現でき、追加のロックも順序制約も生じない。
+**(a) `Mutex` の中で設定を再確認する。**§15.1 の seqlock 下で設定値を読む際に `SECURITY_SCAN_ENABLED` も読み、**偽なら送信せず `consumeById` で待機を除去して終了する**(通知はしない。利用者自身が無効化した直後であり、通知は不要かつ誤解を招く)。
+
+**(b) 無効化の遷移そのものを同じ `Mutex` の中で行う(Codex round16-P1)。**round15 では (a) だけを入れたが、**それでは窓が残っていた**。再確認の直後から `runSecurityScan` までの間に無効化が走ると、§17.1 の `suspendSource` / `clear` はこの `Mutex` を取得しないため、待機を消した後でも捕捉済みの有効な設定でスキャンが送信される。**無効化した後にファイルが送信される**ことになり、L1〜L7 のどれとしても受容していない。
+
+したがって §17.1 の手順 1・2(`suspendSource` と `clear`)を、**`LanguageServerOutboundLock` を取得したコルーチンの中で実行する**。
+
+```
+[performOk・UI スレッド]
+  有効 -> 無効 の遷移を検出
+  |
+  v  coroutineScope.launch { outboundMutex.withLock { ... } }   // UI スレッドはブロックしない
+  1. suspendSource("gitlab_security_scan")
+  2. CommandWaiters.clear(epoch)  +  SAVE 失敗抑制の破棄
+  |
+  v  (Mutex の外)
+  3. deleteMarkersBySource(source, watermark) の Job を schedule
+```
+
+- **送信コルーチンと無効化コルーチンが同じ `Mutex` を奪い合う**ため、「再確認 → 送信」の区間に無効化が割り込むことはなくなる
+- 無効化が送信の**後**に順序づけられた場合、そのスキャン 1 回は送信されるが、それは**利用者が無効化する前に発火した要求**であり、同意の範囲内である
+- UI スレッドは `launch` するだけでブロックしない(`Mutex` は `kotlinx.coroutines.sync.Mutex` であり、UI スレッドから `withLock` を呼ぶと `runBlocking` が必要になるため、必ずコルーチンへ委譲する)
+- 手順 1 が手順 2 より先、手順 3 が `Mutex` の外、という §17.1 の順序制約は保たれる(手順 3 は marker の I/O であり、`Mutex` の保護区間に入れると保持時間が延びるため外に置く)
+- この `launch` も §9.1.1 と同じく**未開始を検出できない**と困るので、`invokeOnCompletion` で「無効化が適用されなかった」場合をログに残す(利用者には通知しない。設定値自体は既に保存されており、次回の送信は (a) の再確認で止まる)
 
 ### 9.2 診断の受信と適用
 
@@ -463,9 +486,9 @@ this.capturedConnectionEpoch != registry.currentEpoch -> debug ログのみ、�
 key = DiagnosticUri.normalize(params.uri)
   |- 失敗 -> debug ログのみ、破棄
   v
-tokens = params.diagnostics.associateWith { registry.acceptToken(it.source) }
-  |    // ★ acceptToken は「停止しているか」と「source 失効世代」を **単一の原子的読み取り**で返す。
-  |    //   停止中なら null。§17.1 の偶奇エンコードにより 1 回の volatile 読みで済む
+tokens = params.diagnostics.associateWith { registry.acceptToken(it.source, capturedConnectionEpoch) }
+  |    // ★ acceptToken は「接続 epoch の照合」「停止しているか」「source 失効世代」を
+  |    //   **単一のロック区間**で返す。epoch 不一致 or 停止中なら null(§14.6)
   v
 accepted = tokens.filterValues { it != null }.keys
   |
@@ -474,9 +497,9 @@ params.diagnostics.isNotEmpty() && accepted.isEmpty() -> **何もしない(no-op
   |    // 全要素が停止中 source で除外された場合、この URI に対する権威ある情報が
   |    // 残らないため、全置換として適用すると他 source の marker まで消しうる(§9.2.1)
   v
-gen   = registry.nextGeneration(key)        // ここで順序が確定。全 URI を通じて一意
-  |- null(active=false)-> 破棄
-epoch = registry.currentEpoch               // gen とは別軸。§11.2 の表を参照
+gen   = registry.nextGeneration(key, capturedConnectionEpoch)   // 順序確定・全 URI を通じて一意
+  |- null(active=false / epoch 不一致)-> 破棄
+epoch = capturedConnectionEpoch             // gen とは別軸。§11.2 の表を参照
   |
   v
 files = DiagnosticFileResolver.resolve(key)
@@ -521,7 +544,11 @@ this.capturedConnectionEpoch != registry.currentEpoch -> debug ログのみ、�
   |
   v
 path   = DiagnosticUri.normalize("file:" + res.filePath) ?: res.filePath
-source = if (CommandWaiters.consumeOldest(path, capturedConnectionEpoch)) COMMAND else SAVE  // §9.1.1
+when (CommandWaiters.consumeOldest(path, capturedConnectionEpoch)) {   // §9.1.1
+  EPOCH_MISMATCH -> return          // ★ 旧接続の応答。**コールバック全体を終了**(§9.3)
+  COMMAND        -> source = COMMAND
+  NO_WAITER      -> source = SAVE
+}
   |
   v
 分類:
@@ -578,14 +605,15 @@ object DiagnosticGenerationRegistry {
   @Volatile var active: Boolean          // バンドルの生存。LS 停止では落とさない(§14.2.1)
   val currentEpoch: Long
 
-  /** active でないときは null を返す(= その診断は破棄) */
-  fun nextGeneration(key: String): Long?
+  /** active でない / 接続 epoch 不一致のときは null を返す(= その診断は破棄) */
+  fun nextGeneration(key: String, connectionEpoch: Long): Long?
 
   /**
-   * 「停止しているか」と「source 失効世代」を **単一の原子的読み取り**で返す(§17.1)。
-   * 停止中なら null。判定と捕捉を分けると、その隙間の suspendSource を取りこぼす。
+   * 「接続 epoch の照合」「停止しているか」「source 失効世代」を **単一のロック区間**で返す。
+   * epoch 不一致 or 停止中なら null(§14.6 / §17.1)。
+   * 判定と捕捉を分けると、その隙間の suspendSource / onServerStopped を取りこぼす。
    */
-  fun acceptToken(source: String?): SourceToken?
+  fun acceptToken(source: String?, connectionEpoch: Long): SourceToken?
   fun isTokenValid(token: SourceToken?): Boolean
 
   fun shouldApply(key: String, generation: Long, capturedEpoch: Long): Boolean
@@ -606,7 +634,7 @@ object DiagnosticGenerationRegistry {
 /** COMMAND 起動に可視の応答を返すためだけの最小状態(§9.1.1) */
 object CommandWaiters {                    // 正規化パス -> 待機 id の FIFO
   fun add(path: String, connectionEpoch: Long): Long?
-  fun consumeOldest(path: String, connectionEpoch: Long): Boolean
+  fun consumeOldest(path: String, connectionEpoch: Long): WaiterMatch
   fun consumeById(waiterId: Long, connectionEpoch: Long): Boolean
   fun markDeadlineArmed(waiterId: Long, connectionEpoch: Long)
   fun isDeadlineArmed(waiterId: Long): Boolean
@@ -773,7 +801,8 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 | `runSecurityScan` 送信時の例外 | 捕捉してログ。**共有 `CoroutineScope` は plain `Job` であり、未捕捉例外 1 つでセッション中すべての非同期処理が停止する**(Phase 5A の教訓)。送信呼び出しは必ず try/catch で囲む |
 | `publishDiagnostics` ハンドラ内の例外 | 捕捉してログ。lsp4j リスナースレッドへ例外を伝播させない |
 | 停止中の `source` の診断 | その diagnostic のみバッチから除外(他 source は通常どおり適用)。debug ログのみ(§17.1) |
-| 待機の無い応答(`consumeOldest` が false) | `SAVE` として分類する(§9.3)。成功は通知せず、失敗は §11.3 の抑制規則に従う |
+| 待機の無い応答(`consumeOldest` が `NO_WAITER`) | `SAVE` として分類する(§9.3)。成功は通知せず、失敗は §11.3 の抑制規則に従う |
+| 接続 epoch 不一致の応答(`EPOCH_MISMATCH`) | **コールバック全体を終了**。通知も監査も抑制状態の更新も行わない(§9.3) |
 
 ### 13.2 コマンド応答の期限
 
@@ -933,7 +962,9 @@ process?.destroy()
 - 状態を変更する全操作は `connectionEpoch: Long` を受け取り、そのロックの下で `epoch == currentEpoch` を確認してから実行する。不一致なら何もせず false を返す
 - **`onServerStopped()` も同じロックを取る**。したがって「照合 → 実行」と「epoch の更新 → 状態の破棄」が交錯することはない
 
-対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear`(`CommandWaiters`)。**後者も `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1)。
+対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear`(`CommandWaiters`)。
+
+**両レジストリの全操作が `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1 / round16-P1)。round13 では `CommandWaiters` にだけ epoch を通したが、**診断経路の `acceptToken` / `nextGeneration` にも同じ穴が残っていた**。旧クライアントのコールバックが §9.2 の入口検査を通過した直後に LS が停止・再起動すると、epoch を受け取らないこれらの操作は新接続の現在値を読み、**旧診断に新しい generation / epoch を付けてしまう**。その結果 `shouldApply` も通り、旧接続の結果が再表示される。
 
 このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
@@ -1048,6 +1079,8 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan")`** — この `source` の**失効世代(`sourceEpoch`)を奇数へ進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
 2. `CommandWaiters.clear(epoch)` と `SAVE` 失敗抑制の状態(§11.3)を破棄する。**除去した待機は通知しない**(監査行に `outcome=cancelled` のみ残す)
 
+   **手順 1 と 2 は `LanguageServerOutboundLock` を取得したコルーチンの中で実行する**(§9.1.1 の「無効化と並行する待機登録」)。これにより送信側の「設定再確認 → 送信」区間に無効化が割り込めなくなる。手順 3 は marker の I/O なので `Mutex` の外で schedule する。
+
    **通知しない理由(Codex round13-P2)**: §11.3 に存在する破棄時の文言は「language server restarted」の 1 種類だけであり、LS を再起動していない利用者に**虚偽の再起動通知**を出すことになる。加えて、この破棄は**利用者自身が設定を無効化した直接の結果**であり、無効化したのにスキャン結果を待っていると考えるのは不自然である。専用文言を増やすより通知しないほうが正確で、面積も小さい。
 3. `deleteMarkersBySource("gitlab_security_scan", watermark)` の Job を schedule する。`watermark` は**この時点の generation カウンタ値**
 
@@ -1155,15 +1188,16 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | **送信順序(A9)** | `didChangeConfiguration` が `runSecurityScan` より前に、**同一 mock サーバ**上で呼ばれること(MockK の `verifyOrder`)/ seqlock が不安定なとき両方とも 0 回 / **`Mutex` 保持中は他の `sendConfiguration` が割り込めないこと**(§15.1・並行コルーチンで検証) |
 | **期限タスクの帰属(§9.1.1 / §13.2)** | **A の応答で A の待機が消えた後に B を開始し、A の期限が後から発火しても B の待機を消費しないこと**(round14-P1 の回帰テスト) |
 | **応答期限の起点(§13.2)** | **`Mutex` を 60 秒以上保持しても、送信前の `COMMAND` が「応答なし」と通知されないこと**(round14-P2 の回帰テスト)/ 期限が `runSecurityScan` の試行直後から起算されること |
-| **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consumeOldest` が `true` を返したときだけ `COMMAND` として通知されること / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
+| **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consumeOldest` が `COMMAND` を返したときだけコマンドとして通知されること / **`EPOCH_MISMATCH` では通知も監査も抑制更新も 0 回**であること(round16-P2 の回帰テスト) / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
 | **送信失敗(§9.1.1)** | seqlock 不安定 / `didChangeConfiguration` 例外 / `runSecurityScan` 例外のいずれでも、`COMMAND` は待機が解除され通知が 1 回・`SAVE` は 0 回 / 監査に `exceptionType` のみが載り本文が載らないこと |
 | **並行スキャンの受容(§9.1.1)** | 同一パスへの 2 要求が**どちらも送信される**こと(single-flight を持たないことの確認)/ 応答が逆順でも例外や状態破壊が起きないこと |
 | **LS 停止時の待機(§13.4)** | `CommandWaiters.clear(epoch)` で `COMMAND` に**待機数のぶんだけ**通知され監査が `cancelled` になること / 再送されないこと / **設定無効化では通知が 0 回で監査のみ**であること(§17.1) |
 | **待機の epoch 照合(§9.1.1)** | **旧接続の応答が新接続の `COMMAND` 待機を消費しないこと**(round13-P1 の回帰テスト) |
+| **診断経路の epoch 照合(§9.2 / §14.6)** | 入口検査の通過後に LS が停止・再起動しても、**旧診断が新しい generation / epoch を得ないこと**(`acceptToken` / `nextGeneration` が epoch 不一致で null を返す)(round16-P1 の回帰テスト) |
 | **同一パスの複数 COMMAND(§9.1.1)** | 応答前に `COMMAND` を 2 回実行したとき、**通知が 2 回**出ること(待機 id の列で管理されていること)(round13-P2 の回帰テスト) |
 | **waiterId の一意性(§9.1.1)** | `clear` の前後で **id が再利用されないこと** / 無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと(round15-P1 の回帰テスト) |
 | **期限起動前の終了経路(§9.1.1)** | `entered=true` の後に `Mutex` 待ちでキャンセルされた場合 / 送信呼び出しが例外を投げた場合のいずれでも、**期限未起動の待機が `invokeOnCompletion` で解決され、永久に残らないこと**(round15-P2 の回帰テスト) |
-| **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2 の回帰テスト) |
+| **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2)/ **再確認と送信の間に無効化が割り込めないこと**(無効化も同じ `Mutex` を取る。round16-P1 の回帰テスト) |
 | **送信コルーチン未開始(§9.1.1)** | キャンセル済み `CoroutineScope` で `launch` が本体を実行しない場合に、待機が即座に解除され `COMMAND` に送信失敗が通知されること / **60 秒後の誤った「応答なし」が出ないこと**(round13-P2 の回帰テスト) |
 | **停止と予約済み Job(§17.1.1)** | **受理後・適用前に `suspendSource` された診断が適用時に落ちること**(round3-P1 の回帰テスト)/ 同じバッチの他 source は適用されること |
 | **`acceptToken` の原子性(§17.1.1)** | 偶数世代で token を返し奇数で null / `suspendSource` → `resumeSource` を跨いだ token が無効になること / **判定と捕捉の間に停止が入っても停止後の世代を捕捉しないこと**(round4-P1 の回帰テスト) |
