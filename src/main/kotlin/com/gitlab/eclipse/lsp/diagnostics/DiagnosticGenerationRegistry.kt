@@ -90,6 +90,8 @@ object DiagnosticGenerationRegistry {
   // `epoch += 1` の**後**に `stoppedForEpoch = epoch`(新 epoch)を記録するよう順序を入れ替え、
   // 不変条件を回復した。
   // LS 停止。**active は落とさない**(§14.2.1)。同じ接続について二重に呼ばれても進めない。
+  // 「同じ接続」の境界は [onServerStarted] が引く: 次の接続が始まったことを誰も知らせなければ、
+  // このガードは一度停止した epoch でそれ以降永久に進まなくなる(2 回目以降の停止が無言の no-op)。
   fun onServerStopped() {
     synchronized(lock) {
       if (stoppedForEpoch == epoch) return
@@ -98,6 +100,22 @@ object DiagnosticGenerationRegistry {
       latest.clear()
     }
   }
+
+  /**
+   * A new language server connection is live.
+   *
+   * Deliberately does **not** touch the epoch: only a stop advances it (§14.2.1), so the connection
+   * that starts now runs at the epoch the previous stop advanced *to*. What it does is re-arm
+   * [onServerStopped]'s idempotence guard, which is keyed on the epoch and would otherwise refuse to
+   * advance ever again once a stop had happened at the current value.
+   *
+   * Without this, the second stop of a session is a silent no-op: the connection that just died and
+   * the one that replaces it share an epoch, so a late response from the dead one is accepted by the
+   * live one, and `deleteMarkersNotInEpoch(currentEpoch)` keeps exactly the markers it was asked to
+   * remove. "Idempotent for the same connection" only means that if something says when a different
+   * connection began.
+   */
+  fun onServerStarted() = synchronized(lock) { stoppedForEpoch = -1 }
 
   fun nextSettingsSeq(): Long = synchronized(lock) {
     settingsSeq += 1

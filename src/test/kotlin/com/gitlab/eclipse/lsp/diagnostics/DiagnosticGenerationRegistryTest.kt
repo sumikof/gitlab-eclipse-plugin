@@ -74,6 +74,23 @@ class DiagnosticGenerationRegistryTest : DescribeSpec({
       DiagnosticGenerationRegistry.currentEpoch shouldBe once
       (once > before) shouldBe true
     }
+    it("advances again for the next connection, once onServerStarted has said there is one") {
+      val before = DiagnosticGenerationRegistry.currentEpoch
+      DiagnosticGenerationRegistry.onServerStopped()
+
+      DiagnosticGenerationRegistry.onServerStarted()
+      DiagnosticGenerationRegistry.onServerStopped()
+
+      // Without the re-arm the second stop is a silent no-op: the connection that just died and the
+      // one that replaced it would share an epoch, so a late response from the dead one would be
+      // accepted and `deleteMarkersNotInEpoch(currentEpoch)` would keep the markers it must remove.
+      DiagnosticGenerationRegistry.currentEpoch shouldBe before + 2
+    }
+    it("does not move the epoch when a connection starts") {
+      val before = DiagnosticGenerationRegistry.currentEpoch
+      DiagnosticGenerationRegistry.onServerStarted()
+      DiagnosticGenerationRegistry.currentEpoch shouldBe before
+    }
   }
 
   describe("onActivate") {

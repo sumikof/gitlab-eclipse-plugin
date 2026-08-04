@@ -13,6 +13,8 @@ import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLauncher
+import com.gitlab.eclipse.security.SecurityScanSaveListener
+import com.gitlab.eclipse.security.SecurityScanSettings
 import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
@@ -48,5 +50,14 @@ val languageServerModule = module {
 
   single<SecurityScanLauncher> {
     SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
+
+  // The save trigger is a singleton because it is stateful in a way that has to be paired: it holds
+  // every document provider and page it attached to, and GitLabEclipseStartup.stop() detaches from
+  // exactly those. A second instance would leak the first one's registrations.
+  single<SecurityScanSaveListener> { SecurityScanSaveListener() }
+
+  single<SecurityScanSettings> {
+    SecurityScanSettings(get(), get(named(LANGUAGE_SERVER_OUTBOUND)), get())
   }
 }

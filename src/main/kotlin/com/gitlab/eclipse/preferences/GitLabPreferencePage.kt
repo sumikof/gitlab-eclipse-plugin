@@ -15,6 +15,7 @@ import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationService
 import com.gitlab.eclipse.preferences.healthcheck.HealthCheckFieldEditor
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
+import com.gitlab.eclipse.security.SecurityScanSettings
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.makeBoldFont
 import com.gitlab.eclipse.utils.makeHintFont
@@ -292,6 +293,10 @@ class GitLabPreferencePage(
   }
 
   override fun performOk(): Boolean {
+    // Read BEFORE super.performOk() writes the field editors into the store: the transition is the
+    // difference between the two reads, and once the new value is stored there is nothing left to
+    // compare it against.
+    val securityScanWasEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
     // super.performOk() stores the URL field editor (preference store) AND the token field editor
     // (secure storage) as separate writes; bracketing them marks the whole window as
     // update-in-progress so GitLabApiClient.captureConnection never accepts the torn intermediate.
@@ -309,6 +314,18 @@ class GitLabPreferencePage(
     refreshCodeSuggestionsToggle()
     if (!preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)) {
       dismissActiveCodeSuggestion()
+    }
+
+    val securityScanEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
+    if (securityScanEnabled != securityScanWasEnabled) {
+      // Only a real transition is applied. Pressing OK without touching this setting must leave the
+      // suspended parity, the pending scans and the published markers exactly as they were.
+      //
+      // The sequence number that orders two rapid transitions against each other is taken inside
+      // this call, synchronously on the UI thread, in the same turn the user pressed OK; the work
+      // itself is handed to the plugin's scope, because it has to take the outbound lock and the UI
+      // thread may not block on it.
+      service<SecurityScanSettings>().onSettingChanged(securityScanEnabled)
     }
 
     return true // super.performOk() always returns true

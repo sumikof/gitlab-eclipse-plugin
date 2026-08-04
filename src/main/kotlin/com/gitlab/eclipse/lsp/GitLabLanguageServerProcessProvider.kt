@@ -6,8 +6,10 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.gitlab.eclipse.security.SecurityScanLifecycle
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.Platform
@@ -119,6 +121,9 @@ class GitLabLanguageServerProcessProvider(
       throw IllegalStateException("Language server process could not be created", e)
     }
     process = startedProcess
+    // A new connection begins here, so the teardown below must be able to run for it. The epoch is
+    // untouched: this connection runs at the one the previous stop advanced to.
+    DiagnosticGenerationRegistry.onServerStarted()
 
     startedProcess.onExit().thenApply {
       synchronized(lifecycleLock) {
@@ -128,6 +133,11 @@ class GitLabLanguageServerProcessProvider(
           logger.info("Language Server exited.")
           process = null
           processListener = null
+          // A crash or a self-inflicted exit never reaches stopLocked(), so the connection teardown
+          // has to run here too — inside the identity guard, so a superseded process cannot tear
+          // down the connection that replaced it. Idempotent with stopLocked() for one connection,
+          // and it never throws, so it cannot break this notification chain.
+          SecurityScanLifecycle.onServerStopped()
         }
       }
     }
@@ -199,6 +209,14 @@ class GitLabLanguageServerProcessProvider(
 
     process?.destroy()
     process = null
+
+    // The connection is gone: advance the epoch, cancel the commands that were waiting on it and
+    // remove the markers it left behind. Runs last, when nothing of the connection is left, and
+    // never throws, so restart()'s "settle in the stopped state" contract is unaffected.
+    //
+    // Called from here as well as from onExit(): an explicit stop clears `process` under this same
+    // lock, so the exit notification that follows fails its identity guard and never runs.
+    SecurityScanLifecycle.onServerStopped()
   }
 
   private fun createProcessBuilder(path: String): ProcessBuilder {
