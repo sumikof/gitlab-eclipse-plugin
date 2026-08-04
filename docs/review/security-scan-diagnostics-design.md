@@ -365,7 +365,16 @@ round6 では `reserve` がトークンを返すことだけを定義し、**`Pe
 **確定仕様: レジストリは送信しない。「次に送るもの」を返し、送信は常に呼び出し側が行う。**
 
 ```kotlin
-data class PromotedRequest(val token: ScanRequestToken, val source: SecurityScanSource)
+/**
+ * 昇格した要求。**送信に必要な情報をすべて持ち回る。**
+ * documentUri は受理時に捕捉した「LS へ送った/送る予定の文字列そのもの」であり、
+ * 正規化パスから再構築しない(§9.1.2 の URI 引き継ぎを参照)。
+ */
+data class PromotedRequest(
+  val token: ScanRequestToken,
+  val source: SecurityScanSource,
+  val documentUri: String,
+)
 
 /** 応答受信時。ロック下で entry を消し、Pending があれば新しい requestId を採番して InFlight にする */
 fun complete(path: String, connectionEpoch: Long, response: SecurityScanResponse): CompletionResult
@@ -380,7 +389,43 @@ fun abort(token: ScanRequestToken): PromotedRequest?
 - 昇格した要求の `armTimeout` / `abort` も、同じトークンで呼ぶ。**`reserve` を再度呼ぶことはない**(呼ぶと二重に `InFlight` を作る)
 - 昇格した要求の送信も §9.1.1 の分類に従う
 
-応答ハンドラは lsp4j のリスナースレッドで動くため、**昇格した要求の送信は共有 `CoroutineScope` へ委譲する**(リスナースレッドで LS への書き込みと `Mutex` 取得を行わない)。委譲のスケジューリング自体が失敗しうるので、その呼び出しは try/catch で封じ込める(Phase 5A の教訓)。
+#### URI の引き継ぎ(Codex round8-P1)
+
+`Pending` は **受理時の `documentUri` をそのまま保持**し、昇格時に `PromotedRequest.documentUri` として引き渡す。
+
+正規化パスから URI を再構築してはならない。本設計の正規化(§10.2 `DiagnosticUri.normalize`)は `file:` URI を**デコード済み絶対パス**に落とすため、そこから `file:/…` を再構築するとパーセントエンコードの選択が `IFile.locationURI.toASCIIString()` と**バイト単位で一致する保証がない**。LS のドキュメントストアは `didOpen` で送った文字列そのものでキーされる(§6.1 P2 手順 2)ので、1 バイトでも違えば `getDocument` が外れ、**その昇格要求は無応答のまま `Draining` に落ちる**。
+
+したがって `SecurityScanInFlightRegistry` が保持する `Pending` は `Pending(source, documentUri)` とする。正規化パスは**レジストリのキー**としてのみ使い、送信内容には使わない。
+
+#### 昇格送信の「開始」保証(Codex round8-P1)
+
+応答ハンドラは lsp4j のリスナースレッドで動くため、**昇格した要求の送信は共有 `CoroutineScope` へ委譲する**(リスナースレッドで LS への書き込みと `Mutex` 取得を行わない)。
+
+**ここで `try/catch` だけでは不十分である。**共有 `CoroutineScope` が既にキャンセルされている場合、`launch` は**例外を投げず、キャンセル済みの `Job` を返して本体を実行しない**。その時点で昇格要求は `InFlight` になっているのに `armTimeout` すら呼ばれず、後続の `Pending` も応答の来ない要求の後ろで永久に止まる。本設計の共有スコープは plain `Job` であり、一度の未捕捉例外でセッション中ずっとキャンセル状態になりうる(Phase 5A の教訓)ため、これは机上の話ではない。
+
+**確定仕様: 開始できなかったことを検出し、Definite として `abort` し、連鎖を最後まで排出する。**
+
+```kotlin
+fun startOrDrain(request: PromotedRequest) {
+  var next: PromotedRequest? = request
+  while (next != null) {
+    val started = runCatching {
+      val job = coroutineScope.launch { sendScan(next!!) }   // §9.1 の送信ルーチン
+      !job.isCancelled                                        // ← 例外だけでなく未開始も検出する
+    }.getOrDefault(false)
+    if (started) return
+    // 開始できなかった = 未送信が確定している(Definite)
+    next = registry.abort(next.token)                         // さらに Pending があれば連鎖
+  }
+}
+```
+
+- 例外(`runCatching`)と**未開始(`job.isCancelled`)の両方**を失敗として扱う
+- 失敗は **Definite** である(コルーチンの本体が動いていないので、送信は一度も試みられていない)
+- `abort` が次の `PromotedRequest` を返したら、それにも同じ処理を適用する
+- **この連鎖は有界である。**昇格は 1 パスにつき `Pending` を 1 件消費し、`Pending` はパスあたり高々 1 件なので、同一パスでの反復は 2 回で必ず `null` に至る
+
+この `startOrDrain` は、応答ハンドラからの昇格と、§9.1 の送信コルーチン内で `abort` が `PromotedRequest` を返した場合の両方で使う。
 
 ### 9.2 診断の受信と適用
 
@@ -765,7 +810,9 @@ round2 では「`DRAIN_WINDOW`(5 分)を過ぎたら応答は届かないもの�
 状態 = Idle
      | InFlight(source, sentAt, deadline)
      | Draining(timedOutSource)          // タイムアウトした要求の source を保持する
-Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあたり最大 1 件)
+Pending(source: SecurityScanSource,
+        documentUri: String)             // 未送信の後続要求(パスあたり最大 1 件)
+                                         // documentUri は受理時の文字列そのもの(§9.1.2)
 ```
 
 `Draining` が `timedOutSource` を持つのは、遅延応答を監査するとき `source=command|save` が必須だからである(Codex round3-P2)。`Pending` の source から推測すると、`COMMAND` でタイムアウトし `SAVE` が Pending に入っている場合などに誤記録する。
@@ -1146,6 +1193,8 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled 
 | **接続 epoch(§14.6)** | 旧接続の `publishDiagnostics` / `securityScanResponse` が新 epoch の状態に触れないこと(round4-P1 の回帰テスト) |
 | **失敗経路の分類(§9.1.1)** | seqlock 不安定・`didChangeConfiguration` 例外では `Idle` に戻り**タイムアウトも `Draining` も発生しない**こと(round4-P2)/ **`runSecurityScan` 例外では `abort` せず `InFlight` を保持して `armTimeout` へ進むこと**(round7-P1 の回帰テスト)/ 監査に `exceptionType` のみが載り本文が載らないこと |
 | **`Pending` 昇格(§9.1.2)** | `complete` / `abort` が `PromotedRequest` を**新しい `requestId` 付きで**返すこと / 昇格要求に対する `armTimeout` / `abort` がそのトークンで効くこと / **昇格時に `reserve` が二重に呼ばれないこと**(round7-P1 の回帰テスト) |
+| **昇格時の URI 引き継ぎ(§9.1.2)** | `PromotedRequest.documentUri` が**受理時の文字列と逐語一致**すること / **正規化パスから再構築した値ではない**こと(パーセントエンコードを含む URI で検証)(round8-P1 の回帰テスト) |
+| **昇格送信の開始保証(§9.1.2)** | **キャンセル済み `CoroutineScope` では `launch` が例外を投げず未開始になる**ことを前提に、`job.isCancelled` で検出して `abort` すること / 連鎖が `null` に至って停止すること(有界性)/ `InFlight` が残留しないこと(round8-P1 の回帰テスト) |
 | **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が no-op になり `Draining` に固定されないこと(round5-P2 の回帰テスト) |
 | **要求トークンの照合(§9.1)** | A の応答 → `Pending` の B が新 `InFlight` → **A の遅れた `abort` が B を解除しないこと** / **A の遅れた `armTimeout` が B に期限を設定しないこと**(round6-P1 の回帰テスト) |
 | **停止フックの冪等性(§14.2.1)** | `stopLocked()` と `onExit()` の両方から呼ばれても epoch が二重に進まず通知も二重に出ないこと / **`onExit()` だけ(クラッシュ)でも marker が消え epoch が進むこと**(round5-P2 の回帰テスト) |
