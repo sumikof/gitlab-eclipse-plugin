@@ -76,6 +76,43 @@ class DiagnosticGenerationRegistryTest : DescribeSpec({
     }
   }
 
+  describe("onActivate") {
+    it("advances the epoch and clears latest, so a generation issued before it no longer applies") {
+      val e = DiagnosticGenerationRegistry.currentEpoch
+      val g = DiagnosticGenerationRegistry.nextGeneration("/a", e)!!
+      DiagnosticGenerationRegistry.shouldApply("/a", g, e) shouldBe true
+
+      DiagnosticGenerationRegistry.onActivate()
+
+      (DiagnosticGenerationRegistry.currentEpoch > e) shouldBe true
+      // stale epoch alone would already fail shouldApply; assert with the *new* epoch too,
+      // to prove `latest` was actually cleared and not just the epoch mismatching.
+      val newEpoch = DiagnosticGenerationRegistry.currentEpoch
+      DiagnosticGenerationRegistry.shouldApply("/a", g, newEpoch) shouldBe false
+    }
+  }
+
+  describe("currentGenerationCounter") {
+    it("reflects the number of generations actually issued, not a constant") {
+      DiagnosticGenerationRegistry.currentGenerationCounter() shouldBe 0L
+      val e = DiagnosticGenerationRegistry.currentEpoch
+      DiagnosticGenerationRegistry.nextGeneration("/a", e)
+      DiagnosticGenerationRegistry.currentGenerationCounter() shouldBe 1L
+      DiagnosticGenerationRegistry.nextGeneration("/b", e)
+      DiagnosticGenerationRegistry.currentGenerationCounter() shouldBe 2L
+    }
+  }
+
+  describe("isLatestSettingsSeq") {
+    it("is true for the newest issued seq and false once a newer one is issued") {
+      val seq = DiagnosticGenerationRegistry.nextSettingsSeq()
+      DiagnosticGenerationRegistry.isLatestSettingsSeq(seq) shouldBe true
+      val newer = DiagnosticGenerationRegistry.nextSettingsSeq()
+      DiagnosticGenerationRegistry.isLatestSettingsSeq(seq) shouldBe false
+      DiagnosticGenerationRegistry.isLatestSettingsSeq(newer) shouldBe true
+    }
+  }
+
   describe("source suspension is scoped and atomic") {
     it("excludes only the suspended source") {
       val e = DiagnosticGenerationRegistry.currentEpoch

@@ -46,11 +46,19 @@ object DiagnosticMarkerAttributes {
    * Problems ビューは 1 行表示。LS は "<name>\n\n<description>" を送る(§6.1 P3)。
    *
    * この repo の lsp4j バージョンでは `Diagnostic.message` は `Either<String, MarkupContent>`
-   * (プレーン `String` ではない)。プレーンテキスト(`isLeft`)のみ扱い、`MarkupContent`(`isRight`)
-   * は本文を持たない扱いにしてプレースホルダへ落とす([codeOf] の Either 処理と同じパターン)。
+   * (プレーン `String` ではない)。プレーンテキスト(`isLeft`)ならその文字列を、
+   * `MarkupContent`(`isRight`)なら `getValue()` の本文テキストを使う(javap で確認済み:
+   * `MarkupContent.getValue(): String`)。どちらの経路でも同じ空白圧縮・trim・空白プレースホルダ
+   * 処理を適用する(右側を無条件にプレースホルダへ落とすと本文を丸ごと失うため)。
    */
   private fun messageOf(diagnostic: Diagnostic): String {
-    val text = diagnostic.message?.takeIf { it.isLeft }?.left
+    val message = diagnostic.message
+    val text = when {
+      message == null -> null
+      message.isLeft -> message.left
+      message.isRight -> message.right?.value
+      else -> null
+    }
     return text?.replace(WHITESPACE, " ")?.trim()?.takeIf { it.isNotEmpty() } ?: NO_MESSAGE
   }
 

@@ -5,6 +5,7 @@ import io.kotest.matchers.shouldBe
 import org.eclipse.core.resources.IMarker
 import org.eclipse.lsp4j.Diagnostic
 import org.eclipse.lsp4j.DiagnosticSeverity
+import org.eclipse.lsp4j.MarkupContent
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
 
@@ -21,6 +22,12 @@ private fun diag(
 }
 
 class DiagnosticMarkerAttributesTest : DescribeSpec({
+  describe("TYPE") {
+    it("is the exact literal machine-matched against plugin.xml in a later task") {
+      DiagnosticMarkerAttributes.TYPE shouldBe "com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic"
+    }
+  }
+
   describe("of") {
     it("maps all four severities and treats absent as info") {
       DiagnosticMarkerAttributes.of(diag(severity = DiagnosticSeverity.Error), 1L, 2L)[IMarker.SEVERITY] shouldBe IMarker.SEVERITY_ERROR
@@ -44,6 +51,10 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
     }
     it("substitutes a placeholder for a blank message") {
       DiagnosticMarkerAttributes.of(diag(message = "   "), 1L, 2L)[IMarker.MESSAGE] shouldBe "(no message)"
+    }
+    it("surfaces MarkupContent text and collapses its whitespace the same way as plain text") {
+      val markup = diag().apply { setMessage(MarkupContent("markdown", "name\n\n  long   description")) }
+      DiagnosticMarkerAttributes.of(markup, 1L, 2L)[IMarker.MESSAGE] shouldBe "name long description"
     }
     it("always records source, generation and epoch") {
       val a = DiagnosticMarkerAttributes.of(diag(), 7L, 9L)
