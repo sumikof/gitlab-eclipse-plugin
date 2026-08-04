@@ -17,6 +17,7 @@ import com.gitlab.eclipse.security.SecurityScanResponse
 import com.gitlab.eclipse.security.SecurityScanStatusReporter
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.google.gson.JsonObject
+import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
@@ -366,6 +367,41 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
 
       verify(exactly = 0) { NotificationUtils.show(any()) }
+    }
+
+    it("still tells the user when the audit line cannot be written") {
+      // The record and the notification are independent obligations. Losing the log must not also
+      // lose the answer the user is waiting for.
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { log.info(any<String>()) } throws RuntimeException("log is gone")
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+
+      client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
+
+      verify { NotificationUtils.show(any()) }
+    }
+
+    it("does not let a failing failure-log escape into the dispatch loop") {
+      // The outermost handler runs on lsp4j's dispatch thread; anything thrown from here takes the
+      // dispatcher with it, so the log call has to be contained just like the audit one (§16.2).
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { log.warn(any<String>()) } throws RuntimeException("log is gone")
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      mockkObject(SecurityScanStatusReporter)
+      every { SecurityScanStatusReporter.settle(any(), any(), any()) } throws RuntimeException("boom")
+
+      try {
+        shouldNotThrowAny {
+          client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
+        }
+      } finally {
+        unmockkObject(SecurityScanStatusReporter)
+      }
+
+      verify { log.warn(any<String>()) }
     }
 
     it("swallows failures raised while handling the notification") {

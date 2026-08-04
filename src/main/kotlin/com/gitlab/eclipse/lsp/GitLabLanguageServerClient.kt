@@ -122,7 +122,13 @@ class GitLabLanguageServerClient(
           decision.notify?.let { NotificationUtils.show(it) }
         }
       }
-    }.onFailure { logger.warn("Failed to handle a security scan response: ${it::class.simpleName}") }
+    }.onFailure { failure ->
+      // Contained like the audit line above it: this is the outermost handler on lsp4j's dispatch
+      // thread, so a log that throws here would escape into the dispatch loop itself (§16.2).
+      runCatching {
+        logger.warn("Failed to handle a security scan response: ${failure::class.simpleName}")
+      }
+    }
   }
 
   @JsonNotification("$/gitlab/token/check")

@@ -3,6 +3,8 @@ package com.gitlab.eclipse.security
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticFileResolver
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
+import org.eclipse.core.resources.IFile
+import java.net.URI
 
 /** What a scan response was decided to mean. */
 sealed interface ResponseDecision {
@@ -45,6 +47,12 @@ private const val CANCELLED_MESSAGE =
 
 /** Placeholder for every audit field that has no value. Never an empty string, never omitted. */
 private const val NONE = "-"
+
+/** Audit outcome vocabulary (design §16.2). Shared with [SecurityScanLauncher]. */
+internal const val OUTCOME_SUCCESS = "success"
+internal const val OUTCOME_FAILURE = "failure"
+internal const val OUTCOME_TIMEOUT = "timeout"
+internal const val OUTCOME_CANCELLED = "cancelled"
 
 /**
  * Turns a scan response into "who was waiting", "what do we tell them" and "what do we record".
@@ -97,7 +105,23 @@ object SecurityScanStatusReporter {
    * [path] is the normalised absolute path used as the waiter key; it is never put in the audit
    * line, which carries a workspace relative path or nothing at all.
    */
-  fun settle(path: String, response: SecurityScanResponse, connectionEpoch: Long): ResponseDecision {
+  fun settle(path: String, response: SecurityScanResponse, connectionEpoch: Long): ResponseDecision =
+    settle(path, response, connectionEpoch, DiagnosticFileResolver::resolve)
+
+  /**
+   * As [settle], with the workspace lookup passed in.
+   *
+   * The seam exists so the branch that really emits a path can be tested. The workspace throws on
+   * every lookup in a headless test, so without it `path=-` is the only outcome any test can ever
+   * observe, and the property that matters most here — that a resolved path is the *workspace
+   * relative* one and never the absolute input — would go unproven.
+   */
+  internal fun settle(
+    path: String,
+    response: SecurityScanResponse,
+    connectionEpoch: Long,
+    resolve: (String) -> List<IFile>,
+  ): ResponseDecision {
     val verdict = synchronized(lock) {
       // A response from a connection that has already been replaced is not evidence about anything
       // current. Returning before `consumeOldest` matters as much as the answer does: consuming
@@ -107,12 +131,14 @@ object SecurityScanStatusReporter {
     }
     return ResponseDecision.Report(
       notify = notification(verdict),
-      auditLine = auditLine(
+      auditLine = securityScanAuditLine(
         source = verdict.source,
-        outcome = if (verdict.succeeded) "success" else "failure",
+        outcome = if (verdict.succeeded) OUTCOME_SUCCESS else OUTCOME_FAILURE,
         status = verdict.status,
         findings = verdict.findings,
+        exceptionType = null,
         path = path,
+        resolve = resolve,
       ),
     )
   }
@@ -171,8 +197,19 @@ object SecurityScanStatusReporter {
     }
     return CancellationReport(
       notify = notify,
-      auditLines = dropped.keys.sorted().map { path ->
-        auditLine(SecurityScanSource.COMMAND, "cancelled", status = null, findings = null, path = path)
+      // One line per *waiter*, not per file: two commands queued on the same file are two requests
+      // that were thrown away, and an audit that showed one of them would undercount what happened.
+      auditLines = dropped.entries.sortedBy { it.key }.flatMap { (path, count) ->
+        List(count) {
+          securityScanAuditLine(
+            source = SecurityScanSource.COMMAND,
+            outcome = OUTCOME_CANCELLED,
+            status = null,
+            findings = null,
+            exceptionType = null,
+            path = path,
+          )
+        }
       },
     )
   }
@@ -203,30 +240,43 @@ object SecurityScanStatusReporter {
     return "GitLab security scan: $count issue(s) found. See the Problems view."
   }
 
-  private fun auditLine(
-    source: SecurityScanSource,
-    outcome: String,
-    status: Int?,
-    findings: Int?,
-    path: String,
-  ): String = "securityScan source=${source.wireValue} outcome=$outcome " +
-    "httpStatus=${status ?: NONE} findings=${findings ?: NONE} " +
-    "exceptionType=$NONE path=${workspaceRelative(path)}"
-
-  /**
-   * Turns the waiter key into something safe to write down.
-   *
-   * The key is an absolute path on the user's machine, which the error log must never carry
-   * (design §16.1), so it is exchanged for the workspace relative path of the file it resolves to.
-   * A path that resolves to nothing — a file outside the workspace, or any lookup at all while the
-   * workspace is closed — is recorded as absent rather than falling back to the absolute form.
-   */
-  private fun workspaceRelative(path: String): String =
-    runCatching { DiagnosticFileResolver.resolve(path).firstOrNull()?.fullPath?.toString() }
-      .getOrNull() ?: NONE
-
   fun resetForTest() = synchronized(lock) { lastSaveFailure.clear() }
 }
+
+/**
+ * The one place an audit line is built (design §16.2), for every outcome and every caller.
+ *
+ * Kept as a single function on purpose: the secrecy rules are per-field, so a second builder
+ * somewhere else is how a raw path or an error body eventually gets out. [SecurityScanLauncher]
+ * reports the outcomes this object never sees — a request that timed out or never left — through
+ * here rather than through prose of its own.
+ *
+ * Every absent value is written as `-`; no field is ever dropped, so the shape of the line does not
+ * depend on what happened.
+ */
+@Suppress("LongParameterList")
+internal fun securityScanAuditLine(
+  source: SecurityScanSource,
+  outcome: String,
+  status: Int?,
+  findings: Int?,
+  exceptionType: String?,
+  path: String,
+  resolve: (String) -> List<IFile> = DiagnosticFileResolver::resolve,
+): String = "securityScan source=${source.wireValue} outcome=$outcome " +
+  "httpStatus=${status ?: NONE} findings=${findings ?: NONE} " +
+  "exceptionType=${exceptionType ?: NONE} path=${workspaceRelative(path, resolve)}"
+
+/**
+ * Turns the waiter key into something safe to write down.
+ *
+ * The key is an absolute path on the user's machine, which the error log must never carry
+ * (design §16.1), so it is exchanged for the workspace relative path of the file it resolves to.
+ * A path that resolves to nothing — a file outside the workspace, or any lookup at all while the
+ * workspace is closed — is recorded as absent rather than falling back to the absolute form.
+ */
+private fun workspaceRelative(path: String, resolve: (String) -> List<IFile>): String =
+  runCatching { resolve(path).firstOrNull()?.fullPath?.toString() }.getOrNull() ?: NONE
 
 /**
  * Two or more characters before the colon, so a Windows drive letter is not mistaken for a scheme.
@@ -257,7 +307,29 @@ internal fun securityScanPathKey(filePath: String): String {
   return DiagnosticUri.normalize(candidate) ?: filePath
 }
 
+/**
+ * Builds a `file:` URI for a bare OS path.
+ *
+ * Deliberately **not** string concatenation. A path is not a URI: a space makes `URI()` throw
+ * outright, and a `#` is read as a fragment separator, so `/w/a#b.kt` would silently become the key
+ * `/w/a`. Either way the key stops matching the one the request registered and the waiting command
+ * is only ever released by its sixty second deadline.
+ *
+ * This is `java.io.File.toURI()`'s own algorithm — slashify, then the multi-argument [URI]
+ * constructor, which quotes whatever the path syntax does not allow — with one part left out:
+ * `File.toURI()` first calls `getAbsoluteFile()`, which resolves against the *running* JVM's
+ * notion of an absolute path. On a POSIX JVM a Windows path is therefore treated as relative and
+ * prefixed with the process working directory, which both destroys the key and writes the working
+ * directory into it. The language server decides the spelling, not the JVM, so the platform must
+ * not take part in this.
+ *
+ * The extra `//` on a path that already starts with one is what keeps a UNC host out of the URI's
+ * authority; without it `\\host\share\f.kt` becomes `file://host/share/f.kt`, whose path is merely
+ * `/share/f.kt`.
+ */
 private fun fileUriFor(rawPath: String): String {
   val slashed = rawPath.replace('\\', '/')
-  return if (slashed.startsWith("/")) "file:$slashed" else "file:/$slashed"
+  val absolute = if (slashed.startsWith("/")) slashed else "/$slashed"
+  val path = if (absolute.startsWith("//")) "//$absolute" else absolute
+  return runCatching { URI("file", null, path, null).toASCIIString() }.getOrNull() ?: rawPath
 }

@@ -2,9 +2,15 @@ package com.gitlab.eclipse.security
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.mockk.every
+import io.mockk.mockk
+import org.eclipse.core.resources.IFile
+import org.eclipse.core.runtime.Path
+import java.io.File
 
 private const val PATH_A = "/w/a.kt"
 private const val PATH_B = "/w/b.kt"
@@ -165,6 +171,21 @@ class SecurityScanStatusReporterTest : DescribeSpec({
       )
     }
 
+    it("row 10: accounts for every cancelled request, not merely every file") {
+      // Two commands queued on the same file are two requests that were thrown away. An audit
+      // that showed one line would undercount what the restart actually destroyed.
+      CommandWaiters.add(PATH_A, epoch())
+      CommandWaiters.add(PATH_A, epoch())
+      CommandWaiters.add(PATH_B, epoch())
+      val dead = epoch()
+      DiagnosticGenerationRegistry.onServerStopped()
+
+      val report = SecurityScanStatusReporter.cancelPending(dead, ScanCancelReason.SERVER_STOPPED)
+
+      report.auditLines.size shouldBe 3
+      report.notify shouldBe CANCELLED_MESSAGE
+    }
+
     it("row 11: says nothing about a save when the server stops, because a save has no waiter") {
       // Exactly what the launcher does for a save: it sends, and it registers nothing.
       val dead = epoch()
@@ -279,11 +300,20 @@ class SecurityScanStatusReporterTest : DescribeSpec({
     }
 
     it("does not touch the save suppression state when it rejects") {
-      reportOf(asSave(response = response(500))).notify shouldNotBe null
+      // B already has a failure on record; A has nothing on record.
+      reportOf(asSave(PATH_B, response(500))).notify shouldNotBe null
       val dead = epoch()
       DiagnosticGenerationRegistry.onServerStopped()
 
+      // A rejected failure must not *record* suppression, and a rejected success must not
+      // *release* it. Both are state changes a rejection has no business making.
       SecurityScanStatusReporter.settle(PATH_A, response(401), dead) shouldBe ResponseDecision.Rejected
+      SecurityScanStatusReporter.settle(PATH_B, response(200), dead) shouldBe ResponseDecision.Rejected
+
+      // Nothing was recorded for A, so its first live failure is still news.
+      reportOf(asSave(PATH_A, response(401))).notify shouldNotBe null
+      // Nothing was released for B, so its repeat is still suppressed.
+      reportOf(asSave(PATH_B, response(500))).notify shouldBe null
     }
   }
 
@@ -302,6 +332,54 @@ class SecurityScanStatusReporterTest : DescribeSpec({
 
       report.auditLine shouldBe
         "securityScan source=save outcome=failure httpStatus=- findings=- exceptionType=- path=-"
+    }
+
+    // Headless, the workspace throws on every lookup, so `path=-` is the only outcome the tests
+    // above can observe. These drive the other branch through the injected resolver, which is the
+    // only way the property that matters — a *resolved* path is the workspace relative one, never
+    // the absolute input — can be proven at all.
+    it("carries the workspace relative path, never the absolute one it was given") {
+      val absolute = "/home/u/workspaces/ws/Project/src/a.kt"
+      val file = mockk<IFile>()
+      every { file.fullPath } returns Path("/Project/src/a.kt")
+
+      val report = SecurityScanStatusReporter.settle(
+        absolute,
+        SecurityScanResponse(filePath = absolute, status = 500),
+        epoch(),
+      ) { listOf(file) } as ResponseDecision.Report
+
+      report.auditLine shouldBe
+        "securityScan source=save outcome=failure httpStatus=500 findings=- " +
+        "exceptionType=- path=/Project/src/a.kt"
+      report.auditLine.contains("/home/u") shouldBe false
+      report.auditLine.contains(absolute) shouldBe false
+    }
+
+    it("takes the first file when the same location is linked into several projects") {
+      val first = mockk<IFile>()
+      val second = mockk<IFile>()
+      every { first.fullPath } returns Path("/First/a.kt")
+      every { second.fullPath } returns Path("/Second/a.kt")
+
+      val report = SecurityScanStatusReporter.settle(
+        "/abs/a.kt",
+        SecurityScanResponse(filePath = "/abs/a.kt", status = 200),
+        epoch(),
+      ) { listOf(first, second) } as ResponseDecision.Report
+
+      report.auditLine.endsWith(" path=/First/a.kt") shouldBe true
+    }
+
+    it("falls back to a dash rather than the absolute path when the lookup throws") {
+      val report = SecurityScanStatusReporter.settle(
+        "/abs/a.kt",
+        SecurityScanResponse(filePath = "/abs/a.kt", status = 200),
+        epoch(),
+      ) { error("workspace is closed") } as ResponseDecision.Report
+
+      report.auditLine.endsWith(" path=-") shouldBe true
+      report.auditLine.contains("/abs") shouldBe false
     }
 
     it("keeps the findings themselves out of the record") {
@@ -344,6 +422,37 @@ class SecurityScanStatusReporterTest : DescribeSpec({
 
     it("returns something that cannot be normalised unchanged") {
       securityScanPathKey("untitled:Untitled-1") shouldBe "untitled:Untitled-1"
+    }
+
+    // A path is not a URI. Concatenating one makes `URI()` throw on a space and read a `#` as a
+    // fragment separator, and either way the key stops matching the one the request registered —
+    // so the command is released only by its sixty second deadline.
+    it("accepts a path containing a space") {
+      securityScanPathKey("/w/my docs/a.kt") shouldBe "/w/my docs/a.kt"
+    }
+
+    it("accepts a Windows path containing a space") {
+      securityScanPathKey("C:\\My Docs\\a.kt") shouldBe "/C:/My Docs/a.kt"
+    }
+
+    it("keeps a UNC host in the path instead of losing it to the authority") {
+      // `file://host/share/f.kt` would parse `host` as the authority and truncate the key to
+      // `/share/f.kt`, silently merging two different servers' copies of the same share.
+      securityScanPathKey("\\\\host\\share\\f.kt") shouldBe "//host/share/f.kt"
+    }
+
+    it("does not let a hash in the name truncate the key") {
+      securityScanPathKey("/w/a#b.kt") shouldBe "/w/a#b.kt"
+    }
+
+    it("agrees with the key the request side registered") {
+      // The waiter is registered under DiagnosticUri.normalize(<the uri we sent>); a response that
+      // normalised to anything else would never find it. Driven through the real registry here
+      // rather than asserted against a literal.
+      listOf("/w/my docs/a.kt", "/w/a#b.kt", PATH_A).forEach { osPath ->
+        val sentUri = File(osPath).toURI().toASCIIString()
+        securityScanPathKey(osPath) shouldBe DiagnosticUri.normalize(sentUri)
+      }
     }
   }
 })

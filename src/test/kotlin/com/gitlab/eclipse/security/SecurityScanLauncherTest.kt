@@ -24,11 +24,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
+import org.eclipse.core.runtime.Platform
 import org.eclipse.core.runtime.jobs.IJobChangeEvent
 import org.eclipse.core.runtime.jobs.Job
 import org.eclipse.core.runtime.jobs.JobChangeAdapter
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.osgi.framework.Bundle
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -431,8 +434,86 @@ class SecurityScanLauncherTest : DescribeSpec({
       deadlines.single().first shouldBe 60_000L
       deadlines.single().second()
 
-      notified.size shouldBe 1
+      // §11.3 row 4. Fixed client-side wording, from the same table every other outcome uses.
+      notified.single() shouldBe "GitLab security scan: no response from the language server."
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
+    }
+
+    it("audits a timeout in the shared format, with no path of its own") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
+      scope.testScheduler.runCurrent()
+      deadlines.single().second()
+
+      verify {
+        log.info(
+          "securityScan source=command outcome=timeout httpStatus=- findings=- " +
+            "exceptionType=- path=-"
+        )
+      }
+      verify(exactly = 0) { log.info(match<String> { it.contains(KEY_A) }) }
+    }
+
+    it("tells the user a request that never left failed, in the generic fixed wording") {
+      // §11.3 row 8 / §11.4. The status is genuinely unknown — nothing was sent, so nothing
+      // answered — which is the case the generic message is worded for.
+      every { server.runSecurityScan(any()) } throws IllegalStateException("stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
+
+      notified.single() shouldBe
+        "GitLab security scan failed (status -). See the Error Log for details."
+    }
+
+    it("audits a send that failed with the exception class and never its message") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { server.runSecurityScan(any()) } throws
+        IllegalStateException("Bearer glpat-SECRET stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
+
+      verify {
+        log.info(
+          "securityScan source=command outcome=failure httpStatus=- findings=- " +
+            "exceptionType=IllegalStateException path=-"
+        )
+      }
+      verify(exactly = 0) { log.info(match<String> { it.contains("glpat") }) }
+      verify(exactly = 0) { log.warn(match<String> { it.contains("glpat") }) }
+    }
+
+    it("audits a save whose send failed without telling the user") {
+      // §11.3 row 9: the record is the only trace a background failure leaves.
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { server.runSecurityScan(any()) } throws IllegalStateException("stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE)
+
+      verify {
+        log.info(
+          "securityScan source=save outcome=failure httpStatus=- findings=- " +
+            "exceptionType=IllegalStateException path=-"
+        )
+      }
+      notified shouldBe emptyList()
+    }
+
+    it("audits nothing for a save that was sent successfully") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE)
+
+      verify(exactly = 0) { log.info(match<String> { it.startsWith("securityScan ") }) }
     }
 
     it("closes the request out exactly once however often the deadline runs") {

@@ -23,6 +23,7 @@ import org.eclipse.core.runtime.jobs.JobChangeAdapter
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** Why a scan request did or did not leave the plugin. */
 enum class SecurityScanLaunchOutcome { SENT, DISABLED, NO_TOKEN, NO_EDITOR }
@@ -107,10 +108,10 @@ private const val NO_EDITOR_MESSAGE =
   "Open a file in the editor to run a GitLab security scan on it."
 private const val NO_TOKEN_MESSAGE =
   "Sign in to GitLab to run a security scan."
-private const val SEND_FAILED_MESSAGE =
-  "GitLab could not start the security scan."
+
+/** Design §11.3 row 4. Fixed client-side text, like every other outcome the user is shown. */
 private const val TIMED_OUT_MESSAGE =
-  "The GitLab security scan did not answer in time."
+  "GitLab security scan: no response from the language server."
 
 /**
  * Decides whether a scan request may leave the plugin, and builds it.
@@ -232,9 +233,12 @@ class SecurityScanLauncher(
   ) {
     val waiterId = if (source == SecurityScanSource.COMMAND) CommandWaiters.add(path, epoch) else null
     val entered = AtomicBoolean(false)
+    // What the send threw, if it threw, so the completion handler can name it in the audit line.
+    // Only ever the class name: an lsp4j failure quotes the request it was carrying.
+    val failureType = AtomicReference<String?>(null)
     val job = coroutineScope.launch {
       entered.set(true)
-      contained {
+      val failure = contained {
         // ONE coroutine, ONE lock region, both notifications in order. Splitting them across two
         // coroutines would only give mutual exclusion: a Mutex does not hand the lock out in the
         // order it was asked for, so the scan could overtake the configuration that enables it.
@@ -256,14 +260,17 @@ class SecurityScanLauncher(
           // holding the registry monitor across both sends, which inverts the lock order.
           target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
           target.runSecurityScan(params)
-          if (waiterId != null) armDeadline(waiterId, epoch)
+          if (waiterId != null) armDeadline(waiterId, path, epoch)
         }
       }
+      failureType.set(failure)
     }
     // A cancelled scope makes `launch` return a completed job without throwing and without ever
     // running the body, so try/catch cannot see it. This can. It also runs after a contained
     // failure, which is how a send that threw still reaches the user as a failure.
-    job.invokeOnCompletion { reportIfNeverSent(waiterId, epoch, entered.get()) }
+    job.invokeOnCompletion {
+      reportIfNeverSent(waiterId, epoch, path, source, entered.get(), failureType.get())
+    }
   }
 
   /**
@@ -277,16 +284,18 @@ class SecurityScanLauncher(
    *
    * Cancellation keeps its normal meaning and is rethrown: it is not a failure and does not cancel
    * the parent. Only the exception's class name is recorded — an lsp4j failure can quote the request
-   * it was carrying, and no path may ever reach the log.
+   * it was carrying, and no path may ever reach the log. That class name is also what is returned,
+   * so the completion handler can put it in the audit line; `null` means the body finished.
    */
-  private inline fun contained(body: () -> Unit) {
+  private inline fun contained(body: () -> Unit): String? {
     try {
       body()
     } catch (e: CancellationException) {
       throw e
     } catch (e: Throwable) {
-      logger.warn("Failed to send a remote security scan request: ${e::class.simpleName}")
+      return e::class.simpleName ?: e.javaClass.name
     }
+    return null
   }
 
   /**
@@ -316,9 +325,9 @@ class SecurityScanLauncher(
    * elapse. Scheduling with a delay returns immediately, so doing it under the outbound lock costs
    * nothing.
    */
-  private fun armDeadline(waiterId: Long, epoch: Long) {
+  private fun armDeadline(waiterId: Long, path: String, epoch: Long) {
     CommandWaiters.markDeadlineArmed(waiterId, epoch)
-    scheduleDeadline(RESPONSE_DEADLINE_MS) { expire(waiterId, epoch) }
+    scheduleDeadline(RESPONSE_DEADLINE_MS) { expire(waiterId, path, epoch) }
   }
 
   /**
@@ -328,8 +337,30 @@ class SecurityScanLauncher(
    * By id, never "the oldest": this request may already have been answered and a *different* scan
    * may be queued on the same file by the time the deadline comes due.
    */
-  private fun expire(waiterId: Long, epoch: Long) {
-    if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
+  private fun expire(waiterId: Long, path: String, epoch: Long) {
+    if (!CommandWaiters.consumeById(waiterId, epoch)) return
+    audit(
+      securityScanAuditLine(
+        source = SecurityScanSource.COMMAND,
+        outcome = OUTCOME_TIMEOUT,
+        status = null,
+        findings = null,
+        exceptionType = null,
+        path = path,
+      )
+    )
+    notify(TIMED_OUT_MESSAGE)
+  }
+
+  /**
+   * Writes an audit line, and survives failing to.
+   *
+   * A log call is not free of failure — the platform log can be gone while the workbench is
+   * stopping — and this runs on the paths that are the *only* thing left to release a waiting
+   * command. Losing the record must not also lose the notification (Phase 5A).
+   */
+  private fun audit(line: String) {
+    runCatching { logger.info(line) }
   }
 
   /**
@@ -339,13 +370,42 @@ class SecurityScanLauncher(
    * waiter is cancelled, and only a waiter that was still standing counts as a failure worth showing
    * — a request that was deliberately abandoned, or answered already, has removed its own.
    */
-  private fun reportIfNeverSent(waiterId: Long?, epoch: Long, entered: Boolean) {
+  private fun reportIfNeverSent(
+    waiterId: Long?,
+    epoch: Long,
+    path: String,
+    source: SecurityScanSource,
+    entered: Boolean,
+    failureType: String?,
+  ) {
     if (waiterId != null && CommandWaiters.isDeadlineArmed(waiterId)) return
+    // Not an outcome, so not an audit line: this says the plugin's own scope is broken, which is
+    // worth knowing whatever the scan did.
     if (!entered) logger.warn("A remote security scan request never started.")
-    if (waiterId == null) return
-    if (CommandWaiters.consumeById(waiterId, epoch)) {
-      logger.warn("A remote security scan request was not sent.")
-      notify(SEND_FAILED_MESSAGE)
+
+    // A save registers no waiter, so there is nothing to claim and nothing to tell the user
+    // (§11.3 row 9); the send's own evidence is the only thing that says it failed.
+    if (waiterId == null) {
+      if (failureType != null || !entered) auditNotSent(source, path, failureType)
+      return
     }
+    // A waiter that has already gone was answered, or deliberately abandoned. Neither is a failure.
+    if (!CommandWaiters.consumeById(waiterId, epoch)) return
+    auditNotSent(source, path, failureType)
+    // The status is genuinely unknown here — nothing was sent, so nothing answered — which is
+    // exactly the case the generic message is worded for (§11.4). Kept as one definition rather
+    // than a second constant saying the same thing in different words.
+    notify(SecurityScanStatusReporter.messageForStatus(null))
   }
+
+  private fun auditNotSent(source: SecurityScanSource, path: String, failureType: String?) = audit(
+    securityScanAuditLine(
+      source = source,
+      outcome = OUTCOME_FAILURE,
+      status = null,
+      findings = null,
+      exceptionType = failureType,
+      path = path,
+    )
+  )
 }
