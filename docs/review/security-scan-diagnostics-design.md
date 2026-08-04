@@ -465,24 +465,32 @@ round16 では無効化だけを `Mutex` 内へ移したが、**それも不十�
   有効/無効 の遷移を検出したら seq = settingsSeq.incrementAndGet() を採番   // ★ UI スレッドで採番
   |
   v  coroutineScope.launch { outboundMutex.withLock { ... } }   // UI スレッドはブロックしない
-  seq <= lastAppliedSeq -> **何もしない**(追い越された古い遷移)      // ★ round17-P1
-  lastAppliedSeq = seq
-  |
-  無効化のとき: 1. suspendSource(source, seq)
+  無効化のとき: applied = suspendSource(source, seq)     // ★ 順序判定と更新は API 内で原子的に
+               applied == false -> 何もしない(追い越された古い遷移)
+               1. (suspendSource が適用済み)
                2. CommandWaiters.clear(epoch) + SAVE 失敗抑制の破棄
                3. watermark = 現在の generation カウンタ値を **この区間で捕捉**   // ★ round17-P2
-  有効化のとき: 1. resumeSource(source, seq)
+  有効化のとき: applied = resumeSource(source, seq)
+               applied == false -> 何もしない
   |
   v  (Mutex の外)
   無効化のとき: deleteMarkersBySource(source, watermark) の Job を schedule
 ```
+
+**順序判定と `lastAppliedSeq` の更新は、遷移 API の内側だけで行う(Codex round18-P2)。**呼び出し側でも `lastAppliedSeq = seq` としてから API を呼ぶと、API 側の `seq <= lastAppliedSeq` 判定が必ず真になり、**初回を含む全遷移が no-op になる**。`suspendSource` / `resumeSource` は「順序判定 → 更新 → 適用」を 1 つのロック区間で行い、**適用したかどうかを `Boolean` で返す**。呼び出し側は戻り値が `false` なら後続の手順(`clear` / watermark / marker 削除)を行わない。順序状態を持つのはレジストリ側だけである。
 
 - **送信コルーチンと設定遷移コルーチンが同じ `Mutex` を奪い合う**ため、「再確認 → 送信」の区間に遷移が割り込むことはなくなる
 - **順序番号により、`Mutex` の待ち行列で入れ替わった古い遷移は適用されない**。UI スレッドでの採番順が唯一の正順である
 - 遷移が送信の**後**に順序づけられた場合、そのスキャン 1 回は送信されるが、それは**利用者が操作する前に発火した要求**であり、同意の範囲内である
 - UI スレッドは `launch` するだけでブロックしない(`Mutex` は `kotlinx.coroutines.sync.Mutex` であり、UI スレッドから `withLock` を呼ぶと `runBlocking` が必要になるため、必ずコルーチンへ委譲する)
 - **`watermark` は `Mutex` の保護区間で捕捉する(round17-P2)。**marker I/O の `schedule` は保持時間を延ばさないため `Mutex` の外でよいが、**watermark の読み取りまで外へ出すと**、手順 2 の完了後・watermark 取得前に再有効化されて新しい診断が generation N を得た場合、その N が古い削除 Job の watermark に含まれ、**再有効化後の marker まで `generation <= watermark` で削除される**。§17.1.1 の保護が成立しなくなる
-- この `launch` も §9.1.1 と同じく**未開始を検出できない**と困るので、`invokeOnCompletion` で「遷移が適用されなかった」場合をログに残す(利用者には通知しない。設定値自体は既に保存されており、次回の送信は (a) の再確認で止まる)
+- **未開始の遷移をログだけで放置しない(Codex round18-P2)。**共有スコープがキャンセル済みなどで**有効化 Job が開始されない**と、直前の無効化で奇数になった `sourceEpoch` が永久に停止したままになる。設定値は既に `true` なので以後の `performOk` は遷移を検出せず、**スキャン送信は再開しても診断だけがすべて破棄され続ける**。
+
+  したがって **`sourceEpoch` の停止状態は、次の送信時に現在の設定へ収束させる**。§9.1.1 (a) の `Mutex` 内の再確認で `SECURITY_SCAN_ENABLED` を読む際、`isSuspended(source)` と突き合わせ、**設定が有効なのに停止中なら `resumeSource` を、設定が無効なのに稼働中なら `suspendSource` を、その場で適用する**(`settingsSeq` は現在値を使う)。同じ収束処理を `onActivate()`(バンドル起動)でも行う。
+
+  これにより、遷移 Job の未開始は**次のスキャン送信または次回起動で自動的に是正される**。`invokeOnCompletion` では引き続きログを残すが、それは復旧手段ではなく調査用である。
+
+  無効化 Job が未開始だった場合は既存 marker と遅延診断が残るが、収束処理が `suspendSource` を適用した後の次の掃除(LS 停止時の epoch 選択削除、または次の無効化遷移)で除去される。**この遅れは受容し、L8 として §23.1 に記載する。**
 
 ### 9.2 診断の受信と適用
 
@@ -566,18 +574,25 @@ when (CommandWaiters.consumeOldest(path, capturedConnectionEpoch)) {   // §9.1.
   status != 200 -> Failure(status)          // res.error は使わない(§11.4)
   |
   v
-capturedConnectionEpoch != registry.currentEpoch -> **ここでも終了**(§9.3)
-  |    // ★ consumeOldest の後に onServerStopped が入ると、旧応答が監査・通知・抑制状態の
-  |    //   更新まで進んでしまう。特に NO_WAITER の失敗では、停止処理が消した SAVE 抑制状態を
-  |    //   旧応答が再登録し、新接続の同 status 通知を抑制しうる(Codex round17-P2)
-  v
+ここまで(**待機の消費・分類・抑制状態の更新・通知するかの決定**)を
+**1 つのロック区間で原子的に行い**、`ResponseDecision` を返す(§9.3)
+  |
+  v  (ロックの外)
 監査ログ(§16.2) — error 本文・絶対パスを出さない
   |
   v
-通知(§11.3 の表 + §11.4 の固定文言。SAVE の失敗抑制状態は SecurityScanStatusReporter が保持)
+通知(§11.3 の表 + §11.4 の固定文言)
 ```
 
-**報告処理も `connectionEpoch` で隔離する。**`SecurityScanStatusReporter` は監査・通知・抑制状態の更新をまとめて行う際に `capturedConnectionEpoch` を受け取り、**ロックの下で照合してから**実行する。`consumeOldest` の 3 値化だけでは「停止が `consumeOldest` より前に入る場合」しか防げない。
+**「消費 → 報告」を分割してはならない(Codex round17-P2 / round18-P2)。**
+
+round17 では報告処理の直前にもう一度 epoch を照合する形にしたが、**それでは `COMMAND` が無通知になる**。`consumeOldest` が待機を除去した直後に `onServerStopped()` が走ると、再照合はコールバックを終了する一方、停止側の `clear` も**既に除去済みの待機を通知できない**。応答通知も再起動通知も出ず、F6 を破る。
+
+したがって `SecurityScanStatusReporter` は、**待機の消費・分類・`SAVE` 抑制状態の更新・通知の要否判定までを `capturedConnectionEpoch` の照合と同じロック区間で行い**、その結果を `ResponseDecision`(通知の要否・文言・監査フィールド)として返す。
+
+- ロック区間に入った時点で epoch が不一致なら、**待機を消費せずに終了**する(停止側の `clear` が通知を担う)
+- ロック区間に入れた場合は、**消費と報告の決定が不可分**なので、途中で停止が入っても決定は失われない
+- 実際の通知(SWT)と監査ログの出力だけをロックの外で行う。これらは決定済みの値を出力するだけで、状態を読まない
 
 **この経路は状態遷移を持たない。**`CommandWaiters` から 1 件除去し、分類して通知するだけである。次に送るべき要求(昇格)も、解放すべきスロットも存在しない。
 
@@ -1227,9 +1242,11 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | **waiterId の一意性(§9.1.1)** | `clear` の前後で **id が再利用されないこと** / 無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと(round15-P1 の回帰テスト) |
 | **期限起動前の終了経路(§9.1.1)** | `entered=true` の後に `Mutex` 待ちでキャンセルされた場合 / 送信呼び出しが例外を投げた場合のいずれでも、**期限未起動の待機が `invokeOnCompletion` で解決され、永久に残らないこと**(round15-P2 の回帰テスト) |
 | **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2)/ **再確認と送信の間に遷移が割り込めないこと**(round16-P1) |
-| **設定遷移の順序(§9.1.1)** | **`Mutex` の待ち行列で無効化と有効化が入れ替わっても、`settingsSeq` により古い遷移が適用されないこと**(= 有効なのに診断だけ恒久停止、が起きないこと)(round17-P1 の回帰テスト) |
+| **設定遷移の順序(§9.1.1)** | **`Mutex` の待ち行列で無効化と有効化が入れ替わっても、`settingsSeq` により古い遷移が適用されないこと**(= 有効なのに診断だけ恒久停止、が起きないこと)(round17-P1 の回帰テスト)/ **順序判定と `lastAppliedSeq` の更新が遷移 API の内側だけで行われ、初回の遷移が no-op にならないこと**(round18-P2 の回帰テスト) |
+| **遷移未開始からの収束(§9.1.1)** | 有効化 Job が開始されなかった場合でも、**次の送信時の再確認で `resumeSource` が適用され診断が復帰すること** / `onActivate()` でも収束すること(round18-P2 の回帰テスト) |
+| **応答の消費と報告の原子性(§9.3)** | `consumeOldest` の直後に `onServerStopped` が入っても、**`COMMAND` が無通知にならないこと**(消費と報告の決定が同一ロック区間)(round18-P2 の回帰テスト)/ ロック区間に入る前に epoch 不一致なら**待機を消費せず**停止側の `clear` が通知すること |
 | **watermark の捕捉位置(§9.1.1 / §17.1)** | **手順 2 の後・`Mutex` 解放前に捕捉されること** / 再有効化後の診断の generation が watermark に含まれず、その marker が削除されないこと(round17-P2 の回帰テスト) |
-| **報告処理の epoch 隔離(§9.3)** | `consumeOldest` の後に `onServerStopped` が入った場合、**監査・通知・`SAVE` 抑制状態の更新がいずれも 0 回**であること(round17-P2 の回帰テスト) |
+
 | **送信コルーチン未開始(§9.1.1)** | キャンセル済み `CoroutineScope` で `launch` が本体を実行しない場合に、待機が即座に解除され `COMMAND` に送信失敗が通知されること / **60 秒後の誤った「応答なし」が出ないこと**(round13-P2 の回帰テスト) |
 | **停止と予約済み Job(§17.1.1)** | **受理後・適用前に `suspendSource` された診断が適用時に落ちること**(round3-P1 の回帰テスト)/ 同じバッチの他 source は適用されること |
 | **`acceptToken` の原子性(§17.1.1)** | 偶数世代で token を返し奇数で null / `suspendSource` → `resumeSource` を跨いだ token が無効になること / **判定と捕捉の間に停止が入っても停止後の世代を捕捉しないこと**(round4-P1 の回帰テスト) |
@@ -1333,6 +1350,7 @@ PR 本文にチェックリストとして記載する。
 | L5 | エディタ内の範囲下線は出ず、行単位の marker のみ | §11.2。`CHAR_START` / `CHAR_END` を設定しないため |
 | L6 | 切替フェーズの削除失敗時に旧世代の一部が残り新世代と混在しうる | §12.2 |
 | L7 | ワークスペース外のファイル・インメモリエディタはスキャン対象外 | §9.1。`didOpen` を送っていないため LS が黙って return する |
+| L8 | 設定遷移の適用コルーチンが開始されなかった場合、`sourceEpoch` の是正が**次のスキャン送信または次回起動まで遅れる**(その間、無効化したのに古い marker が残りうる) | §9.1.1 (b)。共有 `CoroutineScope` がキャンセル済みのときにのみ起こる。収束処理により恒久化はしない |
 
 **L1〜L3 は、single-flight 機構を採らないという設計判断(§9.1.1)の直接の帰結である。**これらを排除するには、相関 ID を持たないプロトコルの上で要求・応答の 1 対 1 対応を作る状態機械が必要になるが、それは VSCode 版が持たない不変条件であり、パリティ要件ではない。
 
