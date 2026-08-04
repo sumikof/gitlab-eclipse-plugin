@@ -128,7 +128,13 @@ class SecurityScanLauncher(
       uri = if (path == null) null else uri,
       source = source,
       enabled = enabled,
-      hasToken = tokenProviderManager.getToken().isNotBlank(),
+      // Short-circuited on purpose. Kotlin evaluates arguments at the call site, so without the
+      // `enabled &&` the token would be read on the way in, before the gate that is supposed to
+      // stop everything. Reading it goes to Equinox secure storage, which can block and can raise
+      // the master password prompt: with the save trigger wired up, a user who never opted in
+      // would get a credential prompt on every save. The outcome is unchanged because DISABLED
+      // already wins over NO_TOKEN in the gate order.
+      hasToken = enabled && tokenProviderManager.getToken().isNotBlank(),
       // `path` is non-null on every path that reaches this lambda: a null one made `uri` null
       // above, and the gates answer NO_EDITOR for that before send is ever called.
       send = { params -> if (path != null) dispatch(params, path, source, server, epoch) },
@@ -171,6 +177,11 @@ class SecurityScanLauncher(
         // No server means nothing was sent; leaving the deadline unarmed lets the completion
         // handler below report it as a failure.
         val target = server ?: return@withLock
+        // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
+        // above and this line sends `remoteSecurityScans=false` and then the scan request. That
+        // fails safe: the server has just been told the feature is off, and the only thing that
+        // left the plugin is a URI — never the file's contents. Closing the window would mean
+        // holding the registry monitor across both sends, which inverts the lock order.
         target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
         target.runSecurityScan(params)
         if (waiterId != null) armDeadline(waiterId, epoch)
@@ -200,13 +211,26 @@ class SecurityScanLauncher(
    *
    * The timer is a sibling of the send, never a child of it: a child would keep the send's job alive
    * for the whole minute and postpone the "did this ever send" check by exactly that long.
+   *
+   * Arming makes [reportIfNeverSent] stand down, so from here on this timer is the only thing left
+   * that can close the request out. It therefore needs the same failure detection the send job has:
+   * if the scope dies the body never runs, or is cut short, and a command would otherwise wait for
+   * an answer that can no longer come.
    */
   private fun armDeadline(waiterId: Long, epoch: Long) {
     CommandWaiters.markDeadlineArmed(waiterId, epoch)
-    coroutineScope.launch {
+    val entered = AtomicBoolean(false)
+    val timer = coroutineScope.launch {
+      entered.set(true)
       delay(RESPONSE_DEADLINE_MS)
       // By id, never "the oldest": this request may already have been answered and a different
       // scan may be queued on the same file by now.
+      if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
+    }
+    timer.invokeOnCompletion {
+      if (!entered.get()) logger.warn("A remote security scan deadline never started.")
+      // A no-op after a deadline that did fire, or after the response claimed the waiter: both
+      // removed it already, so this finds nothing and stays quiet.
       if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
     }
   }

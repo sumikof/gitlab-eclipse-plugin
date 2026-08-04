@@ -94,8 +94,16 @@ object CommandWaiters {
   /**
    * Drops every waiter registered on [connectionEpoch] and reports how many per path.
    *
-   * Filtering by epoch rather than wiping everything makes this safe to call either side of the
-   * registry advancing its epoch, and keeps it from touching a connection it was not asked about.
+   * **Pass the epoch of the connection that just died** — the value read *before*
+   * [DiagnosticGenerationRegistry.onServerStopped] advanced it. Passing the post-stop epoch removes
+   * nothing at all: the waiters belong to the old connection, so every one of them and its armed
+   * flag would be left behind and the command that is waiting would never be told anything.
+   *
+   * Note that the neighbouring clean up, `DiagnosticMarkerService.deleteMarkersNotInEpoch`, wants
+   * the opposite value (the epoch *after* the advance, because it keeps what matches). The two are
+   * usually called together and the arguments are not interchangeable.
+   *
+   * Only the named epoch is touched, so this can never take a live connection's waiters with it.
    */
   fun clear(connectionEpoch: Long): Map<String, Int> = synchronized(lock) {
     val removed = mutableMapOf<String, Int>()

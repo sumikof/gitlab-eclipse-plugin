@@ -160,6 +160,20 @@ class SecurityScanLauncherTest : DescribeSpec({
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
     }
 
+    it("does not even read the token while the feature is off") {
+      // Reading the token goes to Equinox secure storage, which can block and can raise the master
+      // password prompt. A user who never opted in must not be asked for a password by this
+      // feature, so the gate has to win before the argument is even evaluated (A1).
+      enable(false)
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.DISABLED
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.DISABLED
+      scope.testScheduler.advanceUntilIdle()
+
+      verify(exactly = 0) { tokenManager.getToken() }
+    }
+
     it("converges the suspended parity from the setting before it gates") {
       enable(false)
       val scope = TestScope(StandardTestDispatcher())
@@ -317,6 +331,23 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.runCurrent()
       notified shouldBe emptyList()
 
+      scope.testScheduler.advanceUntilIdle()
+
+      notified.size shouldBe 1
+      CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
+    }
+
+    it("still closes the request out when the deadline timer is killed before it can fire") {
+      // Arming the deadline makes the send job's completion handler stand down, so from that
+      // moment the timer is the only thing that can answer the command. If the scope dies inside
+      // that window the waiter would leak and nothing would ever be shown.
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
+      scope.testScheduler.runCurrent()
+      notified shouldBe emptyList()
+
+      scope.cancel()
       scope.testScheduler.advanceUntilIdle()
 
       notified.size shouldBe 1
