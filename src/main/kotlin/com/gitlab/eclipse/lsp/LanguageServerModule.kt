@@ -12,6 +12,7 @@ import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 val languageServerModule = module {
@@ -30,7 +31,9 @@ val languageServerModule = module {
   }
 
   single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
-  single<GitLabLanguageServerConfigurationService> { GitLabLanguageServerConfigurationService(get(), get(), get()) }
+  single<GitLabLanguageServerConfigurationService> {
+    GitLabLanguageServerConfigurationService(get(), get(), get(), get(named("languageServerOutbound")))
+  }
   single<DidChangeWatchedFileCapability>(createdAtStart = true) { DidChangeWatchedFileCapability(get(), get()) }
 
   single<GitLabLanguageServerProcessProvider> {

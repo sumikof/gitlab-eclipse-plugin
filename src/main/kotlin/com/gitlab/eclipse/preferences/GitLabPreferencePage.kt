@@ -237,6 +237,24 @@ class GitLabPreferencePage(
     )
 
     addHint("Use , to separate file extensions (ex: md, vue, sh).")
+
+    addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.SECURITY_SCAN_ENABLED,
+        "Enable real-time SAST scan (experimental). Sends the contents of the open file to your GitLab instance.",
+        fieldEditorParent
+      )
+    )
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.SECURITY_SCAN_ON_SAVE,
+        "Scan file on save",
+        fieldEditorParent
+      )
+    )
   }
 
   private fun addLabel(label: String) {

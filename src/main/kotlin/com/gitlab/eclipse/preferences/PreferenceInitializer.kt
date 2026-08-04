@@ -21,5 +21,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.DUO_CHAT_ENABLED, true)
     store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true)
     store.setDefault(PreferenceConstants.DUO_CHAT_SELECTED_WEBVIEW, "")
+    store.setDefault(PreferenceConstants.SECURITY_SCAN_ENABLED, false)
+    store.setDefault(PreferenceConstants.SECURITY_SCAN_ON_SAVE, true)
   }
 }

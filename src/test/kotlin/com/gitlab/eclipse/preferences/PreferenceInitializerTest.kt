@@ -19,6 +19,8 @@ class PreferenceInitializerTest : DescribeSpec({
       verify { store.setDefault(PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS, true) }
       verify { store.setDefault(PreferenceConstants.DUO_CHAT_ENABLED, true) }
       verify { store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true) }
+      verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ENABLED, false) }
+      verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ON_SAVE, true) }
     }
   }
 })

@@ -15,6 +15,7 @@ data class GitLabLanguageServerConfigurationParams(
   val workspaceFolders: List<WorkspaceFolder>? = null,
   val duoChat: DuoChat? = null,
   val duo: Duo? = null,
+  val securityScannerOptions: SecurityScannerOptions? = null,
 ) {
   data class CodeCompletion(
     val enabled: Boolean = true,
@@ -24,6 +25,9 @@ data class GitLabLanguageServerConfigurationParams(
   )
 
   data class FeatureFlags(val remoteSecurityScans: Boolean, val streamCodeGenerations: Boolean)
+
+  // The language server reads only `securityScannerOptions.enabled` (design §6.1 P2 step 6).
+  data class SecurityScannerOptions(val enabled: Boolean)
 
   data class DuoChat(val enabled: Boolean)
 

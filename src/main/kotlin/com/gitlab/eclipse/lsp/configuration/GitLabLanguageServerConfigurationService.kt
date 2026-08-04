@@ -17,13 +17,16 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 class GitLabLanguageServerConfigurationService(
   private val preferenceStore: ScopedPreferenceStore,
   private val languageServerWrapper: GitLabLanguageServerWrapper,
-  private val coroutineScope: CoroutineScope
+  private val coroutineScope: CoroutineScope,
+  private val outboundLock: Mutex,
 ) {
   private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
 
@@ -33,6 +36,7 @@ class GitLabLanguageServerConfigurationService(
   fun sendConfiguration() = sendConfiguration(languageServerWrapper.languageServer)
 
   fun sendConfiguration(server: GitLabLanguageServer?) {
+    val securityScanEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
     val params = GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
@@ -42,9 +46,10 @@ class GitLabLanguageServerConfigurationService(
         disabledSupportedLanguages = service<CodeSuggestionsLanguageService>().getDisabledLanguages(),
       ),
       featureFlags = FeatureFlags(
-        remoteSecurityScans = false,
+        remoteSecurityScans = securityScanEnabled,
         streamCodeGenerations = preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS)
       ),
+      securityScannerOptions = SecurityScannerOptions(enabled = securityScanEnabled),
       ignoreCertificateErrors = preferenceStore.getBoolean(IGNORE_CERTIFICATE_ERRORS),
       logLevel = preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL),
       telemetry = Telemetry(
@@ -75,9 +80,11 @@ class GitLabLanguageServerConfigurationService(
     // before this coroutine runs, and the queued work must strand with the old server
     // instead of being redirected at the new one.
     coroutineScope.launch {
-      server?.didChangeConfiguration(
-        DidChangeConfigurationParams(params)
-      )
+      outboundLock.withLock {
+        server?.didChangeConfiguration(
+          DidChangeConfigurationParams(params)
+        )
+      }
     }
   }
 }
