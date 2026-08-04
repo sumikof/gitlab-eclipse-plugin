@@ -19,10 +19,15 @@ import io.mockk.verifyOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import org.eclipse.core.runtime.jobs.Job
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 private const val URI_A = "file:/w/a.kt"
 private const val KEY_A = "/w/a.kt"
@@ -106,6 +111,45 @@ class SecurityScanLauncherTest : DescribeSpec({
     }
   }
 
+  describe("schedulePlatformDeadline") {
+    // The production scheduler. It runs on a platform Job rather than the shared CoroutineScope,
+    // where an uncaught failure would cancel the scope and silently disable every later launch in
+    // the plugin. Its contract is that `onDue` runs even when the delay never elapses.
+    fun pendingDeadlines() = Job.getJobManager().find(null).filter { it.name == DEADLINE_JOB }
+
+    afterEach { pendingDeadlines().forEach { it.cancel() } }
+
+    it("runs the body once the delay has passed") {
+      val ran = CountDownLatch(1)
+
+      schedulePlatformDeadline(1L) { ran.countDown() }
+
+      ran.await(10, TimeUnit.SECONDS) shouldBe true
+    }
+
+    it("runs the body anyway when the job is cancelled before it can run") {
+      // What the platform does at shutdown. Without this the command that armed the deadline would
+      // wait for an answer that can no longer come, and never be told.
+      val ran = CountDownLatch(1)
+
+      schedulePlatformDeadline(600_000L) { ran.countDown() }
+      pendingDeadlines().forEach { it.cancel() }
+
+      ran.await(10, TimeUnit.SECONDS) shouldBe true
+    }
+
+    it("does not let a throwing body escape into the platform") {
+      val ran = CountDownLatch(1)
+
+      schedulePlatformDeadline(1L) {
+        ran.countDown()
+        error("boom")
+      }
+
+      ran.await(10, TimeUnit.SECONDS) shouldBe true
+    }
+  }
+
   describe("SecurityScanLauncher") {
     val preferenceStore = mockk<ScopedPreferenceStore>(relaxed = true)
     val wrapper = mockk<GitLabLanguageServerWrapper>()
@@ -113,6 +157,10 @@ class SecurityScanLauncherTest : DescribeSpec({
     val tokenManager = mockk<GitLabTokenProviderManager>()
     val server = mockk<GitLabLanguageServer>(relaxUnitFun = true)
     val notified = mutableListOf<String>()
+
+    // What the launcher asked to have run after a delay. The real scheduler is a platform Job, so
+    // the deadline is captured here instead of being driven by virtual time.
+    val deadlines = mutableListOf<Pair<Long, () -> Unit>>()
 
     fun enable(value: Boolean) {
       every { preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED) } returns value
@@ -125,12 +173,14 @@ class SecurityScanLauncherTest : DescribeSpec({
       tokenManager,
       scope,
       outboundLock,
+      scheduleDeadline = { delayMs, onDue -> deadlines += delayMs to onDue },
     ) { notified += it }
 
     beforeEach {
       DiagnosticGenerationRegistry.resetForTest()
       CommandWaiters.resetForTest()
       notified.clear()
+      deadlines.clear()
       // These mocks live for the whole spec, so their recorded calls have to go: a
       // `verify(exactly = 0)` would otherwise see what an earlier test sent.
       clearMocks(preferenceStore, wrapper, configurationService, tokenManager, server)
@@ -331,24 +381,25 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.runCurrent()
       notified shouldBe emptyList()
 
-      scope.testScheduler.advanceUntilIdle()
+      deadlines.single().first shouldBe 60_000L
+      deadlines.single().second()
 
       notified.size shouldBe 1
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
     }
 
-    it("still closes the request out when the deadline timer is killed before it can fire") {
-      // Arming the deadline makes the send job's completion handler stand down, so from that
-      // moment the timer is the only thing that can answer the command. If the scope dies inside
-      // that window the waiter would leak and nothing would ever be shown.
+    it("closes the request out exactly once however often the deadline runs") {
+      // The platform scheduler releases the waiter from the job body and again from the job's
+      // completion listener, so that a job cancelled before it ever ran still closes the request
+      // out. Running twice must not show the message twice.
       val scope = TestScope(StandardTestDispatcher())
 
       launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
       scope.testScheduler.runCurrent()
-      notified shouldBe emptyList()
 
-      scope.cancel()
-      scope.testScheduler.advanceUntilIdle()
+      val onDue = deadlines.single().second
+      onDue()
+      onDue()
 
       notified.size shouldBe 1
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
@@ -361,7 +412,7 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.runCurrent()
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.COMMAND
 
-      scope.testScheduler.advanceUntilIdle()
+      deadlines.single().second()
 
       notified shouldBe emptyList()
     }
@@ -375,17 +426,47 @@ class SecurityScanLauncherTest : DescribeSpec({
       // The first scan is answered well before its deadline.
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.COMMAND
 
-      // Half a minute later the user starts a second scan of the same file. Its own deadline is
-      // therefore still half a minute away when the first one comes due.
-      scope.testScheduler.advanceTimeBy(30_000L)
+      // The user starts a second scan of the same file, whose own deadline is still far off when
+      // the first one comes due.
       subject.launch(URI_A, SecurityScanSource.COMMAND)
       scope.testScheduler.runCurrent()
+      deadlines.size shouldBe 2
 
       // The first deadline fires here, and only that one. The second scan must survive it.
-      scope.testScheduler.advanceTimeBy(31_000L)
+      deadlines[0].second()
 
       notified shouldBe emptyList()
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.COMMAND
+    }
+
+    it("keeps a failing send from cancelling the shared scope") {
+      // The scope is shared with the whole plugin and is built on a plain Job, not a SupervisorJob:
+      // a failure that escaped would cancel it, and every later launch anywhere in the plugin would
+      // silently do nothing for the rest of the session.
+      every { server.runSecurityScan(any()) } throws IllegalStateException("stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
+
+      scope.isActive shouldBe true
+      var ranAfterwards = false
+      scope.launch { ranAfterwards = true }
+      ranAfterwards shouldBe true
+
+      // The command still hears about it, through the same never-sent path as any other failure.
+      notified.size shouldBe 1
+      CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
+      deadlines shouldBe emptyList()
+    }
+
+    it("keeps a save whose send failed from cancelling the shared scope, silently") {
+      every { server.runSecurityScan(any()) } throws IllegalStateException("stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.SENT
+
+      scope.isActive shouldBe true
+      notified shouldBe emptyList()
     }
 
     it("strands a request with the connection it was sent on") {

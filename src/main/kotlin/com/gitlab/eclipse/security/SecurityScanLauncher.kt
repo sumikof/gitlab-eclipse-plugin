@@ -9,11 +9,17 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.eclipse.core.runtime.IProgressMonitor
+import org.eclipse.core.runtime.IStatus
+import org.eclipse.core.runtime.Status
+import org.eclipse.core.runtime.jobs.IJobChangeEvent
+import org.eclipse.core.runtime.jobs.Job
+import org.eclipse.core.runtime.jobs.JobChangeAdapter
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,6 +38,54 @@ const val SECURITY_SCAN_SOURCE = "gitlab_security_scan"
 
 /** How long a user command waits for its answer before it is told there will not be one. */
 private const val RESPONSE_DEADLINE_MS = 60_000L
+
+/** Name of the platform job that runs an answer deadline. `internal` so tests can find it. */
+internal const val DEADLINE_JOB = "GitLab security scan response deadline"
+
+/**
+ * Runs [onDue] once the delay has passed.
+ *
+ * The implementation must call [onDue] **exactly once, even if the delay can never elapse**, so a
+ * command is always closed out. [onDue] is written to tolerate being called more than once, so an
+ * implementation may call it again rather than track whether it already did.
+ */
+internal typealias DeadlineScheduler = (delayMs: Long, onDue: () -> Unit) -> Unit
+
+/**
+ * Runs an answer deadline on a platform [Job], deliberately not on the shared `CoroutineScope`.
+ *
+ * That scope is built on a plain `Job`, not a `SupervisorJob` (`WorkspaceModule`), so a single
+ * uncaught failure in any child cancels it, and every later `launch` anywhere in the plugin —
+ * configuration sends, chat, code suggestions — then silently does nothing for the rest of the
+ * session. This body ends in a user notification, which resolves a `Display` and can throw once the
+ * workbench is gone, so it is exactly the kind of body that must not run there. The platform catches
+ * and logs what a job throws instead.
+ *
+ * [onDue] is still invoked from the completion listener when the body did not run at all: the
+ * platform can cancel a scheduled job at shutdown, and the command waiting for the answer has to be
+ * released either way. Running twice is harmless — the second call finds nothing left to release.
+ */
+internal fun schedulePlatformDeadline(delayMs: Long, onDue: () -> Unit) {
+  val logger = logger<SecurityScanLauncher>()
+  val entered = AtomicBoolean(false)
+  val job = object : Job(DEADLINE_JOB) {
+    override fun run(monitor: IProgressMonitor?): IStatus {
+      entered.set(true)
+      // Always OK_STATUS: a failure status would raise a platform error dialog over a background
+      // timer, the same reason the diagnostics jobs report success and log instead.
+      runCatching(onDue).onFailure { logger.warn("Failed to expire a security scan request: ${it::class.simpleName}") }
+      return Status.OK_STATUS
+    }
+  }
+  job.isSystem = true
+  job.addJobChangeListener(object : JobChangeAdapter() {
+    override fun done(event: IJobChangeEvent?) {
+      if (!entered.get()) logger.warn("A remote security scan deadline never started.")
+      runCatching(onDue).onFailure { logger.warn("Failed to expire a security scan request: ${it::class.simpleName}") }
+    }
+  })
+  job.schedule(delayMs)
+}
 
 private const val NO_EDITOR_MESSAGE =
   "Open a file in the editor to run a GitLab security scan on it."
@@ -100,6 +154,7 @@ class SecurityScanLauncher(
   private val tokenProviderManager: GitLabTokenProviderManager,
   private val coroutineScope: CoroutineScope,
   private val outboundLock: Mutex,
+  private val scheduleDeadline: DeadlineScheduler = ::schedulePlatformDeadline,
   private val notify: (String) -> Unit = NotificationUtils::show,
 ) {
   private val logger by lazy { logger<SecurityScanLauncher>() }
@@ -163,33 +218,59 @@ class SecurityScanLauncher(
     val entered = AtomicBoolean(false)
     val job = coroutineScope.launch {
       entered.set(true)
-      // ONE coroutine, ONE lock region, both notifications in order. Splitting them across two
-      // coroutines would only give mutual exclusion: a Mutex does not hand the lock out in the
-      // order it was asked for, so the scan could overtake the configuration that enables it.
-      outboundLock.withLock {
-        if (!stillEnabled()) {
-          // Switched off between the gate and the send. Drop the request and say nothing: the user
-          // turning the feature off is the answer.
-          if (waiterId != null) CommandWaiters.consumeById(waiterId, epoch)
-          logger.info("Remote security scan was turned off before the request was sent.")
-          return@withLock
+      contained {
+        // ONE coroutine, ONE lock region, both notifications in order. Splitting them across two
+        // coroutines would only give mutual exclusion: a Mutex does not hand the lock out in the
+        // order it was asked for, so the scan could overtake the configuration that enables it.
+        outboundLock.withLock {
+          if (!stillEnabled()) {
+            // Switched off between the gate and the send. Drop the request and say nothing: the
+            // user turning the feature off is the answer.
+            if (waiterId != null) CommandWaiters.consumeById(waiterId, epoch)
+            logger.info("Remote security scan was turned off before the request was sent.")
+            return@withLock
+          }
+          // No server means nothing was sent; leaving the deadline unarmed lets the completion
+          // handler below report it as a failure.
+          val target = server ?: return@withLock
+          // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
+          // above and this line sends `remoteSecurityScans=false` and then the scan request. That
+          // fails safe: the server has just been told the feature is off, and the only thing that
+          // left the plugin is a URI — never the file's contents. Closing the window would mean
+          // holding the registry monitor across both sends, which inverts the lock order.
+          target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
+          target.runSecurityScan(params)
+          if (waiterId != null) armDeadline(waiterId, epoch)
         }
-        // No server means nothing was sent; leaving the deadline unarmed lets the completion
-        // handler below report it as a failure.
-        val target = server ?: return@withLock
-        // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
-        // above and this line sends `remoteSecurityScans=false` and then the scan request. That
-        // fails safe: the server has just been told the feature is off, and the only thing that
-        // left the plugin is a URI — never the file's contents. Closing the window would mean
-        // holding the registry monitor across both sends, which inverts the lock order.
-        target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
-        target.runSecurityScan(params)
-        if (waiterId != null) armDeadline(waiterId, epoch)
       }
     }
     // A cancelled scope makes `launch` return a completed job without throwing and without ever
-    // running the body, so try/catch cannot see it. This can.
+    // running the body, so try/catch cannot see it. This can. It also runs after a contained
+    // failure, which is how a send that threw still reaches the user as a failure.
     job.invokeOnCompletion { reportIfNeverSent(waiterId, epoch, entered.get()) }
+  }
+
+  /**
+   * Runs the sending body so that no failure reaches the scope's parent job.
+   *
+   * The shared scope is built on a plain `Job`, not a `SupervisorJob` (`WorkspaceModule`): one
+   * escaping failure cancels it, and from then on every `launch` anywhere in the plugin —
+   * configuration sends, chat, code suggestions — silently does nothing for the rest of the session.
+   * An lsp4j proxy whose stream has died throws straight out of the two sends below, so this is a
+   * reachable path, not a defensive flourish.
+   *
+   * Cancellation keeps its normal meaning and is rethrown: it is not a failure and does not cancel
+   * the parent. Only the exception's class name is recorded — an lsp4j failure can quote the request
+   * it was carrying, and no path may ever reach the log.
+   */
+  private inline fun contained(body: () -> Unit) {
+    try {
+      body()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Throwable) {
+      logger.warn("Failed to send a remote security scan request: ${e::class.simpleName}")
+    }
   }
 
   /**
@@ -210,29 +291,29 @@ class SecurityScanLauncher(
    * Starts the answer deadline for a request that really went out.
    *
    * The timer is a sibling of the send, never a child of it: a child would keep the send's job alive
-   * for the whole minute and postpone the "did this ever send" check by exactly that long.
+   * for the whole minute and postpone the "did this ever send" check by exactly that long. It runs on
+   * a platform job rather than the shared scope; see [schedulePlatformDeadline] for why.
    *
-   * Arming makes [reportIfNeverSent] stand down, so from here on this timer is the only thing left
-   * that can close the request out. It therefore needs the same failure detection the send job has:
-   * if the scope dies the body never runs, or is cut short, and a command would otherwise wait for
-   * an answer that can no longer come.
+   * Marked armed **before** it is scheduled, so the two can never both stand down. Arming makes
+   * [reportIfNeverSent] stand down, which leaves the deadline as the only thing that can still close
+   * the request out — hence the scheduler's obligation to run [expire] even when the delay cannot
+   * elapse. Scheduling with a delay returns immediately, so doing it under the outbound lock costs
+   * nothing.
    */
   private fun armDeadline(waiterId: Long, epoch: Long) {
     CommandWaiters.markDeadlineArmed(waiterId, epoch)
-    val entered = AtomicBoolean(false)
-    val timer = coroutineScope.launch {
-      entered.set(true)
-      delay(RESPONSE_DEADLINE_MS)
-      // By id, never "the oldest": this request may already have been answered and a different
-      // scan may be queued on the same file by now.
-      if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
-    }
-    timer.invokeOnCompletion {
-      if (!entered.get()) logger.warn("A remote security scan deadline never started.")
-      // A no-op after a deadline that did fire, or after the response claimed the waiter: both
-      // removed it already, so this finds nothing and stays quiet.
-      if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
-    }
+    scheduleDeadline(RESPONSE_DEADLINE_MS) { expire(waiterId, epoch) }
+  }
+
+  /**
+   * Releases a request whose answer will not come. Safe to call repeatedly and from any thread: the
+   * waiter can only be removed once, so the message is shown exactly once however often this runs.
+   *
+   * By id, never "the oldest": this request may already have been answered and a *different* scan
+   * may be queued on the same file by the time the deadline comes due.
+   */
+  private fun expire(waiterId: Long, epoch: Long) {
+    if (CommandWaiters.consumeById(waiterId, epoch)) notify(TIMED_OUT_MESSAGE)
   }
 
   /**
