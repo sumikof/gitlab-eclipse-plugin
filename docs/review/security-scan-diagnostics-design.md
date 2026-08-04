@@ -320,6 +320,8 @@ ConnectionConfigGeneration の seqlock 下で設定を読む
 server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
   |- 例外 -> **registry.abort(token)** して中止
   v
+registry.markSendAttempted(token)              // ★ ここより前のキャンセルは Definite(§9.1.2)
+  v
 server.runSecurityScan(SecurityScanParams(uri, source))
   |- 例外 -> **abort しない。**送信済みかもしれないため InFlight を保持したまま終える。
   |          期限は既に起動済みなのでタイムアウト -> Draining の経路に乗る(§9.1.1)
@@ -435,18 +437,38 @@ fun start(request: ScanRequest) {
   if (job == null) { onNeverStarted(request); return }
 
   job.invokeOnCompletion { cause ->
-    // armed でない = 本体へ一度も入っていない = 未送信が確定(Definite)
-    if (cause != null && !registry.isArmed(request.token)) onNeverStarted(request)
+    if (cause == null) return@invokeOnCompletion
+    when (registry.startStateOf(request.token)) {
+      NEVER_ENTERED -> onNeverStarted(request)   // 本体へ一度も入っていない = Definite
+      PRE_SEND      -> onNeverStarted(request)   // 入ったがスキャン通知を試みる前 = Definite
+      POST_SEND     -> Unit                      // Ambiguous。期限は起動済みなので Draining へ
+      GONE          -> Unit                      // 既に決着済み(complete / abort)
+    }
   }
 }
 ```
 
 **`armTimeout` は `Boolean` を返す(自己レビューで追加)。**`reserve` から本体入場までの間に応答が到着すると、`complete` が entry を消し(場合によっては `Pending` を昇格させ)ている。このとき `armTimeout` は no-op になるが、**そのまま `sendScan` へ進むと、どの `InFlight` にも紐づかない要求を送ってしまう**。その応答は孤児になるか、昇格した B を誤って `complete` する。したがって `armTimeout` は「対象トークンが現役の `InFlight` であり、期限を起動した」ときだけ `true` を返し、**`false` なら本体は何も送らずに終える**。
 
-この早期 return は `cause == null` の正常終了なので `invokeOnCompletion` の `onNeverStarted` は呼ばれない。仮にその後キャンセルされて `cause != null` かつ `isArmed == false` となっても、`onNeverStarted` → `abortAndDiscardPending(token)` はトークン照合により no-op となる(現役 entry は B であって A ではない)。
+この早期 return は `cause == null` の正常終了なので `invokeOnCompletion` は何もしない。仮にその後キャンセルされても、`startStateOf` は `GONE` を返すため誤って破棄することはない。
+
+#### 送信を試みる前のキャンセルは Definite である(Codex round11-P2)
+
+round10 で「期限を本体の最初の文で起動する」ようにした結果、**`Mutex` 待ちや `didChangeConfiguration` の途中でキャンセルされた場合も Ambiguous 扱いになる**という副作用が生じた。この時点では `runSecurityScan` を**一度も呼んでいないので未送信が確定している**のに、60 秒後に「応答が来るはずのない要求」がタイムアウトし、`COMMAND` に誤った「no response」を出して、そのパスを LS 停止まで塞ぐ。
+
+したがって `InFlight` は「スキャン通知を試みたか」を保持し、レジストリは次の 4 値を返す。
+
+| `startStateOf(token)` | 意味 | 完了ハンドラの扱い |
+|---|---|---|
+| `NEVER_ENTERED` | `armTimeout` に到達していない | **Definite** → `onNeverStarted`(`not_started`) |
+| `PRE_SEND` | armed 済みだが `runSecurityScan` を試みていない | **Definite** → `onNeverStarted`(`not_started`) |
+| `POST_SEND` | `runSecurityScan` を試みた(成否は問わない) | **Ambiguous** → 何もしない。期限は起動済みなので `Draining` へ |
+| `GONE` | 既に `complete` / `abort` で決着済み | 何もしない |
+
+`PRE_SEND` → `POST_SEND` への遷移は、**`server.runSecurityScan(...)` を呼ぶ直前**に `registry.markSendAttempted(token)` をロック下で行う。マークと実際の送信の間でキャンセルされた場合は `POST_SEND` = Ambiguous に倒れるが、これは §9.1.1 の分類と同じく**安全側**である。
 
 - **判定を同期的に行わない。**`invokeOnCompletion` はキャンセル済みスコープでも即座に発火するため、未開始は確実に検出できる
-- **`InFlight` が期限を持たない時間帯は、本体の最初の 1 文までに限られる。**そこまでに到達しなければ `isArmed == false` となり、未開始として破棄される
+- **`InFlight` が期限を持たない時間帯は、本体の最初の 1 文までに限られる。**そこまでに到達しなければ `startStateOf` が `NEVER_ENTERED` を返し、未開始として破棄される
 - **本体へ入った後は、送信ルーチン側の Definite / Ambiguous 分類(§9.1.1)に委ねる。**`Mutex` 待ちや `didChangeConfiguration` の途中でキャンセルされても、**既に期限が起動しているのでタイムアウト → `Draining` の経路に必ず乗る**
 - 期限が「送信時刻」ではなく「本体入場時刻」から始まることになるが、両者の差は `Mutex` の待ち時間だけであり、この `Mutex` が保護するのは通知 2 通の書き込みのみ(§15.1)なので 60 秒の期限に対して無視できる
 
@@ -860,7 +882,10 @@ round2 では「`DRAIN_WINDOW`(5 分)を過ぎたら応答は届かないもの�
 
 ```
 状態 = Idle
-     | InFlight(requestId, source, documentUri, sentAt, deadline)
+     | InFlight(requestId, source, documentUri, armed, sendAttempted, deadline)
+       //  armed / sendAttempted は §9.1.2 の startStateOf を決める。
+       //  armed=false は「本体へ入っていない」、armed=true かつ sendAttempted=false は
+       //  「入ったがスキャン通知を試みていない」= いずれも Definite(未送信)
      | Draining(timedOutSource)          // タイムアウトした要求の source を保持する
 Pending(source: SecurityScanSource,
         documentUri: String)             // 未送信の後続要求(パスあたり最大 1 件)
@@ -1025,7 +1050,7 @@ process?.destroy()
 - 状態を変更する全操作は `connectionEpoch: Long` を受け取り、そのロックの下で `epoch == currentEpoch` を確認してから実行する。不一致なら何もせず false を返す
 - **`onServerStopped()` も同じロックを取る**。したがって「照合 → 実行」と「epoch の更新 → 状態の破棄」が交錯することはない
 
-対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `reserve` / `armTimeout` / `isArmed` / `complete` / `abort` / `abortAndDiscardPending` / `suspendSource` / `resumeSource`。
+対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `reserve` / `armTimeout` / `markSendAttempted` / `startStateOf` / `complete` / `abort` / `abortAndDiscardPending` / `suspendSource` / `resumeSource`。
 
 このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
@@ -1247,7 +1272,8 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled|
 | **失敗経路の分類(§9.1.1)** | seqlock 不安定・`didChangeConfiguration` 例外では `Idle` に戻り**タイムアウトも `Draining` も発生しない**こと(round4-P2)/ **`runSecurityScan` 例外では `abort` せず `InFlight` を保持して `armTimeout` へ進むこと**(round7-P1 の回帰テスト)/ 監査に `exceptionType` のみが載り本文が載らないこと |
 | **`Pending` 昇格(§9.1.2)** | `complete` / `abort` が `PromotedRequest` を**新しい `requestId` 付きで**返すこと / 昇格要求に対する `armTimeout` / `abort` がそのトークンで効くこと / **昇格時に `reserve` が二重に呼ばれないこと**(round7-P1 の回帰テスト) |
 | **昇格時の URI 引き継ぎ(§9.1.2)** | `PromotedRequest.documentUri` が**受理時の文字列と逐語一致**すること / **正規化パスから再構築した値ではない**こと(パーセントエンコードを含む URI で検証)(round8-P1 の回帰テスト) |
-| **送信の開始保証(§9.1.2)** | キャンセル済み `CoroutineScope` で `launch` が例外を投げず未開始になる場合に `invokeOnCompletion` + **`isArmed`** で検出して破棄すること(round8-P1)/ **本体に入った直後にスコープがキャンセルされた場合は Definite として扱わず `InFlight` を保持すること**(round9-P1)/ **`Mutex` 待ちや `didChangeConfiguration` 中のキャンセルでも期限が起動済みで `Draining` に至ること**(round10-P1 の回帰テスト)/ **初回送信でも未開始が検出されること**(round10-P1 の回帰テスト)/ `abortAndDiscardPending` が 1 回で終わりループしないこと(round9-P2)/ 破棄した `COMMAND` が **`not_started` の文言で**通知され監査も `not_started` になること(round10-P2) |
+| **送信の開始保証(§9.1.2)** | キャンセル済み `CoroutineScope` で `launch` が例外を投げず未開始になる場合に `invokeOnCompletion` + **`startStateOf`** で検出して破棄すること(round8-P1)/ `abortAndDiscardPending` が 1 回で終わりループしないこと(round9-P2)/ **初回送信でも未開始が検出されること**(round10-P1)/ 破棄した `COMMAND` が **`not_started` の文言で**通知され監査も `not_started` になること(round10-P2) |
+| **`startStateOf` の 4 値(§9.1.2)** | `NEVER_ENTERED` / `PRE_SEND` → **Definite として破棄**され `not_started` になること / **`POST_SEND` は破棄せず `InFlight` を保持し `Draining` に至ること**(round9-P1・round10-P1)/ **`Mutex` 待ちでのキャンセルが `PRE_SEND` と判定され、誤った "no response" を出さないこと**(round11-P2 の回帰テスト)/ `GONE` で何も起きないこと |
 | **`reserve` の URI 契約(§9.1.2)** | `InFlight` / `Draining` 中の `reserve` で渡した `documentUri` が `Pending` に保存され、昇格時に逐語一致で復元されること(round9-P1 の回帰テスト) |
 | **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が `false` を返し、**本体が何も送らずに終える**こと(自己レビューで追加した回帰テスト)/ `Draining` に固定されないこと(round5-P2) |
 | **要求トークンの照合(§9.1)** | A の応答 → `Pending` の B が新 `InFlight` → **A の遅れた `abort` が B を解除しないこと** / **A の遅れた `armTimeout` が B に期限を設定しないこと**(round6-P1 の回帰テスト) |
