@@ -24,8 +24,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import org.eclipse.core.runtime.IStatus
+import org.eclipse.core.runtime.jobs.IJobChangeEvent
 import org.eclipse.core.runtime.jobs.Job
+import org.eclipse.core.runtime.jobs.JobChangeAdapter
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -119,8 +123,11 @@ class SecurityScanLauncherTest : DescribeSpec({
 
     afterEach { pendingDeadlines().forEach { it.cancel() } }
 
-    it("runs the body once the delay has passed") {
-      val ran = CountDownLatch(1)
+    it("runs the body from the job itself and again from its completion listener") {
+      // Counting to two is the point. A single count would be satisfied by either call site alone,
+      // so it would not notice the job body losing its call — and the body is the normal path,
+      // the one that actually reports a scan that timed out.
+      val ran = CountDownLatch(2)
 
       schedulePlatformDeadline(1L) { ran.countDown() }
 
@@ -138,15 +145,42 @@ class SecurityScanLauncherTest : DescribeSpec({
       ran.await(10, TimeUnit.SECONDS) shouldBe true
     }
 
-    it("does not let a throwing body escape into the platform") {
+    it("runs the body anyway when the platform refuses to schedule the job") {
+      // A negative delay makes JobManager reject the schedule outright. It rejects every schedule
+      // the same way, with "Job manager has been shut down.", once the workbench is stopping —
+      // and by then the deadline is already marked armed, so nothing else would ever release the
+      // waiter.
       val ran = CountDownLatch(1)
 
-      schedulePlatformDeadline(1L) {
-        ran.countDown()
-        error("boom")
-      }
+      schedulePlatformDeadline(-1L) { ran.countDown() }
 
       ran.await(10, TimeUnit.SECONDS) shouldBe true
+    }
+
+    it("does not let a throwing body escape into the platform") {
+      // Observed through the status the platform ends the job with, not through the body: a body
+      // that threw would be turned into an error status, which raises a dialog over what is only a
+      // background timer. Counting a latch before the throw would prove nothing at all.
+      val finished = CountDownLatch(1)
+      val results = CopyOnWriteArrayList<IStatus>()
+      val listener = object : JobChangeAdapter() {
+        override fun done(event: IJobChangeEvent) {
+          if (event.job.name != DEADLINE_JOB) return
+          results += event.result
+          finished.countDown()
+        }
+      }
+      Job.getJobManager().addJobChangeListener(listener)
+
+      try {
+        schedulePlatformDeadline(1L) { error("boom") }
+
+        finished.await(10, TimeUnit.SECONDS) shouldBe true
+        results.isEmpty() shouldBe false
+        results.none { it.severity == IStatus.ERROR } shouldBe true
+      } finally {
+        Job.getJobManager().removeJobChangeListener(listener)
+      }
     }
   }
 

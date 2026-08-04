@@ -45,9 +45,11 @@ internal const val DEADLINE_JOB = "GitLab security scan response deadline"
 /**
  * Runs [onDue] once the delay has passed.
  *
- * The implementation must call [onDue] **exactly once, even if the delay can never elapse**, so a
- * command is always closed out. [onDue] is written to tolerate being called more than once, so an
- * implementation may call it again rather than track whether it already did.
+ * An implementation **must run [onDue] even if the delay can never elapse, and must not throw**.
+ * The caller marks the deadline armed before calling this, which stands the send's own failure
+ * reporting down, so from that point nothing else is left to close the request out. [onDue] is
+ * written to tolerate being called more than once, so an implementation may simply call it again
+ * rather than track whether it already did.
  */
 internal typealias DeadlineScheduler = (delayMs: Long, onDue: () -> Unit) -> Unit
 
@@ -61,19 +63,30 @@ internal typealias DeadlineScheduler = (delayMs: Long, onDue: () -> Unit) -> Uni
  * workbench is gone, so it is exactly the kind of body that must not run there. The platform catches
  * and logs what a job throws instead.
  *
- * [onDue] is still invoked from the completion listener when the body did not run at all: the
- * platform can cancel a scheduled job at shutdown, and the command waiting for the answer has to be
- * released either way. Running twice is harmless — the second call finds nothing left to release.
+ * [onDue] runs from three places, because each covers a way the previous one can fail to happen: the
+ * job body is the normal path, the completion listener covers a job the platform cancelled before it
+ * ever ran, and the scheduling guard covers a job the platform refused to take at all. `JobManager`
+ * rejects every `schedule` with `IllegalStateException("Job manager has been shut down.")` once the
+ * workbench is stopping, and by then the deadline is already marked armed, so without that last one
+ * the waiter would never be released. Running more than once is harmless: the second call finds
+ * nothing left to release.
  */
 internal fun schedulePlatformDeadline(delayMs: Long, onDue: () -> Unit) {
   val logger = logger<SecurityScanLauncher>()
   val entered = AtomicBoolean(false)
+
+  // Nothing this runs may escape: inside the job it would become a failure status and raise a
+  // platform error dialog over what is only a background timer, and inside the listener or the
+  // scheduling guard it would escape to the caller. Only the class name is recorded.
+  fun release() = runCatching(onDue)
+    .onFailure { logger.warn("Failed to expire a security scan request: ${it::class.simpleName}") }
+    .let { }
+
   val job = object : Job(DEADLINE_JOB) {
     override fun run(monitor: IProgressMonitor?): IStatus {
       entered.set(true)
-      // Always OK_STATUS: a failure status would raise a platform error dialog over a background
-      // timer, the same reason the diagnostics jobs report success and log instead.
-      runCatching(onDue).onFailure { logger.warn("Failed to expire a security scan request: ${it::class.simpleName}") }
+      release()
+      // Always OK_STATUS, for the same reason the diagnostics jobs report success and log instead.
       return Status.OK_STATUS
     }
   }
@@ -81,10 +94,13 @@ internal fun schedulePlatformDeadline(delayMs: Long, onDue: () -> Unit) {
   job.addJobChangeListener(object : JobChangeAdapter() {
     override fun done(event: IJobChangeEvent?) {
       if (!entered.get()) logger.warn("A remote security scan deadline never started.")
-      runCatching(onDue).onFailure { logger.warn("Failed to expire a security scan request: ${it::class.simpleName}") }
+      release()
     }
   })
-  job.schedule(delayMs)
+  runCatching { job.schedule(delayMs) }.onFailure {
+    logger.warn("Failed to schedule a security scan deadline: ${it::class.simpleName}")
+    release()
+  }
 }
 
 private const val NO_EDITOR_MESSAGE =
