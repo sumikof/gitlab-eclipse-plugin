@@ -320,7 +320,9 @@ ConnectionConfigGeneration の seqlock 下で設定を読む
 server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
   |- 例外 -> **registry.abort(token)** して中止
   v
-registry.markSendAttempted(token)              // ★ ここより前のキャンセルは Definite(§9.1.2)
+if (!registry.markSendAttempted(token)) return // ★ 応答期限を起動 + 現役判定。
+  |    // false(開始期限で中止済み/別要求に置換)-> **何も送らずに終える**(§9.1.2)
+  |    // ここより前のキャンセルは Definite、ここから後は Ambiguous
   v
 server.runSecurityScan(SecurityScanParams(uri, source))
   |- 例外 -> **abort しない。**送信済みかもしれないため InFlight を保持したまま終える。
@@ -467,10 +469,23 @@ round10 で「期限を本体の最初の文で起動する」ようにした結
 
 `PRE_SEND` → `POST_SEND` への遷移は、**`server.runSecurityScan(...)` を呼ぶ直前**に `registry.markSendAttempted(token)` をロック下で行う。マークと実際の送信の間でキャンセルされた場合は `POST_SEND` = Ambiguous に倒れるが、これは §9.1.1 の分類と同じく**安全側**である。
 
+#### 期限は 2 本に分ける(Codex round12-P2)
+
+round10〜11 では単一の 60 秒期限を本体入場時に起動していた。その根拠として「`Mutex` の待ちは無視できる」と書いたが、**これは自分のリスク表 K11(`Mutex` 保持中に LS への書き込みがブロックしうる)と矛盾していた**。ロックが 60 秒以上保持されると、`runSecurityScan` をまだ試みていない `PRE_SEND` がタイムアウトし、**誤った "no response" を通知して `Draining` に落ちる**。しかも待ちが解ければ送信フローはそのまま続行しうる。
+
+| 期限 | 起動点 | 長さ(既定) | 満了時の扱い |
+|---|---|---|---|
+| **開始期限** `startDeadline` | 本体入場(`armTimeout`) | **10 秒** | 状態が `PRE_SEND` のままなら **Definite** として `abortAndDiscardPending` + `not_started`。`POST_SEND` に進んでいれば何もしない |
+| **応答期限** `responseDeadline` | `markSendAttempted` | **60 秒** | §13.2 のタイムアウト(通知 + `Draining`) |
+
+開始期限で中止された要求が、その後ロックを取得して送信を続行しないよう、**`markSendAttempted(token)` も `Boolean` を返す**。entry が無い / 別要求に置き換わっている場合は `false` を返し、**本体はスキャン通知を送らずに終える**(`armTimeout` と同じ規律)。これで「待ちが解けると送信フローは継続し得る」経路も閉じる。
+
+`not_started` は §11.3 / §16.2 のとおり `COMMAND` にのみ通知し、監査には `SAVE` も残す。
+
 - **判定を同期的に行わない。**`invokeOnCompletion` はキャンセル済みスコープでも即座に発火するため、未開始は確実に検出できる
 - **`InFlight` が期限を持たない時間帯は、本体の最初の 1 文までに限られる。**そこまでに到達しなければ `startStateOf` が `NEVER_ENTERED` を返し、未開始として破棄される
 - **本体へ入った後は、送信ルーチン側の Definite / Ambiguous 分類(§9.1.1)に委ねる。**`Mutex` 待ちや `didChangeConfiguration` の途中でキャンセルされても、**既に期限が起動しているのでタイムアウト → `Draining` の経路に必ず乗る**
-- 期限が「送信時刻」ではなく「本体入場時刻」から始まることになるが、両者の差は `Mutex` の待ち時間だけであり、この `Mutex` が保護するのは通知 2 通の書き込みのみ(§15.1)なので 60 秒の期限に対して無視できる
+- **応答期限は本体入場ではなく `markSendAttempted` から起動する**(§9.1.2 の「期限は 2 本に分ける」)。本体入場で起動するのは**開始期限**のみである。round10 でここに「`Mutex` の待ちは無視できる」と書いたのは、リスク K11 と矛盾する誤りだった
 
 #### この入口は初回送信にも使う(Codex round10-P1)
 
@@ -827,8 +842,8 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 
 **確定仕様**:
 
-- 送信時に `deadline = 送信時刻 + SCAN_RESPONSE_TIMEOUT`(既定 **60 秒**)を記録する
-- 期限切れの検出は、**次のスキャン送信時**と**応答受信時**の掃除(sweep)で行う。加えて `SecurityScanInFlightRegistry` が単一の遅延タスクを持ち、最も近い deadline で起床する
+- `markSendAttempted` の時点で `responseDeadline = 現在時刻 + SCAN_RESPONSE_TIMEOUT`(既定 **60 秒**)を記録する。**本体入場時に起動するのは開始期限(既定 10 秒)であり、応答期限とは別物である**(§9.1.2)
+- 期限切れの検出は、**次のスキャン送信時**と**応答受信時**の掃除(sweep)で行う。加えて `SecurityScanInFlightRegistry` が単一の遅延タスクを持ち、最も近い期限(開始期限・応答期限のいずれか)で起床する
 - 期限切れ時: `source == COMMAND` なら §11.3 のタイムアウト文言を通知し、監査行に `outcome=timeout` を残す
 - **タイムアウトはスロットを解放しない(Codex round2-P1 により round1 の仕様を是正)。**タイムアウトは「ユーザーへの応答義務」の期限であって、「その要求が届いていない証明」ではない
 
@@ -882,7 +897,8 @@ round2 では「`DRAIN_WINDOW`(5 分)を過ぎたら応答は届かないもの�
 
 ```
 状態 = Idle
-     | InFlight(requestId, source, documentUri, armed, sendAttempted, deadline)
+     | InFlight(requestId, source, documentUri, armed, sendAttempted,
+                startDeadline, responseDeadline)
        //  armed / sendAttempted は §9.1.2 の startStateOf を決める。
        //  armed=false は「本体へ入っていない」、armed=true かつ sendAttempted=false は
        //  「入ったがスキャン通知を試みていない」= いずれも Definite(未送信)
@@ -1165,10 +1181,18 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled|
 設定が有効 → 無効へ**遷移した**とき(値が同じなら何もしない)、次を**この順に**行う。
 
 1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan")`** — この `source` の**失効世代(`sourceEpoch`)を奇数へ進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
-2. in-flight レジストリ(§13.4)と `SAVE` 失敗抑制の状態(§11.3)を破棄する
+2. in-flight レジストリの **`Pending`(未送信)だけ**を破棄する。**`InFlight` / `Draining`(= 既に送信済み)は破棄しない**。あわせて `SAVE` 失敗抑制の状態(§11.3)を破棄する
 3. `deleteMarkersBySource("gitlab_security_scan", watermark)` の Job を schedule する。`watermark` は**この時点の generation カウンタ値**
 
 手順 1 が手順 3 より先にあるため、掃除の後に到着した遅延診断は受理時点で除外され、**marker を復活させられない**。ライフサイクル epoch は**進めない**(進める必要がない。無効化は LS の生死とは無関係であり、他 source の in-flight な適用処理を巻き込む理由がない)。
+
+**送信済みの要求を破棄してはならない(Codex round12-P1)。**round9〜11 では手順 2 で in-flight レジストリを丸ごと破棄していた。しかし**要求 A を送信した後に無効化しても、A はワイヤ上に残る**。直後に再有効化して要求 B を登録すると、相関 ID の無い A の遅延応答が B を `complete` してしまう。無効化ではライフサイクル epoch を進めないため、§14.6 の接続 epoch による隔離も効かない。single-flight の不変条件が崩れる。
+
+したがって破棄するのは **`Pending`(まだ送っていないもの)だけ**とする。`InFlight` / `Draining` は応答の到着または LS 停止まで保持する。
+
+- 無効化中は新規送信が起こらないので、保持しても新たな送信は発生しない
+- 再有効化後に同じパスへ要求 B が来ても、状態が `InFlight`(A)なので `Pending` に畳み込まれ、**A の応答が届くまで送信されない**。これは single-flight の不変条件そのものである
+- A の応答が届いたら通常どおり `complete` する。無効化中に届いた場合、その診断は §17.1 手順 1 の `suspendSource` により受理時点で除外されるので marker は作られない
 
 再び有効化されたときは `resumeSource("gitlab_security_scan")` を呼ぶ(失効世代をさらに進める)。
 
@@ -1274,6 +1298,8 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled|
 | **昇格時の URI 引き継ぎ(§9.1.2)** | `PromotedRequest.documentUri` が**受理時の文字列と逐語一致**すること / **正規化パスから再構築した値ではない**こと(パーセントエンコードを含む URI で検証)(round8-P1 の回帰テスト) |
 | **送信の開始保証(§9.1.2)** | キャンセル済み `CoroutineScope` で `launch` が例外を投げず未開始になる場合に `invokeOnCompletion` + **`startStateOf`** で検出して破棄すること(round8-P1)/ `abortAndDiscardPending` が 1 回で終わりループしないこと(round9-P2)/ **初回送信でも未開始が検出されること**(round10-P1)/ 破棄した `COMMAND` が **`not_started` の文言で**通知され監査も `not_started` になること(round10-P2) |
 | **`startStateOf` の 4 値(§9.1.2)** | `NEVER_ENTERED` / `PRE_SEND` → **Definite として破棄**され `not_started` になること / **`POST_SEND` は破棄せず `InFlight` を保持し `Draining` に至ること**(round9-P1・round10-P1)/ **`Mutex` 待ちでのキャンセルが `PRE_SEND` と判定され、誤った "no response" を出さないこと**(round11-P2 の回帰テスト)/ `GONE` で何も起きないこと |
+| **2 本の期限(§9.1.2)** | **`Mutex` を 60 秒以上保持しても `PRE_SEND` が「応答なし」を通知しない**こと(開始期限で `not_started` になる)(round12-P2 の回帰テスト)/ 応答期限が `markSendAttempted` から起算されること / **開始期限で中止された後にロックを取得しても `markSendAttempted` が `false` を返して送信しないこと** |
+| **無効化と送信済み要求(§17.1)** | 無効化で **`Pending` だけが破棄され `InFlight` / `Draining` は残る**こと / **無効化 → 再有効化 → 同一パスへの要求 B が `Pending` に畳み込まれ、A の応答が来るまで送信されないこと**(round12-P1 の回帰テスト)/ 無効化中に届いた A の診断が marker を作らないこと |
 | **`reserve` の URI 契約(§9.1.2)** | `InFlight` / `Draining` 中の `reserve` で渡した `documentUri` が `Pending` に保存され、昇格時に逐語一致で復元されること(round9-P1 の回帰テスト) |
 | **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が `false` を返し、**本体が何も送らずに終える**こと(自己レビューで追加した回帰テスト)/ `Draining` に固定されないこと(round5-P2) |
 | **要求トークンの照合(§9.1)** | A の応答 → `Pending` の B が新 `InFlight` → **A の遅れた `abort` が B を解除しないこと** / **A の遅れた `armTimeout` が B に期限を設定しないこと**(round6-P1 の回帰テスト) |
