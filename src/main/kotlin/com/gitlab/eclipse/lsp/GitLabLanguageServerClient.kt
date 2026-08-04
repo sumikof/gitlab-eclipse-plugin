@@ -20,6 +20,11 @@ import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
+import com.gitlab.eclipse.security.ResponseDecision
+import com.gitlab.eclipse.security.SecurityScanResponse
+import com.gitlab.eclipse.security.SecurityScanStatusReporter
+import com.gitlab.eclipse.security.securityScanPathKey
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.JsonObject
 import org.eclipse.lsp4j.*
@@ -91,6 +96,34 @@ class GitLabLanguageServerClient(
       }
     }
   }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
+  /**
+   * A remote security scan came back.
+   *
+   * The whole body is contained, and the containment records only the exception's class name: the
+   * payload quotes the scanned file and the server's own error text, so neither it nor a failure
+   * raised while handling it may reach the error log (design §16.1).
+   *
+   * The audit line is written before the user is told, and its own failure is contained too — a log
+   * that cannot be written must not swallow the notification the user is waiting for (Phase 5A).
+   * The notification goes through [NotificationUtils.show], not `showOnUiThread`: this runs on
+   * lsp4j's dispatch thread, and building the popup there would be invalid thread access.
+   */
+  @JsonNotification("$/gitlab/security/remoteSecurityScan/response")
+  fun securityScanResponse(response: SecurityScanResponse) {
+    runCatching {
+      // Nothing identifies the request, so an answer with no file cannot be matched to one.
+      val filePath = response.filePath ?: return
+      val path = securityScanPathKey(filePath)
+      when (val decision = SecurityScanStatusReporter.settle(path, response, connectionEpoch)) {
+        is ResponseDecision.Rejected -> Unit
+        is ResponseDecision.Report -> {
+          runCatching { logger.info(decision.auditLine) }
+          decision.notify?.let { NotificationUtils.show(it) }
+        }
+      }
+    }.onFailure { logger.warn("Failed to handle a security scan response: ${it::class.simpleName}") }
+  }
 
   @JsonNotification("$/gitlab/token/check")
   fun gitlabTokenCheck(params: Any?) {

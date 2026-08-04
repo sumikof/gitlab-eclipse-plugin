@@ -315,6 +315,19 @@ class SecurityScanLauncherTest : DescribeSpec({
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.COMMAND
     }
 
+    it("arms no answer deadline for a save, so a save can never report a timeout") {
+      // §11.3 row 7. A save is background work: the user did not ask, and a popup a minute after a
+      // save would arrive with no context at all. The silence is structural rather than a check on
+      // the trigger — a save registers no waiter, so there is nothing to expire.
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.SENT
+      scope.testScheduler.advanceUntilIdle()
+
+      deadlines shouldBe emptyList()
+      notified shouldBe emptyList()
+    }
+
     it("reports NO_TOKEN without sending when there is no token") {
       every { tokenManager.getToken() } returns ""
       val scope = TestScope(StandardTestDispatcher())

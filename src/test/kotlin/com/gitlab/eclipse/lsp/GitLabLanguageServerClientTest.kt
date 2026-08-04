@@ -12,10 +12,16 @@ import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
+import com.gitlab.eclipse.security.CommandWaiters
+import com.gitlab.eclipse.security.SecurityScanResponse
+import com.gitlab.eclipse.security.SecurityScanStatusReporter
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.google.gson.JsonObject
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.*
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.Diagnostic
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.PublishDiagnosticsParams
@@ -28,6 +34,7 @@ import org.eclipse.lsp4j.jsonrpc.services.GenericEndpoint
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
+import org.osgi.framework.Bundle
 import java.util.concurrent.CompletableFuture
 
 class GitLabLanguageServerClientTest : DescribeSpec({
@@ -264,6 +271,111 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.publishDiagnostics(PublishDiagnosticsParams(uri, listOf(diagnosticFrom("sast"))))
 
       verify { markerService.apply(key, any(), 1L, 0L) }
+    }
+  }
+
+  describe("security scan response") {
+    val path = "/p/a.kt"
+
+    beforeEach {
+      DiagnosticGenerationRegistry.resetForTest()
+      CommandWaiters.resetForTest()
+      SecurityScanStatusReporter.resetForTest()
+      mockkObject(NotificationUtils)
+      every { NotificationUtils.show(any()) } returns Unit
+    }
+
+    afterEach {
+      unmockkObject(NotificationUtils)
+      SecurityScanStatusReporter.resetForTest()
+      CommandWaiters.resetForTest()
+      DiagnosticGenerationRegistry.resetForTest()
+    }
+
+    // The server sends this as a plain notification, so lsp4j has to be able to dispatch it under
+    // the exact method name. Asserting the notification as well keeps this able to fail: an
+    // unimplemented handler dispatches perfectly well.
+    it("dispatches the response notification through lsp4j") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+
+      GenericEndpoint(client).notify(
+        "\$/gitlab/security/remoteSecurityScan/response",
+        SecurityScanResponse(filePath = "file:$path", status = 200, results = emptyList())
+      )
+
+      verify { NotificationUtils.show("GitLab security scan: no issues found.") }
+    }
+
+    it("shows the fixed message and never the server's own error text") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+
+      client.securityScanResponse(
+        SecurityScanResponse(filePath = path, status = 403, error = "Bearer glpat-SECRET")
+      )
+
+      verify {
+        NotificationUtils.show(
+          "GitLab security scan failed: the real-time scan is not available for this project or namespace."
+        )
+      }
+      verify(exactly = 0) { NotificationUtils.show(match { it.contains("glpat") }) }
+    }
+
+    it("writes the audit line to the log without the error text or the absolute path") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+
+      client.securityScanResponse(
+        SecurityScanResponse(filePath = path, status = 500, error = "Bearer glpat-SECRET")
+      )
+
+      verify {
+        log.info(
+          "securityScan source=command outcome=failure httpStatus=500 findings=- exceptionType=- path=-"
+        )
+      }
+    }
+
+    it("stays silent about a save that succeeded") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+
+      client.securityScanResponse(
+        SecurityScanResponse(filePath = path, status = 200, results = listOf("x"))
+      )
+
+      verify(exactly = 0) { NotificationUtils.show(any()) }
+    }
+
+    it("ignores a response that does not say which file it is about") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+
+      client.securityScanResponse(SecurityScanResponse(status = 500))
+
+      verify(exactly = 0) { NotificationUtils.show(any()) }
+    }
+
+    it("ignores a response from a connection that has already been replaced") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+      DiagnosticGenerationRegistry.onServerStopped()
+
+      client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
+
+      verify(exactly = 0) { NotificationUtils.show(any()) }
+    }
+
+    it("swallows failures raised while handling the notification") {
+      val client = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, 0L)
+      every { NotificationUtils.show(any()) } throws RuntimeException("no display")
+
+      client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
+
+      verify { NotificationUtils.show(any()) }
     }
   }
 
