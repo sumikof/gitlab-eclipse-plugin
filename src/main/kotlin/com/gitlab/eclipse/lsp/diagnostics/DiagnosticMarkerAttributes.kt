@@ -22,6 +22,13 @@ object DiagnosticMarkerAttributes {
   private const val NO_MESSAGE = "(no message)"
   private val WHITESPACE = Regex("\\s+")
 
+  /**
+   * `Eclipse Core Resources` の `MarkerInfo.checkValidAttribute` は `null` / `String` /
+   * `Boolean` / `Integer` **以外**を渡すと `IllegalArgumentException`(`CoreException` ではない)
+   * で落とす(javap で確認済み)。`generation` / `epoch` は API 全体で `Long` だが、marker 属性へは
+   * **`String` として渡す**(`Int` へ縮小すると `Long` を静かに切り捨てるため。`String` は
+   * `Long` を可逆に往復できる)。
+   */
   fun of(diagnostic: Diagnostic, generation: Long, epoch: Long): Map<String, Any> {
     val attributes = mutableMapOf<String, Any>(
       IMarker.SEVERITY to severityOf(diagnostic.severity),
@@ -29,8 +36,8 @@ object DiagnosticMarkerAttributes {
       IMarker.LINE_NUMBER to lineOf(diagnostic),
       // source は §17.1 の source 単位の失効に使うため必須。空にできない。
       ATTR_SOURCE to (diagnostic.source?.takeIf { it.isNotBlank() } ?: UNKNOWN_SOURCE),
-      ATTR_GENERATION to generation,
-      ATTR_EPOCH to epoch,
+      ATTR_GENERATION to generation.toString(),
+      ATTR_EPOCH to epoch.toString(),
     )
     codeOf(diagnostic)?.let { attributes[ATTR_CODE] = it }
     return attributes

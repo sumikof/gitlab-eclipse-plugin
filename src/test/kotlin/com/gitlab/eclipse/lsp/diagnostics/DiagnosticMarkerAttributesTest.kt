@@ -59,8 +59,11 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
     it("always records source, generation and epoch") {
       val a = DiagnosticMarkerAttributes.of(diag(), 7L, 9L)
       a[DiagnosticMarkerAttributes.ATTR_SOURCE] shouldBe "gitlab_security_scan"
-      a[DiagnosticMarkerAttributes.ATTR_GENERATION] shouldBe 7L
-      a[DiagnosticMarkerAttributes.ATTR_EPOCH] shouldBe 9L
+      // IMarker attributes only accept String/Boolean/Integer at runtime (Eclipse Core Resources
+      // MarkerInfo.checkValidAttribute throws IllegalArgumentException for anything else, notably
+      // Long) — generation/epoch are Long across the API, so they must round-trip through String.
+      a[DiagnosticMarkerAttributes.ATTR_GENERATION] shouldBe "7"
+      a[DiagnosticMarkerAttributes.ATTR_EPOCH] shouldBe "9"
     }
     it("substitutes (unknown) when the source is absent") {
       DiagnosticMarkerAttributes.of(diag(source = null), 1L, 2L)[DiagnosticMarkerAttributes.ATTR_SOURCE] shouldBe "(unknown)"
@@ -74,6 +77,19 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
       val a = DiagnosticMarkerAttributes.of(diag(), 1L, 2L)
       a.containsKey(IMarker.CHAR_START) shouldBe false
       a.containsKey(IMarker.CHAR_END) shouldBe false
+    }
+    it("only ever produces attribute values Eclipse's MarkerInfo.checkValidAttribute accepts") {
+      // Mirrors org.eclipse.core.internal.resources.MarkerInfo.checkValidAttribute, which throws
+      // IllegalArgumentException (not CoreException) for anything other than null/String/Boolean/
+      // Integer. A real IMarker.setAttributes(...) call would blow up on any other runtime type
+      // (e.g. Long), and our headless tests can't construct a real IMarker to catch that directly
+      // — this test is the durable substitute so a future attribute addition can't reintroduce it.
+      val withCode = diag().apply { setCode("SAST-1") }
+      val attributes = DiagnosticMarkerAttributes.of(withCode, 7L, 9L)
+      attributes.size shouldBe 7 // exercise every key, including the optional ATTR_CODE
+      attributes.values.forEach { value ->
+        (value is String || value is Boolean || value is Int) shouldBe true
+      }
     }
   }
 })
