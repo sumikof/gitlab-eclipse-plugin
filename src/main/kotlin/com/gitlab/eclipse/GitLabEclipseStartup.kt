@@ -110,7 +110,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // shutdownDiagnostics() below: the waiters are dropped and their deadlines released while there
     // is still a workbench to show it, instead of leaving in-flight deadline jobs to notify one that
     // is already gone.
-    service<GitLabLanguageServerProcessProvider>().stop()
+    stopLanguageServer()
     shutdownDiagnostics()
     service<CodeSuggestionsManager>().endAllSessions()
     service<OAuthTokenProvider>().stopTokenRefreshTimer()
@@ -150,6 +150,26 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     } catch (e: Exception) {
       // Workbench/display already gone (headless or late shutdown): nothing to release. Never let stop throw.
       logger<GitLabEclipseStartup>().warn("Job-log shutdown skipped: workbench/display unavailable.", e)
+    }
+  }
+
+  /**
+   * Step 1 of the diagnostics shutdown, guarded.
+   *
+   * Reaching the provider goes through Koin, which can be closed by the time a late stop runs, and
+   * the stop itself walks a language server that may be half gone. Unguarded, either would take
+   * [shutdownDiagnostics] and everything after it down with it — the markers would survive and the
+   * save trigger would stay attached to every document provider it reached, which outlive this
+   * bundle. The connection teardown inside the provider is in a `finally`, so it still runs.
+   *
+   * Only the exception's class name is recorded: this path quotes language server state. Never let
+   * stop throw.
+   */
+  private fun stopLanguageServer() {
+    try {
+      service<GitLabLanguageServerProcessProvider>().stop()
+    } catch (e: Exception) {
+      logger<GitLabEclipseStartup>().warn("Language server shutdown skipped: ${e::class.simpleName}")
     }
   }
 

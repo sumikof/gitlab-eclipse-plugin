@@ -376,6 +376,23 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       DiagnosticGenerationRegistry.currentEpoch shouldBe first + 2
     }
 
+    it("tears the connection down even when an earlier stop step throws") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val live = DiagnosticGenerationRegistry.currentEpoch
+      // A late or degraded stop: the lookups at the top of stopLocked() go through Koin, whose
+      // scope may already be closed. The connection is gone either way, so its waiters, deadlines
+      // and markers have to go with it rather than be discarded along with the failure.
+      every { languageServerWrapper.unregisterLanguageServer() } throws
+        IllegalStateException("Koin scope is already closed")
+
+      // Still reported: GitLabEclipseStartup.stop() is what contains it, so that the steps after
+      // the language server shutdown keep running.
+      shouldThrow<IllegalStateException> { provider.stop() }
+
+      DiagnosticGenerationRegistry.currentEpoch shouldBe live + 1
+    }
+
     it("ignores the exit notification of a process that was already replaced") {
       val provider = newProvider()
       provider.start(bundle)

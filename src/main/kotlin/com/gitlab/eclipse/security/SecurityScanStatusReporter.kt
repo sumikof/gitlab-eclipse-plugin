@@ -181,14 +181,50 @@ object SecurityScanStatusReporter {
    *
    * Only a command is told. A save has no waiter at all, so it contributes nothing here — that is a
    * property of [CommandWaiters], not a check made below.
+   *
+   * The composition of [dropPending] and [renderCancellation]. **Never call this while holding
+   * [DiagnosticGenerationRegistry.lock]**: the rendering half resolves paths against the workspace,
+   * and doing that under this monitor is what the split exists to prevent. A caller that needs the
+   * drop to be atomic with a decision of its own calls the two halves itself.
    */
-  fun cancelPending(deadEpoch: Long, reason: ScanCancelReason): CancellationReport {
-    val dropped = synchronized(lock) {
-      // A restart is one of the four things that make a repeated save failure newsworthy again:
-      // the server it failed against is gone, so nothing that was learned about it still holds.
-      if (reason == ScanCancelReason.SERVER_STOPPED) lastSaveFailure.clear()
-      CommandWaiters.clear(deadEpoch)
-    }
+  fun cancelPending(deadEpoch: Long, reason: ScanCancelReason): CancellationReport =
+    renderCancellation(dropPending(deadEpoch, reason), reason, DiagnosticFileResolver::resolve)
+
+  /**
+   * The half that changes state, and the only half that needs [lock].
+   *
+   * Split out so a caller that has to be atomic with a decision of its own — the settings
+   * transition, which drops the waiters only if it is still the latest transition — can hold the
+   * monitor across just this, and render afterwards. Calling the whole of [cancelPending] under the
+   * monitor would put a resource tree lookup (one per dropped waiter, through the audit line) inside
+   * the one monitor `DiagnosticMarkerService.applyNow` takes from inside a `WorkspaceJob`, which
+   * both stalls every `publishDiagnostics` for the duration and inverts that order.
+   *
+   * Pass the epoch of the connection that just died, read *before* the registry was advanced;
+   * passing the new one removes nothing (see [CommandWaiters.clear]).
+   *
+   * Returns how many waiters were dropped per path, which is all [renderCancellation] needs.
+   */
+  fun dropPending(deadEpoch: Long, reason: ScanCancelReason): Map<String, Int> = synchronized(lock) {
+    // A restart is one of the four things that make a repeated save failure newsworthy again:
+    // the server it failed against is gone, so nothing that was learned about it still holds.
+    if (reason == ScanCancelReason.SERVER_STOPPED) lastSaveFailure.clear()
+    CommandWaiters.clear(deadEpoch)
+  }
+
+  /**
+   * The half that only reads, and that **must not run under [lock]**: it resolves every dropped
+   * path against the workspace, once per dropped waiter.
+   *
+   * The workspace lookup is passed in rather than defaulted, for the same reason [settle] has the
+   * seam — and because the caller that needs this half on its own is exactly the caller that has to
+   * prove *where* it runs.
+   */
+  internal fun renderCancellation(
+    dropped: Map<String, Int>,
+    reason: ScanCancelReason,
+    resolve: (String) -> List<IFile>,
+  ): CancellationReport {
     val notify = when {
       dropped.isEmpty() -> null
       reason == ScanCancelReason.SERVER_STOPPED -> CANCELLED_MESSAGE
@@ -208,6 +244,7 @@ object SecurityScanStatusReporter {
             findings = null,
             exceptionType = null,
             path = path,
+            resolve = resolve,
           )
         }
       },

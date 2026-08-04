@@ -195,28 +195,35 @@ class GitLabLanguageServerProcessProvider(
   }
 
   private fun stopLocked() {
-    // Unregister language server before killing the process.
-    languageServerWrapper.unregisterLanguageServer()
+    try {
+      // Unregister language server before killing the process.
+      languageServerWrapper.unregisterLanguageServer()
 
-    // Unregister capabilities before killing the process.
-    service<DidChangeWatchedFileCapability>().unregisterAll()
+      // Unregister capabilities before killing the process.
+      service<DidChangeWatchedFileCapability>().unregisterAll()
 
-    processListener?.cancel(true)
-    processListener = null
+      processListener?.cancel(true)
+      processListener = null
 
-    pullStdErrLogsExecutor?.shutdownNow()
-    pullStdErrLogsExecutor = null
+      pullStdErrLogsExecutor?.shutdownNow()
+      pullStdErrLogsExecutor = null
 
-    process?.destroy()
-    process = null
-
-    // The connection is gone: advance the epoch, cancel the commands that were waiting on it and
-    // remove the markers it left behind. Runs last, when nothing of the connection is left, and
-    // never throws, so restart()'s "settle in the stopped state" contract is unaffected.
-    //
-    // Called from here as well as from onExit(): an explicit stop clears `process` under this same
-    // lock, so the exit notification that follows fails its identity guard and never runs.
-    SecurityScanLifecycle.onServerStopped()
+      process?.destroy()
+      process = null
+    } finally {
+      // The connection is gone: advance the epoch, cancel the commands that were waiting on it and
+      // remove the markers it left behind. Runs last, when nothing of the connection is left, and
+      // never throws, so restart()'s "settle in the stopped state" contract is unaffected.
+      //
+      // In a `finally` because the steps above can raise on a late or degraded stop — the
+      // capability lookup goes through Koin, whose scope may already be closed — and this clean up
+      // must not be the thing that a failure up there silently discards. It is also the last chance
+      // the bundle's stop() has: everything after this call would be skipped by the same throw.
+      //
+      // Called from here as well as from onExit(): an explicit stop clears `process` under this same
+      // lock, so the exit notification that follows fails its identity guard and never runs.
+      SecurityScanLifecycle.onServerStopped()
+    }
   }
 
   private fun createProcessBuilder(path: String): ProcessBuilder {

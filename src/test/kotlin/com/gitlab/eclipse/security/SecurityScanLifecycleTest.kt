@@ -15,8 +15,10 @@ import io.mockk.verifyOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
+import org.eclipse.core.resources.IFile
 
 private const val PATH_A = "/w/a.kt"
+private const val PATH_B = "/w/b.kt"
 private const val CANCELLED_MESSAGE =
   "GitLab security scan: the scan was cancelled because the language server restarted. " +
     "Run the scan again."
@@ -186,11 +188,30 @@ class SecurityScanLifecycleTest : DescribeSpec({
       val watermark = DiagnosticGenerationRegistry.currentGenerationCounter()
       val seq = DiagnosticGenerationRegistry.nextSettingsSeq()
       val connection = epoch()
+      var monitorHeldWhileRendering: Boolean? = null
 
-      settings(markerService).applyTransition(enabled = false, seq = seq)
+      // Rendering the audit resolves every dropped path against the workspace. Standing in for that
+      // lookup is the only way a test can see two things that are otherwise invisible: whether the
+      // registry monitor is still held while it happens, and what a scan landing at exactly that
+      // moment does to the watermark. The generation issued here belongs to a decision newer than
+      // this transition, so a watermark captured inside the locked region cannot include it — one
+      // captured any later can, and would delete the newer decision's markers.
+      val resolve: (String) -> List<IFile> = { _ ->
+        monitorHeldWhileRendering = Thread.holdsLock(DiagnosticGenerationRegistry.lock)
+        DiagnosticGenerationRegistry.nextGeneration(PATH_B, DiagnosticGenerationRegistry.currentEpoch)
+        emptyList()
+      }
+
+      SecurityScanSettings(CoroutineScope(Dispatchers.Unconfined), Mutex(), markerService, resolve)
+        .applyTransition(enabled = false, seq = seq)
 
       DiagnosticGenerationRegistry.isSuspended(SECURITY_SCAN_SOURCE) shouldBe true
       CommandWaiters.isDeadlineArmed(waiter) shouldBe false
+      // A resource tree read under this monitor would invert the order `applyNow` takes it in from
+      // inside a WorkspaceJob, and would stall every publishDiagnostics for the duration.
+      monitorHeldWhileRendering shouldBe false
+      // The hook really ran, so the assertion below is about something that actually happened.
+      DiagnosticGenerationRegistry.currentGenerationCounter() shouldBe watermark + 1
       verify { markerService.deleteMarkersBySource(SECURITY_SCAN_SOURCE, watermark) }
       // A settings transition is not a connection event: moving the epoch would tell every request
       // in flight that its connection had died.

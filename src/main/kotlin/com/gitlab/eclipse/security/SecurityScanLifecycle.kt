@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.security
 
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticFileResolver
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.utils.NotificationUtils
@@ -10,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.eclipse.core.resources.IFile
 
 private val lifecycleLog by lazy { logger<SecurityScanLifecycle>() }
 
@@ -163,9 +165,15 @@ class SecurityScanSettings(
   private val coroutineScope: CoroutineScope,
   private val outboundLock: Mutex,
   private val markerService: DiagnosticMarkerService,
+  /**
+   * The workspace lookup the audit lines are rendered with. Injected for the same reason
+   * [SecurityScanStatusReporter.settle]'s is: it is the only way a test can observe *where* the
+   * rendering happens, and "not under the registry monitor" is the property that matters.
+   */
+  private val resolve: (String) -> List<IFile> = DiagnosticFileResolver::resolve,
 ) {
   /** What the locked region decided, so the rest can run without reading state again. */
-  private data class Disabled(val report: CancellationReport, val watermark: Long)
+  private data class Disabled(val dropped: Map<String, Int>, val watermark: Long)
 
   /**
    * Call from the UI thread when the setting really changed value.
@@ -204,14 +212,19 @@ class SecurityScanSettings(
       // `false` = a newer transition already applied. Doing anything now would undo it.
       if (!DiagnosticGenerationRegistry.suspendSource(SECURITY_SCAN_SOURCE, seq)) return@withLock
       val disabled = synchronized(DiagnosticGenerationRegistry.lock) {
-        // The latest-check and the destructive steps share one region on purpose. Split across two,
+        // The latest-check and the destructive step share one region on purpose. Split across two,
         // a transition that was overtaken between them would still drop the new one's waiters.
         if (!DiagnosticGenerationRegistry.isLatestSettingsSeq(seq)) {
           null
         } else {
           Disabled(
+            // Only the half that changes state. Rendering the report resolves every dropped path
+            // against the workspace, and this monitor is the one `DiagnosticMarkerService.applyNow`
+            // takes from inside a WorkspaceJob — a resource tree read here would invert that order
+            // and stall every publishDiagnostics for the duration.
+            //
             // The *current* epoch: the connection is alive, only the setting changed.
-            SecurityScanStatusReporter.cancelPending(
+            SecurityScanStatusReporter.dropPending(
               DiagnosticGenerationRegistry.currentEpoch,
               ScanCancelReason.SETTING_DISABLED,
             ),
@@ -222,7 +235,14 @@ class SecurityScanSettings(
         }
       } ?: return@withLock
       // Outside the monitor: the audit resolves paths and the clean up schedules a workspace job.
-      disabled.report.auditLines.forEach { line -> contain("auditing a cancelled scan") { audit(line) } }
+      // The report's `notify` is deliberately dropped — switching the feature off is itself the
+      // answer, so this direction records and says nothing (design §11.3).
+      val report = SecurityScanStatusReporter.renderCancellation(
+        disabled.dropped,
+        ScanCancelReason.SETTING_DISABLED,
+        resolve,
+      )
+      report.auditLines.forEach { line -> contain("auditing a cancelled scan") { audit(line) } }
       contain("cleaning up the markers of a disabled source") {
         markerService.deleteMarkersBySource(SECURITY_SCAN_SOURCE, disabled.watermark)
       }
