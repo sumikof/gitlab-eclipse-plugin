@@ -8,6 +8,9 @@ import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
@@ -35,6 +38,14 @@ class GitLabLanguageServerClient(
   }
 
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
+
+  /**
+   * Connection epoch captured when this client is constructed. A new client is built for every
+   * language server start, and `restart()` stops before it starts, so a new client always sees a
+   * newer epoch than the one it replaces. Every diagnostics callback checks the captured value so
+   * that late notifications from a dead connection cannot publish markers.
+   */
+  private val connectionEpoch: Long = DiagnosticGenerationRegistry.currentEpoch
 
   @JsonNotification("streamingCompletionResponse")
   fun streamingCompletionResponse(
@@ -149,7 +160,33 @@ class GitLabLanguageServerClient(
   }
 
   override fun publishDiagnostics(diagnostic: PublishDiagnosticsParams) {
-    logger.info("publishDiagnostics: $diagnostic")
+    // Diagnostics carry scan findings and absolute file locations, so neither the payload nor the
+    // failure message may reach the error log.
+    runCatching { applyDiagnostics(diagnostic) }
+      .onFailure { logger.warn("Failed to handle publishDiagnostics: ${it::class.simpleName}") }
+  }
+
+  private fun applyDiagnostics(params: PublishDiagnosticsParams) {
+    val key = DiagnosticUri.normalize(params.uri) ?: return
+    val incoming = params.diagnostics ?: emptyList()
+
+    // Only suspended sources are dropped; diagnostics from every other source still pass through.
+    val tokens = incoming.associateWith {
+      DiagnosticGenerationRegistry.acceptToken(it.source, connectionEpoch)
+    }
+    val accepted = incoming.filter { tokens[it] != null }
+
+    // A non-empty batch that was fully dropped is a no-op: an empty set must not gain the authority
+    // to replace everything the file currently shows.
+    if (incoming.isNotEmpty() && accepted.isEmpty()) return
+
+    val generation = DiagnosticGenerationRegistry.nextGeneration(key, connectionEpoch) ?: return
+
+    // Re-check for sources that were suspended while this batch was being prepared.
+    val finalDiagnostics = accepted.filter { DiagnosticGenerationRegistry.isTokenValid(tokens[it]) }
+    if (accepted.isNotEmpty() && finalDiagnostics.isEmpty()) return
+
+    service<DiagnosticMarkerService>().apply(key, finalDiagnostics, generation, connectionEpoch)
   }
 
   override fun showMessage(message: MessageParams) {

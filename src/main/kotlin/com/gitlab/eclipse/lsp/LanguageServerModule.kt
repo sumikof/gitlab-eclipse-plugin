@@ -7,6 +7,7 @@ import com.gitlab.eclipse.authentication.PatTokenProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
@@ -37,4 +38,6 @@ val languageServerModule = module {
   }
 
   single<LanguageServerWebviewService> { LanguageServerWebviewService(get(), get()) }
+
+  single<DiagnosticMarkerService> { DiagnosticMarkerService() }
 }
