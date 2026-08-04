@@ -343,7 +343,7 @@ isDeadlineArmed(waiterId) == false -> onSendFailed(waiterId, ...)   // 万能の
 |---|---|---|
 | L1 | 同一ファイルの並行スキャンで、**古い内容の検出結果が新しい結果を上書きしうる** | 短時間に連続して保存し、応答が要求順と異なる順序で返った場合 |
 | L2 | `COMMAND` 起動の通知が、保存起動の応答に消費されうる(通知の `source` の取り違え) | 同一ファイルに対する `COMMAND` と保存がほぼ同時に走った場合 |
-| L3 | 送信例外の後に応答が届くと、**失敗通知が 2 回出うる** | `runSecurityScan` がワイヤ書き込み後に例外を返し、その後 **非 200 の応答**が届いた場合 |
+| L3 | 送信例外の後に応答が届くと、**通知が 2 回出うる** | `runSecurityScan` がワイヤ書き込み後に例外を返し、その後応答が届いた場合。**(a) 同一パスに他の `COMMAND` 待機が無ければ非 200 応答のときだけ**(失敗 2 回)。**(b) 他の `COMMAND` 待機があれば 200 応答でも**(送信失敗 + 成功の 2 回) |
 
 いずれも**再スキャンで解消し、永続的な不整合を残さない**。L1 は VSCode 版と同一の挙動である。
 
@@ -452,27 +452,37 @@ job?.invokeOnCompletion { _ ->
 
 **(a) `Mutex` の中で設定を再確認する。**§15.1 の seqlock 下で設定値を読む際に `SECURITY_SCAN_ENABLED` も読み、**偽なら送信せず `consumeById` で待機を除去して終了する**(通知はしない。利用者自身が無効化した直後であり、通知は不要かつ誤解を招く)。
 
-**(b) 無効化の遷移そのものを同じ `Mutex` の中で行う(Codex round16-P1)。**round15 では (a) だけを入れたが、**それでは窓が残っていた**。再確認の直後から `runSecurityScan` までの間に無効化が走ると、§17.1 の `suspendSource` / `clear` はこの `Mutex` を取得しないため、待機を消した後でも捕捉済みの有効な設定でスキャンが送信される。**無効化した後にファイルが送信される**ことになり、L1〜L7 のどれとしても受容していない。
+**(b) 設定遷移そのものを同じ `Mutex` の中で、順序番号つきで適用する(Codex round16-P1 / round17-P1)。**
 
-したがって §17.1 の手順 1・2(`suspendSource` と `clear`)を、**`LanguageServerOutboundLock` を取得したコルーチンの中で実行する**。
+round15 では (a) だけを入れたが、**再確認の直後から `runSecurityScan` までの間に無効化が走ると窓が残る**。§17.1 の `suspendSource` / `clear` がこの `Mutex` を取得しないため、待機を消した後でも捕捉済みの有効な設定でスキャンが送信される。**無効化した後にファイルが送信される**ことになり、L1〜L7 のどれとしても受容していない。
+
+round16 では無効化だけを `Mutex` 内へ移したが、**それも不十分だった**。K11 のように先行する送信が `Mutex` を長時間保持している間に利用者が再有効化すると、`resumeSource` が先に走り、その後で待機していた `suspendSource` が適用される。**以後 resume する処理は無いため、設定と LS のゲートは有効なのに診断だけが恒久的に破棄される。**
+
+**確定仕様: 有効化・無効化の両遷移を同じ `Mutex` で直列化し、設定遷移の順序番号で古い遷移を捨てる。**
 
 ```
 [performOk・UI スレッド]
-  有効 -> 無効 の遷移を検出
+  有効/無効 の遷移を検出したら seq = settingsSeq.incrementAndGet() を採番   // ★ UI スレッドで採番
   |
   v  coroutineScope.launch { outboundMutex.withLock { ... } }   // UI スレッドはブロックしない
-  1. suspendSource("gitlab_security_scan")
-  2. CommandWaiters.clear(epoch)  +  SAVE 失敗抑制の破棄
+  seq <= lastAppliedSeq -> **何もしない**(追い越された古い遷移)      // ★ round17-P1
+  lastAppliedSeq = seq
+  |
+  無効化のとき: 1. suspendSource(source, seq)
+               2. CommandWaiters.clear(epoch) + SAVE 失敗抑制の破棄
+               3. watermark = 現在の generation カウンタ値を **この区間で捕捉**   // ★ round17-P2
+  有効化のとき: 1. resumeSource(source, seq)
   |
   v  (Mutex の外)
-  3. deleteMarkersBySource(source, watermark) の Job を schedule
+  無効化のとき: deleteMarkersBySource(source, watermark) の Job を schedule
 ```
 
-- **送信コルーチンと無効化コルーチンが同じ `Mutex` を奪い合う**ため、「再確認 → 送信」の区間に無効化が割り込むことはなくなる
-- 無効化が送信の**後**に順序づけられた場合、そのスキャン 1 回は送信されるが、それは**利用者が無効化する前に発火した要求**であり、同意の範囲内である
+- **送信コルーチンと設定遷移コルーチンが同じ `Mutex` を奪い合う**ため、「再確認 → 送信」の区間に遷移が割り込むことはなくなる
+- **順序番号により、`Mutex` の待ち行列で入れ替わった古い遷移は適用されない**。UI スレッドでの採番順が唯一の正順である
+- 遷移が送信の**後**に順序づけられた場合、そのスキャン 1 回は送信されるが、それは**利用者が操作する前に発火した要求**であり、同意の範囲内である
 - UI スレッドは `launch` するだけでブロックしない(`Mutex` は `kotlinx.coroutines.sync.Mutex` であり、UI スレッドから `withLock` を呼ぶと `runBlocking` が必要になるため、必ずコルーチンへ委譲する)
-- 手順 1 が手順 2 より先、手順 3 が `Mutex` の外、という §17.1 の順序制約は保たれる(手順 3 は marker の I/O であり、`Mutex` の保護区間に入れると保持時間が延びるため外に置く)
-- この `launch` も §9.1.1 と同じく**未開始を検出できない**と困るので、`invokeOnCompletion` で「無効化が適用されなかった」場合をログに残す(利用者には通知しない。設定値自体は既に保存されており、次回の送信は (a) の再確認で止まる)
+- **`watermark` は `Mutex` の保護区間で捕捉する(round17-P2)。**marker I/O の `schedule` は保持時間を延ばさないため `Mutex` の外でよいが、**watermark の読み取りまで外へ出すと**、手順 2 の完了後・watermark 取得前に再有効化されて新しい診断が generation N を得た場合、その N が古い削除 Job の watermark に含まれ、**再有効化後の marker まで `generation <= watermark` で削除される**。§17.1.1 の保護が成立しなくなる
+- この `launch` も §9.1.1 と同じく**未開始を検出できない**と困るので、`invokeOnCompletion` で「遷移が適用されなかった」場合をログに残す(利用者には通知しない。設定値自体は既に保存されており、次回の送信は (a) の再確認で止まる)
 
 ### 9.2 診断の受信と適用
 
@@ -556,11 +566,18 @@ when (CommandWaiters.consumeOldest(path, capturedConnectionEpoch)) {   // §9.1.
   status != 200 -> Failure(status)          // res.error は使わない(§11.4)
   |
   v
+capturedConnectionEpoch != registry.currentEpoch -> **ここでも終了**(§9.3)
+  |    // ★ consumeOldest の後に onServerStopped が入ると、旧応答が監査・通知・抑制状態の
+  |    //   更新まで進んでしまう。特に NO_WAITER の失敗では、停止処理が消した SAVE 抑制状態を
+  |    //   旧応答が再登録し、新接続の同 status 通知を抑制しうる(Codex round17-P2)
+  v
 監査ログ(§16.2) — error 本文・絶対パスを出さない
   |
   v
 通知(§11.3 の表 + §11.4 の固定文言。SAVE の失敗抑制状態は SecurityScanStatusReporter が保持)
 ```
+
+**報告処理も `connectionEpoch` で隔離する。**`SecurityScanStatusReporter` は監査・通知・抑制状態の更新をまとめて行う際に `capturedConnectionEpoch` を受け取り、**ロックの下で照合してから**実行する。`consumeOldest` の 3 値化だけでは「停止が `consumeOldest` より前に入る場合」しか防げない。
 
 **この経路は状態遷移を持たない。**`CommandWaiters` から 1 件除去し、分類して通知するだけである。次に送るべき要求(昇格)も、解放すべきスロットも存在しない。
 
@@ -626,8 +643,13 @@ object DiagnosticGenerationRegistry {
    * 層 2 が呼ぶ。引数の source を解釈しない = セキュリティ固有の概念を持たない(§17.1)。
    * 停止は source 単位にスコープされ、他の source の診断には一切影響しない。
    */
-  fun suspendSource(source: String)
-  fun resumeSource(source: String)
+  /**
+   * 設定遷移。connectionEpoch ではなく **設定遷移の順序番号 settingsSeq** を受け取る(§9.1.1)。
+   * seq <= lastAppliedSeq なら何もしない(Mutex の待ち行列で追い越された古い遷移)。
+   * LS の生死とは無関係な操作なので接続 epoch では順序づけられない。
+   */
+  fun suspendSource(source: String, settingsSeq: Long)
+  fun resumeSource(source: String, settingsSeq: Long)
   fun isSuspended(source: String?): Boolean   // 表示・診断用。受理判定には acceptToken を使う
 }
 
@@ -964,7 +986,14 @@ process?.destroy()
 
 対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear`(`CommandWaiters`)。
 
-**両レジストリの全操作が `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1 / round16-P1)。round13 では `CommandWaiters` にだけ epoch を通したが、**診断経路の `acceptToken` / `nextGeneration` にも同じ穴が残っていた**。旧クライアントのコールバックが §9.2 の入口検査を通過した直後に LS が停止・再起動すると、epoch を受け取らないこれらの操作は新接続の現在値を読み、**旧診断に新しい generation / epoch を付けてしまう**。その結果 `shouldApply` も通り、旧接続の結果が再表示される。
+**接続に紐づく操作はすべて `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1 / round16-P1)。round13 では `CommandWaiters` にだけ epoch を通したが、**診断経路の `acceptToken` / `nextGeneration` にも同じ穴が残っていた**。旧クライアントのコールバックが §9.2 の入口検査を通過した直後に LS が停止・再起動すると、epoch を受け取らないこれらの操作は新接続の現在値を読み、**旧診断に新しい generation / epoch を付けてしまう**。その結果 `shouldApply` も通り、旧接続の結果が再表示される。
+
+**ただし `suspendSource` / `resumeSource` は接続 epoch を受け取らない(Codex round17-P2)。**これらは LS の生死とは無関係な**設定遷移**であり、接続 epoch では順序づけられない。代わりに **設定遷移の順序番号 `settingsSeq`** を受け取り、`seq <= lastAppliedSeq` なら適用しない(§9.1.1)。どちらの操作もこのロックの下で実行される点は同じである。
+
+| 操作 | 順序づけに使う値 |
+|---|---|
+| `acceptToken` / `nextGeneration` / `shouldApply` / `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear` / **応答の報告処理**(§9.3) | `connectionEpoch` |
+| `suspendSource` / `resumeSource` | `settingsSeq` |
 
 このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
@@ -1076,13 +1105,13 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 
 設定が有効 → 無効へ**遷移した**とき(値が同じなら何もしない)、次を**この順に**行う。
 
-1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan")`** — この `source` の**失効世代(`sourceEpoch`)を奇数へ進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
+1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan", settingsSeq)`** — この `source` の**失効世代(`sourceEpoch`)を奇数へ進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
 2. `CommandWaiters.clear(epoch)` と `SAVE` 失敗抑制の状態(§11.3)を破棄する。**除去した待機は通知しない**(監査行に `outcome=cancelled` のみ残す)
 
-   **手順 1 と 2 は `LanguageServerOutboundLock` を取得したコルーチンの中で実行する**(§9.1.1 の「無効化と並行する待機登録」)。これにより送信側の「設定再確認 → 送信」区間に無効化が割り込めなくなる。手順 3 は marker の I/O なので `Mutex` の外で schedule する。
+   **手順 1〜3 のうち、1・2 と watermark の捕捉は `LanguageServerOutboundLock` を取得したコルーチンの中で、`settingsSeq` による古い遷移の破棄を伴って実行する**(§9.1.1 の (b))。これにより送信側の「設定再確認 → 送信」区間に遷移が割り込めなくなり、`Mutex` の待ち行列で有効化と無効化が入れ替わっても古い方は適用されない。**marker 削除 Job の `schedule` だけ**を `Mutex` の外で行う。
 
    **通知しない理由(Codex round13-P2)**: §11.3 に存在する破棄時の文言は「language server restarted」の 1 種類だけであり、LS を再起動していない利用者に**虚偽の再起動通知**を出すことになる。加えて、この破棄は**利用者自身が設定を無効化した直接の結果**であり、無効化したのにスキャン結果を待っていると考えるのは不自然である。専用文言を増やすより通知しないほうが正確で、面積も小さい。
-3. `deleteMarkersBySource("gitlab_security_scan", watermark)` の Job を schedule する。`watermark` は**この時点の generation カウンタ値**
+3. `deleteMarkersBySource("gitlab_security_scan", watermark)` の Job を schedule する。**`watermark` は手順 2 と同じ `Mutex` 区間で捕捉した generation カウンタ値**である(§9.1.1 の (b)。区間の外で読むと、再有効化後の新しい診断の generation が watermark に含まれ、その marker まで削除されうる)
 
 手順 1 が手順 3 より先にあるため、掃除の後に到着した遅延診断は受理時点で除外され、**marker を復活させられない**。ライフサイクル epoch は**進めない**(進める必要がない。無効化は LS の生死とは無関係であり、他 source の in-flight な適用処理を巻き込む理由がない)。
 
@@ -1093,7 +1122,7 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 
 単一飛行を採らない(§9.1.1)ため、「送信済み要求を保持して次の要求を待たせる」必要はない。再有効化後の新しいスキャンは即座に送信され、その結果が最後に届けば正しく表示される。**古い応答が後着した場合の逆転は L1 として受容する。**
 
-再び有効化されたときは `resumeSource("gitlab_security_scan")` を呼ぶ(失効世代をさらに進める)。
+再び有効化されたときは `resumeSource("gitlab_security_scan", settingsSeq)` を呼ぶ(失効世代をさらに進める)。**有効化も無効化と同じ `Mutex` と同じ順序番号で適用する**(§9.1.1 の (b))。片方だけを直列化すると、`Mutex` の待ち行列で順序が入れ替わったときに「設定は有効なのに診断だけが恒久的に破棄される」状態になる。
 
 ### 17.1.1 予約済み Job と古い削除 Job(Codex round3 により追加)
 
@@ -1132,7 +1161,7 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 
 **層の分離**(どの層が何を判定するかを明示する):
 
-- **層 1(汎用)** は「有効/無効」というセキュリティ固有の概念を持たない。持つのは **`source` という LSP の語彙**だけである。公開 API は `suspendSource(source)` / `resumeSource(source)` / `acceptToken(source)` / `isTokenValid(token)`(`DiagnosticGenerationRegistry`)と `deleteMarkersBySource(source, watermark)`(`DiagnosticMarkerService`)で、いずれも引数の `source` を解釈しない
+- **層 1(汎用)** は「有効/無効」というセキュリティ固有の概念を持たない。持つのは **`source` という LSP の語彙**だけである。公開 API は `suspendSource(source, settingsSeq)` / `resumeSource(source, settingsSeq)` / `acceptToken(source, connectionEpoch)` / `isTokenValid(token)`(`DiagnosticGenerationRegistry`)と `deleteMarkersBySource(source, watermark)`(`DiagnosticMarkerService`)で、いずれも引数の `source` を解釈しない
 - **層 2(セキュリティ)** が、設定の遷移を観測し、自分の `source` 文字列(`"gitlab_security_scan"`)を渡して呼ぶ
 
 `publishDiagnostics` のバッチに複数 `source` が混在する場合、**停止中の `source` の診断だけを除いた集合**を §12 の全置換として適用する。LSP の全置換セマンティクスと整合し、停止した `source` の marker は置換によって自然に消える。
@@ -1197,7 +1226,10 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | **同一パスの複数 COMMAND(§9.1.1)** | 応答前に `COMMAND` を 2 回実行したとき、**通知が 2 回**出ること(待機 id の列で管理されていること)(round13-P2 の回帰テスト) |
 | **waiterId の一意性(§9.1.1)** | `clear` の前後で **id が再利用されないこと** / 無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと(round15-P1 の回帰テスト) |
 | **期限起動前の終了経路(§9.1.1)** | `entered=true` の後に `Mutex` 待ちでキャンセルされた場合 / 送信呼び出しが例外を投げた場合のいずれでも、**期限未起動の待機が `invokeOnCompletion` で解決され、永久に残らないこと**(round15-P2 の回帰テスト) |
-| **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2)/ **再確認と送信の間に無効化が割り込めないこと**(無効化も同じ `Mutex` を取る。round16-P1 の回帰テスト) |
+| **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2)/ **再確認と送信の間に遷移が割り込めないこと**(round16-P1) |
+| **設定遷移の順序(§9.1.1)** | **`Mutex` の待ち行列で無効化と有効化が入れ替わっても、`settingsSeq` により古い遷移が適用されないこと**(= 有効なのに診断だけ恒久停止、が起きないこと)(round17-P1 の回帰テスト) |
+| **watermark の捕捉位置(§9.1.1 / §17.1)** | **手順 2 の後・`Mutex` 解放前に捕捉されること** / 再有効化後の診断の generation が watermark に含まれず、その marker が削除されないこと(round17-P2 の回帰テスト) |
+| **報告処理の epoch 隔離(§9.3)** | `consumeOldest` の後に `onServerStopped` が入った場合、**監査・通知・`SAVE` 抑制状態の更新がいずれも 0 回**であること(round17-P2 の回帰テスト) |
 | **送信コルーチン未開始(§9.1.1)** | キャンセル済み `CoroutineScope` で `launch` が本体を実行しない場合に、待機が即座に解除され `COMMAND` に送信失敗が通知されること / **60 秒後の誤った「応答なし」が出ないこと**(round13-P2 の回帰テスト) |
 | **停止と予約済み Job(§17.1.1)** | **受理後・適用前に `suspendSource` された診断が適用時に落ちること**(round3-P1 の回帰テスト)/ 同じバッチの他 source は適用されること |
 | **`acceptToken` の原子性(§17.1.1)** | 偶数世代で token を返し奇数で null / `suspendSource` → `resumeSource` を跨いだ token が無効になること / **判定と捕捉の間に停止が入っても停止後の世代を捕捉しないこと**(round4-P1 の回帰テスト) |
