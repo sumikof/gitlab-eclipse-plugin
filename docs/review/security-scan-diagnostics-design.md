@@ -303,15 +303,24 @@ uri = file.locationURI.toASCIIString()      // didOpen と逐語的に同一の�
 トークン未設定 -> 中止 (source=command のときのみ通知)
   |
   v
-SecurityScanInFlightRegistry.offer(DiagnosticUri.normalize(uri), source)
-  |- 既に in-flight -> Pending に畳み込んで終了(送信しない。§13.4)
-  v (coroutineScope・捕捉した server プロキシを使用)
-ConnectionConfigGeneration の seqlock 下で設定を読む(不安定なら中止・§15.1)
-  |
+SecurityScanInFlightRegistry.reserve(DiagnosticUri.normalize(uri), source)
+  |- Idle でない -> Pending に畳み込んで終了(送信しない。§13.4)
+  v (coroutineScope・捕捉した server プロキシを使用・§15.1 の Mutex 下)
+ConnectionConfigGeneration の seqlock 下で設定を読む
+  |- 不安定 -> **registry.abort(path)** して中止(COMMAND なら通知)
   v
 server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
+  |- 例外 -> **registry.abort(path)** して中止
+  v
 server.runSecurityScan(SecurityScanParams(uri, source))
+  |- 例外 -> **registry.abort(path)** して中止
+  v
+registry.markSent(path)                        // ここで初めて応答待ちが確定する
 ```
+
+**`reserve` と `markSent` を分ける理由(Codex round4-P2)**。round3 までは記録(`offer`)を送信の**前**に済ませていたため、seqlock が不安定で中止した場合や送信が例外を投げた場合に、**LS へ要求が届いていないのに応答待ちだけが残った**。60 秒後にタイムアウトし、`Draining` は応答でしか解けないため(§13.2)、そのファイルは**不要な LS 再起動まで再試行できなくなる**。
+
+`reserve` は「同一パスの並行送信を防ぐ予約」であり、応答待ちの確定ではない。**送信が確定していない全経路で `abort(path)` を呼び、`Idle` に戻して `Pending` を安全に進める。**`abort` はタイムアウトを起動せず、`Draining` にも移行しない(要求が届いていないことが確定しているため)。
 
 **対応表のキーについて。** LS は応答の `filePath` を `sh(n.uri).path`、すなわち**ドキュメント URI の decode 済み path** から作る。これは `DiagnosticUri.normalize` の戻り値と同一の値になる。したがって送信側は正規化済みパスをキーにして記録し、受信側は `res.filePath` をそのまま(念のため同じ正規化を通したうえで)引き当てる。
 
@@ -325,17 +334,22 @@ Windows では `URI.path` が `/C:/...` のように先頭スラッシュ付き�
 [lsp4j リスナースレッド]  publishDiagnostics(params)
   |
   v
+this.capturedConnectionEpoch != registry.currentEpoch -> debug ログのみ、破棄   // §14.6
+  |
+  v
 key = DiagnosticUri.normalize(params.uri)
   |- 失敗 -> debug ログのみ、破棄
   v
-accepted = params.diagnostics.filterNot { registry.isSuspended(it.source) }   // §17.1・source 単位
-  |    // 停止中の source だけを除く。他 source はそのまま通す。
-  |    // 除外後が空でも「その URI の全置換」として適用する(LSP セマンティクス)
+tokens = params.diagnostics.associateWith { registry.acceptToken(it.source) }
+  |    // ★ acceptToken は「停止しているか」と「source 失効世代」を **単一の原子的読み取り**で返す。
+  |    //   停止中なら null。§17.1 の偶奇エンコードにより 1 回の volatile 読みで済む
   v
-sourceEpochs = accepted.map { it.source }.distinct()
-                       .associateWith { registry.sourceEpochOf(it) }   // ★ 受理時点で捕捉
-  |    // 「停止していないこと」を確認した瞬間の world を持ち回る。
-  |    // 適用時に再検査しないと、停止直前に受理された Job が停止後に marker を復活させる
+accepted = tokens.filterValues { it != null }.keys
+  |
+  v
+params.diagnostics.isNotEmpty() && accepted.isEmpty() -> **何もしない(no-op)**
+  |    // 全要素が停止中 source で除外された場合、この URI に対する権威ある情報が
+  |    // 残らないため、全置換として適用すると他 source の marker まで消しうる(§9.2.1)
   v
 gen   = registry.nextGeneration(key)        // ここで順序が確定。全 URI を通じて一意
   |- null(active=false)-> 破棄
@@ -351,16 +365,28 @@ WorkspaceJob(rule = MultiRule(files)) を schedule して即 return   // ブロ�
 registry.shouldApply(key, gen, epoch) == false -> return
   |
   v
-final = accepted.filter { registry.sourceEpochOf(it.source) == sourceEpochs[it.source] }
-  |    // ★ 受理時に捕捉した source 失効世代を再検査。
-  |    // 世代が進んでいる source(= 受理後に停止された)の診断はここで落とす。
-  |    // 残りは全置換として適用する(LSP セマンティクスは保たれる)
+final = accepted.filter { registry.isTokenValid(tokens[it]) }
+  |    // ★ 受理時に得た token を再検査。世代が進んでいる source(= 受理後に停止された)は落ちる
+  |
+  |- accepted が非空で final が空 -> **何もしない(no-op)**。理由は上と同じ
   v
 files.forEach { f -> §12 の二段階置換(生成 -> 全件成功時のみ gen != genNew を削除) }
   |
   v
 CoreException は捕捉してログ。Job の外へ例外を出さない
 ```
+
+### 9.2.1 全要素が除外されたバッチを no-op にする理由(Codex round4-P2)
+
+指摘の機序について、事実関係を先に整理する。**LSP の `publishDiagnostics` は URI 単位の全置換であり、単一のサーバから届く 1 バッチはその URI の全 source を通じた権威ある集合である。**したがって「security だけのバッチが届いた」= 「その URI には他 source の診断は無い」であり、他 source の marker を消すこと自体は LSP のセマンティクス上は正しい。現時点の LS は診断の発行器を 1 つしか持たないため、実害も生じない。
+
+それでもなお **no-op を採用する**。理由は次のとおり。
+
+1. 停止中の source を除外した時点で、**その集合はもはやサーバが送った集合ではない**。他 source について権威を主張できるのは「サーバが実際に送った要素」だけであり、除外の結果できた空集合に全置換の権威を与えるのは論理の飛躍である
+2. 受け入れ条件 **A10 は「source 単位の停止が他診断に影響しない」と明言している**。上記の挙動はその条件と正面から矛盾する。設計内の矛盾は、LSP 的に正当化できるかどうかとは別に解消すべきである
+3. リスクが非対称である。no-op にして失うのは「停止中 source のバッチが他 source の marker を掃除する機会」だけで、次に届く非除外バッチが正しく置換する。採用しない場合に失うのは他 source の marker そのものである
+
+**元のバッチが空だった場合は従来どおり全置換(= 全削除)として適用する。**「除外の結果空になった」場合とは区別する。
 
 ### 9.3 スキャン応答
 
@@ -429,8 +455,12 @@ object DiagnosticGenerationRegistry {
   /** active でないときは null を返す(= その診断は破棄) */
   fun nextGeneration(key: String): Long?
 
-  /** 現在の source 失効世代。採番時に捕捉し、適用時に再検査する(§17.1) */
-  fun sourceEpochOf(source: String?): Long
+  /**
+   * 「停止しているか」と「source 失効世代」を **単一の原子的読み取り**で返す(§17.1)。
+   * 停止中なら null。判定と捕捉を分けると、その隙間の suspendSource を取りこぼす。
+   */
+  fun acceptToken(source: String?): SourceToken?
+  fun isTokenValid(token: SourceToken?): Boolean
 
   fun shouldApply(key: String, generation: Long, capturedEpoch: Long): Boolean
 
@@ -444,7 +474,7 @@ object DiagnosticGenerationRegistry {
    */
   fun suspendSource(source: String)
   fun resumeSource(source: String)
-  fun isSuspended(source: String?): Boolean
+  fun isSuspended(source: String?): Boolean   // 表示・診断用。受理判定には acceptToken を使う
 }
 ```
 
@@ -540,6 +570,8 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 | `SAVE` | 成功(件数を問わず) | **出さない** | — | — | 結果は Problems ビューに出る |
 | `SAVE` | 失敗 | **状態が変化したときのみ**出す | §11.4 の固定文言 | `(正規化パス, status)` | 同一パスで `status` が変わる / 成功が挟まる / LS 再起動 / 設定の再有効化 |
 | `SAVE` | タイムアウト | **出さない** | — | — | 監査行にのみ残す |
+| `COMMAND` | LS 停止で `Pending` を破棄 | 出す | `GitLab security scan: the scan was cancelled because the language server restarted. Run the scan again.`(§13.4.1) | なし(常に出す) | — |
+| `SAVE` | LS 停止で `Pending` を破棄 | **出さない** | — | — | 監査行にのみ残す |
 
 **`COMMAND` を一切抑制しない理由**: 明示操作には必ず可視の応答を返す(F6)。抑制すると「コマンドを押したのに何も起きない」が発生する。
 
@@ -639,7 +671,7 @@ round2 では「`DRAIN_WINDOW`(5 分)を過ぎたら応答は届かないもの�
 `Draining` から `Idle` へ戻る契機は次の 2 つだけとする。**いずれも「旧応答がもう届かない」ことを構造的に保証する。**
 
 1. **そのパスに対する応答の到着** — 未応答要求は高々 1 件なので、届いた応答は A のものと確定する
-2. **LS の停止・再起動**(`onServerStopped()`)— 旧プロセスは `destroy()` され listener も cancel されるため、**旧応答は原理的に到達不能になる**。全パスの in-flight 状態を破棄する
+2. **LS の停止・再起動**(`onServerStopped()`)— §14.6 の**接続 epoch** により、旧接続のコールバックは新しい状態に一切触れられなくなる。**全パスの状態を破棄する**(§13.4.1 のとおり `Pending` も送信せずに破棄し、`COMMAND` の `Pending` だけ通知する)
 
 `Draining` 中に到着した診断は、そのパスに対する唯一の未応答要求 A のものであることが確定しているため、**通常どおり適用する**(破棄しない)。逆転の余地は無い。
 
@@ -681,7 +713,7 @@ Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあ�
 
 - 送信要求が来たとき、状態が **`Idle` なら送信**して `InFlight` を記録する
 - **`InFlight` または `Draining` なら送信せず `Pending` に畳み込む**。既に `Pending` がある場合は上書きするが、**`source` は「より強い方」を採る**(`COMMAND` > `SAVE`)。コマンドの明示操作が保存に飲み込まれて無通知になるのを防ぐため
-- **応答を受信したとき、または LS が停止したときにのみ** `Idle` へ戻し、`Pending` があればその時点で 1 件だけ送信する。**タイムアウトでも時間経過でも戻さない**(§13.2)
+- **応答を受信したときにのみ** `Idle` へ戻し、`Pending` があればその時点で 1 件だけ送信する。**タイムアウトでも時間経過でも戻さない**(§13.2)。LS 停止時の扱いは §13.4.1 に分離する
 
 これにより、あるパスについて**送信済みかつ未応答の要求は、いかなる時点でも高々 1 件**となり、
 (a) 診断の到着順 = 要求順 となって欠陥 1 が消え、
@@ -691,7 +723,24 @@ Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあ�
 
 **冪等性についての整理**: スキャン自体はサーバ側の状態を変えない冪等な分析であり、二重送信が破壊的な副作用を生むことはない。single-flight を課す理由は副作用の防止ではなく、**相関 ID が無いプロトコルの下で結果の順序と対応付けを回復するため**である(Phase 4 の CI lint に in-flight ガードを設けなかった判断とは、目的が異なる)。
 
-`Pending` はパスあたり高々 1 件、エントリはパスあたり 1 件、LS 停止で全破棄されるため、レジストリは無制限に成長しない(当初案の LRU は不要になったので採用しない)。LS 再起動・設定無効化の際は全エントリを破棄する。
+`Pending` はパスあたり高々 1 件、エントリはパスあたり 1 件、LS 停止で全破棄されるため、レジストリは無制限に成長しない(当初案の LRU は不要になったので採用しない)。
+
+### 13.4.1 LS 停止時の `Pending` の扱い(Codex round4-P2 により一意化)
+
+round3 の反映では、§13.2 が「LS 停止で `Idle` へ戻して `Pending` を送信する」、§13.4 と §14.2.1 が「LS 停止で全エントリを破棄する」と、**互いに矛盾する記述になっていた**。前者を実装すれば停止済みプロキシへ送信しかねず、後者を実装すれば coalesce 済みの明示 `COMMAND` が無通知で失われ F6 に反する。
+
+**確定仕様: LS 停止時は破棄する。ただし `COMMAND` の `Pending` は通知する。**
+
+1. 全パスの状態(`InFlight` / `Draining` / `Pending`)を**破棄**する。**新 LS への自動再送はしない**
+2. 破棄した `Pending` のうち `source == COMMAND` のものについて、パスごとに 1 回通知する
+
+   > `GitLab security scan: the scan was cancelled because the language server restarted. Run the scan again.`
+
+3. 破棄した `Pending` について監査行に `outcome=cancelled` を残す(`SAVE` も含む)
+
+自動再送しない理由: 新 LS の初期化直後は対象ドキュメントの `didOpen` が済んでいる保証が無く(§6.1 P2 の手順 2 に該当すると**無応答のまま `Draining` に落ちる**)、利用者から見て「いつの間にか送信された」状態にもなる。明示操作だった `COMMAND` にだけ再実行を促すほうが、送信の予測可能性と F6 の両方を満たす。
+
+これに伴い §16.2 の `outcome` に `cancelled` を追加する。
 
 ---
 
@@ -733,7 +782,7 @@ Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあ�
 **確定仕様: 掃除は「epoch による選択削除」にする。**
 
 - すべての marker は生成時に `com.gitlab.eclipse.diagnosticEpoch`(ライフサイクル epoch)を持つ(§11.2)。§12 が使う `diagnosticGeneration` とは**別の属性**である
-- **LS 停止(`stopLocked()`)**: `active` は落とさない。`epoch` を進め、in-flight レジストリと `latest` を破棄し、**「`diagnosticEpoch != 現在の epoch` の marker を削除する」Job** を schedule する
+- **LS 停止(`stopLocked()`)**: `active` は落とさない。`epoch` を進め(これが §14.6 の接続 epoch でもある)、in-flight レジストリを **§13.4.1 の手順で**破棄し、`latest` を破棄し、**「`diagnosticEpoch != 現在の epoch` の marker を削除する」Job** を schedule する
 - **LS 起動(`startLocked()` 成功後)**: 追加の activate は不要。epoch は停止時に既に進んでおり、新 LS の診断はその新 epoch で適用される
 - **バンドル停止**: `active = false` の後、**epoch を問わず全削除**する Job を schedule する
 
@@ -758,6 +807,29 @@ Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあ�
 ### 14.5 ワークスペースロックの競合
 
 `MrBranchCheckoutService.kt:200` の `refreshLocal(IResource.DEPTH_INFINITE, null)` と適用 Job が競合しうる。スケジューリングルールにより正しさは保たれるが、**待ちは発生する**。ブランチ切替中にスキャン結果の反映が遅れることがある。
+
+### 14.6 接続 epoch によるコールバックの隔離(Codex round4-P1 により追加)
+
+round3 では「LS 停止で旧応答は**原理的に到達不能**になる」と書いたが、**この主張は強すぎた**。実際の `stopLocked()`(`GitLabLanguageServerProcessProvider.kt:187-202`)は
+
+```kotlin
+processListener?.cancel(true)
+processListener = null
+...
+process?.destroy()
+```
+
+と、**listener の終了を待たない**。したがって、既に dispatch 済みの旧クライアントのコールバックは `onServerStopped()` の後にも走りうる。その間に新 LS の要求 B が登録されていれば、旧 A のコールバックが B を完了させて source を取り違え、旧 `publishDiagnostics` が新しい epoch を捕捉する経路も残る。
+
+**確定仕様: `GitLabLanguageServerClient` に接続 epoch を持たせ、全コールバックの入口で照合する。**
+
+- `GitLabLanguageServerClient` は `Launcher.Builder.setLocalService(...)` で**起動ごとに新規構築される**(同 `:140`)。構築時に `DiagnosticGenerationRegistry.currentEpoch` を捕捉して保持する
+- `onServerStopped()` は `stopLocked()` の中で epoch を進める。`restart()` は `stopLocked()` → `startLocked()` の順なので、**新しいクライアントは必ず新しい epoch を捕捉する**
+- `publishDiagnostics` と `securityScanResponse` は、処理の**最初**に `capturedEpoch == registry.currentEpoch` を照合し、不一致なら debug ログのみで即 return する
+
+新しいカウンタは導入せず、既存のライフサイクル epoch を再利用する。これは既存の「プロセス同一性ガード」(`if (process === startedProcess)`、同 `:123-133`)と同じ発想を、クライアントのコールバック側に適用したものである。
+
+**この照合は層 1 のコールバック入口に置く**ため、セキュリティ機能だけでなく将来の診断すべてが保護される。
 
 ---
 
@@ -827,7 +899,7 @@ Pending(source: SecurityScanSource)      // 未送信の後続要求(パスあ�
 ### 16.2 監査行の形式
 
 ```
-securityScan source=command|save outcome=success|failure|timeout|late httpStatus=<int|-> findings=<int|-> path=<workspace-relative>
+securityScan source=command|save outcome=success|failure|timeout|late|cancelled httpStatus=<int|-> findings=<int|-> path=<workspace-relative>
 ```
 
 `outcome` の値(Codex round2-P2 により `timeout` / `late` を追加。round1 で §13.2 にタイムアウトを導入した際、この表を `success|failure` のまま放置していた):
@@ -837,7 +909,8 @@ securityScan source=command|save outcome=success|failure|timeout|late httpStatus
 | `success` | `status == 200` の応答を受領 |
 | `failure` | `status != 200` の応答を受領 |
 | `timeout` | 応答期限(§13.2)を超過 |
-| `late` | `timeout` を記録した後に応答が到着した(§13.4 のドレイン終了) |
+| `late` | `timeout` を記録した後に応答が到着した(§13.2 のドレイン終了) |
+| `cancelled` | LS 停止により未送信の `Pending` を破棄した(§13.4.1) |
 
 トークン・本文・診断内容を含まない。既存の `writeAuditMessage`(`WriteAction.kt:80-104`)/ `discussionAuditMessage`(`DiscussionWriteFlow.kt:90-116`)と同じ規律に従う。ログ呼び出し自体も `runCatching` で包み、ログの失敗が処理を壊さないようにする(Phase 5A の教訓)。
 
@@ -867,7 +940,7 @@ securityScan source=command|save outcome=success|failure|timeout|late httpStatus
 
 設定が有効 → 無効へ**遷移した**とき(値が同じなら何もしない)、次を**この順に**行う。
 
-1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan")`** — この `source` の**失効世代(`sourceEpoch`)を進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
+1. **`DiagnosticGenerationRegistry.suspendSource("gitlab_security_scan")`** — この `source` の**失効世代(`sourceEpoch`)を奇数へ進め**、以後この `source` の診断は受理時に除外される。**必ず最初に行う**
 2. in-flight レジストリ(§13.4)と `SAVE` 失敗抑制の状態(§11.3)を破棄する
 3. `deleteMarkersBySource("gitlab_security_scan", watermark)` の Job を schedule する。`watermark` は**この時点の generation カウンタ値**
 
@@ -882,7 +955,20 @@ securityScan source=command|save outcome=success|failure|timeout|late httpStatus
 **(a) 停止前に受理済みの適用 Job が、停止後に marker を復活させる。**
 §9.2 では「source の確認」と「Job の実行」の間に時間差がある。停止直前に受理された診断の Job は、`shouldApply` が generation と epoch しか見ず、ここでは epoch を進めないため通過し、手順 3 の削除 Job より後に走れば security marker を再生成する。
 
-→ **`sourceEpoch` を受理時に捕捉し、適用時に再検査する**(§9.2 の `sourceEpochs` / `final`)。世代が進んだ `source` の診断は適用直前に落とされる。
+→ **`sourceEpoch` を受理時に捕捉し、適用時に再検査する**(§9.2 の `tokens` / `final`)。世代が進んだ `source` の診断は適用直前に落とされる。
+
+**捕捉は「停止判定」と原子的でなければならない(Codex round4-P1)。**round3 の反映では `isSuspended(source)` で判定した**後**に `sourceEpochOf(source)` を読む二段構えにしていたが、その隙間に別スレッドの `suspendSource` が入ると、停止前に届いた診断が**更新後の世代を捕捉**してしまう。その Job は適用時の照合にも成功して marker を復活させ、直後に再有効化された場合は watermark より新しい generation を得て古い削除 Job からも保護される。
+
+**確定仕様: `sourceEpoch` に偶奇を持たせ、単一の読み取りで両方を判定する。**
+
+| 値 | 意味 |
+|---|---|
+| **偶数** | 稼働中。その値が `SourceToken` になる |
+| **奇数** | 停止中。`acceptToken` は `null` を返す |
+
+`suspendSource` は偶数 → 奇数、`resumeSource` は奇数 → 偶数へ、いずれも `AtomicLong.incrementAndGet()` で進める。`acceptToken` は**1 回の volatile 読み**で「停止していないこと」と「その時点の世代」を同時に得るため、隙間が存在しない。
+
+これは既存の `ConnectionConfigGeneration`(`ConnectionConfigGeneration.kt:13-18`。`beginUpdate()` で奇数・`endUpdate()` で偶数)と同じ偶奇 seqlock の型であり、本リポジトリで実績のあるパターンをそのまま使う。
 
 **(b) 古い削除 Job が、再有効化後に作られた marker を消す。**
 無効化直後に再有効化されると、非同期の削除 Job が待機したまま `resumeSource` と新しい診断の適用が進みうる。§14.2.1 自身が認めているとおり Job の実行順は FIFO ではないため、古い削除 Job が後から走ると、**再有効化後に作られた同じ `source` の marker まで削除する**。
@@ -895,7 +981,7 @@ securityScan source=command|save outcome=success|failure|timeout|late httpStatus
 
 **層の分離**(どの層が何を判定するかを明示する):
 
-- **層 1(汎用)** は「有効/無効」というセキュリティ固有の概念を持たない。持つのは **`source` という LSP の語彙**だけである。公開 API は `suspendSource(source)` / `resumeSource(source)` / `isSuspended(source)` / `sourceEpochOf(source)`(`DiagnosticGenerationRegistry`)と `deleteMarkersBySource(source, watermark)`(`DiagnosticMarkerService`)で、いずれも引数の `source` を解釈しない
+- **層 1(汎用)** は「有効/無効」というセキュリティ固有の概念を持たない。持つのは **`source` という LSP の語彙**だけである。公開 API は `suspendSource(source)` / `resumeSource(source)` / `acceptToken(source)` / `isTokenValid(token)`(`DiagnosticGenerationRegistry`)と `deleteMarkersBySource(source, watermark)`(`DiagnosticMarkerService`)で、いずれも引数の `source` を解釈しない
 - **層 2(セキュリティ)** が、設定の遷移を観測し、自分の `source` 文字列(`"gitlab_security_scan"`)を渡して呼ぶ
 
 `publishDiagnostics` のバッチに複数 `source` が混在する場合、**停止中の `source` の診断だけを除いた集合**を §12 の全置換として適用する。LSP の全置換セマンティクスと整合し、停止した `source` の marker は置換によって自然に消える。
@@ -952,6 +1038,11 @@ securityScan source=command|save outcome=success|failure|timeout|late httpStatus
 | **single-flight(§13.4)** | in-flight 中の後続要求で `send` が増えないこと / 応答後に Pending が 1 件だけ送られること / Pending の source が `SAVE` → `COMMAND` に格上げされること / **応答が要求と逆順に来ても source を取り違えないこと** |
 | **タイムアウトとドレイン(§13.2)** | 期限切れで `COMMAND` は通知 1 回・`SAVE` は 0 回 / 監査行が `outcome=timeout` / **期限切れではスロットが解放されず Pending が送信されないこと** / ドレイン中の `COMMAND` は送信 0 回で復旧手段が通知されること / **時間がいくら経過しても `Idle` へ戻らないこと**(round3-P1 の回帰テスト)/ 遅延応答の到着で `Idle` へ戻り Pending が送られること / **遅延応答の監査 `source` が `Pending` ではなく `timedOutSource` になること**(round3-P2 の回帰テスト)/ LS 停止で `Idle` に戻ること |
 | **停止と予約済み Job(§17.1.1)** | **受理後・適用前に `suspendSource` された診断が適用時に落ちること**(round3-P1 の回帰テスト)/ 同じバッチの他 source は適用されること |
+| **`acceptToken` の原子性(§17.1.1)** | 偶数世代で token を返し奇数で null / `suspendSource` → `resumeSource` を跨いだ token が無効になること / **判定と捕捉の間に停止が入っても停止後の世代を捕捉しないこと**(round4-P1 の回帰テスト) |
+| **除外後が空のバッチ(§9.2.1)** | **非空バッチが全除外されたとき marker を 1 つも消さないこと**(round4-P2 の回帰テスト)/ **元から空のバッチは従来どおり全削除すること**(両者を区別できること) |
+| **接続 epoch(§14.6)** | 旧接続の `publishDiagnostics` / `securityScanResponse` が新 epoch の状態に触れないこと(round4-P1 の回帰テスト) |
+| **送信前失敗の解除(§9.1)** | seqlock 不安定・`didChangeConfiguration` 例外・`runSecurityScan` 例外のいずれでも `Idle` に戻り、**タイムアウトも `Draining` も発生しない**こと / `Pending` が進むこと(round4-P2 の回帰テスト) |
+| **LS 停止時の `Pending`(§13.4.1)** | 破棄され**再送されない**こと / `COMMAND` の `Pending` のみ通知されること / 監査 `outcome=cancelled` が `SAVE` にも残ること |
 | **削除 watermark(§17.1.1)** | **古い `deleteMarkersBySource` が、再有効化後に作られた同 source の marker を消さないこと**(round3-P2 の回帰テスト)/ watermark 以前の marker は消えること |
 | **二段階置換(§12)** | 生成途中の `CoreException` で**`genNew` の marker が 0 件になり旧 marker が残る**こと / 全件成功時にのみ `!= genNew` が消えること / 空 diagnostics で旧世代が消えること / **同一 LS セッション内の連続適用で結果が累積しないこと**(round2-P1 の回帰テスト) |
 | **generation と epoch の分離(§11.2)** | `generation` が適用ごとに必ず変わること / `epoch` が LS 停止まで変わらないこと / **`epoch` が同じでも旧世代が正しく削除されること** |
