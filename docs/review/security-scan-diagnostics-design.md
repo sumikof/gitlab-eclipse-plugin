@@ -311,8 +311,8 @@ token = SecurityScanInFlightRegistry.reserve(DiagnosticUri.normalize(uri), sourc
 start(ScanRequest(token, source, uri))         // §9.1.2 の唯一の入口。初回も昇格も同じ
   |
   v [coroutineScope の本体・捕捉した server プロキシを使用]
-registry.armTimeout(token)                     // ★ 最初のキャンセル可能点より前。入場記録も兼ねる
-  |- entry が無い / 別要求に置き換わっている -> 何もしない(no-op)
+if (!registry.armTimeout(token)) return       // ★ 期限起動 + 入場記録 + 現役判定を兼ねる
+  |- false(既に complete 済み/別要求に置換)-> **何も送らずに終える**(§9.1.2)
   v (§15.1 の Mutex 下)
 ConnectionConfigGeneration の seqlock 下で設定を読む
   |- 不安定 -> **registry.abort(token)** して中止(COMMAND なら通知)
@@ -334,7 +334,7 @@ round3 までは記録を送信の**前**に済ませ、失敗時に取り消し
 - `reserve(path, source, documentUri)` は**その場で `InFlight` にする**。予約と応答待ちを別状態にしない。戻り値として **`ScanRequestToken(path, requestId)`** を返す(`requestId` は単調増加)。`documentUri` は `InFlight` と(畳み込む場合は)`Pending` の双方に保存する(§9.1.2)
 - したがって `reserve` の直後に応答が届いても `complete` は正常に処理できる
 - **「未送信であることが確定している」経路でだけ `abort(token)` を呼ぶ**(§9.1.1)。`abort` は `Idle` に戻して `Pending` を進め、**タイムアウトも `Draining` も起こさない**
-- `armTimeout(token)` は**コルーチン本体の最初の文**で呼び、応答期限を起動する。対象 entry が無い、または別要求に置き換わっていれば**何もしない**。この呼び出しは「本体へ入った」ことの記録も兼ねる(§9.1.2)
+- `armTimeout(token): Boolean` は**コルーチン本体の最初の文**で呼ぶ。対象トークンが現役の `InFlight` なら応答期限を起動して `true` を返す。entry が無い、または別要求に置き換わっていれば**何もせず `false`** を返し、**呼び出し側は何も送らずに終える**。この呼び出しは「本体へ入った」ことの記録も兼ねる(§9.1.2)
 
 **`armTimeout` / `abort` はパスではなく要求トークンで対象を特定する(Codex round6-P1)。**round5 の反映ではパスだけをキーにしていたが、これは誤りだった。A の応答が先に `complete` され、`Pending` の B が**同じパスの新しい `InFlight`** になった後に、A 側の遅れた `armTimeout` や例外処理の `abort` が **B に作用してしまう**。round5 の返信でこの順序を「安全に扱える」と述べたのは誤りである。
 
@@ -425,8 +425,10 @@ round9 では別の `AtomicBoolean(entered)` を置き、`armTimeout` は送信�
 fun start(request: ScanRequest) {
   val job = runCatching {
     coroutineScope.launch {
-      registry.armTimeout(request.token)   // ★ 最初のキャンセル可能点より前。入場記録も兼ねる
-      sendScan(request)                    // Definite/Ambiguous は §9.1.1 に従う
+      // ★ 最初のキャンセル可能点より前。期限の起動と入場記録を兼ね、
+      //   同時に「このトークンがまだ現役か」を返す
+      if (!registry.armTimeout(request.token)) return@launch   // 既に決着済み -> 送信しない
+      sendScan(request)                                        // Definite/Ambiguous は §9.1.1
     }
   }.getOrNull()
 
@@ -438,6 +440,10 @@ fun start(request: ScanRequest) {
   }
 }
 ```
+
+**`armTimeout` は `Boolean` を返す(自己レビューで追加)。**`reserve` から本体入場までの間に応答が到着すると、`complete` が entry を消し(場合によっては `Pending` を昇格させ)ている。このとき `armTimeout` は no-op になるが、**そのまま `sendScan` へ進むと、どの `InFlight` にも紐づかない要求を送ってしまう**。その応答は孤児になるか、昇格した B を誤って `complete` する。したがって `armTimeout` は「対象トークンが現役の `InFlight` であり、期限を起動した」ときだけ `true` を返し、**`false` なら本体は何も送らずに終える**。
+
+この早期 return は `cause == null` の正常終了なので `invokeOnCompletion` の `onNeverStarted` は呼ばれない。仮にその後キャンセルされて `cause != null` かつ `isArmed == false` となっても、`onNeverStarted` → `abortAndDiscardPending(token)` はトークン照合により no-op となる(現役 entry は B であって A ではない)。
 
 - **判定を同期的に行わない。**`invokeOnCompletion` はキャンセル済みスコープでも即座に発火するため、未開始は確実に検出できる
 - **`InFlight` が期限を持たない時間帯は、本体の最初の 1 文までに限られる。**そこまでに到達しなければ `isArmed == false` となり、未開始として破棄される
@@ -1243,7 +1249,7 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled|
 | **昇格時の URI 引き継ぎ(§9.1.2)** | `PromotedRequest.documentUri` が**受理時の文字列と逐語一致**すること / **正規化パスから再構築した値ではない**こと(パーセントエンコードを含む URI で検証)(round8-P1 の回帰テスト) |
 | **送信の開始保証(§9.1.2)** | キャンセル済み `CoroutineScope` で `launch` が例外を投げず未開始になる場合に `invokeOnCompletion` + **`isArmed`** で検出して破棄すること(round8-P1)/ **本体に入った直後にスコープがキャンセルされた場合は Definite として扱わず `InFlight` を保持すること**(round9-P1)/ **`Mutex` 待ちや `didChangeConfiguration` 中のキャンセルでも期限が起動済みで `Draining` に至ること**(round10-P1 の回帰テスト)/ **初回送信でも未開始が検出されること**(round10-P1 の回帰テスト)/ `abortAndDiscardPending` が 1 回で終わりループしないこと(round9-P2)/ 破棄した `COMMAND` が **`not_started` の文言で**通知され監査も `not_started` になること(round10-P2) |
 | **`reserve` の URI 契約(§9.1.2)** | `InFlight` / `Draining` 中の `reserve` で渡した `documentUri` が `Pending` に保存され、昇格時に逐語一致で復元されること(round9-P1 の回帰テスト) |
-| **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が no-op になり `Draining` に固定されないこと(round5-P2 の回帰テスト) |
+| **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が `false` を返し、**本体が何も送らずに終える**こと(自己レビューで追加した回帰テスト)/ `Draining` に固定されないこと(round5-P2) |
 | **要求トークンの照合(§9.1)** | A の応答 → `Pending` の B が新 `InFlight` → **A の遅れた `abort` が B を解除しないこと** / **A の遅れた `armTimeout` が B に期限を設定しないこと**(round6-P1 の回帰テスト) |
 | **停止フックの冪等性(§14.2.1)** | `stopLocked()` と `onExit()` の両方から呼ばれても epoch が二重に進まず通知も二重に出ないこと / **`onExit()` だけ(クラッシュ)でも marker が消え epoch が進むこと**(round5-P2 の回帰テスト) |
 | **`suspend`/`resume` の冪等性(§17.1.1)** | `suspendSource` を 2 回連続で呼んでも**再有効化されない**こと / `resumeSource` の連続でも停止しないこと / 並行呼び出しで状態が反転しないこと(round5-P2 の回帰テスト) |
