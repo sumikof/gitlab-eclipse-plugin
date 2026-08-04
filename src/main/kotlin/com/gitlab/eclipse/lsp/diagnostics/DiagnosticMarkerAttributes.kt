@@ -23,6 +23,19 @@ object DiagnosticMarkerAttributes {
   private val WHITESPACE = Regex("\\s+")
 
   /**
+   * Upper bound on the stored message, ellipsis included.
+   *
+   * The Problems view renders a single line, so nothing near this length is ever readable anyway,
+   * and staying far below the limit keeps the workspace's own size handling out of play: it
+   * fast-returns for string attributes shorter than 21000 characters and otherwise measures their
+   * UTF-8 length, reporting an oversized value by asserting with a large slice of that value in the
+   * failure message. That would copy the diagnostic body into the error log, so the cap is an order
+   * of magnitude below the threshold and the check can never be reached.
+   */
+  private const val MESSAGE_MAX_LENGTH = 2000
+  private const val ELLIPSIS = "…"
+
+  /**
    * `Eclipse Core Resources` の `MarkerInfo.checkValidAttribute` は `null` / `String` /
    * `Boolean` / `Integer` **以外**を渡すと `IllegalArgumentException`(`CoreException` ではない)
    * で落とす(javap で確認済み)。`generation` / `epoch` は API 全体で `Long` だが、marker 属性へは
@@ -57,6 +70,9 @@ object DiagnosticMarkerAttributes {
    * `MarkupContent`(`isRight`)なら `getValue()` の本文テキストを使う(javap で確認済み:
    * `MarkupContent.getValue(): String`)。どちらの経路でも同じ空白圧縮・trim・空白プレースホルダ
    * 処理を適用する(右側を無条件にプレースホルダへ落とすと本文を丸ごと失うため)。
+   *
+   * 長さの上限([MESSAGE_MAX_LENGTH])は**空白圧縮のあと**に掛ける。表示される形に対する上限であり、
+   * 圧縮で十分短くなるメッセージを切り詰めないため。
    */
   private fun messageOf(diagnostic: Diagnostic): String {
     val message = diagnostic.message
@@ -66,7 +82,9 @@ object DiagnosticMarkerAttributes {
       message.isRight -> message.right?.value
       else -> null
     }
-    return text?.replace(WHITESPACE, " ")?.trim()?.takeIf { it.isNotEmpty() } ?: NO_MESSAGE
+    val collapsed = text?.replace(WHITESPACE, " ")?.trim()?.takeIf { it.isNotEmpty() } ?: NO_MESSAGE
+    if (collapsed.length <= MESSAGE_MAX_LENGTH) return collapsed
+    return collapsed.take(MESSAGE_MAX_LENGTH - ELLIPSIS.length) + ELLIPSIS
   }
 
   /** LSP は 0 始まり、IMarker は 1 始まり。LS は負の値も出しうる(§6.1 P3)。 */

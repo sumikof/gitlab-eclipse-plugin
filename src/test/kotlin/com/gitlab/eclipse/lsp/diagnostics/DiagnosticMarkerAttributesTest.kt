@@ -9,6 +9,9 @@ import org.eclipse.lsp4j.MarkupContent
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
 
+/** Pins the cap: the production value may not drift without this test failing. */
+private const val MESSAGE_MAX_LENGTH = 2000
+
 private fun diag(
   message: String = "m",
   severity: DiagnosticSeverity? = DiagnosticSeverity.Error,
@@ -55,6 +58,25 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
     it("surfaces MarkupContent text and collapses its whitespace the same way as plain text") {
       val markup = diag().apply { setMessage(MarkupContent("markdown", "name\n\n  long   description")) }
       DiagnosticMarkerAttributes.of(markup, 1L, 2L)[IMarker.MESSAGE] shouldBe "name long description"
+    }
+    // The workspace inspects the UTF-8 length of long string attributes and reports oversized ones
+    // by asserting with a large slice of the value in the failure message, which would put the
+    // diagnostic body into the error log. Capping the message keeps that path unreachable.
+    it("truncates a message longer than the cap and marks it as truncated") {
+      val message = DiagnosticMarkerAttributes.of(diag(message = "x".repeat(5000)), 1L, 2L)[IMarker.MESSAGE]
+
+      message shouldBe "x".repeat(MESSAGE_MAX_LENGTH - 1) + "…"
+      (message as String).length shouldBe MESSAGE_MAX_LENGTH
+    }
+    it("leaves a message at the cap untouched") {
+      val message = "y".repeat(MESSAGE_MAX_LENGTH)
+
+      DiagnosticMarkerAttributes.of(diag(message = message), 1L, 2L)[IMarker.MESSAGE] shouldBe message
+    }
+    it("applies the cap to the collapsed message, not to the raw one") {
+      val raw = "name" + " ".repeat(5000) + "description"
+
+      DiagnosticMarkerAttributes.of(diag(message = raw), 1L, 2L)[IMarker.MESSAGE] shouldBe "name description"
     }
     it("always records source, generation and epoch") {
       val a = DiagnosticMarkerAttributes.of(diag(), 7L, 9L)

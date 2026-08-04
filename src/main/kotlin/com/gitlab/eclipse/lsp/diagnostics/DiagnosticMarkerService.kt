@@ -79,7 +79,11 @@ class DiagnosticMarkerService {
 
     val job = object : WorkspaceJob(APPLY_JOB) {
       override fun runInWorkspace(monitor: IProgressMonitor?): IStatus {
-        applyNow(uriKey, files, diagnostics, generation, epoch)
+        // Nothing may escape into the platform's job worker: it logs whatever a job throws, and
+        // the message of a runtime failure raised while validating an attribute can contain the
+        // diagnostic body. Only the exception's class name is ever recorded.
+        runCatching { applyNow(uriKey, files, diagnostics, generation, epoch) }
+          .onFailure { logger.warn("Failed to apply diagnostics markers: ${it::class.simpleName}") }
         return Status.OK_STATUS
       }
     }
@@ -112,12 +116,19 @@ class DiagnosticMarkerService {
    *
    * The switch phase itself is not compensated: a failure there leaves both generations visible,
    * which is preferable to dropping findings.
+   *
+   * Markers are created with their attributes in a single operation. Creating first and setting the
+   * attributes afterwards would leave a marker with no attributes behind whenever the second step
+   * failed: its generation would read back as [OLDER_THAN_ANY_GENERATION], the rollback below would
+   * not recognise it as part of this generation, and the Problems view would show a blank row.
    */
   internal fun replaceIn(file: IFile, diagnostics: List<Diagnostic>, generation: Long, epoch: Long) {
     try {
       diagnostics.forEach { diagnostic ->
-        file.createMarker(DiagnosticMarkerAttributes.TYPE)
-          .setAttributes(DiagnosticMarkerAttributes.of(diagnostic, generation, epoch))
+        file.createMarker(
+          DiagnosticMarkerAttributes.TYPE,
+          DiagnosticMarkerAttributes.of(diagnostic, generation, epoch)
+        )
       }
     } catch (e: CoreException) {
       logger.warn("Failed to create diagnostics markers; rolling back this generation.", e)
@@ -143,6 +154,10 @@ class DiagnosticMarkerService {
   /**
    * Called when the language server stopped. Markers of the current epoch survive, so a clean up
    * that runs late cannot remove what the next connection has already published.
+   *
+   * Call this with the epoch **after** `DiagnosticGenerationRegistry.onServerStopped()` has advanced
+   * it. Passing the epoch of the connection that just died inverts the predicate: it would keep the
+   * dead connection's markers and delete everything the live connection publishes.
    */
   fun deleteMarkersNotInEpoch(epoch: Long) = scheduleRootJob { deleteNotInEpoch(epoch) }
 
@@ -164,7 +179,10 @@ class DiagnosticMarkerService {
   private fun scheduleRootJob(body: () -> Unit) {
     val job = object : WorkspaceJob(CLEANUP_JOB) {
       override fun runInWorkspace(monitor: IProgressMonitor?): IStatus {
-        body()
+        // See the apply job: the platform logs anything a job throws, so nothing escapes and only
+        // the exception's class name is recorded.
+        runCatching { body() }
+          .onFailure { logger.warn("Failed to clean up diagnostics markers: ${it::class.simpleName}") }
         return Status.OK_STATUS
       }
     }

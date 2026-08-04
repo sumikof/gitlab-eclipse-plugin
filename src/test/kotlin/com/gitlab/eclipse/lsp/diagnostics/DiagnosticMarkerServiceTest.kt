@@ -52,10 +52,20 @@ private class FakeFile(var failCreateOnCall: Int = 0) {
   private var creates = 0
 
   init {
+    // Atomic creation: the marker only becomes visible once its attributes were accepted.
+    every {
+      file.createMarker(DiagnosticMarkerAttributes.TYPE, any<Map<String, Any>>())
+    } answers {
+      creates += 1
+      if (creates == failCreateOnCall) throw coreFailure()
+      newMarker(secondArg())
+    }
+    // The two step form is still modelled faithfully - a marker created this way exists with no
+    // attributes at all - so that a regression to it is visible instead of breaking the fake.
     every { file.createMarker(DiagnosticMarkerAttributes.TYPE) } answers {
       creates += 1
       if (creates == failCreateOnCall) throw coreFailure()
-      newMarker()
+      newMarker(emptyMap())
     }
     every {
       file.findMarkers(DiagnosticMarkerAttributes.TYPE, false, IResource.DEPTH_ZERO)
@@ -74,8 +84,9 @@ private class FakeFile(var failCreateOnCall: Int = 0) {
 
   fun generations(): List<String> = markers.map { it.getAttribute(GENERATION, "") }
 
-  private fun newMarker(): IMarker {
+  private fun newMarker(initial: Map<String, Any>): IMarker {
     val values = mutableMapOf<String, Any>()
+    values.putAll(initial)
     val marker = mockk<IMarker>(relaxUnitFun = true)
     every { marker.setAttributes(any<Map<String, Any>>()) } answers {
       values.putAll(firstArg<Map<String, Any>>())
@@ -101,6 +112,20 @@ class DiagnosticMarkerServiceTest : DescribeSpec({
   afterEach { DiagnosticGenerationRegistry.resetForTest() }
 
   describe("replaceIn") {
+    // Creating the marker and setting its attributes as two workspace operations would leave a
+    // marker with no attributes behind if the second one failed: it reads back as generation -1,
+    // so the rollback would not recognise it and the Problems view would show a blank row.
+    it("creates every marker together with its attributes in one operation") {
+      val fake = FakeFile()
+
+      service.replaceIn(fake.file, listOf(diagnostic("a")), generation = 1, epoch = 0)
+
+      verify {
+        fake.file.createMarker(DiagnosticMarkerAttributes.TYPE, any<Map<String, Any>>())
+      }
+      verify(exactly = 0) { fake.file.createMarker(DiagnosticMarkerAttributes.TYPE) }
+    }
+
     it("creates a marker per diagnostic and drops the previous generation") {
       val fake = FakeFile()
       fake.addExisting(GENERATION to "1", EPOCH to "0")
@@ -152,7 +177,9 @@ class DiagnosticMarkerServiceTest : DescribeSpec({
 
     it("does not propagate a failure raised while deleting the previous generation") {
       val file = mockk<IFile>(relaxUnitFun = true)
-      every { file.createMarker(DiagnosticMarkerAttributes.TYPE) } returns mockk(relaxUnitFun = true)
+      every {
+        file.createMarker(DiagnosticMarkerAttributes.TYPE, any<Map<String, Any>>())
+      } returns mockk(relaxUnitFun = true)
       every { file.findMarkers(any(), any(), any()) } throws coreFailure()
 
       service.replaceIn(file, listOf(diagnostic("a")), generation = 1, epoch = 0)
