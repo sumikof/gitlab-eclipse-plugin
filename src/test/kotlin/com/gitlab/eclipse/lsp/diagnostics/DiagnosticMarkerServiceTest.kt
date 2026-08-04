@@ -46,7 +46,10 @@ private fun existingMarker(vararg attributes: Pair<String, String>): IMarker {
  * they were given and deleted markers really disappear, so the tests observe the resulting marker
  * set rather than a sequence of mock calls.
  */
-private class FakeFile(var failCreateOnCall: Int = 0) {
+private class FakeFile(
+  var failCreateOnCall: Int = 0,
+  val failCreateWith: () -> Throwable = { coreFailure() }
+) {
   val markers = mutableListOf<IMarker>()
   val file = mockk<IFile>(relaxUnitFun = true)
   private var creates = 0
@@ -57,14 +60,14 @@ private class FakeFile(var failCreateOnCall: Int = 0) {
       file.createMarker(DiagnosticMarkerAttributes.TYPE, any<Map<String, Any>>())
     } answers {
       creates += 1
-      if (creates == failCreateOnCall) throw coreFailure()
+      if (creates == failCreateOnCall) throw failCreateWith()
       newMarker(secondArg())
     }
     // The two step form is still modelled faithfully - a marker created this way exists with no
     // attributes at all - so that a regression to it is visible instead of breaking the fake.
     every { file.createMarker(DiagnosticMarkerAttributes.TYPE) } answers {
       creates += 1
-      if (creates == failCreateOnCall) throw coreFailure()
+      if (creates == failCreateOnCall) throw failCreateWith()
       newMarker(emptyMap())
     }
     every {
@@ -139,6 +142,18 @@ class DiagnosticMarkerServiceTest : DescribeSpec({
     // before the failure are removed again and the previous generation is left untouched.
     it("rolls the whole generation back when a marker cannot be created") {
       val fake = FakeFile(failCreateOnCall = 2)
+      val old = fake.addExisting(GENERATION to "1", EPOCH to "0")
+
+      service.replaceIn(fake.file, listOf(diagnostic("a"), diagnostic("b")), generation = 2, epoch = 0)
+
+      fake.markers shouldContainExactly listOf(old)
+    }
+
+    // The attribute values come from the language server, and the workspace rejects an oversized
+    // one with an AssertionFailedException - a RuntimeException, not a CoreException. Rolling back
+    // only on CoreException would leave half of the new generation next to the whole old one.
+    it("rolls the whole generation back when marker creation fails with a runtime exception") {
+      val fake = FakeFile(failCreateOnCall = 2, failCreateWith = { IllegalStateException("boom") })
       val old = fake.addExisting(GENERATION to "1", EPOCH to "0")
 
       service.replaceIn(fake.file, listOf(diagnostic("a"), diagnostic("b")), generation = 2, epoch = 0)

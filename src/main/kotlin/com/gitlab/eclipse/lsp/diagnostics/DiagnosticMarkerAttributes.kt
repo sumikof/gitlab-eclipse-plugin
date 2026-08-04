@@ -23,7 +23,8 @@ object DiagnosticMarkerAttributes {
   private val WHITESPACE = Regex("\\s+")
 
   /**
-   * Upper bound on the stored message, ellipsis included.
+   * Upper bound on every language server controlled string attribute (message, source, code),
+   * ellipsis included.
    *
    * The Problems view renders a single line, so nothing near this length is ever readable anyway,
    * and staying far below the limit keeps the workspace's own size handling out of play: it
@@ -32,8 +33,22 @@ object DiagnosticMarkerAttributes {
    * failure message. That would copy the diagnostic body into the error log, so the cap is an order
    * of magnitude below the threshold and the check can never be reached.
    */
-  private const val MESSAGE_MAX_LENGTH = 2000
+  private const val ATTRIBUTE_MAX_LENGTH = 2000
   private const val ELLIPSIS = "…"
+
+  /**
+   * Bounds a stored value. Applied to the **final** form of the attribute, so for the message it
+   * runs after the whitespace collapse.
+   *
+   * The cut never splits a surrogate pair: keeping the leading half of one would store a lone
+   * surrogate, which is not valid text any more.
+   */
+  private fun capped(value: String): String {
+    if (value.length <= ATTRIBUTE_MAX_LENGTH) return value
+    val head = value.take(ATTRIBUTE_MAX_LENGTH - ELLIPSIS.length)
+    val whole = if (head.lastOrNull()?.isHighSurrogate() == true) head.dropLast(1) else head
+    return whole + ELLIPSIS
+  }
 
   /**
    * `Eclipse Core Resources` の `MarkerInfo.checkValidAttribute` は `null` / `String` /
@@ -45,14 +60,14 @@ object DiagnosticMarkerAttributes {
   fun of(diagnostic: Diagnostic, generation: Long, epoch: Long): Map<String, Any> {
     val attributes = mutableMapOf<String, Any>(
       IMarker.SEVERITY to severityOf(diagnostic.severity),
-      IMarker.MESSAGE to messageOf(diagnostic),
+      IMarker.MESSAGE to capped(messageOf(diagnostic)),
       IMarker.LINE_NUMBER to lineOf(diagnostic),
       // source は §17.1 の source 単位の失効に使うため必須。空にできない。
-      ATTR_SOURCE to (diagnostic.source?.takeIf { it.isNotBlank() } ?: UNKNOWN_SOURCE),
+      ATTR_SOURCE to capped(diagnostic.source?.takeIf { it.isNotBlank() } ?: UNKNOWN_SOURCE),
       ATTR_GENERATION to generation.toString(),
       ATTR_EPOCH to epoch.toString(),
     )
-    codeOf(diagnostic)?.let { attributes[ATTR_CODE] = it }
+    codeOf(diagnostic)?.let { attributes[ATTR_CODE] = capped(it) }
     return attributes
   }
 
@@ -71,7 +86,7 @@ object DiagnosticMarkerAttributes {
    * `MarkupContent.getValue(): String`)。どちらの経路でも同じ空白圧縮・trim・空白プレースホルダ
    * 処理を適用する(右側を無条件にプレースホルダへ落とすと本文を丸ごと失うため)。
    *
-   * 長さの上限([MESSAGE_MAX_LENGTH])は**空白圧縮のあと**に掛ける。表示される形に対する上限であり、
+   * 長さの上限([capped])は**空白圧縮のあと**に掛ける([of] が適用する)。表示される形に対する上限であり、
    * 圧縮で十分短くなるメッセージを切り詰めないため。
    */
   private fun messageOf(diagnostic: Diagnostic): String {
@@ -82,9 +97,7 @@ object DiagnosticMarkerAttributes {
       message.isRight -> message.right?.value
       else -> null
     }
-    val collapsed = text?.replace(WHITESPACE, " ")?.trim()?.takeIf { it.isNotEmpty() } ?: NO_MESSAGE
-    if (collapsed.length <= MESSAGE_MAX_LENGTH) return collapsed
-    return collapsed.take(MESSAGE_MAX_LENGTH - ELLIPSIS.length) + ELLIPSIS
+    return text?.replace(WHITESPACE, " ")?.trim()?.takeIf { it.isNotEmpty() } ?: NO_MESSAGE
   }
 
   /** LSP は 0 始まり、IMarker は 1 始まり。LS は負の値も出しうる(§6.1 P3)。 */

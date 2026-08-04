@@ -10,6 +10,7 @@ import org.eclipse.core.runtime.CoreException
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.core.runtime.IStatus
+import org.eclipse.core.runtime.OperationCanceledException
 import org.eclipse.core.runtime.Status
 import org.eclipse.core.runtime.jobs.ISchedulingRule
 import org.eclipse.core.runtime.jobs.MultiRule
@@ -43,6 +44,21 @@ private fun workspaceMarkers(): Array<IMarker> = ResourcesPlugin.getWorkspace().
 
 private fun fileMarkers(file: IFile): Array<IMarker> =
   file.findMarkers(DiagnosticMarkerAttributes.TYPE, false, IResource.DEPTH_ZERO)
+
+/**
+ * Runs a job body so that nothing escapes into the platform's job worker: it logs whatever a job
+ * throws, and the message of a runtime failure raised while validating an attribute can contain the
+ * diagnostic body. Only the exception's class name is ever recorded.
+ *
+ * Cancellation is not a failure and keeps its normal meaning: it is rethrown so the platform turns
+ * it into a cancel status instead of a logged warning.
+ */
+private fun runJobBody(logger: ILog, context: String, body: () -> Unit) {
+  runCatching(body).onFailure { failure ->
+    if (failure is OperationCanceledException) throw failure
+    logger.warn("$context: ${failure::class.simpleName}")
+  }
+}
 
 /**
  * Deleting markers is best effort: the workspace can refuse at any point (closed project, marker
@@ -79,11 +95,9 @@ class DiagnosticMarkerService {
 
     val job = object : WorkspaceJob(APPLY_JOB) {
       override fun runInWorkspace(monitor: IProgressMonitor?): IStatus {
-        // Nothing may escape into the platform's job worker: it logs whatever a job throws, and
-        // the message of a runtime failure raised while validating an attribute can contain the
-        // diagnostic body. Only the exception's class name is ever recorded.
-        runCatching { applyNow(uriKey, files, diagnostics, generation, epoch) }
-          .onFailure { logger.warn("Failed to apply diagnostics markers: ${it::class.simpleName}") }
+        runJobBody(logger, "Failed to apply diagnostics markers") {
+          applyNow(uriKey, files, diagnostics, generation, epoch)
+        }
         return Status.OK_STATUS
       }
     }
@@ -134,6 +148,14 @@ class DiagnosticMarkerService {
       logger.warn("Failed to create diagnostics markers; rolling back this generation.", e)
       deleteMatching(logger, { fileMarkers(file) }) { it.markerGeneration() == generation }
       return
+    } catch (e: Throwable) {
+      // The invariant is what matters here, so anything at all rolls the batch back. The workspace
+      // rejects an oversized attribute value with an AssertionFailedException, which is not a
+      // CoreException; without this the old generation would keep company with half a new one.
+      // Only the class name is recorded: these values come from the language server.
+      logger.warn("Failed to create diagnostics markers; rolling back this generation: ${e::class.simpleName}")
+      deleteMatching(logger, { fileMarkers(file) }) { it.markerGeneration() == generation }
+      return
     }
     deleteMatching(logger, { fileMarkers(file) }) { it.markerGeneration() != generation }
   }
@@ -179,10 +201,7 @@ class DiagnosticMarkerService {
   private fun scheduleRootJob(body: () -> Unit) {
     val job = object : WorkspaceJob(CLEANUP_JOB) {
       override fun runInWorkspace(monitor: IProgressMonitor?): IStatus {
-        // See the apply job: the platform logs anything a job throws, so nothing escapes and only
-        // the exception's class name is recorded.
-        runCatching { body() }
-          .onFailure { logger.warn("Failed to clean up diagnostics markers: ${it::class.simpleName}") }
+        runJobBody(logger, "Failed to clean up diagnostics markers", body)
         return Status.OK_STATUS
       }
     }

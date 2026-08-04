@@ -10,7 +10,9 @@ import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
 
 /** Pins the cap: the production value may not drift without this test failing. */
-private const val MESSAGE_MAX_LENGTH = 2000
+private const val ATTRIBUTE_MAX_LENGTH = 2000
+
+private const val EMOJI = "😀"
 
 private fun diag(
   message: String = "m",
@@ -65,11 +67,11 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
     it("truncates a message longer than the cap and marks it as truncated") {
       val message = DiagnosticMarkerAttributes.of(diag(message = "x".repeat(5000)), 1L, 2L)[IMarker.MESSAGE]
 
-      message shouldBe "x".repeat(MESSAGE_MAX_LENGTH - 1) + "…"
-      (message as String).length shouldBe MESSAGE_MAX_LENGTH
+      message shouldBe "x".repeat(ATTRIBUTE_MAX_LENGTH - 1) + "…"
+      (message as String).length shouldBe ATTRIBUTE_MAX_LENGTH
     }
     it("leaves a message at the cap untouched") {
-      val message = "y".repeat(MESSAGE_MAX_LENGTH)
+      val message = "y".repeat(ATTRIBUTE_MAX_LENGTH)
 
       DiagnosticMarkerAttributes.of(diag(message = message), 1L, 2L)[IMarker.MESSAGE] shouldBe message
     }
@@ -77,6 +79,37 @@ class DiagnosticMarkerAttributesTest : DescribeSpec({
       val raw = "name" + " ".repeat(5000) + "description"
 
       DiagnosticMarkerAttributes.of(diag(message = raw), 1L, 2L)[IMarker.MESSAGE] shouldBe "name description"
+    }
+    // code and source are language server controlled too, so they need the same bound: an
+    // oversized attribute value ends up in the platform's assertion message.
+    it("caps an over-long code") {
+      val code = DiagnosticMarkerAttributes.of(
+        diag().apply { setCode("c".repeat(5000)) },
+        1L,
+        2L
+      )[DiagnosticMarkerAttributes.ATTR_CODE] as String
+
+      code.length shouldBe ATTRIBUTE_MAX_LENGTH
+      code shouldBe "c".repeat(ATTRIBUTE_MAX_LENGTH - 1) + "…"
+    }
+    it("caps an over-long source") {
+      val source = DiagnosticMarkerAttributes.of(
+        diag(source = "s".repeat(5000)),
+        1L,
+        2L
+      )[DiagnosticMarkerAttributes.ATTR_SOURCE] as String
+
+      source.length shouldBe ATTRIBUTE_MAX_LENGTH
+      source shouldBe "s".repeat(ATTRIBUTE_MAX_LENGTH - 1) + "…"
+    }
+    // Cutting between the two halves of a surrogate pair would leave a lone surrogate behind.
+    it("never leaves half of a surrogate pair behind when truncating") {
+      val raw = "a".repeat(ATTRIBUTE_MAX_LENGTH - 2) + EMOJI + "b".repeat(ATTRIBUTE_MAX_LENGTH)
+
+      val message = DiagnosticMarkerAttributes.of(diag(message = raw), 1L, 2L)[IMarker.MESSAGE] as String
+
+      message shouldBe "a".repeat(ATTRIBUTE_MAX_LENGTH - 2) + "…"
+      message.none { it.isSurrogate() } shouldBe true
     }
     it("always records source, generation and epoch") {
       val a = DiagnosticMarkerAttributes.of(diag(), 7L, 9L)
