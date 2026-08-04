@@ -1,9 +1,11 @@
 package com.gitlab.eclipse.lsp.diagnostics
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -191,13 +193,22 @@ class DiagnosticMarkerServiceTest : DescribeSpec({
     }
 
     it("does not propagate a failure raised while deleting the previous generation") {
-      val file = mockk<IFile>(relaxUnitFun = true)
+      val fake = FakeFile()
+      val old = fake.addExisting(GENERATION to "1", EPOCH to "0")
       every {
-        file.createMarker(DiagnosticMarkerAttributes.TYPE, any<Map<String, Any>>())
-      } returns mockk(relaxUnitFun = true)
-      every { file.findMarkers(any(), any(), any()) } throws coreFailure()
+        fake.file.findMarkers(DiagnosticMarkerAttributes.TYPE, false, IResource.DEPTH_ZERO)
+      } throws coreFailure()
 
-      service.replaceIn(file, listOf(diagnostic("a")), generation = 1, epoch = 0)
+      shouldNotThrowAny {
+        service.replaceIn(fake.file, listOf(diagnostic("a")), generation = 2, epoch = 0)
+      }
+
+      // The switch phase is deliberately not compensated (see replaceIn's doc): the new generation
+      // was created, but the failure while enumerating markers to delete the old one means it could
+      // not be removed either - both generations are left visible rather than either propagating
+      // the failure or silently losing the new findings.
+      fake.generations() shouldContainExactly listOf("1", "2")
+      fake.markers.first() shouldBeSameInstanceAs old
     }
   }
 

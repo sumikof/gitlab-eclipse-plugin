@@ -24,7 +24,7 @@ enum class ScanCancelReason {
   SETTING_DISABLED,
 }
 
-/** One notification for the whole cancellation, and one audit line per file that lost a scan. */
+/** One notification for the whole cancellation, and one audit line per waiter that lost a scan. */
 data class CancellationReport(val notify: String?, val auditLines: List<String>)
 
 private const val OK_STATUS = 200

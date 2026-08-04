@@ -87,11 +87,15 @@ object SecurityScanLifecycle {
     audit: (String) -> Unit,
   ) {
     // (1) BEFORE the advance: this is the connection whose waiters have to go.
-    val dead = DiagnosticGenerationRegistry.currentEpoch
+    var dead = 0L
+    contain("reading the connection epoch before it stops") { dead = DiagnosticGenerationRegistry.currentEpoch }
     // (2) Advances the epoch, once per connection.
-    DiagnosticGenerationRegistry.onServerStopped()
+    contain("advancing the connection epoch") { DiagnosticGenerationRegistry.onServerStopped() }
     // (3) The dead epoch, deliberately not the current one.
-    val report = SecurityScanStatusReporter.cancelPending(dead, ScanCancelReason.SERVER_STOPPED)
+    var report = CancellationReport(notify = null, auditLines = emptyList())
+    contain("cancelling the pending scans of a dead connection") {
+      report = SecurityScanStatusReporter.cancelPending(dead, ScanCancelReason.SERVER_STOPPED)
+    }
     // (4) Audit first, then the user: a log that cannot be written must not swallow the one
     // notification a waiting command is going to get.
     report.auditLines.forEach { line -> contain("auditing a cancelled scan") { audit(line) } }
