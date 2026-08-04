@@ -315,12 +315,22 @@ server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで�
 server.runSecurityScan(SecurityScanParams(uri, source))
   |- 例外 -> **registry.abort(path)** して中止
   v
-registry.markSent(path)                        // ここで初めて応答待ちが確定する
+registry.armTimeout(path)                      // 応答期限(§13.2)を起動するだけ
+  |- 既に応答済みで entry が無い -> 何もしない(no-op)
 ```
 
-**`reserve` と `markSent` を分ける理由(Codex round4-P2)**。round3 までは記録(`offer`)を送信の**前**に済ませていたため、seqlock が不安定で中止した場合や送信が例外を投げた場合に、**LS へ要求が届いていないのに応答待ちだけが残った**。60 秒後にタイムアウトし、`Draining` は応答でしか解けないため(§13.2)、そのファイルは**不要な LS 再起動まで再試行できなくなる**。
+**`reserve` は即座に `InFlight` にする。`armTimeout` は期限を起動するだけである(Codex round4-P2 / round5-P2 の両方を満たす形)。**
 
-`reserve` は「同一パスの並行送信を防ぐ予約」であり、応答待ちの確定ではない。**送信が確定していない全経路で `abort(path)` を呼び、`Idle` に戻して `Pending` を安全に進める。**`abort` はタイムアウトを起動せず、`Draining` にも移行しない(要求が届いていないことが確定しているため)。
+round3 までは記録を送信の**前**に済ませ、失敗時に取り消していなかったため、seqlock が不安定で中止した場合や送信が例外を投げた場合に、**LS へ要求が届いていないのに応答待ちだけが残った**(round4-P2)。一方 round4 の反映で「`markSent` で初めて応答待ちが確定する」としたところ、**`runSecurityScan` は通知であり、`markSent` より先に応答が届きうる**という別の欠陥を作った(round5-P2)。その場合 `complete` は応答を未対応として捨て、後から `markSent` が「到着済みの応答を待つ状態」を作って永久に `Draining` へ固定する。
+
+**確定仕様**:
+
+- `reserve(path, source)` は**その場で `InFlight` にする**。予約と応答待ちを別状態にしない
+- したがって `reserve` の直後に応答が届いても `complete` は正常に処理できる
+- **送信が確定していない全経路で `abort(path)` を呼ぶ**。`abort` は `Idle` に戻して `Pending` を進め、**タイムアウトも `Draining` も起こさない**(要求が届いていないことが確定しているため)
+- `armTimeout(path)` は送信成功後に**応答期限を起動するだけ**。既に応答が届いて entry が消えていれば**何もしない**
+
+`abort` と `complete` が競合しないのは、両者とも §14.6 の単一モニタの下で実行され、先に実行されたほうが entry を消すためである。`abort` が後になった場合は entry が無いので no-op となる(送信例外が起きたが応答は届いていた、という順序も安全に扱える)。
 
 **対応表のキーについて。** LS は応答の `filePath` を `sh(n.uri).path`、すなわち**ドキュメント URI の decode 済み path** から作る。これは `DiagnosticUri.normalize` の戻り値と同一の値になる。したがって送信側は正規化済みパスをキーにして記録し、受信側は `res.filePath` をそのまま(念のため同じ正規化を通したうえで)引き当てる。
 
@@ -732,11 +742,18 @@ round3 の反映では、§13.2 が「LS 停止で `Idle` へ戻して `Pending`
 **確定仕様: LS 停止時は破棄する。ただし `COMMAND` の `Pending` は通知する。**
 
 1. 全パスの状態(`InFlight` / `Draining` / `Pending`)を**破棄**する。**新 LS への自動再送はしない**
-2. 破棄した `Pending` のうち `source == COMMAND` のものについて、パスごとに 1 回通知する
+2. 破棄した次の 2 種について、パスごとに 1 回通知する。
 
    > `GitLab security scan: the scan was cancelled because the language server restarted. Run the scan again.`
 
-3. 破棄した `Pending` について監査行に `outcome=cancelled` を残す(`SAVE` も含む)
+   - `Pending` のうち `source == COMMAND` のもの
+   - **`InFlight` のうち `source == COMMAND` のもの**(Codex round5-P2 により追加)
+
+3. 破棄した `Pending` / `InFlight` / `Draining` について監査行に `outcome=cancelled` を残す(`SAVE` も含む)
+
+**`InFlight` の `COMMAND` も通知する理由。**送信済みで応答待ちのまま LS が停止すると、旧接続の応答は §14.6 で破棄されるため、その明示操作には**成功・失敗・キャンセルのいずれも永久に表示されない**(F6 違反)。
+
+**`Draining` は通知しない。**`Draining` に入った時点で既にタイムアウト通知(§11.3)を出しているため、二重通知になる。監査行のみ `cancelled` を残す。
 
 自動再送しない理由: 新 LS の初期化直後は対象ドキュメントの `didOpen` が済んでいる保証が無く(§6.1 P2 の手順 2 に該当すると**無応答のまま `Draining` に落ちる**)、利用者から見て「いつの間にか送信された」状態にもなる。明示操作だった `COMMAND` にだけ再実行を促すほうが、送信の予測可能性と F6 の両方を満たす。
 
@@ -782,7 +799,26 @@ round3 の反映では、§13.2 が「LS 停止で `Idle` へ戻して `Pending`
 **確定仕様: 掃除は「epoch による選択削除」にする。**
 
 - すべての marker は生成時に `com.gitlab.eclipse.diagnosticEpoch`(ライフサイクル epoch)を持つ(§11.2)。§12 が使う `diagnosticGeneration` とは**別の属性**である
-- **LS 停止(`stopLocked()`)**: `active` は落とさない。`epoch` を進め(これが §14.6 の接続 epoch でもある)、in-flight レジストリを **§13.4.1 の手順で**破棄し、`latest` を破棄し、**「`diagnosticEpoch != 現在の epoch` の marker を削除する」Job** を schedule する
+- **LS 停止**: `active` は落とさない。`epoch` を進め(これが §14.6 の接続 epoch でもある)、in-flight レジストリを **§13.4.1 の手順で**破棄し、`latest` を破棄し、**「`diagnosticEpoch != 現在の epoch` の marker を削除する」Job** を schedule する
+
+#### 停止フックの結線点は 2 つある(Codex round5-P2 により追加)
+
+`onServerStopped()` を `stopLocked()` にだけ繋ぐと、**LS がクラッシュした場合や自発的に終了した場合にフックを通らない**。現行の `onExit()` コールバック(`GitLabLanguageServerProcessProvider.kt:123-133`)は `process` と `processListener` を null にするだけで、epoch も marker も single-flight 状態も残る。F8(LS が停止したらその LS の検出結果は消える)を満たせず、§14.6 の接続 epoch も旧クライアントを失効させられない。
+
+**確定仕様: `stopLocked()` と、プロセス同一性を確認した `onExit()` の両方から `onServerStopped()` を呼ぶ。**
+
+```kotlin
+startedProcess.onExit().thenApply {
+  synchronized(lifecycleLock) {
+    if (process === startedProcess) {     // 既存の同一性ガード
+      ...
+      onServerStopped()                   // ★ 追加
+    }
+  }
+}
+```
+
+`onServerStopped()` は**冪等**に実装する(既に同じ接続について実行済みなら何もしない)。`stop()` 経由と `onExit()` 経由で二重に呼ばれても、epoch が二重に進むことも通知が二重に出ることもない。判定には「この接続の epoch について既に停止処理を実行したか」を用いる。
 - **LS 起動(`startLocked()` 成功後)**: 追加の activate は不要。epoch は停止時に既に進んでおり、新 LS の診断はその新 epoch で適用される
 - **バンドル停止**: `active = false` の後、**epoch を問わず全削除**する Job を schedule する
 
@@ -825,11 +861,25 @@ process?.destroy()
 
 - `GitLabLanguageServerClient` は `Launcher.Builder.setLocalService(...)` で**起動ごとに新規構築される**(同 `:140`)。構築時に `DiagnosticGenerationRegistry.currentEpoch` を捕捉して保持する
 - `onServerStopped()` は `stopLocked()` の中で epoch を進める。`restart()` は `stopLocked()` → `startLocked()` の順なので、**新しいクライアントは必ず新しい epoch を捕捉する**
-- `publishDiagnostics` と `securityScanResponse` は、処理の**最初**に `capturedEpoch == registry.currentEpoch` を照合し、不一致なら debug ログのみで即 return する
+- `publishDiagnostics` と `securityScanResponse` は、**自分の `capturedEpoch` をすべてのレジストリ操作に引数として渡す**
 
 新しいカウンタは導入せず、既存のライフサイクル epoch を再利用する。これは既存の「プロセス同一性ガード」(`if (process === startedProcess)`、同 `:123-133`)と同じ発想を、クライアントのコールバック側に適用したものである。
 
 **この照合は層 1 のコールバック入口に置く**ため、セキュリティ機能だけでなく将来の診断すべてが保護される。
+
+#### 照合と状態変更は原子的でなければならない(Codex round5-P1)
+
+入口で 1 回照合するだけでは不十分である。照合を通過した直後に `onServerStopped()` が epoch を進めると、旧 `securityScanResponse` が新しく登録された要求 B を `complete` でき、旧 `publishDiagnostics` も停止後の状態を新接続の診断として更新できてしまう。**照合から状態変更までが原子的でなければならない。**
+
+**確定仕様: 両レジストリの状態変更をすべて `connectionEpoch` 付きの操作にし、単一のモニタの下で「照合してから実行」する。**
+
+- `DiagnosticGenerationRegistry` と `SecurityScanInFlightRegistry` は、**同一のロックオブジェクト**(`LanguageServerLifecycleLock`。Koin の `single`)を共有する
+- 状態を変更する全操作は `connectionEpoch: Long` を受け取り、そのロックの下で `epoch == currentEpoch` を確認してから実行する。不一致なら何もせず false を返す
+- **`onServerStopped()` も同じロックを取る**。したがって「照合 → 実行」と「epoch の更新 → 状態の破棄」が交錯することはない
+
+対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `reserve` / `armTimeout` / `complete` / `abort` / `suspendSource` / `resumeSource`。
+
+このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
 ---
 
@@ -966,7 +1016,11 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled 
 | **偶数** | 稼働中。その値が `SourceToken` になる |
 | **奇数** | 停止中。`acceptToken` は `null` を返す |
 
-`suspendSource` は偶数 → 奇数、`resumeSource` は奇数 → 偶数へ、いずれも `AtomicLong.incrementAndGet()` で進める。`acceptToken` は**1 回の volatile 読み**で「停止していないこと」と「その時点の世代」を同時に得るため、隙間が存在しない。
+`acceptToken` は**1 回の volatile 読み**で「停止していないこと」と「その時点の世代」を同時に得るため、隙間が存在しない。
+
+**遷移は冪等でなければならない(Codex round5-P2)。**`incrementAndGet()` を無条件に行うと、`suspendSource` が二度続けば 偶 → 奇 → 偶 となり、**二度目の停止要求が source を再有効化してしまう**。`resumeSource` の連続も同様に停止状態を作る。設定ページの重複適用や並行呼び出しで実際に起こりうる。
+
+したがって**現在の偶奇を確認する CAS ループ**で、`suspendSource` は「偶数のときだけ +1(奇数へ)」、`resumeSource` は「奇数のときだけ +1(偶数へ)」を行う。既に目的の状態なら**何もしない**。連続呼び出し・並行呼び出しのいずれでも状態は反転しない。
 
 これは既存の `ConnectionConfigGeneration`(`ConnectionConfigGeneration.kt:13-18`。`beginUpdate()` で奇数・`endUpdate()` で偶数)と同じ偶奇 seqlock の型であり、本リポジトリで実績のあるパターンをそのまま使う。
 
@@ -1042,7 +1096,11 @@ securityScan source=command|save outcome=success|failure|timeout|late|cancelled 
 | **除外後が空のバッチ(§9.2.1)** | **非空バッチが全除外されたとき marker を 1 つも消さないこと**(round4-P2 の回帰テスト)/ **元から空のバッチは従来どおり全削除すること**(両者を区別できること) |
 | **接続 epoch(§14.6)** | 旧接続の `publishDiagnostics` / `securityScanResponse` が新 epoch の状態に触れないこと(round4-P1 の回帰テスト) |
 | **送信前失敗の解除(§9.1)** | seqlock 不安定・`didChangeConfiguration` 例外・`runSecurityScan` 例外のいずれでも `Idle` に戻り、**タイムアウトも `Draining` も発生しない**こと / `Pending` が進むこと(round4-P2 の回帰テスト) |
-| **LS 停止時の `Pending`(§13.4.1)** | 破棄され**再送されない**こと / `COMMAND` の `Pending` のみ通知されること / 監査 `outcome=cancelled` が `SAVE` にも残ること |
+| **`armTimeout` より先に応答が来る(§9.1)** | `reserve` 直後(`armTimeout` の前)に届いた応答が正しく `complete` されること / その後の `armTimeout` が no-op になり `Draining` に固定されないこと(round5-P2 の回帰テスト) |
+| **停止フックの冪等性(§14.2.1)** | `stopLocked()` と `onExit()` の両方から呼ばれても epoch が二重に進まず通知も二重に出ないこと / **`onExit()` だけ(クラッシュ)でも marker が消え epoch が進むこと**(round5-P2 の回帰テスト) |
+| **`suspend`/`resume` の冪等性(§17.1.1)** | `suspendSource` を 2 回連続で呼んでも**再有効化されない**こと / `resumeSource` の連続でも停止しないこと / 並行呼び出しで状態が反転しないこと(round5-P2 の回帰テスト) |
+| **epoch 照合の原子性(§14.6)** | 照合の直後に `onServerStopped()` が走っても、旧接続の `complete` / 適用が新しい状態に触れないこと(round5-P1 の回帰テスト。単一モニタ下での「照合してから実行」を検証) |
+| **LS 停止時の `Pending` / `InFlight`(§13.4.1)** | 破棄され**再送されない**こと / `COMMAND` の `Pending` **および `InFlight`** が通知されること / `Draining` は**通知されない**こと(二重通知の回避)/ 監査 `outcome=cancelled` が `SAVE` にも残ること |
 | **削除 watermark(§17.1.1)** | **古い `deleteMarkersBySource` が、再有効化後に作られた同 source の marker を消さないこと**(round3-P2 の回帰テスト)/ watermark 以前の marker は消えること |
 | **二段階置換(§12)** | 生成途中の `CoreException` で**`genNew` の marker が 0 件になり旧 marker が残る**こと / 全件成功時にのみ `!= genNew` が消えること / 空 diagnostics で旧世代が消えること / **同一 LS セッション内の連続適用で結果が累積しないこと**(round2-P1 の回帰テスト) |
 | **generation と epoch の分離(§11.2)** | `generation` が適用ごとに必ず変わること / `epoch` が LS 停止まで変わらないこと / **`epoch` が同じでも旧世代が正しく削除されること** |
