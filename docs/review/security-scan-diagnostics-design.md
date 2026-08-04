@@ -303,8 +303,8 @@ uri = file.locationURI.toASCIIString()      // didOpen と逐語的に同一の�
 トークン未設定 -> 中止 (source=command のときのみ通知)
   |
   v
-source == COMMAND なら CommandWaiters.add(正規化パス, connectionEpoch) して応答期限を起動(§13.2)
-  |
+source == COMMAND なら waiterId = CommandWaiters.add(正規化パス, connectionEpoch)
+  |    // ★ ここでは期限を起動しない(§13.2)。Mutex 待ちで誤タイムアウトするため
   v (coroutineScope・捕捉した server プロキシを使用・§15.1 の Mutex 下)
 ConnectionConfigGeneration の seqlock 下で設定を読む
   |- 不安定 -> 中止(COMMAND なら待機を解除して通知)
@@ -313,6 +313,9 @@ server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで�
   |- 例外 -> 中止(COMMAND なら待機を解除して通知)
   v
 server.runSecurityScan(SecurityScanParams(uri, source))
+  |    // ★ 送信を試みた時点で応答期限を起動する(§13.2)
+  v
+COMMAND なら waiterId に対する応答期限(60 秒)を登録
   |- 例外 -> 中止(COMMAND なら待機を解除して通知)
 ```
 
@@ -367,22 +370,39 @@ job?.invokeOnCompletion { cause -> if (cause != null && !entered.get()) onSendFa
 `COMMAND` 起動に可視の応答を返す(F6)ためだけに、最小限の状態を持つ。
 
 ```kotlin
-object CommandWaiters {                                       // 正規化パス -> 待機数
-  fun add(path: String, connectionEpoch: Long): Boolean       // COMMAND 送信時。count++
-  fun consume(path: String, connectionEpoch: Long): Boolean   // 応答受信時。count-- して true
-  fun clear(connectionEpoch: Long): Map<String, Int>          // 除去した内容を返す
+object CommandWaiters {                    // 正規化パス -> 待機 id の FIFO
+  /** COMMAND 送信時。待機 id を払い出す(epoch 不一致なら null) */
+  fun add(path: String, connectionEpoch: Long): Long?
+
+  /** 応答受信時。最も古い待機を 1 件除去して true(どの要求の応答かは区別できない = L2) */
+  fun consumeOldest(path: String, connectionEpoch: Long): Boolean
+
+  /** 期限切れ・送信失敗・未開始時。**自分の待機 id だけ**を除去する */
+  fun consumeById(waiterId: Long, connectionEpoch: Long): Boolean
+
+  /** LS 停止・設定無効化。除去した待機を返す(パス -> 件数) */
+  fun clear(connectionEpoch: Long): Map<String, Int>
 }
 ```
 
 - **パスごとの待機数だけを持ち、要求単位の識別子・世代・トークン・キューは持たない**
-- 応答受信時に `consume(path, epoch)` が `true` を返せば `COMMAND` として扱い、`false` なら `SAVE` として扱う(L2 の取り違えはここで生じるが受容する)
+- 応答受信時に `consumeOldest(path, epoch)` が `true` を返せば `COMMAND` として扱い、`false` なら `SAVE` として扱う(L2 の取り違えはここで生じるが受容する)
 - 送信失敗時・タイムアウト時・LS 停止時・設定無効化時に除去する
 
 **接続 epoch を全操作に渡す(Codex round13-P1)。**`consume` が epoch を受け取らないと、旧接続の応答が §9.3 の入口検査を通過した直後に LS 停止と新接続の `add` が入った場合、**旧応答が新しい `COMMAND` の待機を消費**してしまう。§14.6 が要求する「照合から状態変更までの原子性」を、single-flight 撤廃後の新 API で再び破ることになる。したがって `add` / `consume` / `clear` はいずれも `connectionEpoch` を受け取り、**§14.6 と同じロックの下で照合してから実行する**。epoch が一致しなければ何もせず `false` を返す。
 
-**集合ではなく待機数を持つ(Codex round13-P2)。**単なる集合にすると、同じファイルで `COMMAND` を応答前に 2 回実行した場合、2 回目の `add` は状態を増やさず、最初の応答が唯一の要素を除去する。残る応答は `SAVE` 扱いとなり、**もう一方の明示操作には成功・失敗・タイムアウトのいずれの通知も出ない**(F6 違反)。パスごとの整数カウンタにすることで、`COMMAND` を n 回実行すれば n 回通知される。
+**集合ではなく待機の列を持つ(Codex round13-P2 / round14-P1)。**単なる集合にすると、同じファイルで `COMMAND` を応答前に 2 回実行した場合、2 回目の `add` は状態を増やさず、最初の応答が唯一の要素を除去する。残る応答は `SAVE` 扱いとなり、**もう一方の明示操作には成功・失敗・タイムアウトのいずれの通知も出ない**(F6 違反)。
 
-期限(§13.2)も待機 1 件につき 1 つ登録する。
+round13 ではこれを整数カウンタで解決したが、**それでも不十分だった**。カウンタだけでは、期限タスクが「自分の待機」を特定できない。要求 A の応答が count を減らした後、60 秒以内に B を開始し、A の期限タスクが後から発火すると、**A の期限タスクが B の待機を消費**する。B は自分の期限より早く「応答なし」と通知され、後着した B の応答は `SAVE` 扱いになる。設定を無効化して同じ epoch のまま再有効化した場合も、`clear` 前に登録された期限タスクが新しい待機を消費しうる。
+
+したがって **`add` は待機 id を払い出し**、除去の経路を 2 つに分ける。
+
+| 除去の契機 | 使う API | 理由 |
+|---|---|---|
+| 応答の受信 | `consumeOldest(path, epoch)` | どの要求の応答かは原理的に区別できない(L2)。最も古い待機を 1 件消す |
+| **期限切れ・送信失敗・未開始** | **`consumeById(waiterId, epoch)`** | **自分が登録した待機だけ**を消す。他の要求の待機に触れない |
+
+`COMMAND` を n 回実行すれば n 回通知され、期限タスクが互いの待機を奪うこともない。
 
 ### 9.2 診断の受信と適用
 
@@ -454,7 +474,7 @@ this.capturedConnectionEpoch != registry.currentEpoch -> debug ログのみ、�
   |
   v
 path   = DiagnosticUri.normalize("file:" + res.filePath) ?: res.filePath
-source = if (CommandWaiters.consume(path, capturedConnectionEpoch)) COMMAND else SAVE   // §9.1.1
+source = if (CommandWaiters.consumeOldest(path, capturedConnectionEpoch)) COMMAND else SAVE  // §9.1.1
   |
   v
 分類:
@@ -703,7 +723,7 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 | `runSecurityScan` 送信時の例外 | 捕捉してログ。**共有 `CoroutineScope` は plain `Job` であり、未捕捉例外 1 つでセッション中すべての非同期処理が停止する**(Phase 5A の教訓)。送信呼び出しは必ず try/catch で囲む |
 | `publishDiagnostics` ハンドラ内の例外 | 捕捉してログ。lsp4j リスナースレッドへ例外を伝播させない |
 | 停止中の `source` の診断 | その diagnostic のみバッチから除外(他 source は通常どおり適用)。debug ログのみ(§17.1) |
-| 待機の無い応答(`consume` が false) | `SAVE` として分類する(§9.3)。成功は通知せず、失敗は §11.3 の抑制規則に従う |
+| 待機の無い応答(`consumeOldest` が false) | `SAVE` として分類する(§9.3)。成功は通知せず、失敗は §11.3 の抑制規則に従う |
 
 ### 13.2 コマンド応答の期限
 
@@ -717,10 +737,15 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 
 **確定仕様**:
 
-- `COMMAND` 送信時に `CommandWaiters.add(path, connectionEpoch)` し、`SCAN_RESPONSE_TIMEOUT`(既定 **60 秒**)後に起床する遅延タスクを**待機 1 件につき 1 つ**登録する
-- 起床時に `CommandWaiters.consume(path, connectionEpoch)` が `true` を返したら、§11.3 のタイムアウト文言を通知し、監査行に `outcome=timeout` を残す
-- `false`(既に応答が来ていた)なら**何もしない**
+- `COMMAND` 送信時に `waiterId = CommandWaiters.add(path, connectionEpoch)` で待機を登録する。**この時点では期限を起動しない**
+- **`server.runSecurityScan(...)` を試みた直後**に、`SCAN_RESPONSE_TIMEOUT`(既定 **60 秒**)後に起床する遅延タスクを、その `waiterId` に対して 1 つ登録する
+- 起床時に `CommandWaiters.consumeById(waiterId, connectionEpoch)` が `true` を返したら、§11.3 のタイムアウト文言を通知し、監査行に `outcome=timeout` を残す
+- `false`(既に応答・送信失敗・停止などで除去済み)なら**何もしない**
 - **`SAVE` には期限を設けない。**保存起動は成功時に通知しないため、待つ対象が無い
+
+**期限の起点は「待機の登録時」ではなく「送信を試みた時点」である(Codex round14-P2)。**待機の登録は UI スレッド側で行うが、実際の送信は §15.1 の `Mutex` を取得してからになる。リスク K11 のとおり `Mutex` 保持中に LS への書き込みがブロックしうるため、登録時点で 60 秒の期限を起動すると、**まだ送信していない `COMMAND` が「応答なし」と誤って通知され、その後ロックを取得した送信は続行して応答が `SAVE` 扱いになる**。
+
+送信に到達する前の異常(コルーチンが一度も開始しない・seqlock 不安定・`didChangeConfiguration` の例外)は、期限ではなく §9.1.1 の**未開始検出と送信失敗処理**が `consumeById` で解決する。したがって「待機が永久に残る」経路は生じない。
 
 **期限切れはそのパスを塞がない。**次のコマンドも保存も、いつでも新しいスキャンを送信できる。単一飛行を採らない(§9.1.1)ため、塞ぐべきスロットが存在しない。
 
@@ -858,7 +883,7 @@ process?.destroy()
 - 状態を変更する全操作は `connectionEpoch: Long` を受け取り、そのロックの下で `epoch == currentEpoch` を確認してから実行する。不一致なら何もせず false を返す
 - **`onServerStopped()` も同じロックを取る**。したがって「照合 → 実行」と「epoch の更新 → 状態の破棄」が交錯することはない
 
-対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consume` / `clear`(`CommandWaiters`)。**後者も `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1)。
+対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `clear`(`CommandWaiters`)。**後者も `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1)。
 
 このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
@@ -930,7 +955,7 @@ process?.destroy()
 ### 16.2 監査行の形式
 
 ```
-securityScan source=command|save outcome=success|failure|timeout|cancelled httpStatus=<int|-> findings=<int|-> path=<workspace-relative>
+securityScan source=command|save outcome=success|failure|timeout|cancelled httpStatus=<int|-> findings=<int|-> exceptionType=<簡易クラス名|-> path=<workspace-relative>
 ```
 
 `outcome` の値(single-flight 撤廃に伴い `late` と `not_started` は廃止した):
@@ -940,7 +965,7 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | `success` | `status == 200` の応答を受領 |
 | `failure` | `status != 200` の応答を受領 |
 | `timeout` | 応答期限(§13.2)を超過 |
-| `cancelled` | **LS 停止**により `COMMAND` の待機を破棄した(§13.4) |
+| `cancelled` | **LS 停止**(§13.4)**または設定の無効化**(§17.1)により `COMMAND` の待機を破棄した。**LS 停止では通知を伴い、設定無効化では監査のみ**である点が異なる |
 
 トークン・本文・診断内容を含まない。既存の `writeAuditMessage`(`WriteAction.kt:80-104`)/ `discussionAuditMessage`(`DiscussionWriteFlow.kt:90-116`)と同じ規律に従う。ログ呼び出し自体も `runCatching` で包み、ログの失敗が処理を壊さないようにする(Phase 5A の教訓)。
 
@@ -1078,6 +1103,8 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | `DiagnosticGenerationRegistry` | 追い越し(古い世代が false)/ epoch 不一致で false / `active=false` で false / `onServerStopped` で epoch が進み `latest` が消え **`active` は真のまま** / `suspendSource(X)` 後に **X の診断だけが除外され Y は通る** / `resumeSource(X)` で復帰 / `generation` が全 URI を通じて一意 |
 | `runSecurityScan`(SWT フリー core) | **設定 OFF で `send` が 0 回**(通知も監査も 0 回)/ トークン無しで 0 回 / `uri=null` で 0 回 / `source=save` のとき通知が 0 回 / `source=command` のとき通知が 1 回 / 正常時に `send` が 1 回で params が期待どおり / **ゲート評価順が `enabled` → `uri` → `hasToken`** |
 | **送信順序(A9)** | `didChangeConfiguration` が `runSecurityScan` より前に、**同一 mock サーバ**上で呼ばれること(MockK の `verifyOrder`)/ seqlock が不安定なとき両方とも 0 回 / **`Mutex` 保持中は他の `sendConfiguration` が割り込めないこと**(§15.1・並行コルーチンで検証) |
+| **期限タスクの帰属(§9.1.1 / §13.2)** | **A の応答で count が減った後に B を開始し、A の期限が後から発火しても B の待機を消費しないこと**(round14-P1 の回帰テスト)/ 設定無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと |
+| **応答期限の起点(§13.2)** | **`Mutex` を 60 秒以上保持しても、送信前の `COMMAND` が「応答なし」と通知されないこと**(round14-P2 の回帰テスト)/ 期限が `runSecurityScan` の試行直後から起算されること |
 | **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consume` が `true` を返したときだけ `COMMAND` として通知されること / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
 | **送信失敗(§9.1.1)** | seqlock 不安定 / `didChangeConfiguration` 例外 / `runSecurityScan` 例外のいずれでも、`COMMAND` は待機が解除され通知が 1 回・`SAVE` は 0 回 / 監査に `exceptionType` のみが載り本文が載らないこと |
 | **並行スキャンの受容(§9.1.1)** | 同一パスへの 2 要求が**どちらも送信される**こと(single-flight を持たないことの確認)/ 応答が逆順でも例外や状態破壊が起きないこと |
@@ -1182,7 +1209,7 @@ PR 本文にチェックリストとして記載する。
 |---|---|---|
 | L1 | **同一ファイルの並行スキャンで、古い内容の検出結果が新しい結果を上書きしうる** | §9.1.1。VSCode 版も同一の挙動。再スキャンで解消する |
 | L2 | `COMMAND` 起動の通知が保存起動の応答に消費されうる | §9.1.1 |
-| L3 | 送信例外の後に応答が届くと、失敗通知と成功通知の両方が出うる | §9.1.1 |
+| L3 | 送信例外の後に**非 200 の応答**が届くと、**失敗通知が 2 回出うる**(200 応答なら `SAVE` として抑制されるため二重にはならない) | §9.1.1 |
 | L4 | 最後の数打鍵が反映されない内容でスキャンされうる | §14.4。`didChange` とスキャン通知の到着順が保証されないため(既存 #16 と同根) |
 | L5 | エディタ内の範囲下線は出ず、行単位の marker のみ | §11.2。`CHAR_START` / `CHAR_END` を設定しないため |
 | L6 | 切替フェーズの削除失敗時に旧世代の一部が残り新世代と混在しうる | §12.2 |
@@ -1205,7 +1232,7 @@ PR 本文にチェックリストとして記載する。
 | K9 | スキャンごとに `didChangeConfiguration` を 1 回追加送信する(§15.1) | 低 | LS 側は `onConfigChange` を呼ぶだけで冪等。保存のたびに 1 通増えるが、直後に送るファイル全文に比べれば無視できる |
 | K6 | **同一ファイルの並行スキャンで結果が逆転しうる**(§9.1.1 の L1) | 中 | **意図的に受容する既知の制限**。VSCode 版も同一の挙動。影響は「次のスキャンまで古い内容の結果が表示される」ことに限られ、再保存・再スキャンで解消する。誤送信も秘匿漏洩も起きない |
 | K10 | `COMMAND` の通知が保存由来の応答に消費されうる(§9.1.1 の L2) | 低 | 同上。パスごとの待機数だけで管理する代償(要求単位の識別子を持たないため、どの応答がどの要求のものか区別できない)。コマンドを再実行すれば解消する |
-| K12 | 送信例外の後に応答が届くと失敗通知と成功通知の両方が出うる(§9.1.1 の L3) | 低 | 同上。永続的な不整合は残らない |
+| K12 | 送信例外の後に**非 200 の応答**が届くと**失敗通知が 2 回**出うる(§9.1.1 の L3) | 低 | 同上。200 応答なら `SAVE` として抑制されるため二重にはならない。永続的な不整合は残らない |
 | K11 | `LanguageServerOutboundLock` の導入で設定送信が直列化される(§15.1) | 低 | 送信内容は不変。設定送信は本来まれで、直列化は #16 の是正方向でもある。`Mutex` 保持中に LS への書き込みがブロックしても、呼び出しは全てコルーチン内であり UI スレッドは影響を受けない |
 | K7 | 既存の `publishDiagnostics` ログを削除することで、既存の運用手順が壊れる | 低 | 当該ログは no-op のデバッグ出力であり、機能として依存されていない |
 
