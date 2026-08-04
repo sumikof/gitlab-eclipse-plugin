@@ -5,6 +5,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.swt.widgets.Display
 import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.IEditorReference
 import org.eclipse.ui.IFileEditorInput
@@ -37,10 +38,23 @@ internal const val REVERT_WINDOW_MS = 30_000L
  * user's GitLab instance, and a revert is not an action the user described as "save", so sending on
  * one would be outside what opting in covered.
  *
+ * **The record is one-shot and is consumed by the dirty edge, not by `elementContentReplaced`.**
+ * That is forced by the order the platform really delivers the three callbacks, which is not the
+ * order the feature was first specified against. Verified from bytecode:
+ * `org.eclipse.core.filebuffers-3.8.500` `ResourceFileBuffer.revert` calls
+ * `handleFileContentChanged(true, false)`, and `ResourceTextFileBuffer.handleFileContentChanged`
+ * fires `fireBufferContentAboutToBeReplaced` (@90), `fireBufferContentReplaced` (@182) and
+ * `fireDirtyStateChanged` (@257) unconditionally in that order;
+ * `org.eclipse.ui.editors-3.20.200` `TextFileDocumentProvider$FileBufferListener` forwards all
+ * three synchronously without reordering. So `elementContentReplaced` arrives **before** the dirty
+ * edge that has to be suppressed — a guard that cleared the record there would clear it a moment
+ * too early and upload the file the user just threw away. Any external reload takes the same path
+ * (a branch switch, a refresh from disk), which is the same argument.
+ *
  * [nowMillis] is injected so the expiry window is testable without waiting for it.
  */
 class RevertGuard(private val nowMillis: () -> Long = System::currentTimeMillis) {
-  /** element key -> when the revert was announced. */
+  /** element key -> when the record was last stamped. */
   private val reverting = mutableMapOf<String, Long>()
 
   /** `elementContentAboutToBeReplaced`: a revert (or any wholesale replacement) is starting. */
@@ -50,24 +64,42 @@ class RevertGuard(private val nowMillis: () -> Long = System::currentTimeMillis)
     reverting[key] = nowMillis()
   }
 
-  /** `elementContentReplaced`: the replacement finished, so the record has done its job. */
+  /**
+   * `elementContentReplaced`: the content is in, but the dirty edge it causes has not arrived yet,
+   * so the record has to **survive** this call. It is re-stamped rather than left alone so that the
+   * expiry window is measured from the last thing that actually happened — a revert slow enough to
+   * cross the window between announcement and completion must not lose its guard on the way.
+   */
   @Synchronized
   fun contentReplaced(key: String) {
+    if (reverting.containsKey(key)) reverting[key] = nowMillis()
+  }
+
+  /**
+   * Forgets [key] outright.
+   *
+   * For the endings a dirty edge will never follow — the element was deleted, or moved to a new
+   * identity. Nothing is left that could consume the record, so it would otherwise sit there until
+   * it expired.
+   */
+  @Synchronized
+  fun discard(key: String) {
     reverting.remove(key)
   }
 
   /**
-   * Answers the dirty -> clean transition: `true` when it was a save, `false` when a revert is
-   * known to be in progress for [key].
+   * Answers the dirty -> clean transition: `true` when it was a save, `false` when it belongs to a
+   * revert — and in that case **consumes** the record, so the very next dirty edge on the same
+   * element is a real save again.
    *
    * Stale records are dropped here rather than on a timer, so nothing needs to be scheduled or
-   * cancelled: a revert whose `elementContentReplaced` never arrived stops suppressing saves as soon
-   * as anything asks a question again.
+   * cancelled: a revert whose dirty edge never arrives at all stops suppressing saves as soon as
+   * anything asks a question again.
    */
   @Synchronized
   fun shouldScanOnClean(key: String): Boolean {
     expireStale()
-    return !reverting.containsKey(key)
+    return reverting.remove(key) == null
   }
 
   /** Number of live records. `internal`-by-name for tests; not part of the behaviour. */
@@ -99,6 +131,25 @@ internal fun scanUriOf(element: Any): String? =
   (element as? IFileEditorInput)?.file?.locationURI?.toASCIIString()
 
 /**
+ * Whether [element] is the input of the editor the user is currently in.
+ *
+ * `AbstractTextEditor` delivers these callbacks through `asyncExec`, so arriving on the UI thread is
+ * likely but not guaranteed. Off it, `PlatformUtils.getActiveTextEditor()` resolves the workbench
+ * window through a display it does not own and answers `null` whatever is really active — which
+ * would read as "some other editor" and silently drop a save the user did make. A wrong answer that
+ * looks like a real one is worse than an admitted refusal, so this says which of the two happened
+ * and declines rather than inventing it.
+ */
+private fun activeEditorInputIsOnUiThread(element: Any): Boolean {
+  if (Display.getCurrent() == null) {
+    logger<SecurityScanSaveListener>()
+      .warn("Security scan save trigger skipped: the save notification did not arrive on the UI thread.")
+    return false
+  }
+  return service<PlatformUtils>().getActiveTextEditor()?.editorInput == element
+}
+
+/**
  * Runs a remote security scan when the user saves the file they are looking at.
  *
  * Three gates stand between a save and an upload, in this order (design §10.2):
@@ -125,9 +176,7 @@ class SecurityScanSaveListener(
   },
   private val keyOf: (Any) -> String? = ::scanKeyOf,
   private val uriOf: (Any) -> String? = ::scanUriOf,
-  private val isActiveEditorInput: (Any) -> Boolean = { element ->
-    service<PlatformUtils>().getActiveTextEditor()?.editorInput == element
-  },
+  private val isActiveEditorInput: (Any) -> Boolean = ::activeEditorInputIsOnUiThread,
   private val launch: (String?, SecurityScanSource) -> SecurityScanLaunchOutcome = { uri, source ->
     service<SecurityScanLauncher>().launch(uri, source)
   },
@@ -169,16 +218,20 @@ class SecurityScanSaveListener(
   @Synchronized
   fun install() {
     if (installed) return
-    installed = true
     try {
       val workbench = PlatformUI.getWorkbench()
       val page = workbench.activeWorkbenchWindow?.activePage
       // Same shape as GitLabLanguageServerOpenFilesService.kt:23-30: attach to the page that is
       // already there, otherwise wait for one to open.
       if (page != null) listenTo(page) else workbench.addWindowListener(windowListener)
+      // Set LAST, and only on the path that really attached something. Setting it up front would
+      // make a first start that ran before the workbench existed permanently indistinguishable from
+      // a successful one: the catch below would log, the flag would say "done", and the save trigger
+      // would be dead for the rest of the session with nothing for the user to see.
+      installed = true
     } catch (e: Exception) {
-      // First start can run before the workbench exists. Nothing is attached, nothing leaks, and
-      // saves simply do not trigger scans until something installs again. Never let start throw.
+      // Never let the bundle's start() throw. Nothing is attached and nothing leaks; a later call
+      // can retry, which is exactly what the flag placement above preserves.
       log.warn("Security scan save trigger not installed: workbench unavailable.", e)
     }
   }
@@ -225,40 +278,66 @@ class SecurityScanSaveListener(
   }
 
   /**
-   * The one place a save can start an upload. UI thread; [SecurityScanLauncher.launch] returns
-   * immediately and does the sending on the plugin's own scope.
+   * Runs a listener callback so that nothing can escape into the platform's notification loop.
+   *
+   * `TextFileDocumentProvider$FileBufferListener` iterates its listeners with no exception table, so
+   * one throw from here does not just lose this feature — it skips every listener after us,
+   * including `AbstractTextEditor`'s own dirty handling, which leaves a stale `*` on the user's tab.
+   * The bodies below reach Koin and the workbench, both of which can be gone while the workbench is
+   * stopping, so this is a reachable path rather than a defensive flourish.
+   *
+   * Only the exception's class name is recorded: this feature's failures can quote a file path, and
+   * no path may reach the log.
    */
-  override fun elementDirtyStateChanged(element: Any?, isDirty: Boolean) {
-    if (isDirty) return
-    val target = element ?: return
-    if (!scanOnSaveEnabled()) return
-    val key = keyOf(target) ?: return
-    if (!guard.shouldScanOnClean(key)) return
-    if (!isActiveEditorInput(target)) return
-    val uri = uriOf(target) ?: return
+  private inline fun contained(what: String, body: () -> Unit) {
+    try {
+      body()
+    } catch (e: Throwable) {
+      runCatching { log.warn("Security scan save trigger failed in $what: ${e::class.simpleName}") }
+    }
+  }
+
+  /**
+   * The one place a save can start an upload. [SecurityScanLauncher.launch] returns immediately and
+   * does the sending on the plugin's own scope.
+   */
+  override fun elementDirtyStateChanged(element: Any?, isDirty: Boolean) = contained("dirtyStateChanged") {
+    if (isDirty) return@contained
+    val target = element ?: return@contained
+    if (!scanOnSaveEnabled()) return@contained
+    val key = keyOf(target) ?: return@contained
+    if (!guard.shouldScanOnClean(key)) return@contained
+    if (!isActiveEditorInput(target)) return@contained
+    val uri = uriOf(target) ?: return@contained
     launch(uri, SecurityScanSource.SAVE)
   }
 
-  override fun elementContentAboutToBeReplaced(element: Any?) {
-    val key = element?.let(keyOf) ?: return
+  override fun elementContentAboutToBeReplaced(element: Any?) = contained("contentAboutToBeReplaced") {
+    val key = element?.let(keyOf) ?: return@contained
     guard.aboutToBeReplaced(key)
   }
 
-  override fun elementContentReplaced(element: Any?) {
-    val key = element?.let(keyOf) ?: return
+  /**
+   * The content is in, but the dirty edge it causes has not been delivered yet — see [RevertGuard]
+   * for the bytecode-verified ordering. The record must survive this call; it is the dirty edge
+   * that consumes it.
+   */
+  override fun elementContentReplaced(element: Any?) = contained("contentReplaced") {
+    val key = element?.let(keyOf) ?: return@contained
     guard.contentReplaced(key)
   }
 
-  override fun elementDeleted(element: Any?) {
-    // A deleted element is not a save, and nothing will close out a record left against it.
-    val key = element?.let(keyOf) ?: return
-    guard.contentReplaced(key)
+  override fun elementDeleted(element: Any?) = contained("elementDeleted") {
+    // A deleted element is not a save, and no dirty edge will ever arrive to consume a record left
+    // against it, so this ending has to drop it outright.
+    val key = element?.let(keyOf) ?: return@contained
+    guard.discard(key)
   }
 
-  override fun elementMoved(originalElement: Any?, movedElement: Any?) {
-    // The old identity is gone, so no `elementContentReplaced` can ever clear a record held
-    // against it. Drop it here instead of waiting out the window.
-    val key = originalElement?.let(keyOf) ?: return
-    guard.contentReplaced(key)
+  override fun elementMoved(originalElement: Any?, movedElement: Any?) = contained("elementMoved") {
+    // Same reasoning as elementDeleted: the old identity is gone, so nothing can consume a record
+    // held against it.
+    val key = originalElement?.let(keyOf) ?: return@contained
+    guard.discard(key)
   }
 }
