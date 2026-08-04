@@ -12,6 +12,8 @@ import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.gitlab.eclipse.security.SecurityScanLauncher
+import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
@@ -32,7 +34,7 @@ val languageServerModule = module {
 
   single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
   single<GitLabLanguageServerConfigurationService> {
-    GitLabLanguageServerConfigurationService(get(), get(), get(), get(named("languageServerOutbound")))
+    GitLabLanguageServerConfigurationService(get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
   }
   single<DidChangeWatchedFileCapability>(createdAtStart = true) { DidChangeWatchedFileCapability(get(), get()) }
 
@@ -43,4 +45,8 @@ val languageServerModule = module {
   single<LanguageServerWebviewService> { LanguageServerWebviewService(get(), get()) }
 
   single<DiagnosticMarkerService> { DiagnosticMarkerService() }
+
+  single<SecurityScanLauncher> {
+    SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
 }
