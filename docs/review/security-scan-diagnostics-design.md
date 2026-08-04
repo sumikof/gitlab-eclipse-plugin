@@ -350,7 +350,12 @@ single-flight を持たないため、送信の失敗で解放すべきスロッ
 - 監査行に `outcome=failure` と `exceptionType` を残す(例外本文は出さない)
 - `source == SAVE` なら監査行のみ
 
-`runSecurityScan` の例外の後に応答が届く可能性は L3 として受容する。**その挙動を正確に述べる**(Codex round13-P2): 送信失敗の時点で `COMMAND` の待機は解除されるため、後着した応答は §9.3 で `SAVE` と分類される。したがって **200 応答なら §11.3 により成功通知は抑制され、二重通知にはならない**。非 200 応答の場合のみ、`SAVE` の失敗通知が(抑制状態も送信失敗時に触れていないため)もう 1 回出うる。
+`runSecurityScan` の例外の後に応答が届く可能性は L3 として受容する。**その挙動を正確に述べる**(Codex round13-P2 / round15-P2):
+
+- **同一パスに他の `COMMAND` 待機が無い場合**: 送信失敗の時点でその待機は解除されるため、後着応答は §9.3 で `SAVE` と分類される。200 応答なら §11.3 により成功通知は抑制され二重にならない。**非 200 応答のときだけ**、`SAVE` の失敗通知がもう 1 回出うる(抑制状態は送信失敗時に触れていないため)
+- **同一パスに他の `COMMAND` 待機がある場合**: 後着応答は `consumeOldest` でその待機を消費し `COMMAND` と分類される。したがって **200 応答でも、送信失敗通知と成功通知の両方**が出る。さらにその `COMMAND` 自身の応答は後で `SAVE` として扱われる
+
+どちらも通知の重複に留まり、marker の内容にも送信先にも影響しない。
 
 **送信コルーチンが一度も開始しなかった場合(Codex round13-P2)。**共有 `CoroutineScope` が既にキャンセルされていると、`launch` は**例外を投げず本体を一度も実行しない**。この場合 try/catch では検出できず、実際には送信していない `COMMAND` が 60 秒後に誤って「応答なし」と通知され、しかもその状態のスコープでは以後の全コマンドが同じ挙動になる。
 
@@ -403,6 +408,42 @@ round13 ではこれを整数カウンタで解決したが、**それでも不�
 | **期限切れ・送信失敗・未開始** | **`consumeById(waiterId, epoch)`** | **自分が登録した待機だけ**を消す。他の要求の待機に触れない |
 
 `COMMAND` を n 回実行すれば n 回通知され、期限タスクが互いの待機を奪うこともない。
+
+**`waiterId` は再利用しない(Codex round15-P1)。**`consumeById` が古い期限タスクから新しい待機を守れるのは、**id が再利用されない**場合だけである。設定の無効化は接続 epoch を進めないため、`clear` が採番器も初期化する実装では、再有効化後の B に A と同じ id が払い出され、A の残存期限タスクが B を再び消費する。したがって:
+
+- `waiterId` は**単一の `AtomicLong` から単調に採番する**
+- **`clear` も `suspendSource` も epoch の更新も、採番器を初期化しない**
+- 採番器はバンドルの生存期間を通じて単調増加する(64bit なので枯渇しない)
+
+#### 期限起動前の待機にも終了経路を与える(Codex round15-P2)
+
+§13.2 のとおり応答期限は `runSecurityScan` の試行**後**に起動するため、そこへ到達しない経路では待機に期限が付かない。到達しない経路は次のとおり。
+
+- コルーチンが一度も開始しない(キャンセル済みスコープ)
+- `entered = true` の後、`Mutex` 待ちや seqlock 読み取り中にキャンセルされた
+- `didChangeConfiguration` / `runSecurityScan` が例外を投げた
+
+**`invokeOnCompletion` を「期限が起動しなかった待機」の万能の後始末にする。**
+
+```kotlin
+job?.invokeOnCompletion { _ ->
+  // 正常終了・例外・キャンセルのいずれでも通る。
+  // 期限が起動済みならその期限に任せ、未起動なら待機をここで解決する。
+  if (!CommandWaiters.isDeadlineArmed(waiterId)) onSendFailed(waiterId, path, source)
+}
+```
+
+`markDeadlineArmed(waiterId, epoch)` は期限タスクを登録した直後に呼ぶ。`onSendFailed` は `consumeById` で自分の待機だけを除去し、`COMMAND` なら §11.4 の固定文言で通知し、監査行に `outcome=failure` を残す。**`consumeById` は冪等**なので、送信失敗の catch と `invokeOnCompletion` の両方から呼ばれても通知は 1 回である。
+
+**残る唯一の穴**: `runSecurityScan` の書き込みが**永久にブロック**した場合、Job は完了せず待機も残る。これは LSP チャネル自体が死んでいる状態であり、本機能単独では回復できない。K11(`Mutex` 保持中のブロック)と同じ扱いで受容し、LS 再起動(`clear`)で解消する。
+
+#### 無効化と並行する待機登録(Codex round15-P2)
+
+起動処理が `enabled == true` を確認した後、待機を登録する前に設定の無効化が `clear` を完了すると、その起動処理は `clear` の後に新しい待機を登録して送信を続行できる。無効化済みなので LS は黙って return し、**無効化した後になって 60 秒後のタイムアウト通知が出る**。
+
+**確定仕様: `Mutex` の中で設定を再確認する。**§15.1 の seqlock 下で設定値を読む際に `SECURITY_SCAN_ENABLED` も読み、**偽なら送信せず `consumeById` で待機を除去して終了する**(通知はしない。利用者自身が無効化した直後であり、通知は不要かつ誤解を招く)。
+
+これは §15.1 の「送信直前に設定を読んで先に送る」手順に 1 つ条件を足すだけで実現でき、追加のロックも順序制約も生じない。
 
 ### 9.2 診断の受信と適用
 
@@ -557,10 +598,13 @@ object DiagnosticGenerationRegistry {
 }
 
 /** COMMAND 起動に可視の応答を返すためだけの最小状態(§9.1.1) */
-object CommandWaiters {                                       // 正規化パス -> 待機数
-  fun add(path: String, connectionEpoch: Long): Boolean
-  fun consume(path: String, connectionEpoch: Long): Boolean   // COMMAND 由来なら true
-  fun clear(connectionEpoch: Long): Map<String, Int>          // 除去した内容(パス -> 件数)
+object CommandWaiters {                    // 正規化パス -> 待機 id の FIFO
+  fun add(path: String, connectionEpoch: Long): Long?
+  fun consumeOldest(path: String, connectionEpoch: Long): Boolean
+  fun consumeById(waiterId: Long, connectionEpoch: Long): Boolean
+  fun markDeadlineArmed(waiterId: Long, connectionEpoch: Long)
+  fun isDeadlineArmed(waiterId: Long): Boolean
+  fun clear(connectionEpoch: Long): Map<String, Int>
 }
 ```
 
@@ -1103,14 +1147,17 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | `DiagnosticGenerationRegistry` | 追い越し(古い世代が false)/ epoch 不一致で false / `active=false` で false / `onServerStopped` で epoch が進み `latest` が消え **`active` は真のまま** / `suspendSource(X)` 後に **X の診断だけが除外され Y は通る** / `resumeSource(X)` で復帰 / `generation` が全 URI を通じて一意 |
 | `runSecurityScan`(SWT フリー core) | **設定 OFF で `send` が 0 回**(通知も監査も 0 回)/ トークン無しで 0 回 / `uri=null` で 0 回 / `source=save` のとき通知が 0 回 / `source=command` のとき通知が 1 回 / 正常時に `send` が 1 回で params が期待どおり / **ゲート評価順が `enabled` → `uri` → `hasToken`** |
 | **送信順序(A9)** | `didChangeConfiguration` が `runSecurityScan` より前に、**同一 mock サーバ**上で呼ばれること(MockK の `verifyOrder`)/ seqlock が不安定なとき両方とも 0 回 / **`Mutex` 保持中は他の `sendConfiguration` が割り込めないこと**(§15.1・並行コルーチンで検証) |
-| **期限タスクの帰属(§9.1.1 / §13.2)** | **A の応答で count が減った後に B を開始し、A の期限が後から発火しても B の待機を消費しないこと**(round14-P1 の回帰テスト)/ 設定無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと |
+| **期限タスクの帰属(§9.1.1 / §13.2)** | **A の応答で A の待機が消えた後に B を開始し、A の期限が後から発火しても B の待機を消費しないこと**(round14-P1 の回帰テスト) |
 | **応答期限の起点(§13.2)** | **`Mutex` を 60 秒以上保持しても、送信前の `COMMAND` が「応答なし」と通知されないこと**(round14-P2 の回帰テスト)/ 期限が `runSecurityScan` の試行直後から起算されること |
 | **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consume` が `true` を返したときだけ `COMMAND` として通知されること / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
 | **送信失敗(§9.1.1)** | seqlock 不安定 / `didChangeConfiguration` 例外 / `runSecurityScan` 例外のいずれでも、`COMMAND` は待機が解除され通知が 1 回・`SAVE` は 0 回 / 監査に `exceptionType` のみが載り本文が載らないこと |
 | **並行スキャンの受容(§9.1.1)** | 同一パスへの 2 要求が**どちらも送信される**こと(single-flight を持たないことの確認)/ 応答が逆順でも例外や状態破壊が起きないこと |
 | **LS 停止時の待機(§13.4)** | `CommandWaiters.clear(epoch)` で `COMMAND` に**待機数のぶんだけ**通知され監査が `cancelled` になること / 再送されないこと / **設定無効化では通知が 0 回で監査のみ**であること(§17.1) |
 | **待機の epoch 照合(§9.1.1)** | **旧接続の応答が新接続の `COMMAND` 待機を消費しないこと**(round13-P1 の回帰テスト) |
-| **同一パスの複数 COMMAND(§9.1.1)** | 応答前に `COMMAND` を 2 回実行したとき、**通知が 2 回**出ること(待機数で管理されていること)(round13-P2 の回帰テスト) |
+| **同一パスの複数 COMMAND(§9.1.1)** | 応答前に `COMMAND` を 2 回実行したとき、**通知が 2 回**出ること(待機 id の列で管理されていること)(round13-P2 の回帰テスト) |
+| **waiterId の一意性(§9.1.1)** | `clear` の前後で **id が再利用されないこと** / 無効化 → 再有効化を跨いでも古い期限タスクが新しい待機を消費しないこと(round15-P1 の回帰テスト) |
+| **期限起動前の終了経路(§9.1.1)** | `entered=true` の後に `Mutex` 待ちでキャンセルされた場合 / 送信呼び出しが例外を投げた場合のいずれでも、**期限未起動の待機が `invokeOnCompletion` で解決され、永久に残らないこと**(round15-P2 の回帰テスト) |
+| **無効化と並行する登録(§9.1.1)** | ゲート通過後・待機登録前に無効化が完了した場合、**`Mutex` 内の再確認で送信されず待機も残らず通知も 0 回**であること(round15-P2 の回帰テスト) |
 | **送信コルーチン未開始(§9.1.1)** | キャンセル済み `CoroutineScope` で `launch` が本体を実行しない場合に、待機が即座に解除され `COMMAND` に送信失敗が通知されること / **60 秒後の誤った「応答なし」が出ないこと**(round13-P2 の回帰テスト) |
 | **停止と予約済み Job(§17.1.1)** | **受理後・適用前に `suspendSource` された診断が適用時に落ちること**(round3-P1 の回帰テスト)/ 同じバッチの他 source は適用されること |
 | **`acceptToken` の原子性(§17.1.1)** | 偶数世代で token を返し奇数で null / `suspendSource` → `resumeSource` を跨いだ token が無効になること / **判定と捕捉の間に停止が入っても停止後の世代を捕捉しないこと**(round4-P1 の回帰テスト) |
@@ -1209,7 +1256,7 @@ PR 本文にチェックリストとして記載する。
 |---|---|---|
 | L1 | **同一ファイルの並行スキャンで、古い内容の検出結果が新しい結果を上書きしうる** | §9.1.1。VSCode 版も同一の挙動。再スキャンで解消する |
 | L2 | `COMMAND` 起動の通知が保存起動の応答に消費されうる | §9.1.1 |
-| L3 | 送信例外の後に**非 200 の応答**が届くと、**失敗通知が 2 回出うる**(200 応答なら `SAVE` として抑制されるため二重にはならない) | §9.1.1 |
+| L3 | 送信例外の後に応答が届くと**二重通知になりうる**。(a) 同一パスに他の `COMMAND` 待機が**無い**場合は、非 200 応答のときだけ失敗通知が 2 回。(b) 他の `COMMAND` 待機が**ある**場合は、後着応答がその待機を消費して `COMMAND` と分類されるため、**200 応答でも送信失敗通知と成功通知の両方**が出る | §9.1.1 |
 | L4 | 最後の数打鍵が反映されない内容でスキャンされうる | §14.4。`didChange` とスキャン通知の到着順が保証されないため(既存 #16 と同根) |
 | L5 | エディタ内の範囲下線は出ず、行単位の marker のみ | §11.2。`CHAR_START` / `CHAR_END` を設定しないため |
 | L6 | 切替フェーズの削除失敗時に旧世代の一部が残り新世代と混在しうる | §12.2 |
@@ -1232,7 +1279,7 @@ PR 本文にチェックリストとして記載する。
 | K9 | スキャンごとに `didChangeConfiguration` を 1 回追加送信する(§15.1) | 低 | LS 側は `onConfigChange` を呼ぶだけで冪等。保存のたびに 1 通増えるが、直後に送るファイル全文に比べれば無視できる |
 | K6 | **同一ファイルの並行スキャンで結果が逆転しうる**(§9.1.1 の L1) | 中 | **意図的に受容する既知の制限**。VSCode 版も同一の挙動。影響は「次のスキャンまで古い内容の結果が表示される」ことに限られ、再保存・再スキャンで解消する。誤送信も秘匿漏洩も起きない |
 | K10 | `COMMAND` の通知が保存由来の応答に消費されうる(§9.1.1 の L2) | 低 | 同上。パスごとの待機数だけで管理する代償(要求単位の識別子を持たないため、どの応答がどの要求のものか区別できない)。コマンドを再実行すれば解消する |
-| K12 | 送信例外の後に**非 200 の応答**が届くと**失敗通知が 2 回**出うる(§9.1.1 の L3) | 低 | 同上。200 応答なら `SAVE` として抑制されるため二重にはならない。永続的な不整合は残らない |
+| K12 | 送信例外の後に応答が届くと二重通知になりうる(§9.1.1 の L3) | 低 | 同上。並行する `COMMAND` 待機が無ければ非 200 応答のときだけ、あれば 200 応答でも二重になる。永続的な不整合は残らない |
 | K11 | `LanguageServerOutboundLock` の導入で設定送信が直列化される(§15.1) | 低 | 送信内容は不変。設定送信は本来まれで、直列化は #16 の是正方向でもある。`Mutex` 保持中に LS への書き込みがブロックしても、呼び出しは全てコルーチン内であり UI スレッドは影響を受けない |
 | K7 | 既存の `publishDiagnostics` ログを削除することで、既存の運用手順が壊れる | 低 | 当該ログは no-op のデバッグ出力であり、機能として依存されていない |
 
