@@ -242,7 +242,7 @@ source   = "gitlab_security_scan"
 | `SecurityScanLauncher` | ゲート判定と通知送信。**SWT フリーの `runSecurityScan(...)` を core として持つ**(Phase 4 の `runCiLint` / `runCreatePipeline` と同型) |
 | `RunSecurityScanHandler` | コマンドハンドラ。UI スレッドでアクティブエディタを解決し core に渡す |
 | `SecurityScanSaveListener` | `IPartListener2` + `IElementStateListener`。保存(dirty → clean)を検出して core を呼ぶ |
-| `CommandWaiters` | `COMMAND` 起動の応答待ち(正規化パス → 待機数)。可視の応答(F6)を返すためだけに持つ(§9.1.1 / §13.2) |
+| `CommandWaiters` | `COMMAND` 起動の応答待ち(正規化パス → 待機 id の FIFO)。可視の応答(F6)を返すためだけに持つ(§9.1.1 / §13.2) |
 | `SecurityScanStatusReporter` | 応答の分類・通知の抑制・監査ログ |
 | `SecurityScanParams` / `SecurityScanResponse` | ワイヤ DTO |
 
@@ -305,18 +305,24 @@ uri = file.locationURI.toASCIIString()      // didOpen と逐語的に同一の�
   v
 source == COMMAND なら waiterId = CommandWaiters.add(正規化パス, connectionEpoch)
   |    // ★ ここでは期限を起動しない(§13.2)。Mutex 待ちで誤タイムアウトするため
-  v (coroutineScope・捕捉した server プロキシを使用・§15.1 の Mutex 下)
-ConnectionConfigGeneration の seqlock 下で設定を読む
-  |- 不安定 -> 中止(COMMAND なら待機を解除して通知)
+  v (coroutineScope の本体・捕捉した server プロキシを使用)
+entered = true                                 // 未開始検出用(§9.1.1)
+  v (§15.1 の Mutex 下)
+ConnectionConfigGeneration の seqlock 下で設定と SECURITY_SCAN_ENABLED を読む
+  |- 不安定 -> 中止(COMMAND なら consumeById して通知)
+  |- enabled == false -> **送信せず consumeById して終了(通知しない)**(§9.1.1)
   v
 server.didChangeConfiguration(読んだ設定)      // 同一コルーチンで先に送る
-  |- 例外 -> 中止(COMMAND なら待機を解除して通知)
+  |- 例外 -> 中止(COMMAND なら consumeById して通知)
   v
 server.runSecurityScan(SecurityScanParams(uri, source))
-  |    // ★ 送信を試みた時点で応答期限を起動する(§13.2)
+  |- 例外 -> 中止(COMMAND なら consumeById して通知)
   v
-COMMAND なら waiterId に対する応答期限(60 秒)を登録
-  |- 例外 -> 中止(COMMAND なら待機を解除して通知)
+COMMAND なら waiterId に応答期限(60 秒)を登録し markDeadlineArmed(waiterId, epoch)
+  |    // ★ 送信を試みた後に起動する(§13.2)
+
+[Job の完了時・§9.1.1]
+isDeadlineArmed(waiterId) == false -> onSendFailed(waiterId, ...)   // 万能の後始末
 ```
 
 **LS 側の前提(明記が必要)**: LS は自身のドキュメントストアに `didOpen` 済みの URI しかスキャンしません(見つからなければ**黙って return**)。本プラグインは `IFileEditorInput` のエディタにしか `didOpen` を送らないため、**ワークスペース外のファイル・プラグイン自身のインメモリエディタ(ジョブログ / merged YAML)はスキャン対象外**です。
@@ -390,11 +396,11 @@ object CommandWaiters {                    // 正規化パス -> 待機 id の F
 }
 ```
 
-- **パスごとの待機数だけを持ち、要求単位の識別子・世代・トークン・キューは持たない**
+- **パスごとの待機 id の列だけを持ち、世代・接続トークン・送信キューは持たない**
 - 応答受信時に `consumeOldest(path, epoch)` が `true` を返せば `COMMAND` として扱い、`false` なら `SAVE` として扱う(L2 の取り違えはここで生じるが受容する)
 - 送信失敗時・タイムアウト時・LS 停止時・設定無効化時に除去する
 
-**接続 epoch を全操作に渡す(Codex round13-P1)。**`consume` が epoch を受け取らないと、旧接続の応答が §9.3 の入口検査を通過した直後に LS 停止と新接続の `add` が入った場合、**旧応答が新しい `COMMAND` の待機を消費**してしまう。§14.6 が要求する「照合から状態変更までの原子性」を、single-flight 撤廃後の新 API で再び破ることになる。したがって `add` / `consume` / `clear` はいずれも `connectionEpoch` を受け取り、**§14.6 と同じロックの下で照合してから実行する**。epoch が一致しなければ何もせず `false` を返す。
+**接続 epoch を全操作に渡す(Codex round13-P1)。**`consume` が epoch を受け取らないと、旧接続の応答が §9.3 の入口検査を通過した直後に LS 停止と新接続の `add` が入った場合、**旧応答が新しい `COMMAND` の待機を消費**してしまう。§14.6 が要求する「照合から状態変更までの原子性」を、single-flight 撤廃後の新 API で再び破ることになる。したがって `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear` はいずれも `connectionEpoch` を受け取り、**§14.6 と同じロックの下で照合してから実行する**。epoch が一致しなければ何もせず `false`(または `null`)を返す。
 
 **集合ではなく待機の列を持つ(Codex round13-P2 / round14-P1)。**単なる集合にすると、同じファイルで `COMMAND` を応答前に 2 回実行した場合、2 回目の `add` は状態を増やさず、最初の応答が唯一の要素を除去する。残る応答は `SAVE` 扱いとなり、**もう一方の明示操作には成功・失敗・タイムアウトのいずれの通知も出ない**(F6 違反)。
 
@@ -807,7 +813,7 @@ marker 型: **`com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic`**
 
 デバウンスも入れない(VSCode パリティ)。ただし「保存のたびにファイル全文が POST される」ことは設定の説明文に明記する。
 
-**LS 停止時の扱い**: `CommandWaiters.clear(epoch)` を呼び、**除去した待機数のぶんだけ** §11.3 に従って `COMMAND` に通知し(旧接続の応答は §14.6 で破棄されるため、通知しなければ永久に無反応になる)、監査行に `outcome=cancelled` を残す。保持している状態はパスごとの待機数だけなので、これ以外に破棄するものは無い。
+**LS 停止時の扱い**: `CommandWaiters.clear(epoch)` を呼び、**除去した待機数のぶんだけ** §11.3 に従って `COMMAND` に通知し(旧接続の応答は §14.6 で破棄されるため、通知しなければ永久に無反応になる)、監査行に `outcome=cancelled` を残す。保持している状態はパスごとの待機 id の列だけなので、これ以外に破棄するものは無い(**採番器は初期化しない**。§9.1.1)。
 
 **設定無効化時は通知しない**(§17.1)。破棄する点は同じだが、利用者自身の操作の直接の結果であり、かつ §11.3 の破棄文言は LS 再起動を指すため流用すると虚偽になる。
 
@@ -927,7 +933,7 @@ process?.destroy()
 - 状態を変更する全操作は `connectionEpoch: Long` を受け取り、そのロックの下で `epoch == currentEpoch` を確認してから実行する。不一致なら何もせず false を返す
 - **`onServerStopped()` も同じロックを取る**。したがって「照合 → 実行」と「epoch の更新 → 状態の破棄」が交錯することはない
 
-対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `clear`(`CommandWaiters`)。**後者も `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1)。
+対象となる操作: `acceptToken` / `nextGeneration` / `shouldApply` / `suspendSource` / `resumeSource`(`DiagnosticGenerationRegistry`)と `add` / `consumeOldest` / `consumeById` / `markDeadlineArmed` / `clear`(`CommandWaiters`)。**後者も `connectionEpoch` を受け取り、同じロックの下で照合してから実行する**(Codex round13-P1)。
 
 このロックは**メモリ上の小さな状態遷移だけ**を保護する(marker への I/O やワークスペースロックの取得は保護区間の外に置く)。したがって保持時間は短く、`onServerStopped()` が `lifecycleLock` を保持している間にこのロックを取っても、逆順のロック取得経路が存在しないためデッドロックしない。**ロック順序は「`lifecycleLock` → `LanguageServerLifecycleLock`」の一方向に固定する**ことを実装上の不変条件とする。
 
@@ -1149,7 +1155,7 @@ securityScan source=command|save outcome=success|failure|timeout|cancelled httpS
 | **送信順序(A9)** | `didChangeConfiguration` が `runSecurityScan` より前に、**同一 mock サーバ**上で呼ばれること(MockK の `verifyOrder`)/ seqlock が不安定なとき両方とも 0 回 / **`Mutex` 保持中は他の `sendConfiguration` が割り込めないこと**(§15.1・並行コルーチンで検証) |
 | **期限タスクの帰属(§9.1.1 / §13.2)** | **A の応答で A の待機が消えた後に B を開始し、A の期限が後から発火しても B の待機を消費しないこと**(round14-P1 の回帰テスト) |
 | **応答期限の起点(§13.2)** | **`Mutex` を 60 秒以上保持しても、送信前の `COMMAND` が「応答なし」と通知されないこと**(round14-P2 の回帰テスト)/ 期限が `runSecurityScan` の試行直後から起算されること |
-| **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consume` が `true` を返したときだけ `COMMAND` として通知されること / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
+| **コマンド待機(§9.1.1 / §13.2)** | `COMMAND` 送信で待機に入り応答で除去されること / `consumeOldest` が `true` を返したときだけ `COMMAND` として通知されること / **期限切れで `COMMAND` に 1 回通知され `SAVE` には 0 回**であること / 期限切れ後もそのパスへ新しいスキャンを送信できること(塞がらないこと) |
 | **送信失敗(§9.1.1)** | seqlock 不安定 / `didChangeConfiguration` 例外 / `runSecurityScan` 例外のいずれでも、`COMMAND` は待機が解除され通知が 1 回・`SAVE` は 0 回 / 監査に `exceptionType` のみが載り本文が載らないこと |
 | **並行スキャンの受容(§9.1.1)** | 同一パスへの 2 要求が**どちらも送信される**こと(single-flight を持たないことの確認)/ 応答が逆順でも例外や状態破壊が起きないこと |
 | **LS 停止時の待機(§13.4)** | `CommandWaiters.clear(epoch)` で `COMMAND` に**待機数のぶんだけ**通知され監査が `cancelled` になること / 再送されないこと / **設定無効化では通知が 0 回で監査のみ**であること(§17.1) |
@@ -1278,7 +1284,7 @@ PR 本文にチェックリストとして記載する。
 | K8 | **§12.2 の限界**: 切替フェーズの削除中に `CoreException` が起きると旧世代の一部が残り新世代と混在する | 中 | 表示されるのはすべて実在した検出結果であり捏造ではない。次回スキャンで再構築される。再試行しても同じ理由で失敗する公算が高いため補償はしない |
 | K9 | スキャンごとに `didChangeConfiguration` を 1 回追加送信する(§15.1) | 低 | LS 側は `onConfigChange` を呼ぶだけで冪等。保存のたびに 1 通増えるが、直後に送るファイル全文に比べれば無視できる |
 | K6 | **同一ファイルの並行スキャンで結果が逆転しうる**(§9.1.1 の L1) | 中 | **意図的に受容する既知の制限**。VSCode 版も同一の挙動。影響は「次のスキャンまで古い内容の結果が表示される」ことに限られ、再保存・再スキャンで解消する。誤送信も秘匿漏洩も起きない |
-| K10 | `COMMAND` の通知が保存由来の応答に消費されうる(§9.1.1 の L2) | 低 | 同上。パスごとの待機数だけで管理する代償(要求単位の識別子を持たないため、どの応答がどの要求のものか区別できない)。コマンドを再実行すれば解消する |
+| K10 | `COMMAND` の通知が保存由来の応答に消費されうる(§9.1.1 の L2) | 低 | 同上。**応答側に相関 ID が無い**ため、どの応答がどの要求のものか区別できない(待機 id は自分が登録した待機を守るためのもので、応答との対応づけには使えない)。コマンドを再実行すれば解消する |
 | K12 | 送信例外の後に応答が届くと二重通知になりうる(§9.1.1 の L3) | 低 | 同上。並行する `COMMAND` 待機が無ければ非 200 応答のときだけ、あれば 200 応答でも二重になる。永続的な不整合は残らない |
 | K11 | `LanguageServerOutboundLock` の導入で設定送信が直列化される(§15.1) | 低 | 送信内容は不変。設定送信は本来まれで、直列化は #16 の是正方向でもある。`Mutex` 保持中に LS への書き込みがブロックしても、呼び出しは全てコルーチン内であり UI スレッドは影響を受けない |
 | K7 | 既存の `publishDiagnostics` ログを削除することで、既存の運用手順が壊れる | 低 | 当該ログは no-op のデバッグ出力であり、機能として依存されていない |
