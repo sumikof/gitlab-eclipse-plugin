@@ -39,15 +39,41 @@ import java.util.concurrent.TimeUnit
 private const val URI_A = "file:/w/a.kt"
 private const val KEY_A = "/w/a.kt"
 
+/**
+ * The disabled gate's fixed wording, spelled out rather than imported.
+ *
+ * The production constant is file-private, and deliberately: a test that shared the constant would
+ * pass whatever it was changed to, and this is user-facing text on the one path a user reaches
+ * before opting in.
+ */
+private const val DISABLED_TEXT =
+  "GitLab security scan is turned off. Enable real-time SAST scan in the GitLab preferences to " +
+    "run it."
+
 class SecurityScanLauncherTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   describe("runSecurityScan gates") {
-    it("sends nothing and notifies nothing when the feature is disabled") {
+    it("sends nothing and tells a command the feature is off") {
+      // F6: the setting defaults to off, so this gate is what the very first press of the menu item
+      // hits. Showing nothing there is indistinguishable from a broken command.
+      var sent = 0
+      val notified = mutableListOf<String>()
+      runSecurityScan(
+        "file:/a.kt", SecurityScanSource.COMMAND, enabled = false, hasToken = true,
+        send = { sent++ }, notify = { notified += it }
+      ) shouldBe SecurityScanLaunchOutcome.DISABLED
+      sent shouldBe 0
+      notified.single() shouldBe DISABLED_TEXT
+    }
+
+    it("sends nothing and notifies nothing for a save while the feature is disabled") {
+      // The half that must not move. A user who never opted in would otherwise be told about this
+      // feature on every single save.
       var sent = 0
       var notified = 0
       runSecurityScan(
-        "file:/a.kt", SecurityScanSource.COMMAND, enabled = false, hasToken = true,
+        "file:/a.kt", SecurityScanSource.SAVE, enabled = false, hasToken = true,
         send = { sent++ }, notify = { notified++ }
       ) shouldBe SecurityScanLaunchOutcome.DISABLED
       sent shouldBe 0
@@ -102,11 +128,12 @@ class SecurityScanLauncherTest : DescribeSpec({
     }
 
     it("evaluates the gates in the order enabled -> uri -> hasToken") {
-      var notified = 0
-      // Disabled AND no editor AND no token -> DISABLED wins and nothing is shown.
-      runSecurityScan(null, SecurityScanSource.COMMAND, false, false, {}, { notified++ }) shouldBe
+      val notified = mutableListOf<String>()
+      // Disabled AND no editor AND no token -> DISABLED wins, and the message proves it: the two
+      // later gates would each have produced a different one.
+      runSecurityScan(null, SecurityScanSource.COMMAND, false, false, {}, { notified += it }) shouldBe
         SecurityScanLaunchOutcome.DISABLED
-      notified shouldBe 0
+      notified.single() shouldBe DISABLED_TEXT
       // No editor AND no token -> the editor gate wins.
       runSecurityScan(null, SecurityScanSource.COMMAND, true, false, {}, {}) shouldBe
         SecurityScanLaunchOutcome.NO_EDITOR
@@ -243,7 +270,8 @@ class SecurityScanLauncherTest : DescribeSpec({
 
       verify(exactly = 0) { server.runSecurityScan(any()) }
       verify(exactly = 0) { server.didChangeConfiguration(any()) }
-      notified shouldBe emptyList()
+      // The command is answered, but only by the client: nothing reached the server to answer it.
+      notified.single() shouldBe DISABLED_TEXT
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
     }
 

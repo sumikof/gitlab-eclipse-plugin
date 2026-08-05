@@ -104,6 +104,15 @@ internal fun schedulePlatformDeadline(delayMs: Long, onDue: () -> Unit) {
   }
 }
 
+/**
+ * What a command is told when the feature it invokes is switched off.
+ *
+ * Says where the switch is, because "nothing happened" and "you have not opted in" look identical
+ * from the menu, and the setting defaults to off — so this is what the *first* invocation hits.
+ */
+private const val DISABLED_MESSAGE =
+  "GitLab security scan is turned off. Enable real-time SAST scan in the GitLab preferences to " +
+    "run it."
 private const val NO_EDITOR_MESSAGE =
   "Open a file in the editor to run a GitLab security scan on it."
 private const val NO_TOKEN_MESSAGE =
@@ -124,11 +133,13 @@ private const val TIMED_OUT_MESSAGE =
  * The gates are evaluated in the fixed order `enabled` -> `uri` -> `hasToken` (design §10.2). The
  * order is not an implementation detail: a user who never turned the feature on must not be told
  * about the editor or about signing in, so [enabled] has to be answered before anything that can
- * produce a message.
+ * produce a message. It answers with a message of its own now, but only the one that names the
+ * setting — never one that implies the scan was attempted.
  *
  * A trigger the user did not ask for stays silent. Only [SecurityScanSource.COMMAND] notifies,
  * because only there is somebody waiting for an answer; a save that cannot be scanned must not
- * interrupt typing.
+ * interrupt typing. That holds for the disabled gate as much as the others: a user who has not
+ * opted in must not be told about this feature on every single save.
  */
 internal fun runSecurityScan(
   uri: String?,
@@ -138,9 +149,17 @@ internal fun runSecurityScan(
   send: (SecurityScanParams) -> Unit,
   notify: (String) -> Unit,
 ): SecurityScanLaunchOutcome {
-  // No notification and no audit trail here: the feature is off, so as far as the user is
-  // concerned nothing happened.
-  if (!enabled) return SecurityScanLaunchOutcome.DISABLED
+  // A command gets an answer even here (F6): the setting defaults to off, so the very first press
+  // of the menu item lands on this gate, and showing nothing makes the item look broken. A save
+  // stays silent — the original intent, that a user who never opted in hears nothing on every
+  // single save, is the half that must not move.
+  //
+  // Still no audit line either way: the feature is off, nothing left the machine, and recording
+  // activity for users who have not opted in is exactly what opt-in is meant to prevent.
+  if (!enabled) {
+    if (source == SecurityScanSource.COMMAND) notify(DISABLED_MESSAGE)
+    return SecurityScanLaunchOutcome.DISABLED
+  }
   if (uri.isNullOrBlank()) {
     if (source == SecurityScanSource.COMMAND) notify(NO_EDITOR_MESSAGE)
     return SecurityScanLaunchOutcome.NO_EDITOR
