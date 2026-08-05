@@ -135,10 +135,18 @@ object DiagnosticGenerationRegistry {
 
   // NOTE(§2.1): 計画では式本体 `= synchronized(lock) { if (...) return false; ... true }` だったが、
   // 同じ理由でブロック本体へ書き換えた。セマンティクスは不変:
-  // seq <= lastAppliedSettingsSeq なら lastAppliedSettingsSeq も parity も変更せず false。
+  // 却下されたら lastAppliedSettingsSeq も parity も変更せず false。
+  //
+  // 却下条件は 2 つあり、どちらか一方では足りない。
+  //  - `seq <= lastAppliedSettingsSeq`: 新しい遷移が既に**適用済み**。今更やると巻き戻す
+  //  - `seq != settingsSeq`: 新しい遷移が既に**発行済み**(まだ適用されていない)。
+  //    後者が無いと、設定を素早く 2 回切り替えて古い方のコルーチンが先にここへ来た場合、
+  //    呼び出し元の isLatestSettingsSeq が破壊的処理を捨てる**前に** parity だけが反転する。
+  //    その窓では有効なのに診断が捨てられる/無効なのに受理される、という取り違えが起きる。
   private fun applyTransition(source: String, seq: Long, desiredOdd: Boolean): Boolean {
     synchronized(lock) {
       if (seq <= lastAppliedSettingsSeq) return false // 待ち行列で追い越された古い遷移
+      if (seq != settingsSeq) return false // 追い越されたが未適用の古い遷移
       lastAppliedSettingsSeq = seq
       setParity(source, desiredOdd)
       return true

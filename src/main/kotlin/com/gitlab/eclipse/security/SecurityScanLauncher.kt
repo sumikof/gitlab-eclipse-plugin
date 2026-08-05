@@ -193,20 +193,23 @@ class SecurityScanLauncher(
     DiagnosticGenerationRegistry.reconcileSource(SECURITY_SCAN_SOURCE, desiredSuspended = !enabled)
 
     val path = DiagnosticUri.normalize(uri)
+    // A URI that does not resolve to a file on disk cannot be scanned, and a response could not
+    // be matched back to it either, so it counts as "no editor".
+    val scanUri = if (path == null) null else uri
     val server = languageServerWrapper.languageServer
     val outcome = runSecurityScan(
-      // A URI that does not resolve to a file on disk cannot be scanned, and a response could not
-      // be matched back to it either, so it counts as "no editor".
-      uri = if (path == null) null else uri,
+      uri = scanUri,
       source = source,
       enabled = enabled,
-      // Short-circuited on purpose. Kotlin evaluates arguments at the call site, so without the
-      // `enabled &&` the token would be read on the way in, before the gate that is supposed to
-      // stop everything. Reading it goes to Equinox secure storage, which can block and can raise
-      // the master password prompt: with the save trigger wired up, a user who never opted in
-      // would get a credential prompt on every save. The outcome is unchanged because DISABLED
-      // already wins over NO_TOKEN in the gate order.
-      hasToken = enabled && tokenProviderManager.getToken().isNotBlank(),
+      // Short-circuited on purpose, and short-circuited on **both** of the gates that precede this
+      // one. Kotlin evaluates arguments at the call site, so anything not guarded here is read on
+      // the way in, before the gate that is supposed to stop everything. Reading the token goes to
+      // Equinox secure storage, which can block and can raise the master password prompt: with the
+      // save trigger wired up, a user who never opted in would get a credential prompt on every
+      // save, and a user who did opt in would get one for every command with no active file or an
+      // untitled editor. The condition mirrors the two gates exactly, so the outcome is unchanged:
+      // DISABLED and NO_EDITOR both already win over NO_TOKEN in the gate order.
+      hasToken = enabled && !scanUri.isNullOrBlank() && tokenProviderManager.getToken().isNotBlank(),
       // `path` is non-null on every path that reaches this lambda: a null one made `uri` null
       // above, and the gates answer NO_EDITOR for that before send is ever called.
       send = { params -> if (path != null) dispatch(params, path, source, server, epoch) },
@@ -232,6 +235,31 @@ class SecurityScanLauncher(
     epoch: Long,
   ) {
     val waiterId = if (source == SecurityScanSource.COMMAND) CommandWaiters.add(path, epoch) else null
+    // `add` refuses on a stale epoch: the server restarted between [launch] reading the epoch and
+    // this line. Sending anyway would label the request a command with nothing waiting for it, so
+    // the answer would later be settled as a save and the user — who pressed a button — would be
+    // told nothing at all (design F6). Report it as what it is, in the same words a restart that
+    // caught the request one step later already uses. A save is unaffected: it registers no waiter
+    // by design, and its `null` means something else entirely.
+    //
+    // Both effects run here, outside every lock: `add` has already released the registry monitor,
+    // and neither an audit nor a notification may be reached while it is held. The audit goes
+    // through the one shared builder, and the message is the one a restart-cancelled scan already
+    // uses — this *is* a restart, caught a moment earlier than the usual path catches it.
+    if (source == SecurityScanSource.COMMAND && waiterId == null) {
+      audit(
+        securityScanAuditLine(
+          source = SecurityScanSource.COMMAND,
+          outcome = OUTCOME_CANCELLED,
+          status = null,
+          findings = null,
+          exceptionType = null,
+          path = path,
+        )
+      )
+      notify(CANCELLED_MESSAGE)
+      return
+    }
     val entered = AtomicBoolean(false)
     // What the send threw, if it threw, so the completion handler can name it in the audit line.
     // Only ever the class name: an lsp4j failure quotes the request it was carrying.

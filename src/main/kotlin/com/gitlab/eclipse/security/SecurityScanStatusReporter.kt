@@ -41,7 +41,15 @@ private const val UNSUPPORTED_MESSAGE =
   "GitLab security scan failed: the real-time scan is not available on this GitLab instance " +
     "(requires GitLab 17.5.0 or later)."
 private const val NO_ISSUES_MESSAGE = "GitLab security scan: no issues found."
-private const val CANCELLED_MESSAGE =
+
+/**
+ * What a command is told when its scan was thrown away by a language server restart.
+ *
+ * `internal` rather than file-private because [SecurityScanLauncher] hits the same situation one
+ * step earlier — the epoch moves between capturing it and registering the waiter, so the request is
+ * abandoned before it is sent — and the user must not be told the same thing in two different words.
+ */
+internal const val CANCELLED_MESSAGE =
   "GitLab security scan: the scan was cancelled because the language server restarted. " +
     "Run the scan again."
 

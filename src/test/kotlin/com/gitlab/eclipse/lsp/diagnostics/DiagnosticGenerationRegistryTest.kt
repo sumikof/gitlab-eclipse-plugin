@@ -175,6 +175,19 @@ class DiagnosticGenerationRegistryTest : DescribeSpec({
       DiagnosticGenerationRegistry.suspendSource(SEC, older) shouldBe false
       DiagnosticGenerationRegistry.isSuspended(SEC) shouldBe false
     }
+    it("drops a transition a newer one has overtaken but not yet applied") {
+      // The user toggled the setting twice and the older coroutine reached the registry first.
+      // "Newer already applied" is not the only way to be stale: nothing has applied yet here, so a
+      // guard that only compares against the last *applied* seq lets this one through and flips the
+      // parity. The caller's own latest-check discards the destructive half afterwards, but by then
+      // every scan and every response has already seen the wrong parity.
+      val older = DiagnosticGenerationRegistry.nextSettingsSeq()
+      DiagnosticGenerationRegistry.nextSettingsSeq()
+
+      DiagnosticGenerationRegistry.suspendSource(SEC, older) shouldBe false
+
+      DiagnosticGenerationRegistry.isSuspended(SEC) shouldBe false
+    }
   }
 
   describe("reconcileSource") {

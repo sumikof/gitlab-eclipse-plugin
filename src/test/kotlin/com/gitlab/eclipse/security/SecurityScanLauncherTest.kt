@@ -261,6 +261,22 @@ class SecurityScanLauncherTest : DescribeSpec({
       verify(exactly = 0) { tokenManager.getToken() }
     }
 
+    it("does not even read the token when there is nothing to scan") {
+      // Same defect, one gate later. The token read is an argument at the call site, so it happens
+      // before the gates run unless it is short-circuited on *every* gate that precedes it: a
+      // command with no active file, or an untitled editor, would otherwise reach Equinox secure
+      // storage and could raise the master password prompt on the way to saying "open a file".
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(null, SecurityScanSource.COMMAND) shouldBe
+        SecurityScanLaunchOutcome.NO_EDITOR
+      launcher(scope).launch("untitled:Untitled-1", SecurityScanSource.COMMAND) shouldBe
+        SecurityScanLaunchOutcome.NO_EDITOR
+      scope.testScheduler.advanceUntilIdle()
+
+      verify(exactly = 0) { tokenManager.getToken() }
+    }
+
     it("converges the suspended parity from the setting before it gates") {
       enable(false)
       val scope = TestScope(StandardTestDispatcher())
@@ -595,6 +611,37 @@ class SecurityScanLauncherTest : DescribeSpec({
 
       scope.isActive shouldBe true
       notified shouldBe emptyList()
+    }
+
+    it("abandons a command whose waiter cannot be registered, and tells the user once") {
+      // The server restarts between the epoch being read and the waiter being registered, so
+      // `CommandWaiters.add` refuses. Sending anyway would put a command-labelled request on the
+      // wire with nothing waiting for it: the answer would later be settled as a save, and the user
+      // who pressed a button would be told nothing at all (F6).
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { wrapper.languageServer } answers {
+        DiagnosticGenerationRegistry.onServerStopped()
+        server
+      }
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND)
+      scope.testScheduler.advanceUntilIdle()
+
+      verify(exactly = 0) { server.didChangeConfiguration(any()) }
+      verify(exactly = 0) { server.runSecurityScan(any()) }
+      // The same fixed wording a restart that caught the request one step later already uses.
+      notified.single() shouldBe
+        "GitLab security scan: the scan was cancelled because the language server restarted. " +
+        "Run the scan again."
+      verify(exactly = 1) {
+        log.info(
+          "securityScan source=command outcome=cancelled httpStatus=- findings=- " +
+            "exceptionType=- path=-"
+        )
+      }
+      deadlines shouldBe emptyList()
     }
 
     it("strands a request with the connection it was sent on") {
