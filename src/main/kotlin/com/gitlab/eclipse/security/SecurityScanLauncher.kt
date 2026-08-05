@@ -234,11 +234,6 @@ class SecurityScanLauncher(
       send = { params -> if (path != null) dispatch(params, path, source, server, epoch) },
       notify = notify,
     )
-    // Audited only once the request is really on its way, and without the path: the point of the
-    // record is that something left the machine, and a disabled feature has nothing to record.
-    if (outcome == SecurityScanLaunchOutcome.SENT) {
-      logger.info("Requested a remote GitLab security scan (source=${source.wireValue}).")
-    }
     return outcome
   }
 
@@ -279,6 +274,12 @@ class SecurityScanLauncher(
       notify(CANCELLED_MESSAGE)
       return
     }
+    // Recorded here, past the guard above, and never from the gate's return value: `SENT` only says
+    // the `send` lambda ran, which is also true of the request that was just abandoned. The whole
+    // point of this record is that an opt-in upload of the user's file happened, so of the two ways
+    // it can be wrong, claiming a send that did not happen is the one that must not occur. Without
+    // the path, for the same reason no audit line carries one.
+    logger.info("Requested a remote GitLab security scan (source=${source.wireValue}).")
     val entered = AtomicBoolean(false)
     // What the send threw, if it threw, so the completion handler can name it in the audit line.
     // Only ever the class name: an lsp4j failure quotes the request it was carrying.

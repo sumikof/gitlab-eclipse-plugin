@@ -669,6 +669,12 @@ class SecurityScanLauncherTest : DescribeSpec({
             "exceptionType=- path=-"
         )
       }
+      // The half that makes the assertion above exhaustive rather than merely present. The trail
+      // must not also claim the request went out: this record exists to say that an opt-in upload
+      // of the user's file happened, so a false positive is the wrong direction for it to err in.
+      verify(exactly = 0) {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      }
       deadlines shouldBe emptyList()
     }
 
