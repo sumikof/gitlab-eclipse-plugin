@@ -161,6 +161,25 @@ object SecurityScanStatusReporter {
     val succeeded = response.status == OK_STATUS
     val findings = response.results?.size
 
+    // Nobody was waiting and the feature is switched off, so this answers a request the user has
+    // since opted out of. It is recorded — something did leave the machine — but it produces no
+    // notification and no state: a user who turned remote scanning off must not be shown anything
+    // by it, and the settings transition cannot prevent this on its own, because a save has no
+    // waiter to cancel and a settings change deliberately does not advance the connection epoch.
+    // A command that was in flight lands here too: the disable path already consumed its waiter, so
+    // its real answer arrives with none.
+    //
+    // Read under the monitor this whole region already holds — the registry's own lock is the same
+    // object, and a Java monitor is reentrant — so "was anybody waiting" and "is the source
+    // suspended" cannot be answered against two different states.
+    //
+    // The suppression map is left untouched on purpose: re-enabling clears it (see
+    // [onScanningReenabled]), so recording anything here could only hide the first failure the user
+    // sees after opting back in.
+    if (source == SecurityScanSource.SAVE && DiagnosticGenerationRegistry.isSuspended(SECURITY_SCAN_SOURCE)) {
+      return Verdict(source, succeeded, response.status, findings, notify = false)
+    }
+
     val notify = when {
       // Whatever the file did before, it is fine now, so the next failure is news again. Cleared
       // for both triggers: a command that succeeds proves the same thing a save would have.

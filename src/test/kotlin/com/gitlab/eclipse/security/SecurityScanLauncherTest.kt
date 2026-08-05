@@ -331,10 +331,10 @@ class SecurityScanLauncherTest : DescribeSpec({
       }
     }
 
-    it("records that a request went out, on the path where it really did") {
-      // The only record that an opt-in upload of the user's file happened, now that it sits past
-      // all three abandonment guards. Nothing else pinned it, so an edit could have deleted it
-      // silently and left the send with no trace at all.
+    it("records that a request went out, after the send that made it true") {
+      // The only record that an opt-in upload of the user's file happened. Nothing else pins it, so
+      // an edit could delete it silently and leave the send with no trace at all — and the order is
+      // pinned with it, because a line written before the send only claims the attempt.
       val log = mockk<ILog>(relaxUnitFun = true)
       every { Platform.getLog(any<Bundle>()) } returns log
       val scope = TestScope(StandardTestDispatcher())
@@ -343,6 +343,10 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.runCurrent()
 
       verify(exactly = 1) { log.info("Requested a remote GitLab security scan (source=command).") }
+      verifyOrder {
+        server.runSecurityScan(SecurityScanParams(URI_A, "command"))
+        log.info("Requested a remote GitLab security scan (source=command).")
+      }
     }
 
     it("keeps both notifications inside one outbound lock region") {
@@ -559,6 +563,37 @@ class SecurityScanLauncherTest : DescribeSpec({
       }
       verify(exactly = 0) { log.info(match<String> { it.contains("glpat") }) }
       verify(exactly = 0) { log.warn(match<String> { it.contains("glpat") }) }
+      // The send threw, so nothing left the machine and the trail must not say it did. This is the
+      // dead-stream case the failure line above already covers, and it is the last place the
+      // "requested" record could still have been written ahead of the send it claims.
+      verify(exactly = 0) {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      }
+    }
+
+    it("records nothing about a request whose send threw, for a save either") {
+      // The save half of the same property. A save has no waiter, so the failure line below is the
+      // only trace it leaves; a "requested" line beside it would be the sole record claiming an
+      // upload of the user's file that never happened.
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { server.runSecurityScan(any()) } throws IllegalStateException("stream closed")
+      val scope = CoroutineScope(Dispatchers.Unconfined)
+
+      launcher(scope).launch(URI_A, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.SENT
+
+      verify(exactly = 0) {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      }
+      // The never-sent reporting still happens, so the assertion above is about placement rather
+      // than about the record having been dropped altogether.
+      verify(exactly = 1) {
+        log.info(
+          "securityScan source=save outcome=failure httpStatus=- findings=- " +
+            "exceptionType=IllegalStateException path=-"
+        )
+      }
+      notified shouldBe emptyList()
     }
 
     it("audits a save whose send failed without telling the user") {

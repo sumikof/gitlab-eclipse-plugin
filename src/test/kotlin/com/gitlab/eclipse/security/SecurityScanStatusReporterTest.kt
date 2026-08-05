@@ -317,6 +317,81 @@ class SecurityScanStatusReporterTest : DescribeSpec({
     }
   }
 
+  // A settings transition suspends the source but deliberately does not advance the connection
+  // epoch, and a save has no waiter for the transition to cancel. So a scan that was already in
+  // flight when the user switched remote scanning off is still answered, and its answer still
+  // reaches `settle` with the epoch intact. Nothing about the feature may be shown after that.
+  describe("a response that arrives after the user opted out") {
+    fun suspendScanning() =
+      DiagnosticGenerationRegistry.reconcileSource(SECURITY_SCAN_SOURCE, desiredSuspended = true)
+
+    fun resumeScanning() =
+      DiagnosticGenerationRegistry.reconcileSource(SECURITY_SCAN_SOURCE, desiredSuspended = false)
+
+    it("records the failing save it answers and shows the user nothing") {
+      suspendScanning()
+
+      val report = reportOf(asSave(response = response(500)))
+
+      report.notify shouldBe null
+      // Still audited: something did leave the machine, and the record is what says so.
+      report.auditLine shouldBe
+        "securityScan source=save outcome=failure httpStatus=500 findings=- exceptionType=- path=-"
+    }
+
+    it("shows nothing for the command whose waiter the disable path already took") {
+      // What the settings transition does to a command that was in flight: its waiter is cancelled
+      // there, so the server's real answer arrives later with none and is settled as a save.
+      CommandWaiters.add(PATH_A, epoch()) shouldNotBe null
+      SecurityScanStatusReporter.cancelPending(epoch(), ScanCancelReason.SETTING_DISABLED)
+      suspendScanning()
+
+      val report = reportOf(SecurityScanStatusReporter.settle(PATH_A, response(401), epoch()))
+
+      report.notify shouldBe null
+      report.auditLine shouldBe
+        "securityScan source=save outcome=failure httpStatus=401 findings=- exceptionType=- path=-"
+    }
+
+    it("still notifies for the very same response when the source is not suspended") {
+      // The half that makes the two above about being opted out, rather than about a save failing.
+      reportOf(asSave(response = response(500))).notify shouldNotBe null
+    }
+
+    it("records no suppression, so the first failure after opting back in is still news") {
+      suspendScanning()
+      reportOf(asSave(response = response(500))).notify shouldBe null
+      // Only the source is resumed here. `onScanningReenabled` would clear the map and hide the
+      // defect this pins: the point is that nothing was written while suspended in the first place.
+      resumeScanning()
+
+      reportOf(asSave(response = response(500))).notify shouldNotBe null
+    }
+
+    it("releases no suppression either, so a suppressed repeat stays suppressed") {
+      // The other direction of the same state. A success that lands while the user is opted out
+      // must not clear what was learned before, or the next repeat would be reported as new.
+      reportOf(asSave(response = response(500))).notify shouldNotBe null
+      suspendScanning()
+      reportOf(asSave(response = response(200, findings = 0))).notify shouldBe null
+      resumeScanning()
+
+      reportOf(asSave(response = response(500))).notify shouldBe null
+    }
+
+    it("leaves a response that does have a waiter alone") {
+      // The user pressed a button and is still waiting for an answer; the waiter is the evidence.
+      // Only the no-waiter fallback is silenced, so this must be unchanged (F6).
+      suspendScanning()
+
+      val report = reportOf(asCommand(response = response(401)))
+
+      report.notify shouldBe AUTH_MESSAGE
+      report.auditLine shouldBe
+        "securityScan source=command outcome=failure httpStatus=401 findings=- exceptionType=- path=-"
+    }
+  }
+
   describe("audit line") {
     it("records a workspace relative path or nothing, never the absolute one") {
       // Headless: the workspace cannot answer, so every lookup is empty and the field is absent.

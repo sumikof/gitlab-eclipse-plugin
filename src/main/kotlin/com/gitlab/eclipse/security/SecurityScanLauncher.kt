@@ -295,18 +295,6 @@ class SecurityScanLauncher(
           // No server means nothing was sent; leaving the deadline unarmed lets the completion
           // handler below report it as a failure.
           val target = server ?: return@withLock
-          // The one record that an opt-in upload of the user's file happened, so it is written at
-          // the last point where that is still unconditionally true: past the gate above, past the
-          // switched-off guard, past the missing-server guard, with nothing between it and the
-          // sends that can decline to send. Of the two directions this record can be wrong in,
-          // claiming a send that did not occur is the one that must not happen — and "a later line
-          // corrects it" is exactly the read-it-in-context reasoning the audit rules exist to
-          // remove. No path, for the same reason no audit line carries one.
-          //
-          // Inside `contained`, so a log call that throws while the workbench is stopping cannot
-          // escape into the shared scope. It introduces no suspension point, so the two sends below
-          // stay adjacent (A9).
-          logger.info("Requested a remote GitLab security scan (source=${source.wireValue}).")
           // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
           // above and this line sends `remoteSecurityScans=false` and then the scan request. That
           // fails safe: the server has just been told the feature is off, and the only thing that
@@ -314,6 +302,25 @@ class SecurityScanLauncher(
           // holding the registry monitor across both sends, which inverts the lock order.
           target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
           target.runSecurityScan(params)
+          // The one record that an opt-in upload of the user's file happened, written where the
+          // claim it makes is true rather than merely intended: *after* the send returned without
+          // throwing. An lsp4j proxy whose stream has died throws straight out of the two calls
+          // above — the same dead-stream path the never-sent reporting below exists for — so a line
+          // written ahead of them would assert an upload that never left. Of the two directions
+          // this record can be wrong in, claiming a send that did not occur is the one that must
+          // not happen, and "a later line corrects it" is exactly the read-it-in-context reasoning
+          // the audit rules exist to remove.
+          //
+          // A clean return is the strongest evidence available here: the request is an LSP
+          // notification, so there is no acknowledgement to wait for. No path, for the same reason
+          // no audit line carries one.
+          //
+          // Written through `audit`, which survives the platform log being gone while the workbench
+          // is stopping. Letting that failure out here would leave the deadline unarmed after a
+          // request really went out, and the completion handler would then report the send as one
+          // that never happened. Inside `contained` all the same, and after both sends, so nothing
+          // at all separates them (A9).
+          audit("Requested a remote GitLab security scan (source=${source.wireValue}).")
           if (waiterId != null) armDeadline(waiterId, path, epoch)
         }
       }
