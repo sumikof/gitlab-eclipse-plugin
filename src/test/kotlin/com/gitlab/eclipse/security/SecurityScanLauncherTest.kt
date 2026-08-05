@@ -261,6 +261,30 @@ class SecurityScanLauncherTest : DescribeSpec({
 
     fun epoch() = DiagnosticGenerationRegistry.currentEpoch
 
+    /**
+     * Sends a command scan whose send succeeds and whose *record* of it cannot be written.
+     *
+     * The platform log can be gone while the workbench is stopping, and the "requested" record is
+     * now written after the send. A failure escaping there would be caught as if the send itself
+     * had thrown, which is the invariant this feature protects, inverted. Each of the three
+     * properties that says it was not is a separate case below, so that one of them failing cannot
+     * hide the other two.
+     */
+    fun launchWithADeadLog(scope: TestScope): ILog {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      } throws IllegalStateException("the platform log is gone")
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
+      scope.testScheduler.runCurrent()
+
+      // The precondition every case below rests on: the request really did leave.
+      verify(exactly = 1) { server.runSecurityScan(SecurityScanParams(URI_A, "command")) }
+      return log
+    }
+
     it("never touches the language server while the feature is off") {
       enable(false)
       val scope = TestScope(StandardTestDispatcher())
@@ -347,6 +371,38 @@ class SecurityScanLauncherTest : DescribeSpec({
         server.runSecurityScan(SecurityScanParams(URI_A, "command"))
         log.info("Requested a remote GitLab security scan (source=command).")
       }
+    }
+
+    it("still arms the deadline when only the record of the send could not be written") {
+      // Arming is what says "this went out and is somebody else's problem now". Lose it and the
+      // completion handler treats a request that really left as one that never did.
+      val scope = TestScope(StandardTestDispatcher())
+
+      launchWithADeadLog(scope)
+
+      deadlines.single().first shouldBe 60_000L
+      // The waiter survives for the response to claim, as on any other successful send.
+      CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.COMMAND
+    }
+
+    it("audits no failure when only the record of the send could not be written") {
+      val scope = TestScope(StandardTestDispatcher())
+
+      val log = launchWithADeadLog(scope)
+
+      // A dead log is not a failed scan. An `outcome=failure` line here would be the audit trail
+      // saying the opposite of what happened, which is the same defect this record exists against.
+      verify(exactly = 0) { log.info(match<String> { it.startsWith("securityScan ") }) }
+    }
+
+    it("tells the user nothing when only the record of the send could not be written") {
+      val scope = TestScope(StandardTestDispatcher())
+
+      launchWithADeadLog(scope)
+
+      // The command is still waiting for a real answer; its deadline is what will speak if none
+      // comes. Reporting a failure now would be wrong and would leave the deadline to report again.
+      notified shouldBe emptyList()
     }
 
     it("keeps both notifications inside one outbound lock region") {
