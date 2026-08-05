@@ -274,12 +274,6 @@ class SecurityScanLauncher(
       notify(CANCELLED_MESSAGE)
       return
     }
-    // Recorded here, past the guard above, and never from the gate's return value: `SENT` only says
-    // the `send` lambda ran, which is also true of the request that was just abandoned. The whole
-    // point of this record is that an opt-in upload of the user's file happened, so of the two ways
-    // it can be wrong, claiming a send that did not happen is the one that must not occur. Without
-    // the path, for the same reason no audit line carries one.
-    logger.info("Requested a remote GitLab security scan (source=${source.wireValue}).")
     val entered = AtomicBoolean(false)
     // What the send threw, if it threw, so the completion handler can name it in the audit line.
     // Only ever the class name: an lsp4j failure quotes the request it was carrying.
@@ -301,6 +295,18 @@ class SecurityScanLauncher(
           // No server means nothing was sent; leaving the deadline unarmed lets the completion
           // handler below report it as a failure.
           val target = server ?: return@withLock
+          // The one record that an opt-in upload of the user's file happened, so it is written at
+          // the last point where that is still unconditionally true: past the gate above, past the
+          // switched-off guard, past the missing-server guard, with nothing between it and the
+          // sends that can decline to send. Of the two directions this record can be wrong in,
+          // claiming a send that did not occur is the one that must not happen — and "a later line
+          // corrects it" is exactly the read-it-in-context reasoning the audit rules exist to
+          // remove. No path, for the same reason no audit line carries one.
+          //
+          // Inside `contained`, so a log call that throws while the workbench is stopping cannot
+          // escape into the shared scope. It introduces no suspension point, so the two sends below
+          // stay adjacent (A9).
+          logger.info("Requested a remote GitLab security scan (source=${source.wireValue}).")
           // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
           // above and this line sends `remoteSecurityScans=false` and then the scan request. That
           // fails safe: the server has just been told the feature is off, and the only thing that

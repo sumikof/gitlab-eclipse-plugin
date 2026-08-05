@@ -331,6 +331,20 @@ class SecurityScanLauncherTest : DescribeSpec({
       }
     }
 
+    it("records that a request went out, on the path where it really did") {
+      // The only record that an opt-in upload of the user's file happened, now that it sits past
+      // all three abandonment guards. Nothing else pinned it, so an edit could have deleted it
+      // silently and left the send with no trace at all.
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
+      scope.testScheduler.runCurrent()
+
+      verify(exactly = 1) { log.info("Requested a remote GitLab security scan (source=command).") }
+    }
+
     it("keeps both notifications inside one outbound lock region") {
       val scope = TestScope(StandardTestDispatcher())
       val outboundLock = Mutex()
@@ -397,6 +411,8 @@ class SecurityScanLauncherTest : DescribeSpec({
     }
 
     it("stops the send when the setting is switched off after the gate passed") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
       val scope = TestScope(StandardTestDispatcher())
 
       launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
@@ -409,6 +425,12 @@ class SecurityScanLauncherTest : DescribeSpec({
       // Abandoned on purpose: the waiter is gone and the user is not told anything.
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
       notified shouldBe emptyList()
+      // Nothing left the machine, so the trail must not say it did — not even followed by the line
+      // that says it was switched off. The reader is not required to join two lines to get the
+      // truth about an upload.
+      verify(exactly = 0) {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      }
     }
 
     it("stops the send when the source was suspended after the gate passed") {
@@ -447,6 +469,8 @@ class SecurityScanLauncherTest : DescribeSpec({
     }
 
     it("cleans up and reports when there is no language server to send to") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
       every { wrapper.languageServer } returns null
       val scope = TestScope(StandardTestDispatcher())
 
@@ -455,6 +479,11 @@ class SecurityScanLauncherTest : DescribeSpec({
 
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
       notified.size shouldBe 1
+      // There was nothing to send to, so the trail must not claim anything was sent — the
+      // outcome=failure line that follows is a second record, not a correction to this one.
+      verify(exactly = 0) {
+        log.info(match<String> { it.startsWith("Requested a remote GitLab security scan") })
+      }
     }
 
     it("keeps quiet on the completion path of a successful send") {
