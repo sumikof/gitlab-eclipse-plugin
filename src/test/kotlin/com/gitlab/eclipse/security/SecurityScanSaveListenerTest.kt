@@ -147,11 +147,10 @@ private class WorkbenchHarness {
   }
 
   /**
-   * Puts an editor whose `getAdapter` throws [exception] into the page install attaches FIRST (the
-   * active window's, line `install`:314). `getAdapter` runs third-party adapter-factory code, and
-   * unlike the enumerated background windows this walk is not individually contained — the throw
-   * lands in install's own catch. This is the path on which the caught exception's message can
-   * quote a file path.
+   * Puts an editor whose `getAdapter` throws [exception] into the page install attaches FIRST
+   * (the active window's). `getAdapter` runs third-party adapter-factory code; since this wave
+   * that walk is contained like every enumerated window's, so the throw exercises the
+   * active-window containment — it can no longer reach install's catch.
    */
   fun brokenAdapterEditorAtInstall(exception: Exception) {
     val part = mockk<IWorkbenchPart>()
@@ -188,12 +187,16 @@ class SecurityScanSaveListenerTest : DescribeSpec({
 
   describe("RevertGuard") {
     // The platform's real order. Verified from bytecode, not from memory:
-    // org.eclipse.core.filebuffers-3.8.500 ResourceFileBuffer.revert -> handleFileContentChanged,
-    // and ResourceTextFileBuffer.handleFileContentChanged fires, unconditionally and in this order,
-    // fireBufferContentAboutToBeReplaced (@90), fireBufferContentReplaced (@182),
-    // fireDirtyStateChanged (@257). org.eclipse.ui.editors-3.20.200
-    // TextFileDocumentProvider$FileBufferListener forwards all three synchronously without
-    // reordering. So `contentReplaced` arrives BEFORE the dirty edge that has to be suppressed.
+    // org.eclipse.core.filebuffers-3.8.500 ResourceFileBuffer.revert ->
+    // handleFileContentChanged(true, false), and ResourceTextFileBuffer.handleFileContentChanged
+    // fires — only when the new content differs from the document (`replaceContent`, guards @80
+    // and @172) — fireBufferContentAboutToBeReplaced (@90) then fireBufferContentReplaced (@182),
+    // and unconditionally fireDirtyStateChanged (@257), in that order.
+    // org.eclipse.ui.editors-3.20.200 TextFileDocumentProvider$FileBufferListener forwards all
+    // three synchronously without reordering. So when the replacement callbacks arrive at all,
+    // `contentReplaced` arrives BEFORE the dirty edge that has to be suppressed. (A revert whose
+    // buffer already equals disk delivers ONLY the dirty edge and is scanned as if it were a save
+    // — the accepted limitation documented on RevertGuard.)
     it("suppresses the dirty edge of a revert delivered in the platform's real order") {
       val guard = RevertGuard()
       guard.aboutToBeReplaced("editorA")
@@ -489,7 +492,13 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     }
 
     // The active window is the one the user is looking at; attaching to it must not depend on the
-    // enumeration of the OTHER windows surviving.
+    // enumeration of the OTHER windows surviving. Keep-behaviour guard: passes at 12b4bbb too, by
+    // accident of the harness rather than by design — the helper only restubs `workbenchWindows`,
+    // which the pre-enumeration install() never read, so the old path satisfied the `exactly = 1`
+    // vacuously. Against today's code it is a real guard: the harness leaves the install window
+    // OUT of the throwing enumeration, so this pins that the dedicated active-window walk exists
+    // and stands outside the enumeration — delete that line and the active window is attached by
+    // nothing.
     it("a background window whose walk throws does not stop install from attaching the active window") {
       val harness = WorkbenchHarness()
       harness.throwingWindowAheadOfBackgroundWindowAtInstall()
@@ -511,6 +520,52 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 1) { harness.latePage.addPartListener(subject) }
     }
 
+    // This wave: the ACTIVE window's walk was the one third-party call in install() that was not
+    // contained. A throw there used to land in install's own catch — window listener rolled back,
+    // `installed` never set, one call site, no retry: the feature died for the session, and it
+    // died on the very window whose editors are guaranteed materialised, i.e. the one where
+    // `getPart(false)` most reliably returns a part for `getAdapter` to break on.
+    it("an active window whose walk throws does not stop install from attaching a background window") {
+      val harness = WorkbenchHarness()
+      harness.brokenAdapterEditorAtInstall(RuntimeException("adapter factory failed"))
+      harness.backgroundWindowAtInstall()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.backgroundPage.addPartListener(subject) }
+    }
+
+    // The positive half: install must still reach `installed = true` on the contained path.
+    // `installed` is not directly observable, so it is observed through the one gate that reads
+    // it here — a window opened later attaches only when install really ended installed.
+    it("an active window whose walk throws still leaves install able to attach later windows") {
+      val harness = WorkbenchHarness()
+      harness.brokenAdapterEditorAtInstall(RuntimeException("adapter factory failed"))
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    // Containment moved the path-quoting active-walk failure OUT of install's catch (where the
+    // two secrecy tests below pin the rule) and INTO `contained` — whose own log line no test
+    // pinned. This closes that gap: the property the pre-wave secrecy test carried for this walk
+    // must survive the walk's relocation. Keep-behaviour guard: passes before and after this wave
+    // by design — pre-wave the same injection reached install's class-name-only catch — and it
+    // fails when `contained`'s log line is made to include `e.message` or the exception object.
+    it("a file path quoted by a contained walk failure does not reach the log") {
+      val harness = WorkbenchHarness()
+      harness.brokenAdapterEditorAtInstall(RuntimeException("/home/user/secret/path.txt"))
+      val ilog = mockk<ILog>(relaxUnitFun = true)
+      val messages = mutableListOf<String>()
+      val throwables = mutableListOf<Throwable>()
+      every { ilog.warn(capture(messages)) } just Runs
+      every { ilog.warn(capture(messages), capture(throwables)) } just Runs
+      every { Platform.getLog(any<Bundle>()) } returns ilog
+      SecurityScanSaveListener().install()
+      val reachedTheLog = messages + throwables.map { it.message.orEmpty() }
+      reachedTheLog.none { "/home/user/secret/path.txt" in it } shouldBe true
+    }
+
     // `fireWindowOpened` iterates a listener snapshot taken before our removal can be seen, so a
     // delivery can still arrive after uninstall() finished on the bundle-stop thread. Re-attaching
     // then would leak the listener into providers for the rest of the session.
@@ -518,9 +573,19 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       val harness = WorkbenchHarness()
       val subject = SecurityScanSaveListener()
       subject.install()
+      // Captured once: the listener is the same instance across install cycles, and the harness's
+      // slot capture cannot be replayed once re-install registers it a second time.
+      val windowListener = harness.registeredWindowListener()
       subject.uninstall()
-      harness.openLateWindow()
+      windowListener.windowOpened(harness.lateWindow)
       verify(exactly = 0) { harness.latePage.addPartListener(any<IPartListener2>()) }
+      // The `exactly = 0` sits behind `contained`, which swallows Throwable — a callback that
+      // THREW would satisfy it too. Same closing tail as the windowClosed lookup test: re-install
+      // and prove the identical delivery does attach, so the suppression above was the
+      // `installed` gate and not a dead callback.
+      subject.install()
+      windowListener.windowOpened(harness.lateWindow)
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
     }
 
     // Keep-behaviour guard: passes before and after this wave by design — the `contained` wrapper
@@ -549,6 +614,12 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       val (reference, provider) = harness.editorReference()
       subject.partOpened(reference)
       verify(exactly = 0) { provider.addElementStateListener(any()) }
+      // Same blind spot and same closing tail as the windowOpened test above: `exactly = 0` is
+      // also satisfied by a throwing callback, so re-install and prove the identical delivery
+      // attaches.
+      subject.install()
+      subject.partOpened(reference)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
     }
 
     // T2: the normal close path, where the model REMOVE (hardClose @266) fires the callback while
@@ -641,13 +712,19 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 2) { harness.workbench.addWindowListener(any()) }
     }
 
-    // A7 secrecy at install's catch. Unlike the callbacks (all behind `contained`), the failure
-    // logged here can come from the ACTIVE window's walk — `getPart`/`getAdapter` run third-party
-    // adapter-factory code — so the log line must follow the same rule as `contained`: the class
-    // name, never the exception object. Property 1 of 2: the class name is recorded.
+    // A7 secrecy at install's catch. Since the active-window walk was contained (this wave), no
+    // third-party code can throw into install's own frame any more — the catch's reachable
+    // inputs are the workbench-level calls only — but the class-name-only rule still has to hold
+    // there, BEFORE anyone widens what the try covers. The injection therefore moved from
+    // `brokenAdapterEditorAtInstall` (which containment now stops a line earlier, where the
+    // `contained` log line would satisfy these assertions vacuously) to `getWorkbenchWindows` —
+    // the same relocation the two rollback tests above needed for the same reason. Keep-behaviour
+    // guard: passes before and after this wave by design; what it pins is the catch's logging
+    // discipline, and it fails when `log.warn(msg, e)` is restored there. Property 1 of 2: the
+    // class name is recorded.
     it("a failed install records the failure's class name in the log message") {
       val harness = WorkbenchHarness()
-      harness.brokenAdapterEditorAtInstall(RuntimeException("adapter factory failed"))
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
       val ilog = mockk<ILog>(relaxUnitFun = true)
       val messages = mutableListOf<String>()
       every { ilog.warn(capture(messages)) } just Runs
@@ -656,12 +733,13 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       messages.any { it.endsWith("RuntimeException") } shouldBe true
     }
 
-    // Property 2 of 2: a path quoted by the third-party failure appears NOWHERE in what reached
-    // the log — neither in a message string nor inside a throwable argument. This is the test that
-    // fails when someone "restores" `log.warn(msg, e)` at the install catch.
+    // Property 2 of 2: what the failure's message quotes appears NOWHERE in what reached the log
+    // — neither in a message string nor inside a throwable argument. Same relocation and same
+    // keep-behaviour status as property 1; this is the test that fails when someone "restores"
+    // `log.warn(msg, e)` at the install catch.
     it("a file path quoted by the failure under install does not reach the log") {
       val harness = WorkbenchHarness()
-      harness.brokenAdapterEditorAtInstall(RuntimeException("/home/user/secret/path.txt"))
+      every { harness.workbench.workbenchWindows } throws RuntimeException("/home/user/secret/path.txt")
       val ilog = mockk<ILog>(relaxUnitFun = true)
       val messages = mutableListOf<String>()
       val throwables = mutableListOf<Throwable>()

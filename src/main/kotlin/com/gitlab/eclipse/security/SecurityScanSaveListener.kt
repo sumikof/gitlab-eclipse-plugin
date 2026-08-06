@@ -42,14 +42,28 @@ internal const val REVERT_WINDOW_MS = 30_000L
  * That is forced by the order the platform really delivers the three callbacks, which is not the
  * order the feature was first specified against. Verified from bytecode:
  * `org.eclipse.core.filebuffers-3.8.500` `ResourceFileBuffer.revert` calls
- * `handleFileContentChanged(true, false)`, and `ResourceTextFileBuffer.handleFileContentChanged`
- * fires `fireBufferContentAboutToBeReplaced` (@90), `fireBufferContentReplaced` (@182) and
- * `fireDirtyStateChanged` (@257) unconditionally in that order;
- * `org.eclipse.ui.editors-3.20.200` `TextFileDocumentProvider$FileBufferListener` forwards all
- * three synchronously without reordering. So `elementContentReplaced` arrives **before** the dirty
- * edge that has to be suppressed — a guard that cleared the record there would clear it a moment
- * too early and upload the file the user just threw away. Any external reload takes the same path
- * (a branch switch, a refresh from disk), which is the same argument.
+ * `handleFileContentChanged(true, false)` (@41-43), and
+ * `ResourceTextFileBuffer.handleFileContentChanged` computes
+ * `replaceContent = !newContent.equals(fDocument.get())` (@52-78; the equality check is reached
+ * because `updateModificationStamp` — the `false` argument — fails the `ifne` at @52), then fires
+ * `fireBufferContentAboutToBeReplaced` (@90) and `fireBufferContentReplaced` (@182) **only when
+ * `replaceContent` is true** (guards at @80 and @172), and `fireDirtyStateChanged` (@257)
+ * unconditionally — in that order; `org.eclipse.ui.editors-3.20.200`
+ * `TextFileDocumentProvider$FileBufferListener` forwards all three synchronously without
+ * reordering. So whenever the replacement callbacks do arrive, `elementContentReplaced` arrives
+ * **before** the dirty edge that has to be suppressed — a guard that cleared the record there
+ * would clear it a moment too early and upload the file the user just threw away. Any external
+ * reload takes the same path (a branch switch, a refresh from disk), which is the same argument.
+ *
+ * **Accepted limitation — those guards defeat the exclusion in one case.** A `File > Revert` on a
+ * buffer that is dirty but whose content already equals disk (type a character and delete it, or
+ * undo back to the original, then revert) has `replaceContent == false`: neither replacement
+ * callback fires and only the dirty edge arrives. This guard is then never armed,
+ * [shouldScanOnClean] answers `true`, and that revert **is uploaded as if it were a save** —
+ * exactly the action the paragraph above says opting in did not cover. Detecting the case needs
+ * the buffer's content compared against disk, which this class deliberately cannot see, and
+ * reading the file on the UI thread is not acceptable, so the exclusion is accepted as covering
+ * only reverts that actually change the buffer.
  *
  * [nowMillis] is injected so the expiry window is testable without waiting for it.
  */
@@ -267,8 +281,12 @@ class SecurityScanSaveListener(
    * Starts listening for saves. **Must be paired with [uninstall]** — the listener is held by every
    * document provider it attaches to, and those outlive this plugin's bundle.
    *
-   * Idempotent, and never throws: a workbench that is not up yet simply leaves the window listener
-   * to do the attaching later.
+   * Idempotent. Never lets an `Exception` escape: every page walk runs inside [contained]
+   * (`Throwable`), so no third-party code can throw into this frame at all, and what the catch
+   * below can see is only the workbench-level calls it names. An `Error` raised by those platform
+   * calls themselves is the one thing that can still propagate — it cannot carry a third-party
+   * message, and the caller has its own last-resort guard. A workbench that is not up yet is not a
+   * failure: the window listener does the attaching later.
    *
    * **Threading.** [install] runs on the UI thread (`GitLabEclipseStartup`, `display.syncExec`);
    * [uninstall] runs on the bundle-stop thread (`GitLabEclipseStartup.stop()` has no `syncExec` on
@@ -278,7 +296,9 @@ class SecurityScanSaveListener(
    * resolves) is bounded to the listener add/remove calls this class makes to attach and detach:
    * those are lock-leaf. `Workbench.add/removeWindowListener` -> synchronized
    * `EventManager.add/removeListenerObject`, which only touches a `ListenerList`;
-   * `WorkbenchPage.add/removePartListener` -> plain `ListenerList.add/remove`;
+   * `WorkbenchPage.add/removePartListener` -> `ListenerList.add/remove`, themselves `public
+   * synchronized` (`org.eclipse.equinox.common` 3.19.100) but lock-leaf all the same — their
+   * bodies touch nothing but the array;
    * `AbstractDocumentProvider.add/removeElementStateListener` -> plain `List` ops;
    * `TextFileDocumentProvider.removeElementStateListener` -> `List.remove` (@9), conditionally
    * `TextFileBufferManager.removeFileBufferListener` (@27-36, a `monitorenter` on its own list
@@ -310,11 +330,23 @@ class SecurityScanSaveListener(
       // The active window comes FIRST and stands outside the enumeration below, so attaching to
       // the window the user is actually in never depends on how many other windows there are or
       // on their walks surviving. It is normally also in `getWorkbenchWindows()`; `listenTo` is
-      // idempotent (`pages.add`), so the overlap costs nothing.
-      workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
+      // idempotent (`pages.add`), so the overlap costs nothing. Its walk is contained for the
+      // same reason each enumerated window's is: it reaches `getAdapter` — third-party code —
+      // and this window is the one whose editors are guaranteed materialised, so it is the one
+      // where `getPart(false)` most reliably returns a part for a broken adapter factory to
+      // throw from. Uncontained, that throw landed in the catch below and killed the feature
+      // for the session (window listener rolled back, `installed` never set, no retry) — and a
+      // third-party Error (`LinkageError` from a replaced bundle) escaped install() entirely,
+      // to be wrapped by `Synchronizer.syncExec` into an `SWTException` whose `getMessage()`
+      // appends `throwable.toString()` and logged upstream with the exception object.
+      contained("install active window walk") {
+        workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
+      }
+
       // Windows that are already open and NOT active are the window listener's blind spot:
-      // `Workbench.createWorkbenchWindow` returns at @288 — past `fireWindowOpened` (@280) — when
-      // the context already holds an `IWorkbenchWindow`, which is exactly the set
+      // `Workbench.createWorkbenchWindow` returns at @288 WITHOUT calling `fireWindowOpened`
+      // (@280 — control jumps over it) when the context already holds an `IWorkbenchWindow`,
+      // which is exactly the set
       // `getWorkbenchWindows()` enumerates (verified from bytecode, 3.133.0 and 3.137.0). Eclipse
       // restores several windows after a restart, so the two sources are complementary and both
       // are needed. Each window's walk is contained on its own: it reaches `getAdapter` — i.e.
@@ -327,11 +359,12 @@ class SecurityScanSaveListener(
         contained("install window walk") { window.activePage?.let { listenTo(it) } }
       }
       // Set LAST, and only after the window listener and the page walks above. `installed = true`
-      // deliberately means "the window listener is registered and the active window is attached"
-      // — NOT "every already-open window is attached": a contained per-window failure above still
-      // ends installed, because the feature staying alive for the windows that did attach beats
-      // the whole feature being dead, and `partActivated` retries the provider attach for any
-      // window whose part listener did make it on. Setting the flag up front instead would make a
+      // deliberately means "the window listener is registered" — NOT "every already-open window
+      // (or even the active one) is attached": a contained failure of any walk above, the active
+      // window's included, still ends installed, because the feature staying alive for the
+      // windows that did attach beats the whole feature being dead, and `partActivated` retries
+      // the provider attach for any window whose part listener did make it on. Setting the flag
+      // up front instead would make a
       // first start that ran before the workbench existed permanently indistinguishable from a
       // successful one: the catch below would log, the flag would say "done", and the save
       // trigger would be dead for the rest of the session with nothing for the user to see.
@@ -344,10 +377,12 @@ class SecurityScanSaveListener(
       // stays false, and a retry re-attaches idempotently: `pages.add`/`providers.add` answer
       // false for what is already there, and `ListenerList.add` dedupes by identity.
       runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
-      // Class name only, never the exception object — same secrecy rule as [contained]. This catch
-      // does not only see "the workbench is not up": it also covers the active-window walk, whose
-      // `getPart`/`getAdapter` run third-party adapter-factory code, and such an exception's
-      // message can quote a file path. No path may reach the log.
+      // Class name only, never the exception object — same secrecy rule as [contained]. With
+      // every page walk contained, the only inputs that can reach this catch are the
+      // workbench-level calls (`PlatformUI.getWorkbench()`, `addWindowListener`,
+      // `getWorkbenchWindows`) — which is what makes "workbench unavailable" a true message. The
+      // class-name-only rule is kept regardless: the discipline must already hold if anyone
+      // widens what the `try` covers.
       log.warn("Security scan save trigger not installed: workbench unavailable: ${e::class.simpleName}")
     }
   }

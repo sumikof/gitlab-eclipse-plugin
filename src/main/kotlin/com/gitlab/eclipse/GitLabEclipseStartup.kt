@@ -210,8 +210,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         }
       }
     } catch (e: Exception) {
-      // Never let start throw. install() is idempotent and only marks itself done once it really
-      // attached something, so a later call can still succeed.
+      // Never let start throw. install() is idempotent, and it leaves its done-flag down when the
+      // workbench itself was unreachable, so a later call can still succeed. It does NOT wait for
+      // a page: on a workbench with zero windows it marks itself done having attached nothing —
+      // deliberately — and the window listener it registered does the attaching as windows open.
       logger<GitLabEclipseStartup>().warn("Security scan save trigger not installed: workbench unavailable.", e)
     }
   }
