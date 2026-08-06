@@ -149,17 +149,27 @@ private class WorkbenchHarness {
 
   /**
    * Puts an editor whose `getAdapter` throws [exception] into the page install attaches FIRST
-   * (the active window's). `getAdapter` runs third-party adapter-factory code; since this wave
-   * that walk is contained like every enumerated window's, so the throw exercises the
-   * active-window containment — it can no longer reach install's catch.
+   * (the active window's). `getAdapter` runs third-party adapter-factory code; the throw now
+   * stops at the per-editor containment inside the walk (this wave — before it, at the
+   * active-window walk's own containment) and can no longer reach install's catch either way.
+   * The OUTER active-window containment is kept discriminating by the install-retry test's
+   * `editorReferences` injection, which the per-editor containment cannot absorb.
    */
   fun brokenAdapterEditorAtInstall(exception: Exception) {
+    every { installPage.editorReferences } returns arrayOf(throwingAdapterReference(exception))
+  }
+
+  /** An editor reference whose adapter lookup throws — the third-party adapter-factory failure. */
+  fun throwingAdapterReference(exception: Exception): IEditorReference {
     val part = mockk<IWorkbenchPart>()
     every { part.getAdapter(ITextEditor::class.java) } throws exception
     val reference = mockk<IEditorReference>()
     every { reference.getPart(false) } returns part
-    every { installPage.editorReferences } returns arrayOf(reference)
+    return reference
   }
+
+  /** Simulates the platform activating the window that was active at install time. */
+  fun activateInstallWindow() = registeredWindowListener().windowActivated(installWindow)
 
   /** A free-standing editor reference for delivering part events directly. */
   fun editorReference(): Pair<IEditorReference, IDocumentProvider> {
@@ -626,7 +636,9 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     // thread, once per open editor, on every window switch. A page in `pages` has its part
     // listener on, and partActivated is already the per-editor retry vehicle there. Keep-behaviour
     // label: green before this wave too (vacuously — windowActivated ran nothing at all); what it
-    // discriminates is the naive wiring that routes every activation into listenTo.
+    // discriminates is the naive wiring that routes every activation into listenTo — and, since
+    // the walk-completion half of the gate exists, an implementation that never records a
+    // completed walk and so re-walks every attached page on every activation.
     it("windowActivated does not walk the editors of a page that is already attached") {
       val harness = WorkbenchHarness()
       val (reference, _) = harness.editorReference()
@@ -706,6 +718,66 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       every { harness.latePage.removePartListener(any<IPartListener2>()) } just Runs
       harness.registeredWindowListener().windowActivated(harness.lateWindow)
       verify(exactly = 2) { harness.latePage.addPartListener(subject) }
+    }
+
+    // Codex round 6 (this wave): `attach` reaches getPart/getAdapter/documentProvider OUTSIDE
+    // registerContained, so a throw from `page.editorReferences` (or, pre-wave, from any editor
+    // ahead in the walk) aborted the walk while `addPartListener` had already succeeded — the
+    // page sat in `pages`, the activation gate skipped it forever, and the editor that was
+    // ALREADY active when the walk aborted never gets another partActivated from a mere window
+    // refocus: shell activation runs `WorkbenchWindow$6.shellActivated` -> `fireWindowActivated`
+    // only (3.133.0 and 3.137.0, byte-identical), and on the e4 side
+    // `ShellActivationListener.processWindow` -> `windowContext.activateBranch()` only — the sole
+    // caller of `PartServiceImpl.firePartActivated` is `activate(MPart,ZZ)` @438, which nothing
+    // on that path calls, and the injected `setPart` stops at its `activePart == part` identity
+    // guard (@0-5) because window-scoped ACTIVE_PART (`ActivePartLookupFunction.compute` reads
+    // the asking window's own `getActiveLeaf()`) does not change on a refocus (verified from
+    // bytecode, e4.ui.workbench 1.15.500 and 1.18.100, workbench.swt 0.17.500 and 0.17.1000).
+    // So saving that editor silently did not scan. Walk completion is now tracked apart from
+    // part-listener registration, and activation retries a page whose walk did not complete.
+    it("windowActivated attaches the active editor of a page whose editor walk aborted before reaching it") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.editorReferences } throws RuntimeException("editor enumeration failed")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      val provider = harness.editorInLateWindow()
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — pre-wave the activation
+    // skipped the page outright (in `pages`), post-wave the retry goes through registerContained,
+    // whose dedup check answers false for a page already recorded. What it discriminates is a
+    // retry wired past that dedup: the part listener re-added on top would deliver every part
+    // event — and so every save-triggered attach — twice.
+    it("the activation retry after an aborted editor walk does not register the part listener twice") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.editorReferences } throws RuntimeException("editor enumeration failed")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.editorInLateWindow()
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    // The install-time instance of the aborted walk: the active window's page attaches its part
+    // listener, then `editorReferences` throws inside the contained active-window walk. Same
+    // trap as the windowOpened instance — page in `pages`, gate skips, active editor unobserved —
+    // and the same vehicle must retry it. This is also the test that keeps the OUTER
+    // `contained("install active window walk")` honest now that the per-editor containment sits
+    // inside it: delete the outer wrapper and this enumeration throw reaches install's catch,
+    // `installed` stays false, and the activation retry below attaches nothing.
+    it("an active window whose editor enumeration throws at install is retried on its next activation") {
+      val harness = WorkbenchHarness()
+      every { harness.installPage.editorReferences } throws RuntimeException("editor enumeration failed")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val (reference, provider) = harness.editorReference()
+      every { harness.installPage.editorReferences } returns arrayOf(reference)
+      harness.activateInstallWindow()
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
     }
 
     // Same snapshot race as above, on the part-listener side: a partOpened taken from a stale
@@ -846,6 +918,64 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       clearMocks(harness.latePage, answers = false)
       subject.uninstall()
       verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    // This wave adds the walk-completion record, and the brief's standing rule is that any new
+    // state is cleaned up wherever `pages` is — a dangling entry in teardown bookkeeping was a
+    // real finding two waves ago (D). The record leaving at close is observed through the retry
+    // gate: were the stale record kept, the reopened page's aborted walk would look complete,
+    // the activation would skip it, and the active editor would stay unobserved.
+    it("windowClosed drops the walk record so a reopened page's aborted walk is retried on activation") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.closeLateWindow()
+      every { harness.latePage.editorReferences } throws RuntimeException("editor enumeration failed")
+      harness.openLateWindow()
+      val provider = harness.editorInLateWindow()
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — pre-wave the activation
+    // skipped an attached page via `pages` alone; post-wave the walk record must survive a
+    // foreign window's close for the skip to keep holding. What it discriminates is an unscoped
+    // drop: losing a live page's walk record would send every later activation of that window
+    // back through the editor walk — `getPart(false)` and `getAdapter`, third-party code — that
+    // the steady-state gate exists to keep at zero.
+    it("windowClosed keeps the walk record of a window that is not closing") {
+      val harness = WorkbenchHarness()
+      val (reference, _) = harness.editorReference()
+      every { harness.latePage.editorReferences } returns arrayOf(reference)
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.registeredWindowListener().windowClosed(mockk<IWorkbenchWindow>())
+      clearMocks(reference, answers = false)
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 0) { reference.getPart(false) }
+    }
+
+    // The uninstall instance of the same cleanup rule: `uninstall` must clear the walk records
+    // with `pages`. A record leaked across the install cycle would claim a completed walk for a
+    // page the fresh install re-attached, and the retry gate would skip exactly the page whose
+    // walk aborted this time round.
+    it("uninstall drops the walk records so a fresh install's aborted walk is retried on activation") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      // Captured once: the listener is the same instance across install cycles, and the harness's
+      // slot capture cannot be replayed once re-install registers it a second time.
+      val windowListener = harness.registeredWindowListener()
+      windowListener.windowOpened(harness.lateWindow)
+      subject.uninstall()
+      subject.install()
+      every { harness.latePage.editorReferences } throws RuntimeException("editor enumeration failed")
+      windowListener.windowOpened(harness.lateWindow)
+      val provider = harness.editorInLateWindow()
+      windowListener.windowActivated(harness.lateWindow)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
     }
 
     // T1: the catch rollback. Keep-behaviour guard: passes before and after this wave by design —
@@ -1121,6 +1251,23 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       clearMocks(provider, answers = false)
       subject.uninstall()
       verify(exactly = 1) { provider.removeElementStateListener(subject) }
+    }
+
+    // Codex round 6 (this wave): only the final registration call inside `attach` was contained —
+    // `getPart(false)`, `getAdapter` (third-party adapter factories) and `documentProvider` were
+    // not, so one editor throwing there aborted the walk for every editor behind it, including
+    // the ACTIVE one, whose provider then observed no saves until the user switched parts (a
+    // window refocus fires no partActivated — see the bytecode note on the activation-retry test
+    // above). Each editor's attachment is now contained on its own.
+    it("one editor whose adapter lookup throws does not stop the walk from attaching the editor behind it") {
+      val harness = WorkbenchHarness()
+      val badReference = harness.throwingAdapterReference(RuntimeException("adapter factory failed"))
+      val (goodReference, goodProvider) = harness.editorReference()
+      every { harness.latePage.editorReferences } returns arrayOf(badReference, goodReference)
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { goodProvider.addElementStateListener(subject) }
     }
 
     // `listenTo` runs `attach` once per editor reference on the page, and the registration call

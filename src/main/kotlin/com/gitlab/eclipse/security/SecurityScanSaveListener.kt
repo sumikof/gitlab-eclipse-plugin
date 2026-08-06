@@ -219,6 +219,27 @@ class SecurityScanSaveListener(
   /** The page instance of the same bookkeeping, for [pages]. */
   private val undetachedPages = mutableSetOf<IWorkbenchPage>()
 
+  /**
+   * Pages whose editor walk ran to the end, recorded separately from [pages] because the two say
+   * different things: [pages] records a successful `addPartListener`, and that succeeding does
+   * NOT mean the walk behind it finished — `page.editorReferences` can throw after it. A page in
+   * [pages] but not here has its part listener on and still unattached editors, and the editor
+   * that was ALREADY active when the walk aborted is the one `partActivated` can never retry: it
+   * fired before the listener was on, and merely refocusing the window does not re-fire it —
+   * shell activation runs `WorkbenchWindow$6.shellActivated` -> `fireWindowActivated` only
+   * (verified from bytecode, 3.133.0 and 3.137.0 byte-identical), and on the e4 side
+   * `ShellActivationListener.processWindow` -> `windowContext.activateBranch()` only (workbench.swt
+   * 0.17.500/0.17.1000): the sole caller of `PartServiceImpl.firePartActivated` is
+   * `activate(MPart,ZZ)` @438 (e4.ui.workbench 1.15.500/1.18.100), which nothing on that path
+   * calls, and the context-injected `setPart` stops at its `activePart == part` identity guard
+   * (@0-5) since window-scoped ACTIVE_PART (`ActivePartLookupFunction.compute` reads the asking
+   * window's own `getActiveLeaf()`) does not change on a refocus. So [onWindowActivated] is that
+   * editor's only retry vehicle, and its gate consults this record alongside [pages].
+   *
+   * Cleaned up wherever [pages] is: [onWindowClosed]'s membership walk and [uninstall].
+   */
+  private val walkedPages = mutableSetOf<IWorkbenchPage>()
+
   private var installed = false
 
   /**
@@ -278,18 +299,24 @@ class SecurityScanSaveListener(
    * had nothing to try it again: the enumeration getter throwing at [install] (already-open
    * background windows — which `windowOpened` structurally never fires for, see the note on
    * [install]'s enumeration), one enumerated window's walk throwing, [onWindowOpened]'s
-   * `activePage` throwing, and a page whose `addPartListener` threw (no part listener means
-   * `partActivated` can never fire for it). Focusing the window retries all four.
+   * `activePage` throwing, a page whose `addPartListener` threw (no part listener means
+   * `partActivated` can never fire for it), and a page whose part listener made it on but whose
+   * editor walk did not run to the end — `page.editorReferences` throwing, the one walk failure
+   * [listenTo]'s per-editor containment cannot absorb. Focusing the window retries all five; the
+   * last is the one whose ALREADY-ACTIVE editor no other callback can ever reach again (see
+   * [walkedPages] for the bytecode-verified reason a refocus fires no `partActivated`).
    *
-   * The `page in pages` check is the cost gate, and it is what keeps the steady state O(1):
-   * membership in [pages] is only ever recorded on a successful `addPartListener`
-   * ([registerContained]), so an attached page has its part listener on and `partActivated`
-   * already retries per editor there. Without the check, every window switch would re-run
-   * [listenTo]'s unconditional editor walk — `getPart(false)` and `getAdapter`, third-party
-   * code, under this monitor on the UI thread, once per open editor. So a normal activation
-   * costs one contained call, one monitor acquisition, one `activePage` read and one set
-   * lookup; only a window whose page is NOT attached — the failure states above — pays the
-   * walk, once per activation until its registration sticks.
+   * The `page in pages && page in walkedPages` check is the cost gate, and it is what keeps the
+   * steady state O(1): membership in [pages] is only ever recorded on a successful
+   * `addPartListener` ([registerContained]), so an attached page has its part listener on and
+   * `partActivated` already retries per editor there; membership in [walkedPages] is only ever
+   * recorded when the editor walk reached its end ([listenTo]), so nothing on such a page is
+   * left for a re-walk to find. Without the gate, every window switch would re-run [listenTo]'s
+   * unconditional editor walk — `getPart(false)` and `getAdapter`, third-party code, under this
+   * monitor on the UI thread, once per open editor. So a normal activation costs one contained
+   * call, one monitor acquisition, one `activePage` read and two set lookups — no third-party
+   * code; only a window whose page is not attached OR not fully walked — the failure states
+   * above — pays the walk, once per activation until both stick.
    *
    * Known-considered gap, recorded rather than guarded: unlike [onWindowClosed], this path makes
    * no disposal check. If the platform ever delivered a `windowActivated` for a window between
@@ -302,7 +329,7 @@ class SecurityScanSaveListener(
   private fun onWindowActivated(window: IWorkbenchWindow) {
     if (!installed) return
     val page = window.activePage ?: return
-    if (page in pages) return
+    if (page in pages && page in walkedPages) return
     listenTo(page)
   }
 
@@ -327,24 +354,39 @@ class SecurityScanSaveListener(
     // dropped even when that attempt throws: the page is disposed either way, and keeping the
     // reference IS the leak.
     detachPagesOfClosed(undetachedPages, window)
+    // The walk-completion record leaves with the page — same membership rule, no detach to make
+    // (it records a fact, not a registration). Left behind, it is not only the same strong
+    // reference as finding D above: were the platform ever to hand a later window the same page
+    // instance, the stale record would claim its walk completed and the activation gate would
+    // skip exactly the page a retry exists for.
+    walkedPages.removeAll { page -> disposedBy(page, window) }
   }
 
   /** Drops from [tracked], and best-effort detaches, every page [window]'s close disposed. */
   private fun detachPagesOfClosed(tracked: MutableSet<IWorkbenchPage>, window: IWorkbenchWindow) {
     tracked.removeAll { page ->
-      // A THROW from the lookup is not evidence of disposal — only a null owner is (nulled by
-      // hardClose, see the KDoc on [onWindowClosed]) — so `getOrDefault(false)` keeps the page
-      // rather than dropping it: dropping would silently detach a live page, while keeping costs
-      // nothing because [uninstall] walks both sets regardless. In production
-      // `getWorkbenchWindow()` is a bare field read, so the failure arm is unreachable today; the
-      // distinction is kept so the collapse cannot be mistaken for a decision.
-      val closing = runCatching { page.workbenchWindow }
-        .map { owner -> owner === window || owner == null }
-        .getOrDefault(false)
+      val closing = disposedBy(page, window)
       if (closing) runCatching { page.removePartListener(this) }
       closing
     }
   }
+
+  /**
+   * Whether [window]'s close disposed [page]: it belongs to [window], or belongs to no window at
+   * all — a page whose `workbenchWindow` is null is disposed and can belong to no live window
+   * (see the KDoc on [onWindowClosed]).
+   *
+   * A THROW from the lookup is not evidence of disposal — only a null owner is (nulled by
+   * hardClose) — so `getOrDefault(false)` keeps the page rather than dropping it: dropping would
+   * silently detach a live page, while keeping costs nothing because [uninstall] clears every
+   * tracked set regardless. In production `getWorkbenchWindow()` is a bare field read, so the
+   * failure arm is unreachable today; the distinction is kept so the collapse cannot be mistaken
+   * for a decision.
+   */
+  private fun disposedBy(page: IWorkbenchPage, window: IWorkbenchWindow): Boolean =
+    runCatching { page.workbenchWindow }
+      .map { owner -> owner === window || owner == null }
+      .getOrDefault(false)
 
   /**
    * Starts listening for saves. **Must be paired with [uninstall]** — the listener is held by every
@@ -497,6 +539,10 @@ class SecurityScanSaveListener(
     (pages.toList() + undetachedPages.toList()).forEach { page -> runCatching { page.removePartListener(this) } }
     pages.clear()
     undetachedPages.clear()
+    // Nothing to detach — the walk record is a fact, not a registration — but it must not
+    // outlive the install cycle: carried across, it would claim a completed walk for a page the
+    // next install re-attaches, and the activation gate would skip the page whose walk aborted.
+    walkedPages.clear()
     (providers.toList() + undetachedProviders.toList()).forEach { provider ->
       runCatching { provider.removeElementStateListener(this) }
     }
@@ -516,8 +562,18 @@ class SecurityScanSaveListener(
     )
     // Editors that were already open when this installed get no partOpened of their own. Walked
     // even when the page registration above failed: the element-state listeners attach straight
-    // to the providers and observe saves without the part listener's help.
-    page.editorReferences.forEach { attach(it) }
+    // to the providers and observe saves without the part listener's help. Each editor's
+    // attachment is contained ON ITS OWN: [attach] runs `getPart(false)`, `getAdapter` and
+    // `getDocumentProvider` — third-party code — before its registerContained, and uncontained,
+    // one editor throwing there hid every editor behind it, including the active one (Codex
+    // round 6; see [walkedPages] for why nothing else could ever reach that editor again).
+    page.editorReferences.forEach { reference -> contained("editor attach") { attach(reference) } }
+    // Recorded strictly AFTER the walk's end, so the only failure the containment above lets
+    // abort the walk — `page.editorReferences` itself throwing — leaves no completion record and
+    // [onWindowActivated] retries the page. Never rolled back by a later aborted re-walk: within
+    // one tracked life of the page a completed walk stays completed, and editors opened since
+    // are the part listener's job, not a re-walk's.
+    walkedPages.add(page)
   }
 
   /**
