@@ -5,21 +5,27 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.ui.IEditorReference
 import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWindowListener
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPage
+import org.eclipse.ui.IWorkbenchPart
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.texteditor.IDocumentProvider
 import org.eclipse.ui.texteditor.ITextEditor
+import org.osgi.framework.Bundle
 
 /** Recorded `launch` calls, so a test can assert both "how many" and "with what". */
 private typealias Launches = MutableList<Pair<String?, SecurityScanSource>>
@@ -138,6 +144,21 @@ private class WorkbenchHarness {
     every { reference.getPart(false) } returns editor
     every { latePage.editorReferences } returns arrayOf(reference)
     return provider
+  }
+
+  /**
+   * Puts an editor whose `getAdapter` throws [exception] into the page install attaches FIRST (the
+   * active window's, line `install`:314). `getAdapter` runs third-party adapter-factory code, and
+   * unlike the enumerated background windows this walk is not individually contained — the throw
+   * lands in install's own catch. This is the path on which the caught exception's message can
+   * quote a file path.
+   */
+  fun brokenAdapterEditorAtInstall(exception: Exception) {
+    val part = mockk<IWorkbenchPart>()
+    every { part.getAdapter(ITextEditor::class.java) } throws exception
+    val reference = mockk<IEditorReference>()
+    every { reference.getPart(false) } returns part
+    every { installPage.editorReferences } returns arrayOf(reference)
   }
 
   /** A free-standing editor reference for delivering part events directly. */
@@ -618,6 +639,38 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       every { harness.workbench.workbenchWindows } returns emptyArray()
       subject.install()
       verify(exactly = 2) { harness.workbench.addWindowListener(any()) }
+    }
+
+    // A7 secrecy at install's catch. Unlike the callbacks (all behind `contained`), the failure
+    // logged here can come from the ACTIVE window's walk — `getPart`/`getAdapter` run third-party
+    // adapter-factory code — so the log line must follow the same rule as `contained`: the class
+    // name, never the exception object. Property 1 of 2: the class name is recorded.
+    it("a failed install records the failure's class name in the log message") {
+      val harness = WorkbenchHarness()
+      harness.brokenAdapterEditorAtInstall(RuntimeException("adapter factory failed"))
+      val ilog = mockk<ILog>(relaxUnitFun = true)
+      val messages = mutableListOf<String>()
+      every { ilog.warn(capture(messages)) } just Runs
+      every { Platform.getLog(any<Bundle>()) } returns ilog
+      SecurityScanSaveListener().install()
+      messages.any { it.endsWith("RuntimeException") } shouldBe true
+    }
+
+    // Property 2 of 2: a path quoted by the third-party failure appears NOWHERE in what reached
+    // the log — neither in a message string nor inside a throwable argument. This is the test that
+    // fails when someone "restores" `log.warn(msg, e)` at the install catch.
+    it("a file path quoted by the failure under install does not reach the log") {
+      val harness = WorkbenchHarness()
+      harness.brokenAdapterEditorAtInstall(RuntimeException("/home/user/secret/path.txt"))
+      val ilog = mockk<ILog>(relaxUnitFun = true)
+      val messages = mutableListOf<String>()
+      val throwables = mutableListOf<Throwable>()
+      every { ilog.warn(capture(messages)) } just Runs
+      every { ilog.warn(capture(messages), capture(throwables)) } just Runs
+      every { Platform.getLog(any<Bundle>()) } returns ilog
+      SecurityScanSaveListener().install()
+      val reachedTheLog = messages + throwables.map { it.message.orEmpty() }
+      reachedTheLog.none { "/home/user/secret/path.txt" in it } shouldBe true
     }
 
     // Keep-behaviour guard: passes before and after this wave by design. One page that is already

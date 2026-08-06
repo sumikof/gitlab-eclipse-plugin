@@ -344,7 +344,11 @@ class SecurityScanSaveListener(
       // stays false, and a retry re-attaches idempotently: `pages.add`/`providers.add` answer
       // false for what is already there, and `ListenerList.add` dedupes by identity.
       runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
-      log.warn("Security scan save trigger not installed: workbench unavailable.", e)
+      // Class name only, never the exception object — same secrecy rule as [contained]. This catch
+      // does not only see "the workbench is not up": it also covers the active-window walk, whose
+      // `getPart`/`getAdapter` run third-party adapter-factory code, and such an exception's
+      // message can quote a file path. No path may reach the log.
+      log.warn("Security scan save trigger not installed: workbench unavailable: ${e::class.simpleName}")
     }
   }
 
