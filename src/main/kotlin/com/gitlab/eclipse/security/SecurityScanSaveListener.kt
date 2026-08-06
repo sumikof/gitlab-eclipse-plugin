@@ -206,7 +206,9 @@ class SecurityScanSaveListener(
   /**
    * Providers whose registration threw AND whose immediate best-effort detach threw too (see
    * [registerContained]): the listener may still be half-on them with no record in [providers],
-   * so [uninstall] walks these as well and makes one more detach attempt. A later activation
+   * so [uninstall] walks these as well and makes one more detach attempt — and, for the page
+   * instance [undetachedPages], so does [onWindowClosed] for the pages a closing window
+   * disposed. A later activation
    * still retries the registration, but through the scrub first: the possibly half-added
    * listener has to come off, and while that scrub keeps throwing the retry refuses to register
    * on top — unobserved-but-retryable, never double-registered (the in-body comment in
@@ -288,6 +290,13 @@ class SecurityScanSaveListener(
    * costs one contained call, one monitor acquisition, one `activePage` read and one set
    * lookup; only a window whose page is NOT attached — the failure states above — pays the
    * walk, once per activation until its registration sticks.
+   *
+   * Known-considered gap, recorded rather than guarded: unlike [onWindowClosed], this path makes
+   * no disposal check. If the platform ever delivered a `windowActivated` for a window between
+   * `hardClose`'s `fireWindowClosed` (@266) and its nulling of `page` (@350), the disposed page
+   * would be recorded in [pages] and held until [uninstall]. No real Eclipse path that fires an
+   * activation on a closing window could be constructed, so no guard is added on speculation;
+   * this note exists so the question does not have to be rediscovered.
    */
   @Synchronized
   private fun onWindowActivated(window: IWorkbenchWindow) {
@@ -350,9 +359,9 @@ class SecurityScanSaveListener(
    *
    * **Threading.** [install] runs on the UI thread (`GitLabEclipseStartup`, `display.syncExec`);
    * [uninstall] runs on the bundle-stop thread (`GitLabEclipseStartup.stop()` has no `syncExec` on
-   * that path). Every mutation of [pages], [providers] and [installed] — including the UI-thread
-   * callbacks [onWindowOpened], [onWindowClosed] and [onPartSeen] — therefore holds this
-   * listener's monitor. What was verified from bytecode (in the versions the manifest floor
+   * that path). Every mutation of [pages], [providers], their undetached twins and [installed] —
+   * including the UI-thread callbacks [onWindowOpened], [onWindowClosed], [onWindowActivated] and
+   * [onPartSeen] — therefore holds this listener's monitor. What was verified from bytecode (in the versions the manifest floor
    * resolves) is bounded to the listener add/remove calls this class makes to attach and detach:
    * those are lock-leaf. `Workbench.add/removeWindowListener` -> synchronized
    * `EventManager.add/removeListenerObject`, which only touches a `ListenerList`;
@@ -370,9 +379,13 @@ class SecurityScanSaveListener(
    * `getPart(false)`, `getAdapter` and `getDocumentProvider` run editor and adapter-factory code
    * — third-party (see [attach] and the note on [windowListener]) — under this monitor, on the
    * UI thread; no bytecode claim covers it. No inversion comes from the platform's side:
-   * `fireWindowOpened`/`fireWindowClosed` and `WorkbenchPage.firePartOpened` all iterate an
-   * unsynchronized listener snapshot (`EventManager.getListeners()` / `ListenerList.iterator()`),
-   * so no thread ever holds a platform monitor while calling into this class.
+   * `fireWindowOpened`/`fireWindowClosed`/`fireWindowActivated` and
+   * `WorkbenchPage.firePartOpened`/`firePartActivated` all iterate an unsynchronized listener
+   * snapshot (`EventManager.getListeners()` / `ListenerList.iterator()`; `fireWindowActivated`
+   * `getListeners` @1 then per-listener `SafeRunner.run` @41, `firePartActivated`
+   * `partListener2List` iterator @109-112 then `SafeRunner.run` @144, verified in 3.133.0 and
+   * 3.137.0 like the rest), so no thread ever holds a platform monitor while calling into this
+   * class.
    */
   @Synchronized
   fun install() {
@@ -491,7 +504,7 @@ class SecurityScanSaveListener(
     undetachedProviders.clear()
   }
 
-  /** Only ever called under this listener's monitor: from [install], [onWindowOpened], [onPartSeen]. */
+  /** Only ever called under this listener's monitor: from [install], [onWindowOpened], [onWindowActivated]. */
   private fun listenTo(page: IWorkbenchPage) {
     registerContained(
       "page attach",
@@ -555,7 +568,12 @@ class SecurityScanSaveListener(
     // it. With the scrub-failure early return, a registered target is never left in [undetached]
     // — a successful retry clears the memory, a blocked one clears the record — so that pairing
     // is unreachable from here today; the ordering is kept so correctness does not depend on
-    // that invariant staying true.
+    // that invariant staying true. It is also strictly safer than the hoisted-scrub ordering,
+    // not merely equal to it: between the `recorded.add` above and the scrub's `onSuccess` below
+    // the two sets transiently overlap, across a call into third-party `remove(target)` under
+    // this REENTRANT monitor — a synchronous re-entry from that call would find the target in
+    // both sets, and in this ordering that frame stops at `recorded.add == false` and returns
+    // harmlessly.
     if (target in undetached) {
       if (runCatching { remove(target) }.onSuccess { undetached.remove(target) }.isFailure) {
         recorded.remove(target)

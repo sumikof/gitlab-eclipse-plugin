@@ -688,6 +688,26 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 2) { harness.latePage.addPartListener(subject) }
     }
 
+    // This wave: the deepest page-side failure state — `addPartListener` threw AND the immediate
+    // best-effort detach threw — for which windowActivated is the ONLY retry vehicle: the page
+    // has no part listener (so partActivated can never fire for it) and windowOpened fires once,
+    // at window creation. The page sits in `undetachedPages`, not `pages`, so the cost gate must
+    // let the activation through: membership in `undetachedPages` records a failed detach, not a
+    // live registration. The provider side of this shape has three tests; this is the page side's
+    // one. `exactly = 2` is the failed registration plus the retry's re-registration.
+    it("windowActivated retries the page whose registration and immediate detach both threw at windowOpened") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } just Runs
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } just Runs
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 2) { harness.latePage.addPartListener(subject) }
+    }
+
     // Same snapshot race as above, on the part-listener side: a partOpened taken from a stale
     // ListenerList snapshot can be delivered after uninstall() already walked `providers`.
     it("a partOpened delivered after uninstall does not attach the provider") {
@@ -784,6 +804,25 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       subject.install()
       harness.openLateWindow()
       every { harness.latePage.removePartListener(any<IPartListener2>()) } just Runs
+      harness.closeLateWindow()
+      clearMocks(harness.latePage, answers = false)
+      subject.uninstall()
+      verify(exactly = 0) { harness.latePage.removePartListener(any<IPartListener2>()) }
+    }
+
+    // This wave: the drop-on-throw decision. The record leaves at close EVEN WHEN the close-time
+    // detach attempt throws — the page is disposed either way, and keeping the reference IS the
+    // leak (the in-body comment in onWindowClosed). The test above cannot see this: it heals
+    // `removePartListener` before the close, so the drop it observes never exercises the throw
+    // arm. Here the remove keeps throwing across the close, and the record having left is
+    // observed the same way: uninstall finds nothing to detach on that page.
+    it("windowClosed drops an undetached page even when the close-time detach attempt throws") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
       harness.closeLateWindow()
       clearMocks(harness.latePage, answers = false)
       subject.uninstall()
@@ -1058,6 +1097,30 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       clearMocks(provider, answers = false)
       subject.partActivated(reference)
       verify(exactly = 0) { provider.removeElementStateListener(any()) }
+    }
+
+    // This wave: the scrub's `onSuccess { undetached.remove(target) }` is the single write that
+    // makes `recorded ∩ undetached = ∅` hold on the successful-retry branch — the invariant
+    // behind both "scrub-above-the-dedup-check is an equivalent mutant" (the test above) and "a
+    // dedup against the undetached sets in uninstall would be dead code". A third delivery cannot
+    // observe the write (with or without it, the target is in `providers`, so the delivery
+    // short-circuits at the dedup check); what CAN is uninstall's walk, which detaches once per
+    // set the target sits in. Exactly one detach after a settled retry is the invariant made
+    // observable — a memory left standing would make it two.
+    it("uninstall detaches a provider settled by a successful retry exactly once") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      every { provider.removeElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      clearMocks(provider, answers = false)
+      subject.uninstall()
+      verify(exactly = 1) { provider.removeElementStateListener(subject) }
     }
 
     // `listenTo` runs `attach` once per editor reference on the page, and the registration call
