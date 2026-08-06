@@ -688,43 +688,47 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     }
 
     // T1: the catch rollback. Keep-behaviour guard: passes before and after this wave by design —
-    // the rollback shipped in 22915b7 with no coverage; this pins it. The failure is injected at
-    // `getWorkbenchWindows` itself — a workbench-level failure — because this wave contained the
-    // per-window walk: a throw from inside one window's walk no longer aborts install, so the old
-    // `installPage.editorReferences` injection could not keep pinning the rollback.
+    // it pins the catch's rollback, which both sides have. The injection has now moved TWICE,
+    // each time because containment took its old point out of the catch's reach: first off the
+    // page walk (`installPage.editorReferences`), then off `getWorkbenchWindows` (the enumeration
+    // getter is contained since this wave — injected there, this test would go green while
+    // covering nothing, for the second time). It injects at `addWindowListener`: of the two calls
+    // that can still reach the catch (`PlatformUI.getWorkbench()` being the other) it is the only
+    // one that can leave a listener half-registered for the rollback to take back off.
     it("a failed install takes the window listener back off") {
       val harness = WorkbenchHarness()
-      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
+      every { harness.workbench.addWindowListener(any()) } throws RuntimeException("workbench going down")
       SecurityScanSaveListener().install()
       verify(exactly = 1) { harness.workbench.removeWindowListener(any()) }
     }
 
     // T1: the flag placement. Keep-behaviour guard: passes before and after this wave by design —
     // `installed` must stay false after a failed install so a later call really retries. Same
-    // injection relocation as the rollback test above.
+    // injection relocation as the rollback test above; the first `addWindowListener` call throws
+    // and is counted all the same, so `exactly = 2` is one failed registration plus one retry.
     it("a failed install leaves the trigger retryable") {
       val harness = WorkbenchHarness()
-      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
+      every { harness.workbench.addWindowListener(any()) } throws RuntimeException("workbench going down")
       val subject = SecurityScanSaveListener()
       subject.install()
-      every { harness.workbench.workbenchWindows } returns emptyArray()
+      every { harness.workbench.addWindowListener(any()) } just Runs
       subject.install()
       verify(exactly = 2) { harness.workbench.addWindowListener(any()) }
     }
 
-    // A7 secrecy at install's catch. Since the active-window walk was contained (this wave), no
-    // third-party code can throw into install's own frame any more — the catch's reachable
-    // inputs are the workbench-level calls only — but the class-name-only rule still has to hold
-    // there, BEFORE anyone widens what the try covers. The injection therefore moved from
-    // `brokenAdapterEditorAtInstall` (which containment now stops a line earlier, where the
-    // `contained` log line would satisfy these assertions vacuously) to `getWorkbenchWindows` —
-    // the same relocation the two rollback tests above needed for the same reason. Keep-behaviour
-    // guard: passes before and after this wave by design; what it pins is the catch's logging
-    // discipline, and it fails when `log.warn(msg, e)` is restored there. Property 1 of 2: the
-    // class name is recorded.
+    // A7 secrecy at install's catch. With the enumeration getter contained (this wave), the
+    // catch's reachable inputs are `PlatformUI.getWorkbench()` and `addWindowListener` only —
+    // but the class-name-only rule still has to hold there, BEFORE anyone widens what the try
+    // covers. The injection therefore moved again, from `getWorkbenchWindows` (whose throw now
+    // stops at `contained`, where the containment secrecy tests already pin the rule and these
+    // assertions would be satisfied vacuously) to `addWindowListener` — the same relocation the
+    // two rollback tests above needed for the same reason. Keep-behaviour guard: passes before
+    // and after this wave by design; what it pins is the catch's logging discipline, and it
+    // fails when `log.warn(msg, e)` is restored there. Property 1 of 2: the class name is
+    // recorded.
     it("a failed install records the failure's class name in the log message") {
       val harness = WorkbenchHarness()
-      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
+      every { harness.workbench.addWindowListener(any()) } throws RuntimeException("workbench going down")
       val ilog = mockk<ILog>(relaxUnitFun = true)
       val messages = mutableListOf<String>()
       every { ilog.warn(capture(messages)) } just Runs
@@ -739,7 +743,7 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     // `log.warn(msg, e)` at the install catch.
     it("a file path quoted by the failure under install does not reach the log") {
       val harness = WorkbenchHarness()
-      every { harness.workbench.workbenchWindows } throws RuntimeException("/home/user/secret/path.txt")
+      every { harness.workbench.addWindowListener(any()) } throws RuntimeException("/home/user/secret/path.txt")
       val ilog = mockk<ILog>(relaxUnitFun = true)
       val messages = mutableListOf<String>()
       val throwables = mutableListOf<Throwable>()
@@ -749,6 +753,209 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       SecurityScanSaveListener().install()
       val reachedTheLog = messages + throwables.map { it.message.orEmpty() }
       reachedTheLog.none { "/home/user/secret/path.txt" in it } shouldBe true
+    }
+
+    // This wave: the enumeration GETTER was the one workbench call between the active-window walk
+    // and `installed = true` still outside any containment. A throw there landed in install's
+    // catch AFTER the active window had already attached: window listener rolled back, `installed`
+    // never set, one call site, no retry — the pages and providers already attached sat live but
+    // permanently inert, which is verbatim the state the previous wave was written to eliminate.
+    // `installed` is not directly observable, so liveness is observed through the one gate that
+    // reads it — a window opened later attaches only when install really ended installed.
+    it("a throwing window enumeration does not leave the session inert for later windows") {
+      val harness = WorkbenchHarness()
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench model failed")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    // The second property of surviving a throwing enumeration: the catch's rollback must NOT run.
+    // Before this wave the catch took the window listener back off; contained, the failure must
+    // leave the listener on — it is the only path by which future windows are ever observed.
+    it("a throwing window enumeration keeps the window listener registered") {
+      val harness = WorkbenchHarness()
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench model failed")
+      SecurityScanSaveListener().install()
+      verify(exactly = 0) { harness.workbench.removeWindowListener(any()) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — the catch never rolled
+    // pages back off, so the active window's attachment survived on both sides. It pins that the
+    // containment keeps it that way: the active window attaches BEFORE the enumeration runs, and
+    // a throw from the enumeration must not cost the user the window they are actually in.
+    it("a throwing window enumeration keeps the active window's attachment intact") {
+      val harness = WorkbenchHarness()
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench model failed")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.installPage.addPartListener(subject) }
+    }
+
+    // B: registration bookkeeping. `providers.add` / `pages.add` recorded BEFORE the registration
+    // call, and a throwing registration kept the record: every later partOpened/partActivated
+    // found `add` answering false and skipped the attach, so saves through that provider went
+    // silently unobserved for the whole session. These tests pin the repaired bookkeeping on both
+    // instances of the shape — provider and page.
+
+    it("a provider whose registration throws is registered again on the next part activation") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      verify(exactly = 2) { provider.addElementStateListener(subject) }
+    }
+
+    // The platform may have added the listener before throwing (the throw does not say how far
+    // the call got), and a retry that succeeds must not end double-registered — so a failed
+    // registration is taken back off the provider immediately, not left for uninstall.
+    it("a provider whose registration throws is taken back off in case it was half-added") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      verify(exactly = 1) { provider.removeElementStateListener(subject) }
+    }
+
+    // When even that immediate detach throws, the listener may still be on the provider with no
+    // record left in `providers` to walk — so the target is remembered separately and uninstall
+    // makes one more attempt: `exactly = 2` is the immediate try plus uninstall's retry.
+    it("a provider whose registration and immediate detach both throw is still detached at uninstall") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      subject.uninstall()
+      verify(exactly = 2) { provider.removeElementStateListener(subject) }
+    }
+
+    // The corner the retry itself opens: when the failed registration's immediate detach ALSO
+    // threw, the half-added listener may still be on the provider, and a retry that just added
+    // again could end double-registered — every save would upload twice. So a retry of a target
+    // remembered as undetached takes the listener off once more before re-registering:
+    // `exactly = 2` on the remove is the failed immediate detach plus the retry's scrub.
+    it("a successful retry after a failed registration and detach scrubs the half-added listener first") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      every { provider.removeElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      verify(exactly = 2) { provider.removeElementStateListener(subject) }
+    }
+
+    // `listenTo` runs `attach` once per editor reference on the page, and the registration call
+    // runs third-party provider code — one broken provider must not abort the walk for the
+    // editors behind it.
+    it("one provider whose registration throws does not stop the walk from attaching the rest of the page") {
+      val harness = WorkbenchHarness()
+      val (badReference, badProvider) = harness.editorReference()
+      val (goodReference, goodProvider) = harness.editorReference()
+      every { badProvider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { harness.latePage.editorReferences } returns arrayOf(badReference, goodReference)
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { goodProvider.addElementStateListener(subject) }
+    }
+
+    // The page instance of the same shape. A second `windowOpened` for the same window is the
+    // delivery vehicle, not the claim: the property is that a failed registration left no record
+    // claiming success, so the next `listenTo` of the page really retries.
+    it("a page whose part-listener registration throws is registered again on the next delivery") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } just Runs
+      harness.openLateWindow()
+      verify(exactly = 2) { harness.latePage.addPartListener(subject) }
+    }
+
+    it("a page whose part-listener registration throws is taken back off in case it was half-added") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    it("a page whose registration and immediate detach both throw is still detached at uninstall") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      subject.uninstall()
+      verify(exactly = 2) { harness.latePage.removePartListener(subject) }
+    }
+
+    // A failed page registration must still leave the page's already-open editors observed: the
+    // element-state listeners attach straight to the providers and do not need the part listener.
+    it("a page whose part-listener registration throws still gets its already-open editors attached") {
+      val harness = WorkbenchHarness()
+      val provider = harness.editorInLateWindow()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — pre-wave the same
+    // throw stopped at `partOpened`'s `contained`, whose class-name-only line the containment
+    // secrecy test pins; post-wave it stops at the registration bookkeeping's own log line, which
+    // this pins: it fails when that line is made to include `e.message` or the exception object.
+    it("a file path quoted by a failed provider registration does not reach the log") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("/home/user/secret/path.txt")
+      val ilog = mockk<ILog>(relaxUnitFun = true)
+      val messages = mutableListOf<String>()
+      val throwables = mutableListOf<Throwable>()
+      every { ilog.warn(capture(messages)) } just Runs
+      every { ilog.warn(capture(messages), capture(throwables)) } just Runs
+      every { Platform.getLog(any<Bundle>()) } returns ilog
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      val reachedTheLog = messages + throwables.map { it.message.orEmpty() }
+      reachedTheLog.none { "/home/user/secret/path.txt" in it } shouldBe true
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — pre-wave `partOpened`'s
+    // `contained` logged the class name, post-wave the registration bookkeeping does. It pins
+    // that a failed registration is never silent: delete the bookkeeping's log line and nothing
+    // records the failure (the throw no longer reaches `contained`), and this goes red.
+    it("a failed provider registration still records the failure's class name in the log") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      val ilog = mockk<ILog>(relaxUnitFun = true)
+      val messages = mutableListOf<String>()
+      every { ilog.warn(capture(messages)) } just Runs
+      every { Platform.getLog(any<Bundle>()) } returns ilog
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      messages.any { it.endsWith("RuntimeException") } shouldBe true
     }
 
     // Keep-behaviour guard: passes before and after this wave by design. One page that is already

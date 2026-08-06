@@ -203,6 +203,18 @@ class SecurityScanSaveListener(
   /** Pages this listener was added to as a part listener, for the same reason. */
   private val pages = mutableSetOf<IWorkbenchPage>()
 
+  /**
+   * Providers whose registration threw AND whose immediate best-effort detach threw too (see
+   * [registerContained]): the listener may still be half-on them with no record in [providers],
+   * so [uninstall] walks these as well and makes one more detach attempt. Being here never
+   * blocks a later activation from retrying the registration; the retry consults it only to
+   * scrub the possibly half-added listener off before registering again.
+   */
+  private val undetachedProviders = mutableSetOf<IDocumentProvider>()
+
+  /** The page instance of the same bookkeeping, for [pages]. */
+  private val undetachedPages = mutableSetOf<IWorkbenchPage>()
+
   private var installed = false
 
   /**
@@ -354,14 +366,21 @@ class SecurityScanSaveListener(
       // the walk for the windows that are fine nor reach the catch below after pages were already
       // attached (that combination left every attached page permanently inert: `installed` stayed
       // false, the callbacks' `installed` guard dropped everything, and install() has exactly one
-      // call site, so there was no retry).
-      workbench.workbenchWindows.forEach { window ->
-        contained("install window walk") { window.activePage?.let { listenTo(it) } }
+      // call site, so there was no retry). The GETTER is contained too, in its own outer wrapper:
+      // it runs after the active window already attached, so a throw from it reaching the catch
+      // re-created exactly the inert state above — rollback, `installed` false, no retry — to
+      // punish a failure the install had already survived. Contained, a dead enumeration costs
+      // only the background windows; the active window and every window opened later still work.
+      contained("install window enumeration") {
+        workbench.workbenchWindows.forEach { window ->
+          contained("install window walk") { window.activePage?.let { listenTo(it) } }
+        }
       }
       // Set LAST, and only after the window listener and the page walks above. `installed = true`
       // deliberately means "the window listener is registered" — NOT "every already-open window
-      // (or even the active one) is attached": a contained failure of any walk above, the active
-      // window's included, still ends installed, because the feature staying alive for the
+      // (or even the active one) is attached": a contained failure of any walk above — the active
+      // window's, one enumerated window's, or the enumeration itself — still ends installed,
+      // because the feature staying alive for the
       // windows that did attach beats the whole feature being dead, and `partActivated` retries
       // the provider attach for any window whose part listener did make it on. Setting the flag
       // up front instead would make a
@@ -378,9 +397,10 @@ class SecurityScanSaveListener(
       // false for what is already there, and `ListenerList.add` dedupes by identity.
       runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
       // Class name only, never the exception object — same secrecy rule as [contained]. With
-      // every page walk contained, the only inputs that can reach this catch are the
-      // workbench-level calls (`PlatformUI.getWorkbench()`, `addWindowListener`,
-      // `getWorkbenchWindows`) — which is what makes "workbench unavailable" a true message. The
+      // every page walk AND the window enumeration contained, the only inputs that can reach
+      // this catch are `PlatformUI.getWorkbench()` and `addWindowListener` — the two calls whose
+      // failure really does mean nothing can ever attach, which is what makes both the rollback
+      // meaningful and "workbench unavailable" a true message. The
       // class-name-only rule is kept regardless: the discipline must already hold if anyone
       // widens what the `try` covers.
       log.warn("Security scan save trigger not installed: workbench unavailable: ${e::class.simpleName}")
@@ -406,17 +426,84 @@ class SecurityScanSaveListener(
   fun uninstall() {
     installed = false
     runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
-    pages.toList().forEach { page -> runCatching { page.removePartListener(this) } }
+    // The undetached sets are walked ON TOP of the recorded ones, deliberately without
+    // de-duplication against them: a target can be in both (failed once, retried successfully),
+    // and if its half-added first registration really stuck it is registered twice, so removing
+    // twice is the direction that cannot leak — a spurious remove is a no-op list removal (see
+    // the bytecode notes on [install]), a missing one outlives the bundle.
+    (pages.toList() + undetachedPages.toList()).forEach { page -> runCatching { page.removePartListener(this) } }
     pages.clear()
-    providers.toList().forEach { provider -> runCatching { provider.removeElementStateListener(this) } }
+    undetachedPages.clear()
+    (providers.toList() + undetachedProviders.toList()).forEach { provider ->
+      runCatching { provider.removeElementStateListener(this) }
+    }
     providers.clear()
+    undetachedProviders.clear()
   }
 
   /** Only ever called under this listener's monitor: from [install], [onWindowOpened], [onPartSeen]. */
   private fun listenTo(page: IWorkbenchPage) {
-    if (pages.add(page)) page.addPartListener(this)
-    // Editors that were already open when this installed get no partOpened of their own.
+    registerContained(
+      "page attach",
+      page,
+      pages,
+      undetachedPages,
+      { it.addPartListener(this) },
+      { it.removePartListener(this) },
+    )
+    // Editors that were already open when this installed get no partOpened of their own. Walked
+    // even when the page registration above failed: the element-state listeners attach straight
+    // to the providers and observe saves without the part listener's help.
     page.editorReferences.forEach { attach(it) }
+  }
+
+  /**
+   * Records [target] in [recorded] and registers this listener on it, surviving a registration
+   * call that throws — both instances of the shape ([attach]'s provider, [listenTo]'s page) go
+   * through here so they cannot drift apart again.
+   *
+   * Record-then-register, in that order, is deliberate and must not be flipped: recording first
+   * means a platform call that adds the listener and THEN throws is never attached-but-unrecorded,
+   * so teardown stays sound. What that order used to cost was the retry: the record survived the
+   * throw and claimed success, so every later `partOpened`/`partActivated` found `add` answering
+   * false and skipped the registration — saves through that provider went silently unobserved for
+   * the whole session. So a throw now (1) rolls the record back off, which is what lets a later
+   * delivery retry; (2) takes the listener best-effort back off [target], because the throw does
+   * not say how far the call got and a retry that succeeds must not end double-registered; and
+   * (3) when even that detach throws, remembers [target] in [undetached] so [uninstall] still
+   * makes one more attempt — the two failures together are the only path on which a half-added
+   * listener has no record left to walk — and so a later retry can scrub the half-add off before
+   * registering again (the in-body comment below). The throw itself is swallowed, not rethrown: [listenTo]
+   * runs [attach] once per editor reference, and one broken provider must not abort the walk for
+   * the rest of the page. Class name only in the log — same secrecy rule as [contained], and for
+   * the same reason: the registration call is third-party code whose message may quote a path.
+   */
+  private fun <T : Any> registerContained(
+    what: String,
+    target: T,
+    recorded: MutableSet<T>,
+    undetached: MutableSet<T>,
+    add: (T) -> Unit,
+    remove: (T) -> Unit,
+  ) {
+    if (!recorded.add(target)) return
+    // A target remembered as undetached may still hold the half-added listener from the earlier
+    // attempt whose detach failed too. Registering again on top of it could end
+    // double-registered — every save would be observed, and uploaded, twice — so the retry takes
+    // the listener off once more FIRST. The memory clears only when that scrub returns: a scrub
+    // that throws leaves the target remembered, so [uninstall] still makes its extra attempt.
+    // This sits after the dedup check on purpose: on a target that is already registered, the
+    // remove would strip the LIVE registration and the early return above would never restore it.
+    if (target in undetached) {
+      runCatching { remove(target) }.onSuccess { undetached.remove(target) }
+    }
+    try {
+      add(target)
+    } catch (e: Throwable) {
+      recorded.remove(target)
+      runCatching { remove(target) }.onFailure { undetached.add(target) }
+      runCatching { log.warn("Security scan save trigger failed in $what: ${e::class.simpleName}") }
+    }
   }
 
   override fun partOpened(partRef: IWorkbenchPartReference) = contained("partOpened") {
@@ -444,7 +531,8 @@ class SecurityScanSaveListener(
    * Attaches to the document provider behind [partRef].
    *
    * Providers are shared between editors of the same kind, so the set both dedupes the attach and
-   * is the exact list [uninstall] has to walk.
+   * is the list [uninstall] has to walk (together with [undetachedProviders] — see
+   * [registerContained] for what a throwing registration leaves where).
    */
   private fun attach(partRef: IWorkbenchPartReference) {
     if (partRef !is IEditorReference) return
@@ -452,7 +540,14 @@ class SecurityScanSaveListener(
     val part = partRef.getPart(false) ?: return
     val textEditor = part.getAdapter(ITextEditor::class.java) ?: (part as? ITextEditor) ?: return
     val provider = textEditor.documentProvider ?: return
-    if (providers.add(provider)) provider.addElementStateListener(this)
+    registerContained(
+      "provider attach",
+      provider,
+      providers,
+      undetachedProviders,
+      { it.addElementStateListener(this) },
+      { it.removeElementStateListener(this) },
+    )
   }
 
   /**
