@@ -246,11 +246,14 @@ class SecurityScanSaveListener(
    * [onWindowActivated] is the one retry a mere refocus can trigger for that editor — the retry
    * that needs no part switch — and its gate consults this record alongside [pages].
    *
-   * Residual, documented rather than closed: a page in [pages] AND here can still hold one
-   * unattached editor. [listenTo] contains each editor's attachment on its own, so an editor
-   * whose `getPart`/`getAdapter`/`documentProvider` threw is skipped while the walk still
-   * reaches its end and the record is written — and the gate then skips the page. When the
-   * editor that threw is the one already active, no refocus re-delivers `partActivated` to it
+   * Residual, documented rather than closed: membership here records that the walk ENUMERATED
+   * to its end, not that every editor on the page attached, so a page in [pages] AND here can
+   * still hold unattached editors. [listenTo] contains each editor's attachment on its own, so
+   * an editor whose `getPart`/`getAdapter`/`documentProvider` threw is skipped while the walk
+   * still reaches its end and the record is written — and the gate then skips the page. A
+   * skipped BACKGROUND editor waits only for its own first activation — an actual change of
+   * active part, so `partActivated` fires for it and [attach] reruns the lookup; the editor
+   * with no such trigger is the ACTIVE one: no refocus re-delivers `partActivated` to it
    * (the bytecode argument above) and this record keeps [onWindowActivated] off the page, so a
    * TRANSIENT failure on the active editor survives every window refocus — indefinitely, for a
    * user who stays in that editor — and heals on the first actual change of active part, when
@@ -259,15 +262,16 @@ class SecurityScanSaveListener(
    * success over the walk and gating the record on all-attached — would buy a page with one
    * persistently-broken editor a full re-walk (`getPart(false)` and `getAdapter`, third-party
    * code, once per open editor) plus one "editor attach" log line per broken editor on EVERY
-   * window activation: a worse trade than the gap, the more so since the gap is one editor
-   * until its next part switch, not a session-long loss. It is also not a regression: before
+   * window activation: a worse trade than the gap, the more so since the gap is, per skipped
+   * editor, one part activation away — a first activation for a background one, a switch away
+   * and back for the active one — not a session-long loss. It is also not a regression: before
    * the per-editor containment the same throw aborted the whole walk and the activation gate —
    * then `page in pages` alone — skipped the page the same way, while every editor the abort
    * left unattached already had this same recovery: a background editor on its own first
    * activation, the active one only after the same switch-away-and-return. What the containment
    * narrowed is how much a throw leaves unattached until those activations happen — every
-   * editor behind the broken one, including the active one, before; the broken editor alone,
-   * now.
+   * editor behind the broken one, including the active one, before; only the editors whose own
+   * lookups threw, now.
    *
    * Cleaned up wherever [pages] is: [onWindowClosed]'s membership walk and [uninstall].
    */
@@ -343,14 +347,19 @@ class SecurityScanSaveListener(
    * The `page in pages && page in walkedPages` check is the cost gate, and it is what keeps the
    * steady state O(1): membership in [pages] is only ever recorded on a successful
    * `addPartListener` ([registerContained]), so an attached page has its part listener on and
-   * `partActivated` already retries per editor there; membership in [walkedPages] is only ever
-   * recorded when the editor walk reached its end ([listenTo]), so nothing on such a page is
-   * left for a re-walk to find. Without the gate, every window switch would re-run [listenTo]'s
-   * unconditional editor walk — `getPart(false)` and `getAdapter`, third-party code, under this
-   * monitor on the UI thread, once per open editor. So a normal activation costs one contained
-   * call, one monitor acquisition, one `activePage` read and two set lookups — no third-party
-   * code; only a window whose page is not attached OR not fully walked — the failure states
-   * above — pays the walk, once per activation until both stick.
+   * `partActivated` already retries per editor there; membership in [walkedPages] says the
+   * editor walk ENUMERATED to its end ([listenTo]) — not that every editor attached: the
+   * per-editor containment skips an editor whose lookup threw while the walk still completes,
+   * so a page behind this gate can still hold unattached editors (the residual on
+   * [walkedPages]). The gate skips such a page on cost, not because a re-walk would find
+   * nothing: re-walking on every activation would pay `getPart(false)` and `getAdapter` —
+   * third-party code, under this monitor on the UI thread, once per open editor — to rerun at
+   * most those editors' failed lookups, which `partActivated` already reruns on each one's next
+   * actual activation (for the active editor, only after a switch away and back — the trade is
+   * weighed in full on [walkedPages]). So a normal activation costs one contained call, one
+   * monitor acquisition, one `activePage` read and two set lookups — no third-party code; only
+   * a window whose page is not attached OR whose walk never reached its end — the failure
+   * states above — pays the walk, once per activation until both records stick.
    *
    * Known-considered gap, recorded rather than guarded: unlike [onWindowClosed], this path makes
    * no disposal check. If the platform ever delivered a `windowActivated` for a window between
@@ -605,7 +614,10 @@ class SecurityScanSaveListener(
     page.editorReferences.forEach { reference -> contained("editor attach") { attach(reference) } }
     // Recorded strictly AFTER the walk's end, so the only failure the containment above lets
     // abort the walk — `page.editorReferences` itself throwing — leaves no completion record and
-    // [onWindowActivated] retries the page. And recorded ONLY while the page is in [pages]:
+    // [onWindowActivated] retries the page. The record claims enumeration completion and no
+    // more: an editor the containment above skipped stays unattached WITH the record written,
+    // so [onWindowActivated]'s gate reads it as "the walk ended", never as "every editor
+    // attached" (the residual on [walkedPages]). And recorded ONLY while the page is in [pages]:
     // immediately after [registerContained], that membership holds exactly when a successful
     // `addPartListener` stands — every failure arm rolls the record back off — so a record here
     // always sits behind a live part listener, and editors opened after the recorded walk really
