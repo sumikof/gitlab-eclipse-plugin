@@ -249,10 +249,17 @@ class SecurityScanSaveListener(
   @Synchronized
   private fun onWindowClosed(window: IWorkbenchWindow) {
     pages.removeAll { page ->
-      val owner = runCatching { page.workbenchWindow }.getOrNull()
-      (owner === window || owner == null).also { closing ->
-        if (closing) runCatching { page.removePartListener(this) }
-      }
+      // A THROW from the lookup is not evidence of disposal — only a null owner is (nulled by
+      // hardClose, see above) — so `getOrDefault(false)` keeps the page rather than dropping it:
+      // dropping would silently detach a live page, while keeping costs nothing because
+      // [uninstall] walks [pages] regardless. In production `getWorkbenchWindow()` is a bare
+      // field read, so the failure arm is unreachable today; the distinction is kept so the
+      // collapse cannot be mistaken for a decision.
+      val closing = runCatching { page.workbenchWindow }
+        .map { owner -> owner === window || owner == null }
+        .getOrDefault(false)
+      if (closing) runCatching { page.removePartListener(this) }
+      closing
     }
   }
 
@@ -267,18 +274,25 @@ class SecurityScanSaveListener(
    * [uninstall] runs on the bundle-stop thread (`GitLabEclipseStartup.stop()` has no `syncExec` on
    * that path). Every mutation of [pages], [providers] and [installed] — including the UI-thread
    * callbacks [onWindowOpened], [onWindowClosed] and [onPartSeen] — therefore holds this
-   * listener's monitor. The UI thread blocking on a monitor the bundle-stop thread can hold is
-   * safe because nothing under the monitor waits for the UI thread or takes a non-leaf lock —
-   * verified from bytecode in the versions the manifest floor resolves:
-   * `Workbench.add/removeWindowListener` -> synchronized `EventManager.add/removeListenerObject`,
-   * which only touches a `ListenerList`; `WorkbenchPage.add/removePartListener` -> plain
-   * `ListenerList.add/remove`; `AbstractDocumentProvider.add/removeElementStateListener` -> plain
-   * `List` ops; `TextFileDocumentProvider.removeElementStateListener` -> `List.remove`, then at
-   * most `TextFileBufferManager.removeFileBufferListener` (a `monitorenter` on its own list around
-   * one `List.remove`). And no inversion is possible: `fireWindowOpened`/`fireWindowClosed` and
-   * `WorkbenchPage.firePartOpened` all iterate an unsynchronized listener snapshot
-   * (`EventManager.getListeners()` / `ListenerList.iterator()`), so no thread ever holds a
-   * platform monitor while calling into this class.
+   * listener's monitor. What was verified from bytecode (in the versions the manifest floor
+   * resolves) is bounded to the listener add/remove calls this class makes to attach and detach:
+   * those are lock-leaf. `Workbench.add/removeWindowListener` -> synchronized
+   * `EventManager.add/removeListenerObject`, which only touches a `ListenerList`;
+   * `WorkbenchPage.add/removePartListener` -> plain `ListenerList.add/remove`;
+   * `AbstractDocumentProvider.add/removeElementStateListener` -> plain `List` ops;
+   * `TextFileDocumentProvider.removeElementStateListener` -> `List.remove` (@9), conditionally
+   * `TextFileBufferManager.removeFileBufferListener` (@27-36, a `monitorenter` on its own list
+   * around one `List.remove`), then unconditionally
+   * `getParentProvider().removeElementStateListener(listener)` (@41-46) — leaf for the default
+   * lazily created `StorageDocumentProvider` parent (inherited `AbstractDocumentProvider` `List`
+   * ops), but `setParentDocumentProvider` is public, so that last hop is only as leaf as the
+   * wiring. What CANNOT be bounded is the path [attach] takes to reach the provider:
+   * `getPart(false)`, `getAdapter` and `getDocumentProvider` run editor and adapter-factory code
+   * — third-party (see [attach] and the note on [windowListener]) — under this monitor, on the
+   * UI thread; no bytecode claim covers it. No inversion comes from the platform's side:
+   * `fireWindowOpened`/`fireWindowClosed` and `WorkbenchPage.firePartOpened` all iterate an
+   * unsynchronized listener snapshot (`EventManager.getListeners()` / `ListenerList.iterator()`),
+   * so no thread ever holds a platform monitor while calling into this class.
    */
   @Synchronized
   fun install() {
@@ -293,21 +307,34 @@ class SecurityScanSaveListener(
       // adding when the same listener is already present (verified from bytecode, see the ordering
       // note on [windowListener]).
       workbench.addWindowListener(windowListener)
+      // The active window comes FIRST and stands outside the enumeration below, so attaching to
+      // the window the user is actually in never depends on how many other windows there are or
+      // on their walks surviving. It is normally also in `getWorkbenchWindows()`; `listenTo` is
+      // idempotent (`pages.add`), so the overlap costs nothing.
+      workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
       // Windows that are already open and NOT active are the window listener's blind spot:
       // `Workbench.createWorkbenchWindow` returns at @288 — past `fireWindowOpened` (@280) — when
       // the context already holds an `IWorkbenchWindow`, which is exactly the set
       // `getWorkbenchWindows()` enumerates (verified from bytecode, 3.133.0 and 3.137.0). Eclipse
       // restores several windows after a restart, so the two sources are complementary and both
-      // are needed. `listenTo` is idempotent (`pages.add`), so overlap costs nothing.
-      workbench.workbenchWindows.forEach { window -> window.activePage?.let { listenTo(it) } }
-      // Kept alongside the enumeration as a belt: the active window is normally in
-      // `getWorkbenchWindows()`, but attaching to it must not depend on that.
-      workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
-      // Set LAST, and only after both the window listener and today's pages (when there are any)
-      // are really attached. Setting it up front would make a first start that ran before the
-      // workbench existed permanently indistinguishable from a successful one: the catch below
-      // would log, the flag would say "done", and the save trigger would be dead for the rest of
-      // the session with nothing for the user to see.
+      // are needed. Each window's walk is contained on its own: it reaches `getAdapter` — i.e.
+      // third-party code — once per window, and one broken background window must neither abort
+      // the walk for the windows that are fine nor reach the catch below after pages were already
+      // attached (that combination left every attached page permanently inert: `installed` stayed
+      // false, the callbacks' `installed` guard dropped everything, and install() has exactly one
+      // call site, so there was no retry).
+      workbench.workbenchWindows.forEach { window ->
+        contained("install window walk") { window.activePage?.let { listenTo(it) } }
+      }
+      // Set LAST, and only after the window listener and the page walks above. `installed = true`
+      // deliberately means "the window listener is registered and the active window is attached"
+      // — NOT "every already-open window is attached": a contained per-window failure above still
+      // ends installed, because the feature staying alive for the windows that did attach beats
+      // the whole feature being dead, and `partActivated` retries the provider attach for any
+      // window whose part listener did make it on. Setting the flag up front instead would make a
+      // first start that ran before the workbench existed permanently indistinguishable from a
+      // successful one: the catch below would log, the flag would say "done", and the save
+      // trigger would be dead for the rest of the session with nothing for the user to see.
       installed = true
     } catch (e: Exception) {
       // Never let the bundle's start() throw. The rollback is deliberately partial: only the
@@ -328,6 +355,13 @@ class SecurityScanSaveListener(
    * one provider that has already gone must not keep the rest attached. The walks iterate
    * snapshots ([toList]) as defence in depth: nothing may abort this method between the first
    * removal and the last `clear()`, because whatever stays attached outlives the bundle.
+   *
+   * The detaches deliberately run UNDER the monitor. Moving them out would break one deadlock
+   * cycle — the bundle-stop thread holding this monitor while a third-party provider's removal
+   * blocks — but not the symmetric one ([attach]'s `getAdapter` running third-party code under
+   * the same monitor on the UI thread, see the threading note on [install]), so it was judged
+   * churn for a strictly smaller win than it appears. A change that wants this risk gone must
+   * move BOTH out from under the monitor, or neither.
    */
   @Synchronized
   fun uninstall() {

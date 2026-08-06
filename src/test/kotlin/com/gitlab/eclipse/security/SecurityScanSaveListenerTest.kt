@@ -2,6 +2,7 @@ package com.gitlab.eclipse.security
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
+import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.every
@@ -63,6 +64,7 @@ private class WorkbenchHarness {
   val lateWindow = mockk<IWorkbenchWindow>()
   private val installWindow = mockk<IWorkbenchWindow>()
   private val backgroundWindow = mockk<IWorkbenchWindow>()
+  private val throwingWindow = mockk<IWorkbenchWindow>()
 
   init {
     every { PlatformUI.getWorkbench() } returns workbench
@@ -79,6 +81,7 @@ private class WorkbenchHarness {
     every { backgroundWindow.activePage } returns backgroundPage
     every { backgroundPage.editorReferences } returns emptyArray()
     every { backgroundPage.workbenchWindow } returns backgroundWindow
+    every { throwingWindow.activePage } throws RuntimeException("adapter factory failed")
   }
 
   /**
@@ -89,6 +92,17 @@ private class WorkbenchHarness {
    */
   fun backgroundWindowAtInstall() {
     every { workbench.workbenchWindows } returns arrayOf(installWindow, backgroundWindow)
+  }
+
+  /**
+   * Puts a window whose page walk throws AHEAD of a healthy background window in the set already
+   * open at install time. `install`'s enumeration reaches `getAdapter` — third-party code — once
+   * per window, so any one window's walk can throw; throwing from `activePage` is the cheapest
+   * stand-in for a failure anywhere inside that window's walk. The ordering matters: only a bad
+   * window that comes FIRST can prove the walk survives it to reach the one behind it.
+   */
+  fun throwingWindowAheadOfBackgroundWindowAtInstall() {
+    every { workbench.workbenchWindows } returns arrayOf(throwingWindow, backgroundWindow)
   }
 
   /** The [IWindowListener] that install() registered; fails the test if none was. */
@@ -442,6 +456,40 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 1) { harness.backgroundPage.addPartListener(subject) }
     }
 
+    // The window enumeration runs third-party code (`getAdapter`) once per already-open window,
+    // so one broken background window is a reachable failure. The walk must survive it and still
+    // attach the windows behind it in the enumeration.
+    it("a background window whose walk throws does not stop install from attaching the next window") {
+      val harness = WorkbenchHarness()
+      harness.throwingWindowAheadOfBackgroundWindowAtInstall()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.backgroundPage.addPartListener(subject) }
+    }
+
+    // The active window is the one the user is looking at; attaching to it must not depend on the
+    // enumeration of the OTHER windows surviving.
+    it("a background window whose walk throws does not stop install from attaching the active window") {
+      val harness = WorkbenchHarness()
+      harness.throwingWindowAheadOfBackgroundWindowAtInstall()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.installPage.addPartListener(subject) }
+    }
+
+    // The attached-but-inert state: before containment, a throwing background window aborted
+    // install AFTER pages were attached, so `installed` stayed false and the `installed` guard in
+    // the callbacks made everything already attached permanently inert — with no retry, because
+    // install() has exactly one call site. `installed` must still be reached.
+    it("a background window whose walk throws does not leave the session inert for later windows") {
+      val harness = WorkbenchHarness()
+      harness.throwingWindowAheadOfBackgroundWindowAtInstall()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
     // `fireWindowOpened` iterates a listener snapshot taken before our removal can be seen, so a
     // delivery can still arrive after uninstall() finished on the bundle-stop thread. Re-attaching
     // then would leak the listener into providers for the rest of the session.
@@ -452,6 +500,22 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       subject.uninstall()
       harness.openLateWindow()
       verify(exactly = 0) { harness.latePage.addPartListener(any<IPartListener2>()) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design — the `contained` wrapper
+    // on the window callbacks shipped in 5ce697a with no coverage; this pins it. The workbench
+    // delivers these through SafeRunner, whose handler logs the FULL exception, and the walk
+    // reaches third-party adapter factories whose message can quote a file path — so nothing may
+    // propagate. (No windowClosed twin: after this wave every fallible call inside onWindowClosed
+    // is individually runCaught, so no injection can reach its `contained` even under mutation —
+    // a twin would be green with the wrapper deleted, i.e. non-discriminating.)
+    it("a windowOpened whose page walk throws does not propagate out of the callback") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val badWindow = mockk<IWorkbenchWindow>()
+      every { badWindow.activePage } throws RuntimeException("/home/user/secret/path.txt")
+      shouldNotThrowAny { harness.registeredWindowListener().windowOpened(badWindow) }
     }
 
     // Same snapshot race as above, on the part-listener side: a partOpened taken from a stale
@@ -467,7 +531,10 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     }
 
     // T2: the normal close path, where the model REMOVE (hardClose @266) fires the callback while
-    // the page is still reachable.
+    // the page is still reachable. Keep-behaviour guard: passes before and after this wave (and
+    // the previous one) by design — the pre-fix close path also detached this page, via
+    // `window.activePage`, which the harness stubs; the discriminating close-path test is the
+    // unreachable-page one below.
     it("windowClosed detaches the part listener of the window that closed") {
       val harness = WorkbenchHarness()
       val subject = SecurityScanSaveListener()
@@ -484,6 +551,23 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       harness.openLateWindow()
       harness.tearDownLatePageBeforeCallback()
       harness.closeLateWindow()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    // A throw from the page -> window lookup is NOT evidence of disposal. Collapsing it into the
+    // null (= disposed) verdict would silently detach a live page and kill the feature for it;
+    // keeping the page costs nothing, because uninstall walks `pages` regardless — which is what
+    // the second half asserts, and what closes the blind spot of an `exactly = 0` sitting behind
+    // `contained` (a callback that THREW would also satisfy it).
+    it("windowClosed keeps a page whose window lookup throws") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.workbenchWindow } throws RuntimeException("model access failed")
+      harness.registeredWindowListener().windowClosed(mockk<IWorkbenchWindow>())
+      verify(exactly = 0) { harness.latePage.removePartListener(any<IPartListener2>()) }
+      subject.uninstall()
       verify(exactly = 1) { harness.latePage.removePartListener(subject) }
     }
 
@@ -512,22 +596,26 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     }
 
     // T1: the catch rollback. Keep-behaviour guard: passes before and after this wave by design —
-    // the rollback shipped in 22915b7 with no coverage; this pins it.
+    // the rollback shipped in 22915b7 with no coverage; this pins it. The failure is injected at
+    // `getWorkbenchWindows` itself — a workbench-level failure — because this wave contained the
+    // per-window walk: a throw from inside one window's walk no longer aborts install, so the old
+    // `installPage.editorReferences` injection could not keep pinning the rollback.
     it("a failed install takes the window listener back off") {
       val harness = WorkbenchHarness()
-      every { harness.installPage.editorReferences } throws RuntimeException("workbench going down")
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
       SecurityScanSaveListener().install()
       verify(exactly = 1) { harness.workbench.removeWindowListener(any()) }
     }
 
     // T1: the flag placement. Keep-behaviour guard: passes before and after this wave by design —
-    // `installed` must stay false after a failed install so a later call really retries.
+    // `installed` must stay false after a failed install so a later call really retries. Same
+    // injection relocation as the rollback test above.
     it("a failed install leaves the trigger retryable") {
       val harness = WorkbenchHarness()
-      every { harness.installPage.editorReferences } throws RuntimeException("workbench going down")
+      every { harness.workbench.workbenchWindows } throws RuntimeException("workbench going down")
       val subject = SecurityScanSaveListener()
       subject.install()
-      every { harness.installPage.editorReferences } returns emptyArray()
+      every { harness.workbench.workbenchWindows } returns emptyArray()
       subject.install()
       verify(exactly = 2) { harness.workbench.addWindowListener(any()) }
     }
