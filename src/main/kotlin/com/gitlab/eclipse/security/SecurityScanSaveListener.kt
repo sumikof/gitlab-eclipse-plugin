@@ -202,17 +202,19 @@ class SecurityScanSaveListener(
    * which constructs the `WorkbenchPage` (@432-444) that `getActivePage()` returns as a plain
    * field. `createWorkbenchWindow` is the only caller of `fireWindowOpened`, so there is no path
    * that delivers this callback before the page exists.
+   *
+   * Both callbacks run through [contained]: the workbench delivers them via `SafeRunner`, whose
+   * handler would log the full exception — and [attach] runs `getAdapter`, which can execute
+   * third-party adapter factories whose message may quote a file path. Same secrecy rule as every
+   * other callback in this class.
    */
   private val windowListener = object : IWindowListener {
-    override fun windowOpened(window: IWorkbenchWindow) {
-      window.activePage?.let { listenTo(it) }
+    override fun windowOpened(window: IWorkbenchWindow) = contained("windowOpened") {
+      onWindowOpened(window)
     }
 
-    override fun windowClosed(window: IWorkbenchWindow) {
-      window.activePage?.let { page ->
-        page.removePartListener(this@SecurityScanSaveListener)
-        pages.remove(page)
-      }
+    override fun windowClosed(window: IWorkbenchWindow) = contained("windowClosed") {
+      onWindowClosed(window)
     }
 
     override fun windowActivated(window: IWorkbenchWindow?) = Unit
@@ -221,11 +223,62 @@ class SecurityScanSaveListener(
   }
 
   /**
+   * UI thread, under this listener's monitor (see the threading note on [install]). The
+   * `installed` guard closes the teardown race: `fireWindowOpened` iterates a listener snapshot
+   * taken by `EventManager.getListeners()` with no lock, so a delivery can arrive after
+   * [uninstall] finished on the bundle-stop thread — attaching then would re-create exactly the
+   * leak uninstall exists to prevent.
+   */
+  @Synchronized
+  private fun onWindowOpened(window: IWorkbenchWindow) {
+    if (!installed) return
+    window.activePage?.let { listenTo(it) }
+  }
+
+  /**
+   * Removes by membership in [pages], not through `window.activePage`: on the platform's own close
+   * path (`WorkbenchWindow.hardClose`, verified from bytecode in 3.133.0 and 3.137.0) the model
+   * removal at @266 fires this callback while the page is still reachable, but on a delayed
+   * delivery `WorkbenchPage.close(ZZ)` has already nulled `legacyWindow` (@613) and `hardClose`
+   * has nulled `page` (@350) — so BOTH `window.activePage` and `page.workbenchWindow` answer null
+   * by then. A page whose `workbenchWindow` is null is disposed and can belong to no live window,
+   * so it is dropped no matter which window's close delivered the callback; detaching from it is a
+   * no-op (`partListener2List` is never nulled, only cleared). Walking [pages] also stops this
+   * callback from ever touching a page it never attached to.
+   */
+  @Synchronized
+  private fun onWindowClosed(window: IWorkbenchWindow) {
+    pages.removeAll { page ->
+      val owner = runCatching { page.workbenchWindow }.getOrNull()
+      (owner === window || owner == null).also { closing ->
+        if (closing) runCatching { page.removePartListener(this) }
+      }
+    }
+  }
+
+  /**
    * Starts listening for saves. **Must be paired with [uninstall]** — the listener is held by every
    * document provider it attaches to, and those outlive this plugin's bundle.
    *
    * Idempotent, and never throws: a workbench that is not up yet simply leaves the window listener
    * to do the attaching later.
+   *
+   * **Threading.** [install] runs on the UI thread (`GitLabEclipseStartup`, `display.syncExec`);
+   * [uninstall] runs on the bundle-stop thread (`GitLabEclipseStartup.stop()` has no `syncExec` on
+   * that path). Every mutation of [pages], [providers] and [installed] — including the UI-thread
+   * callbacks [onWindowOpened], [onWindowClosed] and [onPartSeen] — therefore holds this
+   * listener's monitor. The UI thread blocking on a monitor the bundle-stop thread can hold is
+   * safe because nothing under the monitor waits for the UI thread or takes a non-leaf lock —
+   * verified from bytecode in the versions the manifest floor resolves:
+   * `Workbench.add/removeWindowListener` -> synchronized `EventManager.add/removeListenerObject`,
+   * which only touches a `ListenerList`; `WorkbenchPage.add/removePartListener` -> plain
+   * `ListenerList.add/remove`; `AbstractDocumentProvider.add/removeElementStateListener` -> plain
+   * `List` ops; `TextFileDocumentProvider.removeElementStateListener` -> `List.remove`, then at
+   * most `TextFileBufferManager.removeFileBufferListener` (a `monitorenter` on its own list around
+   * one `List.remove`). And no inversion is possible: `fireWindowOpened`/`fireWindowClosed` and
+   * `WorkbenchPage.firePartOpened` all iterate an unsynchronized listener snapshot
+   * (`EventManager.getListeners()` / `ListenerList.iterator()`), so no thread ever holds a
+   * platform monitor while calling into this class.
    */
   @Synchronized
   fun install() {
@@ -240,18 +293,29 @@ class SecurityScanSaveListener(
       // adding when the same listener is already present (verified from bytecode, see the ordering
       // note on [windowListener]).
       workbench.addWindowListener(windowListener)
+      // Windows that are already open and NOT active are the window listener's blind spot:
+      // `Workbench.createWorkbenchWindow` returns at @288 — past `fireWindowOpened` (@280) — when
+      // the context already holds an `IWorkbenchWindow`, which is exactly the set
+      // `getWorkbenchWindows()` enumerates (verified from bytecode, 3.133.0 and 3.137.0). Eclipse
+      // restores several windows after a restart, so the two sources are complementary and both
+      // are needed. `listenTo` is idempotent (`pages.add`), so overlap costs nothing.
+      workbench.workbenchWindows.forEach { window -> window.activePage?.let { listenTo(it) } }
+      // Kept alongside the enumeration as a belt: the active window is normally in
+      // `getWorkbenchWindows()`, but attaching to it must not depend on that.
       workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
-      // Set LAST, and only after both the window listener and today's page (when there is one) are
-      // really attached. Setting it up front would make a first start that ran before the
+      // Set LAST, and only after both the window listener and today's pages (when there are any)
+      // are really attached. Setting it up front would make a first start that ran before the
       // workbench existed permanently indistinguishable from a successful one: the catch below
       // would log, the flag would say "done", and the save trigger would be dead for the rest of
       // the session with nothing for the user to see.
       installed = true
     } catch (e: Exception) {
-      // Never let the bundle's start() throw. A failed install leaves the workbench as it found
-      // it: if the window listener made it on before the failure it is taken back off here, so
-      // nothing is attached and nothing leaks, and a later call can retry — which is exactly what
-      // the flag placement above preserves.
+      // Never let the bundle's start() throw. The rollback is deliberately partial: only the
+      // window listener is taken back off here. Anything the page walk managed to attach before
+      // the failure is already recorded in [pages]/[providers], and [uninstall] walks both
+      // unconditionally — independent of [installed] — so nothing leaks past teardown. The flag
+      // stays false, and a retry re-attaches idempotently: `pages.add`/`providers.add` answer
+      // false for what is already there, and `ListenerList.add` dedupes by identity.
       runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
       log.warn("Security scan save trigger not installed: workbench unavailable.", e)
     }
@@ -261,27 +325,47 @@ class SecurityScanSaveListener(
    * Stops listening and releases every reference taken by [install].
    *
    * Each removal is contained: the workbench is usually half torn down by the time this runs, and
-   * one provider that has already gone must not keep the rest attached.
+   * one provider that has already gone must not keep the rest attached. The walks iterate
+   * snapshots ([toList]) as defence in depth: nothing may abort this method between the first
+   * removal and the last `clear()`, because whatever stays attached outlives the bundle.
    */
   @Synchronized
   fun uninstall() {
     installed = false
     runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
-    pages.forEach { page -> runCatching { page.removePartListener(this) } }
+    pages.toList().forEach { page -> runCatching { page.removePartListener(this) } }
     pages.clear()
-    providers.forEach { provider -> runCatching { provider.removeElementStateListener(this) } }
+    providers.toList().forEach { provider -> runCatching { provider.removeElementStateListener(this) } }
     providers.clear()
   }
 
+  /** Only ever called under this listener's monitor: from [install], [onWindowOpened], [onPartSeen]. */
   private fun listenTo(page: IWorkbenchPage) {
     if (pages.add(page)) page.addPartListener(this)
     // Editors that were already open when this installed get no partOpened of their own.
     page.editorReferences.forEach { attach(it) }
   }
 
-  override fun partOpened(partRef: IWorkbenchPartReference) = attach(partRef)
+  override fun partOpened(partRef: IWorkbenchPartReference) = contained("partOpened") {
+    onPartSeen(partRef)
+  }
 
-  override fun partActivated(partRef: IWorkbenchPartReference) = attach(partRef)
+  override fun partActivated(partRef: IWorkbenchPartReference) = contained("partActivated") {
+    onPartSeen(partRef)
+  }
+
+  /**
+   * UI thread, under the monitor — same race and same reasoning as [onWindowOpened]:
+   * `WorkbenchPage.firePartOpened` iterates a `ListenerList` snapshot, so a delivery can arrive
+   * after [uninstall] already walked [providers], and attaching then would leak for the session.
+   * The guard cannot sit in [attach] itself: [install] attaches through it while [installed] is
+   * still false, deliberately, so a failed install stays recorded as failed.
+   */
+  @Synchronized
+  private fun onPartSeen(partRef: IWorkbenchPartReference) {
+    if (!installed) return
+    attach(partRef)
+  }
 
   /**
    * Attaches to the document provider behind [partRef].

@@ -11,6 +11,7 @@ import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.eclipse.ui.IEditorReference
+import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWindowListener
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPage
@@ -58,18 +59,36 @@ private class WorkbenchHarness {
   val workbench = mockk<IWorkbench>(relaxed = true)
   val installPage = mockk<IWorkbenchPage>(relaxed = true)
   val latePage = mockk<IWorkbenchPage>(relaxed = true)
-  private val lateWindow = mockk<IWorkbenchWindow>()
+  val backgroundPage = mockk<IWorkbenchPage>(relaxed = true)
+  val lateWindow = mockk<IWorkbenchWindow>()
+  private val installWindow = mockk<IWorkbenchWindow>()
+  private val backgroundWindow = mockk<IWorkbenchWindow>()
 
   init {
     every { PlatformUI.getWorkbench() } returns workbench
-    val installWindow = mockk<IWorkbenchWindow>()
     every { workbench.activeWorkbenchWindow } returns installWindow
+    every { workbench.workbenchWindows } returns arrayOf(installWindow)
     every { installWindow.activePage } returns installPage
     every { installPage.editorReferences } returns emptyArray()
+    every { installPage.workbenchWindow } returns installWindow
     // `activePage` is non-null by the time `windowOpened` is delivered: verified from bytecode,
     // see the ordering note on SecurityScanSaveListener.windowListener.
     every { lateWindow.activePage } returns latePage
     every { latePage.editorReferences } returns emptyArray()
+    every { latePage.workbenchWindow } returns lateWindow
+    every { backgroundWindow.activePage } returns backgroundPage
+    every { backgroundPage.editorReferences } returns emptyArray()
+    every { backgroundPage.workbenchWindow } returns backgroundWindow
+  }
+
+  /**
+   * Puts a second, NON-active window into the set of windows already open at install time. The
+   * window listener structurally cannot reach it: `Workbench.createWorkbenchWindow` returns at @288
+   * without `fireWindowOpened` (@280) when the context already holds an `IWorkbenchWindow` — which
+   * is exactly the set `getWorkbenchWindows()` enumerates. The restored-workspace case.
+   */
+  fun backgroundWindowAtInstall() {
+    every { workbench.workbenchWindows } returns arrayOf(installWindow, backgroundWindow)
   }
 
   /** The [IWindowListener] that install() registered; fails the test if none was. */
@@ -82,6 +101,19 @@ private class WorkbenchHarness {
   /** Simulates the platform opening a new workbench window after install. */
   fun openLateWindow() = registeredWindowListener().windowOpened(lateWindow)
 
+  /** Simulates the platform closing the late window. */
+  fun closeLateWindow() = registeredWindowListener().windowClosed(lateWindow)
+
+  /**
+   * Leaves the late window and its page the way a delayed `windowClosed` really finds them:
+   * `WorkbenchPage.close(ZZ)` nulled `legacyWindow` (@613) before `hardClose` nulled `page` (@350),
+   * so by callback time BOTH references are gone (verified from bytecode, 3.133.0 and 3.137.0).
+   */
+  fun tearDownLatePageBeforeCallback() {
+    every { lateWindow.activePage } returns null
+    every { latePage.workbenchWindow } returns null
+  }
+
   /** Puts one text editor, backed by the returned provider, into the late window's page. */
   fun editorInLateWindow(): IDocumentProvider {
     val provider = mockk<IDocumentProvider>(relaxed = true)
@@ -92,6 +124,17 @@ private class WorkbenchHarness {
     every { reference.getPart(false) } returns editor
     every { latePage.editorReferences } returns arrayOf(reference)
     return provider
+  }
+
+  /** A free-standing editor reference for delivering part events directly. */
+  fun editorReference(): Pair<IEditorReference, IDocumentProvider> {
+    val provider = mockk<IDocumentProvider>(relaxed = true)
+    val editor = mockk<ITextEditor>()
+    every { editor.getAdapter(ITextEditor::class.java) } returns editor
+    every { editor.documentProvider } returns provider
+    val reference = mockk<IEditorReference>()
+    every { reference.getPart(false) } returns editor
+    return reference to provider
   }
 }
 
@@ -333,7 +376,9 @@ class SecurityScanSaveListenerTest : DescribeSpec({
     }
 
     // Passes before and after the fix on purpose: it pins that the fix KEPT today's behaviour for
-    // the window that already exists, it does not pin the fix itself.
+    // the window that already exists, it does not pin the fix itself. Since the harness now puts
+    // the active window into `workbenchWindows` too, `exactly = 1` additionally pins that the
+    // enumeration and the active-window path compose without double-registering the part listener.
     it("still attaches to the page that is already open at install time") {
       val harness = WorkbenchHarness()
       val subject = SecurityScanSaveListener()
@@ -382,6 +427,120 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       val subject = SecurityScanSaveListener()
       subject.install()
       harness.openLateWindow()
+      subject.uninstall()
+      verify(exactly = 1) { provider.removeElementStateListener(subject) }
+    }
+
+    // Eclipse restores several workbench windows after a restart; only one of them is active. The
+    // window listener structurally cannot reach the others (see backgroundWindowAtInstall), so
+    // install() itself has to enumerate them or their editors save without a scan.
+    it("attaches to the page of a window that is already open but not active at install time") {
+      val harness = WorkbenchHarness()
+      harness.backgroundWindowAtInstall()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.backgroundPage.addPartListener(subject) }
+    }
+
+    // `fireWindowOpened` iterates a listener snapshot taken before our removal can be seen, so a
+    // delivery can still arrive after uninstall() finished on the bundle-stop thread. Re-attaching
+    // then would leak the listener into providers for the rest of the session.
+    it("a windowOpened delivered after uninstall does not re-attach") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.uninstall()
+      harness.openLateWindow()
+      verify(exactly = 0) { harness.latePage.addPartListener(any<IPartListener2>()) }
+    }
+
+    // Same snapshot race as above, on the part-listener side: a partOpened taken from a stale
+    // ListenerList snapshot can be delivered after uninstall() already walked `providers`.
+    it("a partOpened delivered after uninstall does not attach the provider") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.uninstall()
+      val (reference, provider) = harness.editorReference()
+      subject.partOpened(reference)
+      verify(exactly = 0) { provider.addElementStateListener(any()) }
+    }
+
+    // T2: the normal close path, where the model REMOVE (hardClose @266) fires the callback while
+    // the page is still reachable.
+    it("windowClosed detaches the part listener of the window that closed") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.closeLateWindow()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    it("windowClosed detaches the part listener of a page the closing window can no longer reach") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.tearDownLatePageBeforeCallback()
+      harness.closeLateWindow()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    it("windowClosed does not touch a page it never attached to") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val foreignWindow = mockk<IWorkbenchWindow>()
+      val foreignPage = mockk<IWorkbenchPage>(relaxed = true)
+      every { foreignWindow.activePage } returns foreignPage
+      every { foreignPage.workbenchWindow } returns foreignWindow
+      harness.registeredWindowListener().windowClosed(foreignWindow)
+      verify(exactly = 0) { foreignPage.removePartListener(any<IPartListener2>()) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design. It pins the bookkeeping
+    // that windowClosed takes the page out of `pages`, so uninstall cannot detach it a second time.
+    it("windowClosed removes the page so uninstall does not detach it a second time") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      harness.closeLateWindow()
+      subject.uninstall()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    // T1: the catch rollback. Keep-behaviour guard: passes before and after this wave by design —
+    // the rollback shipped in 22915b7 with no coverage; this pins it.
+    it("a failed install takes the window listener back off") {
+      val harness = WorkbenchHarness()
+      every { harness.installPage.editorReferences } throws RuntimeException("workbench going down")
+      SecurityScanSaveListener().install()
+      verify(exactly = 1) { harness.workbench.removeWindowListener(any()) }
+    }
+
+    // T1: the flag placement. Keep-behaviour guard: passes before and after this wave by design —
+    // `installed` must stay false after a failed install so a later call really retries.
+    it("a failed install leaves the trigger retryable") {
+      val harness = WorkbenchHarness()
+      every { harness.installPage.editorReferences } throws RuntimeException("workbench going down")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      every { harness.installPage.editorReferences } returns emptyArray()
+      subject.install()
+      verify(exactly = 2) { harness.workbench.addWindowListener(any()) }
+    }
+
+    // Keep-behaviour guard: passes before and after this wave by design. One page that is already
+    // gone must not keep the providers attached — the KDoc calls that leak non-optional.
+    it("uninstall detaches the provider even when a page detach throws") {
+      val harness = WorkbenchHarness()
+      val provider = harness.editorInLateWindow()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page is gone")
       subject.uninstall()
       verify(exactly = 1) { provider.removeElementStateListener(subject) }
     }
