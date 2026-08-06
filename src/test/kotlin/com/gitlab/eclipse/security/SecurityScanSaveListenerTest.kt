@@ -762,6 +762,30 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 1) { harness.latePage.addPartListener(subject) }
     }
 
+    // This wave: the walk record was written even when the page registration had failed —
+    // `walkedPages` gained the page while `registerContained` rolled `pages` back, i.e. a page
+    // marked "fully walked" with no part listener on it. The kill sequence: (1) `addPartListener`
+    // throws at windowOpened while the walk itself completes, leaving the stale record; (2) an
+    // editor opens — no part listener, so no partOpened fires for it; (3) the next activation
+    // heals the registration but its own re-walk aborts, satisfying the OTHER half of the gate;
+    // (4) every later activation finds both halves satisfied by DIFFERENT attempts and returns —
+    // the editor from (2) is attached by nothing, and saving it silently does not scan. The
+    // record must only be written while the page is in `pages`.
+    it("a walk completed while the page registration was failing does not make the gate skip the page") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      val (reference, provider) = harness.editorReference()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } just Runs
+      every { harness.latePage.editorReferences } throws RuntimeException("editor enumeration failed")
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      every { harness.latePage.editorReferences } returns arrayOf(reference)
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
     // The install-time instance of the aborted walk: the active window's page attaches its part
     // listener, then `editorReferences` throws inside the contained active-window walk. Same
     // trap as the windowOpened instance — page in `pages`, gate skips, active editor unobserved —
@@ -1270,9 +1294,15 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 1) { goodProvider.addElementStateListener(subject) }
     }
 
-    // `listenTo` runs `attach` once per editor reference on the page, and the registration call
-    // runs third-party provider code — one broken provider must not abort the walk for the
-    // editors behind it.
+    // Keep-behaviour guard: green on both sides of this wave's layering by design. Its injection
+    // — a provider registration throwing mid-walk — used to be absorbed by `registerContained`'s
+    // catch alone; since the per-editor containment (`contained("editor attach")`) wraps `attach`,
+    // that outer layer would absorb it even if the catch rethrew after its rollback, so this no
+    // longer discriminates the catch (whose swallow-and-rollback the registration-bookkeeping
+    // tests above pin — deleting the catch fails them). What it still pins is the end-to-end walk
+    // property AT THIS INJECTION POINT: one broken provider registration must not hide the rest
+    // of the page, whichever layer absorbs the throw — the adapter-lookup twin above cannot say
+    // that, because its throw never reaches `registerContained` at all.
     it("one provider whose registration throws does not stop the walk from attaching the rest of the page") {
       val harness = WorkbenchHarness()
       val (badReference, badProvider) = harness.editorReference()

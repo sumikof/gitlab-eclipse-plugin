@@ -222,8 +222,11 @@ class SecurityScanSaveListener(
   /**
    * Pages whose editor walk ran to the end, recorded separately from [pages] because the two say
    * different things: [pages] records a successful `addPartListener`, and that succeeding does
-   * NOT mean the walk behind it finished — `page.editorReferences` can throw after it. A page in
-   * [pages] but not here has its part listener on and still unattached editors, and the editor
+   * NOT mean the walk behind it finished — `page.editorReferences` can throw after it. Only ever
+   * recorded while the page is in [pages] ([listenTo]), so a record here always sits behind a
+   * live part listener; a walk that completed while the registration was failing is deliberately
+   * not remembered, because nothing would attach the editors opened after it. A page in [pages]
+   * but not here has its part listener on and a walk that did not reach its end, and the editor
    * that was ALREADY active when the walk aborted is the one `partActivated` can never retry: it
    * fired before the listener was on, and merely refocusing the window does not re-fire it —
    * shell activation runs `WorkbenchWindow$6.shellActivated` -> `fireWindowActivated` only
@@ -235,6 +238,21 @@ class SecurityScanSaveListener(
    * (@0-5) since window-scoped ACTIVE_PART (`ActivePartLookupFunction.compute` reads the asking
    * window's own `getActiveLeaf()`) does not change on a refocus. So [onWindowActivated] is that
    * editor's only retry vehicle, and its gate consults this record alongside [pages].
+   *
+   * Residual, documented rather than closed: a page in [pages] AND here can still hold one
+   * unattached editor. [listenTo] contains each editor's attachment on its own, so an editor
+   * whose `getPart`/`getAdapter`/`documentProvider` threw is skipped while the walk still
+   * reaches its end and the record is written — and the gate then skips the page. When the
+   * editor that threw is the one already active, `partActivated` can never reach it either (the
+   * bytecode argument above), so a TRANSIENT failure on the active editor is permanent for the
+   * session. Closing this — folding per-editor success over the walk and gating the record on
+   * all-attached — would buy a page with one permanently-broken editor a full re-walk
+   * (`getPart(false)` and `getAdapter`, third-party code, once per open editor) plus one
+   * "editor attach" log line per broken editor on EVERY window activation, a worse trade than
+   * the gap. It is also not a regression: before the per-editor containment the same throw
+   * aborted the whole walk and the gate skipped the page just as permanently — the containment
+   * narrowed the blast radius from every editor behind the broken one, including the active
+   * one, to the broken editor only.
    *
    * Cleaned up wherever [pages] is: [onWindowClosed]'s membership walk and [uninstall].
    */
@@ -570,10 +588,21 @@ class SecurityScanSaveListener(
     page.editorReferences.forEach { reference -> contained("editor attach") { attach(reference) } }
     // Recorded strictly AFTER the walk's end, so the only failure the containment above lets
     // abort the walk — `page.editorReferences` itself throwing — leaves no completion record and
-    // [onWindowActivated] retries the page. Never rolled back by a later aborted re-walk: within
-    // one tracked life of the page a completed walk stays completed, and editors opened since
-    // are the part listener's job, not a re-walk's.
-    walkedPages.add(page)
+    // [onWindowActivated] retries the page. And recorded ONLY while the page is in [pages]:
+    // immediately after [registerContained], that membership holds exactly when a successful
+    // `addPartListener` stands — every failure arm rolls the record back off — so a record here
+    // always sits behind a live part listener, and editors opened after the recorded walk really
+    // do get a `partOpened` that attaches them. Written unconditionally, the record outlived the
+    // failed registration it was written next to: the walk completed while `addPartListener`
+    // threw, an editor then opened with no part listener to see it, and a later activation's
+    // successful registration satisfied the OTHER half of [onWindowActivated]'s gate while its
+    // own re-walk aborted — both halves satisfied by DIFFERENT attempts, the gate skipped the
+    // page, and the in-between editor was attached by nothing for the rest of the session. A
+    // record, once written, is still never rolled back by a later aborted re-walk: [pages]
+    // membership — and with it the live listener — persists from the moment of recording until
+    // close or uninstall drops both sets together, so a completed walk stays completed for
+    // exactly as long as its claim stays true.
+    if (page in pages) walkedPages.add(page)
   }
 
   /**
