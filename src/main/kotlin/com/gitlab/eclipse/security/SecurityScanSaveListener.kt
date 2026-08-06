@@ -227,8 +227,8 @@ class SecurityScanSaveListener(
    * live part listener; a walk that completed while the registration was failing is deliberately
    * not remembered, because nothing would attach the editors opened after it. A page in [pages]
    * but not here has its part listener on and a walk that did not reach its end, and the editor
-   * that was ALREADY active when the walk aborted is the one `partActivated` can never retry: it
-   * fired before the listener was on, and merely refocusing the window does not re-fire it —
+   * that was ALREADY active when the walk aborted is the one a mere refocus never hands back to
+   * `partActivated`: it fired before the listener was on, and refocusing does not re-fire it —
    * shell activation runs `WorkbenchWindow$6.shellActivated` -> `fireWindowActivated` only
    * (verified from bytecode, 3.133.0 and 3.137.0 byte-identical), and on the e4 side
    * `ShellActivationListener.processWindow` -> `windowContext.activateBranch()` only (workbench.swt
@@ -236,23 +236,38 @@ class SecurityScanSaveListener(
    * `activate(MPart,ZZ)` @438 (e4.ui.workbench 1.15.500/1.18.100), which nothing on that path
    * calls, and the context-injected `setPart` stops at its `activePart == part` identity guard
    * (@0-5) since window-scoped ACTIVE_PART (`ActivePartLookupFunction.compute` reads the asking
-   * window's own `getActiveLeaf()`) does not change on a refocus. So [onWindowActivated] is that
-   * editor's only retry vehicle, and its gate consults this record alongside [pages].
+   * window's own `getActiveLeaf()`) does not change on a refocus. An actual change of active
+   * part in that window DOES re-fire it: when the user activates another part and comes back,
+   * `setPart` passes its identity guard and calls `activate(MPart,ZZ)` (@56/@66, both versions
+   * above), whose only same-part early return (@203-208 -> @249) cannot be taken for a part that
+   * is not currently the active one, so @438 fires — and [onPartSeen] -> [attach] then rerun the
+   * whole lookup: nothing in that chain remembers the part, and [registerContained]'s dedup is
+   * keyed on the resolved provider, which a lookup that threw never recorded. So
+   * [onWindowActivated] is the one retry a mere refocus can trigger for that editor — the retry
+   * that needs no part switch — and its gate consults this record alongside [pages].
    *
    * Residual, documented rather than closed: a page in [pages] AND here can still hold one
    * unattached editor. [listenTo] contains each editor's attachment on its own, so an editor
    * whose `getPart`/`getAdapter`/`documentProvider` threw is skipped while the walk still
    * reaches its end and the record is written — and the gate then skips the page. When the
-   * editor that threw is the one already active, `partActivated` can never reach it either (the
-   * bytecode argument above), so a TRANSIENT failure on the active editor is permanent for the
-   * session. Closing this — folding per-editor success over the walk and gating the record on
-   * all-attached — would buy a page with one permanently-broken editor a full re-walk
-   * (`getPart(false)` and `getAdapter`, third-party code, once per open editor) plus one
-   * "editor attach" log line per broken editor on EVERY window activation, a worse trade than
-   * the gap. It is also not a regression: before the per-editor containment the same throw
-   * aborted the whole walk and the gate skipped the page just as permanently — the containment
-   * narrowed the blast radius from every editor behind the broken one, including the active
-   * one, to the broken editor only.
+   * editor that threw is the one already active, no refocus re-delivers `partActivated` to it
+   * (the bytecode argument above) and this record keeps [onWindowActivated] off the page, so a
+   * TRANSIENT failure on the active editor survives every window refocus — indefinitely, for a
+   * user who stays in that editor — and heals on the first actual change of active part, when
+   * the switch back re-fires `partActivated` and [attach] reruns the failed lookup (the
+   * `setPart` -> `activate` path above). Closing even the refocus half — folding per-editor
+   * success over the walk and gating the record on all-attached — would buy a page with one
+   * persistently-broken editor a full re-walk (`getPart(false)` and `getAdapter`, third-party
+   * code, once per open editor) plus one "editor attach" log line per broken editor on EVERY
+   * window activation: a worse trade than the gap, the more so since the gap is one editor
+   * until its next part switch, not a session-long loss. It is also not a regression: before
+   * the per-editor containment the same throw aborted the whole walk and the activation gate —
+   * then `page in pages` alone — skipped the page the same way, while every editor the abort
+   * left unattached already had this same recovery: a background editor on its own first
+   * activation, the active one only after the same switch-away-and-return. What the containment
+   * narrowed is how much a throw leaves unattached until those activations happen — every
+   * editor behind the broken one, including the active one, before; the broken editor alone,
+   * now.
    *
    * Cleaned up wherever [pages] is: [onWindowClosed]'s membership walk and [uninstall].
    */
@@ -320,9 +335,10 @@ class SecurityScanSaveListener(
    * `activePage` throwing, a page whose `addPartListener` threw (no part listener means
    * `partActivated` can never fire for it), and a page whose part listener made it on but whose
    * editor walk did not run to the end — `page.editorReferences` throwing, the one walk failure
-   * [listenTo]'s per-editor containment cannot absorb. Focusing the window retries all five; the
-   * last is the one whose ALREADY-ACTIVE editor no other callback can ever reach again (see
-   * [walkedPages] for the bytecode-verified reason a refocus fires no `partActivated`).
+   * [listenTo]'s per-editor containment cannot absorb. Focusing the window retries all five; for
+   * the last, the ALREADY-ACTIVE editor is one `partActivated` reaches again only after an
+   * actual change of active part, never on a mere refocus (see [walkedPages] for the bytecode on
+   * both halves), so this retry is the one that reaches it without the user switching parts.
    *
    * The `page in pages && page in walkedPages` check is the cost gate, and it is what keeps the
    * steady state O(1): membership in [pages] is only ever recorded on a successful
@@ -584,7 +600,8 @@ class SecurityScanSaveListener(
     // attachment is contained ON ITS OWN: [attach] runs `getPart(false)`, `getAdapter` and
     // `getDocumentProvider` — third-party code — before its registerContained, and uncontained,
     // one editor throwing there hid every editor behind it, including the active one (Codex
-    // round 6; see [walkedPages] for why nothing else could ever reach that editor again).
+    // round 6; see [walkedPages] for why no refocus — only an actual part switch — brings
+    // `partActivated` back to the active one).
     page.editorReferences.forEach { reference -> contained("editor attach") { attach(reference) } }
     // Recorded strictly AFTER the walk's end, so the only failure the containment above lets
     // abort the walk — `page.editorReferences` itself throwing — leaves no completion record and
@@ -597,7 +614,9 @@ class SecurityScanSaveListener(
     // threw, an editor then opened with no part listener to see it, and a later activation's
     // successful registration satisfied the OTHER half of [onWindowActivated]'s gate while its
     // own re-walk aborted — both halves satisfied by DIFFERENT attempts, the gate skipped the
-    // page, and the in-between editor was attached by nothing for the rest of the session. A
+    // page, and the in-between editor was left to its own next `partActivated`: no walk would
+    // reach it again, and if it was the active editor that meant a part switch away and back,
+    // never a mere refocus (see [walkedPages]). A
     // record, once written, is still never rolled back by a later aborted re-walk: [pages]
     // membership — and with it the live listener — persists from the moment of recording until
     // close or uninstall drops both sets together, so a completed walk stays completed for
