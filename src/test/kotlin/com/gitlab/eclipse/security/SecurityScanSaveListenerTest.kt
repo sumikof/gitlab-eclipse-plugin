@@ -4,6 +4,20 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.slot
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import org.eclipse.ui.IEditorReference
+import org.eclipse.ui.IWindowListener
+import org.eclipse.ui.IWorkbench
+import org.eclipse.ui.IWorkbenchPage
+import org.eclipse.ui.IWorkbenchWindow
+import org.eclipse.ui.PlatformUI
+import org.eclipse.ui.texteditor.IDocumentProvider
+import org.eclipse.ui.texteditor.ITextEditor
 
 /** Recorded `launch` calls, so a test can assert both "how many" and "with what". */
 private typealias Launches = MutableList<Pair<String?, SecurityScanSource>>
@@ -32,6 +46,54 @@ private fun listener(
     SecurityScanLaunchOutcome.SENT
   },
 )
+
+/**
+ * Workbench mocks for the install/uninstall surface: an active window whose page already exists at
+ * install time (the normal start path), plus a second window that "opens" later by firing the
+ * [IWindowListener] that install registered — the multi-monitor `Window > New Window` case.
+ *
+ * Requires `mockkStatic(PlatformUI::class)` to be active before construction.
+ */
+private class WorkbenchHarness {
+  val workbench = mockk<IWorkbench>(relaxed = true)
+  val installPage = mockk<IWorkbenchPage>(relaxed = true)
+  val latePage = mockk<IWorkbenchPage>(relaxed = true)
+  private val lateWindow = mockk<IWorkbenchWindow>()
+
+  init {
+    every { PlatformUI.getWorkbench() } returns workbench
+    val installWindow = mockk<IWorkbenchWindow>()
+    every { workbench.activeWorkbenchWindow } returns installWindow
+    every { installWindow.activePage } returns installPage
+    every { installPage.editorReferences } returns emptyArray()
+    // `activePage` is non-null by the time `windowOpened` is delivered: verified from bytecode,
+    // see the ordering note on SecurityScanSaveListener.windowListener.
+    every { lateWindow.activePage } returns latePage
+    every { latePage.editorReferences } returns emptyArray()
+  }
+
+  /** The [IWindowListener] that install() registered; fails the test if none was. */
+  fun registeredWindowListener(): IWindowListener {
+    val captured = slot<IWindowListener>()
+    verify { workbench.addWindowListener(capture(captured)) }
+    return captured.captured
+  }
+
+  /** Simulates the platform opening a new workbench window after install. */
+  fun openLateWindow() = registeredWindowListener().windowOpened(lateWindow)
+
+  /** Puts one text editor, backed by the returned provider, into the late window's page. */
+  fun editorInLateWindow(): IDocumentProvider {
+    val provider = mockk<IDocumentProvider>(relaxed = true)
+    val editor = mockk<ITextEditor>()
+    every { editor.getAdapter(ITextEditor::class.java) } returns editor
+    every { editor.documentProvider } returns provider
+    val reference = mockk<IEditorReference>()
+    every { reference.getPart(false) } returns editor
+    every { latePage.editorReferences } returns arrayOf(reference)
+    return provider
+  }
+}
 
 class SecurityScanSaveListenerTest : DescribeSpec({
   extensions(LoggingKotestExtension)
@@ -252,6 +314,76 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       // has to go here rather than wait out the window.
       subject.elementMoved("a", "b")
       guard.entryCountForTest() shouldBe 0
+    }
+  }
+
+  describe("SecurityScanSaveListener window lifecycle") {
+    beforeEach { mockkStatic(PlatformUI::class) }
+    afterEach { unmockkStatic(PlatformUI::class) }
+
+    // Why every one of these opens a window AFTER install: on the normal start path a page already
+    // exists, and an install that only attaches to that page leaves `Window > New Window` (common
+    // on multi-monitor setups) unobserved — the first editor of a type opened there would save
+    // without a scan. The window listener has to be registered even when install found a page.
+
+    it("registers the window listener even when a page already exists at install time") {
+      val harness = WorkbenchHarness()
+      SecurityScanSaveListener().install()
+      verify(exactly = 1) { harness.workbench.addWindowListener(any()) }
+    }
+
+    // Passes before and after the fix on purpose: it pins that the fix KEPT today's behaviour for
+    // the window that already exists, it does not pin the fix itself.
+    it("still attaches to the page that is already open at install time") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      verify(exactly = 1) { harness.installPage.addPartListener(subject) }
+    }
+
+    it("adds a part listener to the page of a window opened after install") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    it("attaches to the provider of an editor already open in a window opened after install") {
+      val harness = WorkbenchHarness()
+      val provider = harness.editorInLateWindow()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    it("uninstall removes the window listener that install registered") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val windowListener = harness.registeredWindowListener()
+      subject.uninstall()
+      verify(exactly = 1) { harness.workbench.removeWindowListener(windowListener) }
+    }
+
+    it("uninstall removes the part listener added for a window opened after install") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      subject.uninstall()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
+    it("uninstall detaches the provider attached for a window opened after install") {
+      val harness = WorkbenchHarness()
+      val provider = harness.editorInLateWindow()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      subject.uninstall()
+      verify(exactly = 1) { provider.removeElementStateListener(subject) }
     }
   }
 })

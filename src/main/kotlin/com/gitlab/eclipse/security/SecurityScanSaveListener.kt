@@ -191,6 +191,18 @@ class SecurityScanSaveListener(
 
   private var installed = false
 
+  /**
+   * Attaches to windows the user opens after [install] ran.
+   *
+   * `windowOpened` reads `activePage` directly because the page is already there when the callback
+   * arrives. Verified from bytecode, not from memory: `org.eclipse.ui.workbench` (3.133.0, the
+   * manifest floor, and 3.137.0 identically) `Workbench.createWorkbenchWindow` runs
+   * `ContextInjectionFactory.inject` on the new `WorkbenchWindow` (@180) before
+   * `fireWindowOpened` (@280); that inject invokes the `@PostConstruct` `WorkbenchWindow.setup()`,
+   * which constructs the `WorkbenchPage` (@432-444) that `getActivePage()` returns as a plain
+   * field. `createWorkbenchWindow` is the only caller of `fireWindowOpened`, so there is no path
+   * that delivers this callback before the page exists.
+   */
   private val windowListener = object : IWindowListener {
     override fun windowOpened(window: IWorkbenchWindow) {
       window.activePage?.let { listenTo(it) }
@@ -220,18 +232,27 @@ class SecurityScanSaveListener(
     if (installed) return
     try {
       val workbench = PlatformUI.getWorkbench()
-      val page = workbench.activeWorkbenchWindow?.activePage
-      // Same shape as GitLabLanguageServerOpenFilesService.kt:23-30: attach to the page that is
-      // already there, otherwise wait for one to open.
-      if (page != null) listenTo(page) else workbench.addWindowListener(windowListener)
-      // Set LAST, and only on the path that really attached something. Setting it up front would
-      // make a first start that ran before the workbench existed permanently indistinguishable from
-      // a successful one: the catch below would log, the flag would say "done", and the save trigger
-      // would be dead for the rest of the session with nothing for the user to see.
+      // The window listener is registered unconditionally, not as the fallback of an either/or: a
+      // page that already exists says nothing about the windows the user opens later (`Window >
+      // New Window`), and an install that only attached to today's page would leave every later
+      // window's first editor of a type saving without a scan. Registering twice cannot happen —
+      // `Workbench.addWindowListener` delegates to `ListenerList.add`, which returns without
+      // adding when the same listener is already present (verified from bytecode, see the ordering
+      // note on [windowListener]).
+      workbench.addWindowListener(windowListener)
+      workbench.activeWorkbenchWindow?.activePage?.let { listenTo(it) }
+      // Set LAST, and only after both the window listener and today's page (when there is one) are
+      // really attached. Setting it up front would make a first start that ran before the
+      // workbench existed permanently indistinguishable from a successful one: the catch below
+      // would log, the flag would say "done", and the save trigger would be dead for the rest of
+      // the session with nothing for the user to see.
       installed = true
     } catch (e: Exception) {
-      // Never let the bundle's start() throw. Nothing is attached and nothing leaks; a later call
-      // can retry, which is exactly what the flag placement above preserves.
+      // Never let the bundle's start() throw. A failed install leaves the workbench as it found
+      // it: if the window listener made it on before the failure it is taken back off here, so
+      // nothing is attached and nothing leaks, and a later call can retry — which is exactly what
+      // the flag placement above preserves.
+      runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
       log.warn("Security scan save trigger not installed: workbench unavailable.", e)
     }
   }
