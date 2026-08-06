@@ -6,6 +6,7 @@ import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.Runs
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -172,6 +173,7 @@ private class WorkbenchHarness {
   }
 }
 
+@Suppress("LargeClass")
 class SecurityScanSaveListenerTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
@@ -687,6 +689,44 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       verify(exactly = 1) { harness.latePage.removePartListener(subject) }
     }
 
+    // D (this wave): `undetachedPages` is teardown bookkeeping and window-close is a teardown
+    // event it was not wired into. Left out, a page whose registration AND immediate detach both
+    // threw kept the disposed window — and the editors it holds — strongly referenced until
+    // uninstall. The record leaving at close is observed through uninstall: once windowClosed
+    // dropped it, uninstall has nothing left to detach on that page.
+    it("windowClosed drops an undetached page so uninstall makes no further detach on it") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } just Runs
+      harness.closeLateWindow()
+      clearMocks(harness.latePage, answers = false)
+      subject.uninstall()
+      verify(exactly = 0) { harness.latePage.removePartListener(any<IPartListener2>()) }
+    }
+
+    // The drop must be scoped to the closing window. Keep-behaviour guard: passes before and
+    // after this wave by design — pre-wave nothing dropped undetached pages at close at all;
+    // post-wave the new walk applies the same membership rule as the `pages` walk. What it
+    // discriminates is an over-eager drop: an undetached page whose window stays open must keep
+    // its record, so uninstall still makes the extra detach attempt on it.
+    it("windowClosed keeps the undetached page of a window that is not closing") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.removePartListener(any<IPartListener2>()) } just Runs
+      harness.registeredWindowListener().windowClosed(mockk<IWorkbenchWindow>())
+      clearMocks(harness.latePage, answers = false)
+      subject.uninstall()
+      verify(exactly = 1) { harness.latePage.removePartListener(subject) }
+    }
+
     // T1: the catch rollback. Keep-behaviour guard: passes before and after this wave by design —
     // it pins the catch's rollback, which both sides have. The injection has now moved TWICE,
     // each time because containment took its old point out of the catch's reach: first off the
@@ -856,6 +896,86 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       every { provider.removeElementStateListener(any()) } just Runs
       subject.partActivated(reference)
       verify(exactly = 2) { provider.removeElementStateListener(subject) }
+    }
+
+    // A (this wave): the scrub itself can throw, and control must NOT fall through and register
+    // on top of a possibly half-added listener — that is the double-upload direction the scrub
+    // exists to prevent. Unreachable with the platform's own providers (all three dedupe their
+    // add — see the bytecode notes on install()); reachable with a third-party provider that
+    // neither dedupes nor detaches, which is exactly the world the scrub was written for.
+    it("a retry whose scrub throws does not register on top of the half-added listener") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    // The refusal above trades "duplicate uploads" for "unobserved until the provider's remove
+    // recovers" — which only holds if the refusal really is retryable. `clearMocks` resets the
+    // call counts so the assertion counts only what the healing delivery itself does.
+    it("a retry blocked by a throwing scrub registers once the scrub succeeds") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      every { provider.removeElementStateListener(any()) } just Runs
+      clearMocks(provider, answers = false)
+      subject.partActivated(reference)
+      verify(exactly = 1) { provider.addElementStateListener(subject) }
+    }
+
+    // A blocked retry must leave the target where uninstall's extra walk can still find it: the
+    // half-added listener may be on the provider, and the blocked delivery proved the remove was
+    // still throwing, so the memory has to survive until either a scrub or uninstall succeeds.
+    it("a retry blocked by a throwing scrub leaves the target remembered for uninstall's extra detach") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      every { provider.removeElementStateListener(any()) } just Runs
+      clearMocks(provider, answers = false)
+      subject.uninstall()
+      verify(exactly = 1) { provider.removeElementStateListener(subject) }
+    }
+
+    // B (this wave): the scrub sits AFTER the dedup check, and that placement had zero coverage.
+    // Keep-behaviour guard: passes before and after this wave by design — since the scrub-failure
+    // path stopped falling through (A), a registered target is never left in `undetached`, so the
+    // state the placement protects (registered AND remembered as undetached) is no longer
+    // reachable and "scrub above the dedup check" is an equivalent mutant on reachable states.
+    // The test pins the observable property all the same: a delivery for a provider that a
+    // successful retry settled must not touch its LIVE registration — the disaster if the
+    // fall-through ever comes back while the scrub sits above the dedup check.
+    it("a delivery for a provider settled by a successful retry does not detach it") {
+      val harness = WorkbenchHarness()
+      val (reference, provider) = harness.editorReference()
+      every { provider.addElementStateListener(any()) } throws RuntimeException("provider broken")
+      every { provider.removeElementStateListener(any()) } throws RuntimeException("provider broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      subject.partOpened(reference)
+      every { provider.addElementStateListener(any()) } just Runs
+      every { provider.removeElementStateListener(any()) } just Runs
+      subject.partActivated(reference)
+      clearMocks(provider, answers = false)
+      subject.partActivated(reference)
+      verify(exactly = 0) { provider.removeElementStateListener(any()) }
     }
 
     // `listenTo` runs `attach` once per editor reference on the page, and the registration call

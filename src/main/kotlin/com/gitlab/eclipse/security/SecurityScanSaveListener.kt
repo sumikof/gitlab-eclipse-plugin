@@ -206,9 +206,11 @@ class SecurityScanSaveListener(
   /**
    * Providers whose registration threw AND whose immediate best-effort detach threw too (see
    * [registerContained]): the listener may still be half-on them with no record in [providers],
-   * so [uninstall] walks these as well and makes one more detach attempt. Being here never
-   * blocks a later activation from retrying the registration; the retry consults it only to
-   * scrub the possibly half-added listener off before registering again.
+   * so [uninstall] walks these as well and makes one more detach attempt. A later activation
+   * still retries the registration, but through the scrub first: the possibly half-added
+   * listener has to come off, and while that scrub keeps throwing the retry refuses to register
+   * on top — unobserved-but-retryable, never double-registered (the in-body comment in
+   * [registerContained]).
    */
   private val undetachedProviders = mutableSetOf<IDocumentProvider>()
 
@@ -262,25 +264,37 @@ class SecurityScanSaveListener(
   }
 
   /**
-   * Removes by membership in [pages], not through `window.activePage`: on the platform's own close
-   * path (`WorkbenchWindow.hardClose`, verified from bytecode in 3.133.0 and 3.137.0) the model
-   * removal at @266 fires this callback while the page is still reachable, but on a delayed
-   * delivery `WorkbenchPage.close(ZZ)` has already nulled `legacyWindow` (@613) and `hardClose`
-   * has nulled `page` (@350) — so BOTH `window.activePage` and `page.workbenchWindow` answer null
-   * by then. A page whose `workbenchWindow` is null is disposed and can belong to no live window,
-   * so it is dropped no matter which window's close delivered the callback; detaching from it is a
-   * no-op (`partListener2List` is never nulled, only cleared). Walking [pages] also stops this
-   * callback from ever touching a page it never attached to.
+   * Removes by membership in the tracked sets, not through `window.activePage`: on the platform's
+   * own close path (`WorkbenchWindow.hardClose`, verified from bytecode in 3.133.0 and 3.137.0)
+   * the model removal at @266 fires this callback while the page is still reachable, but on a
+   * delayed delivery `WorkbenchPage.close(ZZ)` has already nulled `legacyWindow` (@613) and
+   * `hardClose` has nulled `page` (@350) — so BOTH `window.activePage` and `page.workbenchWindow`
+   * answer null by then. A page whose `workbenchWindow` is null is disposed and can belong to no
+   * live window, so it is dropped no matter which window's close delivered the callback; detaching
+   * from it is a no-op (`partListener2List` is never nulled, only cleared). Walking the tracked
+   * sets also stops this callback from ever touching a page it never tried to attach to.
    */
   @Synchronized
   private fun onWindowClosed(window: IWorkbenchWindow) {
-    pages.removeAll { page ->
+    detachPagesOfClosed(pages, window)
+    // [undetachedPages] is teardown bookkeeping, and window-close is a teardown event: left out
+    // of this walk, a page whose registration AND immediate detach both threw kept the disposed
+    // window — and the editors it holds — strongly referenced until [uninstall], which then made
+    // one more pointless detach on it. The one-more-attempt runs here instead, and the record is
+    // dropped even when that attempt throws: the page is disposed either way, and keeping the
+    // reference IS the leak.
+    detachPagesOfClosed(undetachedPages, window)
+  }
+
+  /** Drops from [tracked], and best-effort detaches, every page [window]'s close disposed. */
+  private fun detachPagesOfClosed(tracked: MutableSet<IWorkbenchPage>, window: IWorkbenchWindow) {
+    tracked.removeAll { page ->
       // A THROW from the lookup is not evidence of disposal — only a null owner is (nulled by
-      // hardClose, see above) — so `getOrDefault(false)` keeps the page rather than dropping it:
-      // dropping would silently detach a live page, while keeping costs nothing because
-      // [uninstall] walks [pages] regardless. In production `getWorkbenchWindow()` is a bare
-      // field read, so the failure arm is unreachable today; the distinction is kept so the
-      // collapse cannot be mistaken for a decision.
+      // hardClose, see the KDoc on [onWindowClosed]) — so `getOrDefault(false)` keeps the page
+      // rather than dropping it: dropping would silently detach a live page, while keeping costs
+      // nothing because [uninstall] walks both sets regardless. In production
+      // `getWorkbenchWindow()` is a bare field read, so the failure arm is unreachable today; the
+      // distinction is kept so the collapse cannot be mistaken for a decision.
       val closing = runCatching { page.workbenchWindow }
         .map { owner -> owner === window || owner == null }
         .getOrDefault(false)
@@ -427,10 +441,11 @@ class SecurityScanSaveListener(
     installed = false
     runCatching { PlatformUI.getWorkbench().removeWindowListener(windowListener) }
     // The undetached sets are walked ON TOP of the recorded ones, deliberately without
-    // de-duplication against them: a target can be in both (failed once, retried successfully),
-    // and if its half-added first registration really stuck it is registered twice, so removing
-    // twice is the direction that cannot leak — a spurious remove is a no-op list removal (see
-    // the bytecode notes on [install]), a missing one outlives the bundle.
+    // de-duplication against them. Since a retry refuses to register while its scrub keeps
+    // failing ([registerContained]), a target is never in both sets today — but the walk does
+    // not lean on that invariant, because removing twice is the direction that cannot leak: a
+    // spurious remove is a no-op list removal (see the bytecode notes on [install]), a missing
+    // one outlives the bundle.
     (pages.toList() + undetachedPages.toList()).forEach { page -> runCatching { page.removePartListener(this) } }
     pages.clear()
     undetachedPages.clear()
@@ -472,8 +487,10 @@ class SecurityScanSaveListener(
    * not say how far the call got and a retry that succeeds must not end double-registered; and
    * (3) when even that detach throws, remembers [target] in [undetached] so [uninstall] still
    * makes one more attempt — the two failures together are the only path on which a half-added
-   * listener has no record left to walk — and so a later retry can scrub the half-add off before
-   * registering again (the in-body comment below). The throw itself is swallowed, not rethrown: [listenTo]
+   * listener has no record left to walk — and so a later retry scrubs the half-add off before
+   * registering again; a retry whose scrub also throws registers nothing and leaves the memory
+   * standing, so the delivery after it starts from the scrub once more (the in-body comment
+   * below). The throw itself is swallowed, not rethrown: [listenTo]
    * runs [attach] once per editor reference, and one broken provider must not abort the walk for
    * the rest of the page. Class name only in the log — same secrecy rule as [contained], and for
    * the same reason: the registration call is third-party code whose message may quote a path.
@@ -490,12 +507,25 @@ class SecurityScanSaveListener(
     // A target remembered as undetached may still hold the half-added listener from the earlier
     // attempt whose detach failed too. Registering again on top of it could end
     // double-registered — every save would be observed, and uploaded, twice — so the retry takes
-    // the listener off once more FIRST. The memory clears only when that scrub returns: a scrub
-    // that throws leaves the target remembered, so [uninstall] still makes its extra attempt.
+    // the listener off once more FIRST, and when even that scrub throws it refuses to register
+    // at all: the record is rolled back off so the next delivery starts from the scrub again,
+    // and the target stays remembered, so [uninstall] still makes its extra attempt. That trades
+    // "unobserved until the provider's remove stops throwing" — fully retryable — for never
+    // registering blind on top of a possibly half-added listener, the double-upload direction
+    // this feature treats as worst. The refusal is not logged: the delivery that put the target
+    // here already logged its failure, and this path re-runs on every part activation for as
+    // long as the remove keeps throwing.
     // This sits after the dedup check on purpose: on a target that is already registered, the
-    // remove would strip the LIVE registration and the early return above would never restore it.
+    // remove would strip the LIVE registration and the early return above would never restore
+    // it. With the scrub-failure early return, a registered target is never left in [undetached]
+    // — a successful retry clears the memory, a blocked one clears the record — so that pairing
+    // is unreachable from here today; the ordering is kept so correctness does not depend on
+    // that invariant staying true.
     if (target in undetached) {
-      runCatching { remove(target) }.onSuccess { undetached.remove(target) }
+      if (runCatching { remove(target) }.onSuccess { undetached.remove(target) }.isFailure) {
+        recorded.remove(target)
+        return
+      }
     }
     try {
       add(target)
