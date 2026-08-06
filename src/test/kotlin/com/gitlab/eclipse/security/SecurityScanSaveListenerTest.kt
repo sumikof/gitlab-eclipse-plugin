@@ -606,6 +606,88 @@ class SecurityScanSaveListenerTest : DescribeSpec({
       shouldNotThrowAny { harness.registeredWindowListener().windowOpened(badWindow) }
     }
 
+    // E (this wave): every window-or-page-scoped attachment that failed once — the enumeration
+    // getter, one enumerated window's walk, windowOpened's activePage, a page's addPartListener —
+    // had no per-activation retry vehicle: install() has one call site and windowOpened fires only
+    // at window creation. windowActivated is that vehicle, and it is the only callback that can
+    // ever reach a restored background window whose install-time walk failed. A window nothing
+    // else reached stands in for the whole class.
+    it("windowActivated attaches the page of a window nothing else reached") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    // The steady-state cost gate on the vehicle above: activating a window whose page is already
+    // attached must stay O(1) — it must NOT re-walk the page's editors, because that walk runs
+    // `getPart(false)` and then `getAdapter` (third-party code) under the monitor on the UI
+    // thread, once per open editor, on every window switch. A page in `pages` has its part
+    // listener on, and partActivated is already the per-editor retry vehicle there. Keep-behaviour
+    // label: green before this wave too (vacuously — windowActivated ran nothing at all); what it
+    // discriminates is the naive wiring that routes every activation into listenTo.
+    it("windowActivated does not walk the editors of a page that is already attached") {
+      val harness = WorkbenchHarness()
+      val (reference, _) = harness.editorReference()
+      every { harness.latePage.editorReferences } returns arrayOf(reference)
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      clearMocks(reference, answers = false)
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 0) { reference.getPart(false) }
+    }
+
+    // Same stale-snapshot race as windowOpened: `fireWindowActivated` iterates a listener snapshot
+    // taken before our removal can be seen, so an activation can arrive after uninstall() finished
+    // on the bundle-stop thread. Same closing tail as the windowOpened twin: `exactly = 0` sits
+    // behind `contained`, which a throwing callback would also satisfy, so re-install and prove
+    // the identical delivery attaches.
+    it("a windowActivated delivered after uninstall does not attach") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val windowListener = harness.registeredWindowListener()
+      subject.uninstall()
+      windowListener.windowActivated(harness.lateWindow)
+      verify(exactly = 0) { harness.latePage.addPartListener(any<IPartListener2>()) }
+      subject.install()
+      windowListener.windowActivated(harness.lateWindow)
+      verify(exactly = 1) { harness.latePage.addPartListener(subject) }
+    }
+
+    // The containment twin of the windowOpened test above, for the new callback: the workbench
+    // delivers windowActivated through SafeRunner too, whose handler logs the FULL exception, and
+    // the activation path reaches `activePage` and (for an unattached page) third-party adapter
+    // factories whose message can quote a file path — so nothing may propagate. Keep-behaviour
+    // label: green before this wave too (vacuously — the callback ran nothing at all); it fails
+    // when windowActivated is wired into the attach path without `contained`.
+    it("a windowActivated whose page lookup throws does not propagate out of the callback") {
+      val harness = WorkbenchHarness()
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      val badWindow = mockk<IWorkbenchWindow>()
+      every { badWindow.activePage } throws RuntimeException("/home/user/secret/path.txt")
+      shouldNotThrowAny { harness.registeredWindowListener().windowActivated(badWindow) }
+    }
+
+    // The fourth instance of the shape E closes: a page whose addPartListener threw has no part
+    // listener, so partActivated can never fire for it, and the platform sends windowOpened only
+    // at window creation — before this wave nothing retried that page again. Focusing the window
+    // is now the retry: the page is not in `pages` (the failed registration rolled its record
+    // back), so the activation runs listenTo again.
+    it("windowActivated retries the page registration that failed at windowOpened") {
+      val harness = WorkbenchHarness()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } throws RuntimeException("page broken")
+      val subject = SecurityScanSaveListener()
+      subject.install()
+      harness.openLateWindow()
+      every { harness.latePage.addPartListener(any<IPartListener2>()) } just Runs
+      harness.registeredWindowListener().windowActivated(harness.lateWindow)
+      verify(exactly = 2) { harness.latePage.addPartListener(subject) }
+    }
+
     // Same snapshot race as above, on the part-listener side: a partOpened taken from a stale
     // ListenerList snapshot can be delivered after uninstall() already walked `providers`.
     it("a partOpened delivered after uninstall does not attach the provider") {

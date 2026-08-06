@@ -231,8 +231,11 @@ class SecurityScanSaveListener(
    * field. `createWorkbenchWindow` is the only caller of `fireWindowOpened`, so there is no path
    * that delivers this callback before the page exists.
    *
-   * Both callbacks run through [contained]: the workbench delivers them via `SafeRunner`, whose
-   * handler would log the full exception — and [attach] runs `getAdapter`, which can execute
+   * `windowActivated` is the retry vehicle for window-scoped attachment failures — see
+   * [onWindowActivated] for what it may and may not cost.
+   *
+   * Every live callback runs through [contained]: the workbench delivers them via `SafeRunner`,
+   * whose handler would log the full exception — and [attach] runs `getAdapter`, which can execute
    * third-party adapter factories whose message may quote a file path. Same secrecy rule as every
    * other callback in this class.
    */
@@ -245,7 +248,9 @@ class SecurityScanSaveListener(
       onWindowClosed(window)
     }
 
-    override fun windowActivated(window: IWorkbenchWindow?) = Unit
+    override fun windowActivated(window: IWorkbenchWindow?) = contained("windowActivated") {
+      window?.let { onWindowActivated(it) }
+    }
 
     override fun windowDeactivated(window: IWorkbenchWindow?) = Unit
   }
@@ -261,6 +266,35 @@ class SecurityScanSaveListener(
   private fun onWindowOpened(window: IWorkbenchWindow) {
     if (!installed) return
     window.activePage?.let { listenTo(it) }
+  }
+
+  /**
+   * UI thread, under the monitor; same teardown race and same `installed` guard as
+   * [onWindowOpened].
+   *
+   * This is the retry vehicle for every window-or-page-scoped attachment that failed once and
+   * had nothing to try it again: the enumeration getter throwing at [install] (already-open
+   * background windows — which `windowOpened` structurally never fires for, see the note on
+   * [install]'s enumeration), one enumerated window's walk throwing, [onWindowOpened]'s
+   * `activePage` throwing, and a page whose `addPartListener` threw (no part listener means
+   * `partActivated` can never fire for it). Focusing the window retries all four.
+   *
+   * The `page in pages` check is the cost gate, and it is what keeps the steady state O(1):
+   * membership in [pages] is only ever recorded on a successful `addPartListener`
+   * ([registerContained]), so an attached page has its part listener on and `partActivated`
+   * already retries per editor there. Without the check, every window switch would re-run
+   * [listenTo]'s unconditional editor walk — `getPart(false)` and `getAdapter`, third-party
+   * code, under this monitor on the UI thread, once per open editor. So a normal activation
+   * costs one contained call, one monitor acquisition, one `activePage` read and one set
+   * lookup; only a window whose page is NOT attached — the failure states above — pays the
+   * walk, once per activation until its registration sticks.
+   */
+  @Synchronized
+  private fun onWindowActivated(window: IWorkbenchWindow) {
+    if (!installed) return
+    val page = window.activePage ?: return
+    if (page in pages) return
+    listenTo(page)
   }
 
   /**
@@ -395,9 +429,10 @@ class SecurityScanSaveListener(
       // (or even the active one) is attached": a contained failure of any walk above — the active
       // window's, one enumerated window's, or the enumeration itself — still ends installed,
       // because the feature staying alive for the
-      // windows that did attach beats the whole feature being dead, and `partActivated` retries
-      // the provider attach for any window whose part listener did make it on. Setting the flag
-      // up front instead would make a
+      // windows that did attach beats the whole feature being dead: `partActivated` retries
+      // the provider attach for any window whose part listener did make it on, and
+      // `windowActivated` retries the whole page attach for any window whose walk failed (see
+      // [onWindowActivated]). Setting the flag up front instead would make a
       // first start that ran before the workbench existed permanently indistinguishable from a
       // successful one: the catch below would log, the flag would say "done", and the save
       // trigger would be dead for the rest of the session with nothing for the user to see.
