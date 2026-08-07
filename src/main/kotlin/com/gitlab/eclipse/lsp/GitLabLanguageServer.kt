@@ -6,6 +6,7 @@ import com.gitlab.eclipse.lsp.messages.StreamWithId
 import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.lsp.webview.ThemeChangedParams
 import com.gitlab.eclipse.preferences.healthcheck.FeatureStateParams
+import com.gitlab.eclipse.security.SecurityScanParams
 import com.gitlab.eclipse.telemetry.params.TelemetryParams
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
@@ -82,6 +83,9 @@ interface GitLabLanguageServer {
 
   @JsonNotification("cancelStreaming")
   fun cancelStreaming(params: StreamWithId)
+
+  @JsonNotification("$/gitlab/security/remoteSecurityScan")
+  fun runSecurityScan(params: SecurityScanParams)
 
   @JsonRequest("$/gitlab/validateConfiguration")
   fun validateConfiguration(

@@ -18,6 +18,7 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import org.eclipse.lsp4j.DidChangeConfigurationParams
@@ -36,7 +37,8 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
   val service = GitLabLanguageServerConfigurationService(
     preferenceStore,
     wrapper,
-    CoroutineScope(Dispatchers.Unconfined)
+    CoroutineScope(Dispatchers.Unconfined),
+    Mutex()
   )
 
   extensions(LoggingKotestExtension)
@@ -85,7 +87,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       // StandardTestDispatcher queues the launch instead of running it inline, exposing
       // the gap between capturing the server and the coroutine actually sending.
       val testScope = TestScope(StandardTestDispatcher())
-      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope)
+      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
 
       queuedService.sendConfiguration(serverA)
       // A rapid second restart registers process B's proxy before the coroutine runs.
@@ -138,6 +140,40 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       service.sendConfiguration()
 
       capturedParams().codeCompletion!!.enabled shouldBe false
+    }
+  }
+
+  describe("securityScan settings") {
+    it("keeps remoteSecurityScans false and securityScannerOptions disabled by default") {
+      every { preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED) } returns false
+
+      service.sendConfiguration()
+
+      val params = capturedParams()
+      params.featureFlags!!.remoteSecurityScans shouldBe false
+      params.securityScannerOptions!!.enabled shouldBe false
+    }
+
+    it("sends both gates as true when the master setting is on") {
+      every { preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED) } returns true
+
+      service.sendConfiguration()
+
+      val params = capturedParams()
+      params.featureFlags!!.remoteSecurityScans shouldBe true
+      params.securityScannerOptions!!.enabled shouldBe true
+    }
+
+    it("keeps both security scan gates false when the setting is never touched (A1)") {
+      // No `every { preferenceStore.getBoolean(SECURITY_SCAN_ENABLED) } ...` stub here on purpose:
+      // this proves the untouched-preference path, relying solely on the relaxed mock's
+      // default `getBoolean` return value (false), same as a real ScopedPreferenceStore that
+      // was never written to and falls back to the PreferenceInitializer default.
+      service.sendConfiguration()
+
+      val params = capturedParams()
+      params.featureFlags!!.remoteSecurityScans shouldBe false
+      params.securityScannerOptions!!.enabled shouldBe false
     }
   }
 

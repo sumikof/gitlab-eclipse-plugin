@@ -17,13 +17,16 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 class GitLabLanguageServerConfigurationService(
   private val preferenceStore: ScopedPreferenceStore,
   private val languageServerWrapper: GitLabLanguageServerWrapper,
-  private val coroutineScope: CoroutineScope
+  private val coroutineScope: CoroutineScope,
+  private val outboundLock: Mutex,
 ) {
   private val logger by lazy { logger<GitLabLanguageServerConfigurationService>() }
 
@@ -33,7 +36,34 @@ class GitLabLanguageServerConfigurationService(
   fun sendConfiguration() = sendConfiguration(languageServerWrapper.languageServer)
 
   fun sendConfiguration(server: GitLabLanguageServer?) {
-    val params = GitLabLanguageServerConfigurationParams(
+    val params = buildParams()
+
+    logger.info("Sending configuration change notification to Language Server.")
+    // Send to the server captured at CALL time, never the wrapper's current proxy at
+    // coroutine-execution time: a rapid restart may register a new pre-initialize server
+    // before this coroutine runs, and the queued work must strand with the old server
+    // instead of being redirected at the new one.
+    coroutineScope.launch {
+      outboundLock.withLock {
+        server?.didChangeConfiguration(
+          DidChangeConfigurationParams(params)
+        )
+      }
+    }
+  }
+
+  /**
+   * Snapshot of the whole configuration, read from the preference store at CALL time.
+   *
+   * Exposed separately from [sendConfiguration] for callers that must send the configuration and
+   * something that depends on it back to back, inside one region of the outbound `Mutex`.
+   * [sendConfiguration] cannot serve them: it queues its own coroutine, so a caller already holding
+   * the `Mutex` would deadlock, and one that is not would have no way to keep the two notifications
+   * in order — a `Mutex` grants exclusion, never arrival order.
+   */
+  internal fun buildParams(): GitLabLanguageServerConfigurationParams {
+    val securityScanEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
+    return GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
         enabled = preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED),
@@ -42,9 +72,10 @@ class GitLabLanguageServerConfigurationService(
         disabledSupportedLanguages = service<CodeSuggestionsLanguageService>().getDisabledLanguages(),
       ),
       featureFlags = FeatureFlags(
-        remoteSecurityScans = false,
+        remoteSecurityScans = securityScanEnabled,
         streamCodeGenerations = preferenceStore.getBoolean(LANGUAGE_SERVER_STREAM_CODE_GENERATIONS)
       ),
+      securityScannerOptions = SecurityScannerOptions(enabled = securityScanEnabled),
       ignoreCertificateErrors = preferenceStore.getBoolean(IGNORE_CERTIFICATE_ERRORS),
       logLevel = preferenceStore.getString(LANGUAGE_SERVER_LOG_LEVEL),
       telemetry = Telemetry(
@@ -68,16 +99,5 @@ class GitLabLanguageServerConfigurationService(
         agentPlatform = GitLabLanguageServerConfigurationParams.AgentPlatform(enabled = true),
       )
     )
-
-    logger.info("Sending configuration change notification to Language Server.")
-    // Send to the server captured at CALL time, never the wrapper's current proxy at
-    // coroutine-execution time: a rapid restart may register a new pre-initialize server
-    // before this coroutine runs, and the queued work must strand with the old server
-    // instead of being redirected at the new one.
-    coroutineScope.launch {
-      server?.didChangeConfiguration(
-        DidChangeConfigurationParams(params)
-      )
-    }
   }
 }

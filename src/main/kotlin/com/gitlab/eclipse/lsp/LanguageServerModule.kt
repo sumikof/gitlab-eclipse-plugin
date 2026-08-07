@@ -7,10 +7,16 @@ import com.gitlab.eclipse.authentication.PatTokenProvider
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.gitlab.eclipse.security.SecurityScanLauncher
+import com.gitlab.eclipse.security.SecurityScanSaveListener
+import com.gitlab.eclipse.security.SecurityScanSettings
+import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 val languageServerModule = module {
@@ -29,7 +35,9 @@ val languageServerModule = module {
   }
 
   single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
-  single<GitLabLanguageServerConfigurationService> { GitLabLanguageServerConfigurationService(get(), get(), get()) }
+  single<GitLabLanguageServerConfigurationService> {
+    GitLabLanguageServerConfigurationService(get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
   single<DidChangeWatchedFileCapability>(createdAtStart = true) { DidChangeWatchedFileCapability(get(), get()) }
 
   single<GitLabLanguageServerProcessProvider> {
@@ -37,4 +45,19 @@ val languageServerModule = module {
   }
 
   single<LanguageServerWebviewService> { LanguageServerWebviewService(get(), get()) }
+
+  single<DiagnosticMarkerService> { DiagnosticMarkerService() }
+
+  single<SecurityScanLauncher> {
+    SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
+
+  // The save trigger is a singleton because it is stateful in a way that has to be paired: it holds
+  // every document provider and page it attached to, and GitLabEclipseStartup.stop() detaches from
+  // exactly those. A second instance would leak the first one's registrations.
+  single<SecurityScanSaveListener> { SecurityScanSaveListener() }
+
+  single<SecurityScanSettings> {
+    SecurityScanSettings(get(), get(named(LANGUAGE_SERVER_OUTBOUND)), get())
+  }
 }

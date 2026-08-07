@@ -189,6 +189,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.RunSecurityScan"
+                name="Run Remote Scan (SAST)"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RefreshSidebar"
                 name="Refresh GitLab Sidebar"
                 categoryId="gitlab-eclipse-plugin">
@@ -406,6 +412,20 @@
 
     <extension point="org.eclipse.core.runtime.preferences">
         <initializer class="com.gitlab.eclipse.preferences.PreferenceInitializer"/>
+    </extension>
+
+    <!-- Marker type every GitLab language-server diagnostic is filed under.
+         The `id` attribute carries ONLY the short name: the platform prefixes it with this
+         bundle's symbolic name (`com.gitlab.eclipse.gitlab-eclipse-plugin`, build.gradle.kts:236),
+         so the resulting type is `com.gitlab.eclipse.gitlab-eclipse-plugin.gitlabDiagnostic` —
+         verbatim `DiagnosticMarkerAttributes.TYPE`. Writing the full id here would concatenate
+         twice and silently break every marker create/find at runtime.
+         `persistent=false`: diagnostics are re-published by the language server on each session,
+         so a workspace restart must not resurrect findings nobody re-confirmed. -->
+    <extension point="org.eclipse.core.resources.markers" id="gitlabDiagnostic" name="GitLab Diagnostic">
+        <super type="org.eclipse.core.resources.problemmarker"/>
+        <super type="org.eclipse.core.resources.textmarker"/>
+        <persistent value="false"/>
     </extension>
 
     <extension point="org.eclipse.ui.views">
@@ -639,6 +659,11 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 class="com.gitlab.eclipse.ci.actions.ShowMergedCiConfigHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.RunSecurityScan"
+                class="com.gitlab.eclipse.security.actions.RunSecurityScanHandler"
         />
 
         <handler
@@ -974,6 +999,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                         label="Show Merged GitLab CI Config"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.RunSecurityScan"
+                        label="Run Remote Scan (SAST)"
                 />
             </menu>
         </menuContribution>

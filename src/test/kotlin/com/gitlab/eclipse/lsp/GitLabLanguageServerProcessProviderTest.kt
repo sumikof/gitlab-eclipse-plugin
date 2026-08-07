@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
@@ -207,6 +208,9 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   }
 
   beforeEach {
+    // The diagnostics registry is a process-wide object and every stop below moves its epoch, so
+    // each test starts from a known one rather than from whatever the previous test left.
+    DiagnosticGenerationRegistry.resetForTest()
     nextInitializeReply = InitializeReply.SUCCESS
     every { installer.install() } returns "/fake/language-server"
     every { proxyManager.getHttpProxyUrl() } returns null
@@ -230,7 +234,11 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     clearAllMocks()
   }
 
-  afterSpec { stopKoin() }
+  afterSpec {
+    // The diagnostics registry is a process-wide object and every stop above moves its epoch.
+    DiagnosticGenerationRegistry.resetForTest()
+    stopKoin()
+  }
 
   describe("restart") {
     it("stops the current process and starts a new one") {
@@ -326,6 +334,77 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
 
       nextInitializeReply = InitializeReply.SUCCESS
       provider.restart(bundle) shouldBe true
+      provider.isRunning shouldBe true
+      provider.stop()
+    }
+  }
+
+  describe("connection teardown") {
+    it("advances the connection epoch when the server is stopped explicitly") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val live = DiagnosticGenerationRegistry.currentEpoch
+
+      provider.stop()
+
+      DiagnosticGenerationRegistry.currentEpoch shouldBe live + 1
+    }
+
+    it("advances the connection epoch when the server exits on its own") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val live = DiagnosticGenerationRegistry.currentEpoch
+
+      // A crash or a self-inflicted exit: nothing goes through stop(), so the exit notification is
+      // the only place the teardown can run.
+      spawnedProcesses[0].completeExit()
+
+      eventually(2.seconds) { DiagnosticGenerationRegistry.currentEpoch shouldBe live + 1 }
+      provider.isRunning shouldBe false
+    }
+
+    it("tears the next connection down too, once it has started") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val first = DiagnosticGenerationRegistry.currentEpoch
+      provider.stop()
+
+      provider.start(bundle)
+      provider.stop()
+
+      // Not once per session: every connection that dies has to strand its own markers and waiters.
+      DiagnosticGenerationRegistry.currentEpoch shouldBe first + 2
+    }
+
+    it("tears the connection down even when an earlier stop step throws") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val live = DiagnosticGenerationRegistry.currentEpoch
+      // A late or degraded stop: the lookups at the top of stopLocked() go through Koin, whose
+      // scope may already be closed. The connection is gone either way, so its waiters, deadlines
+      // and markers have to go with it rather than be discarded along with the failure.
+      every { languageServerWrapper.unregisterLanguageServer() } throws
+        IllegalStateException("Koin scope is already closed")
+
+      // Still reported: GitLabEclipseStartup.stop() is what contains it, so that the steps after
+      // the language server shutdown keep running.
+      shouldThrow<IllegalStateException> { provider.stop() }
+
+      DiagnosticGenerationRegistry.currentEpoch shouldBe live + 1
+    }
+
+    it("ignores the exit notification of a process that was already replaced") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val oldProcess = spawnedProcesses[0]
+      provider.restart(bundle) shouldBe true
+      val afterRestart = DiagnosticGenerationRegistry.currentEpoch
+
+      oldProcess.completeExit()
+
+      // The identity guard holds the teardown as well: the superseded process must not strand the
+      // connection that replaced it.
+      DiagnosticGenerationRegistry.currentEpoch shouldBe afterRestart
       provider.isRunning shouldBe true
       provider.stop()
     }

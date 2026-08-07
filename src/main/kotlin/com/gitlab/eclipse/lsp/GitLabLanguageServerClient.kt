@@ -8,6 +8,9 @@ import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
@@ -17,6 +20,11 @@ import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
+import com.gitlab.eclipse.security.ResponseDecision
+import com.gitlab.eclipse.security.SecurityScanResponse
+import com.gitlab.eclipse.security.SecurityScanStatusReporter
+import com.gitlab.eclipse.security.securityScanPathKey
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.JsonObject
 import org.eclipse.lsp4j.*
@@ -35,6 +43,14 @@ class GitLabLanguageServerClient(
   }
 
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
+
+  /**
+   * Connection epoch captured when this client is constructed. A new client is built for every
+   * language server start, and `restart()` stops before it starts, so a new client always sees a
+   * newer epoch than the one it replaces. Every diagnostics callback checks the captured value so
+   * that late notifications from a dead connection cannot publish markers.
+   */
+  private val connectionEpoch: Long = DiagnosticGenerationRegistry.currentEpoch
 
   @JsonNotification("streamingCompletionResponse")
   fun streamingCompletionResponse(
@@ -80,6 +96,40 @@ class GitLabLanguageServerClient(
       }
     }
   }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
+  /**
+   * A remote security scan came back.
+   *
+   * The whole body is contained, and the containment records only the exception's class name: the
+   * payload quotes the scanned file and the server's own error text, so neither it nor a failure
+   * raised while handling it may reach the error log (design §16.1).
+   *
+   * The audit line is written before the user is told, and its own failure is contained too — a log
+   * that cannot be written must not swallow the notification the user is waiting for (Phase 5A).
+   * The notification goes through [NotificationUtils.show], not `showOnUiThread`: this runs on
+   * lsp4j's dispatch thread, and building the popup there would be invalid thread access.
+   */
+  @JsonNotification("$/gitlab/security/remoteSecurityScan/response")
+  fun securityScanResponse(response: SecurityScanResponse) {
+    runCatching {
+      // Nothing identifies the request, so an answer with no file cannot be matched to one.
+      val filePath = response.filePath ?: return
+      val path = securityScanPathKey(filePath)
+      when (val decision = SecurityScanStatusReporter.settle(path, response, connectionEpoch)) {
+        is ResponseDecision.Rejected -> Unit
+        is ResponseDecision.Report -> {
+          runCatching { logger.info(decision.auditLine) }
+          decision.notify?.let { NotificationUtils.show(it) }
+        }
+      }
+    }.onFailure { failure ->
+      // Contained like the audit line above it: this is the outermost handler on lsp4j's dispatch
+      // thread, so a log that throws here would escape into the dispatch loop itself (§16.2).
+      runCatching {
+        logger.warn("Failed to handle a security scan response: ${failure::class.simpleName}")
+      }
+    }
+  }
 
   @JsonNotification("$/gitlab/token/check")
   fun gitlabTokenCheck(params: Any?) {
@@ -149,7 +199,33 @@ class GitLabLanguageServerClient(
   }
 
   override fun publishDiagnostics(diagnostic: PublishDiagnosticsParams) {
-    logger.info("publishDiagnostics: $diagnostic")
+    // Diagnostics carry scan findings and absolute file locations, so neither the payload nor the
+    // failure message may reach the error log.
+    runCatching { applyDiagnostics(diagnostic) }
+      .onFailure { logger.warn("Failed to handle publishDiagnostics: ${it::class.simpleName}") }
+  }
+
+  private fun applyDiagnostics(params: PublishDiagnosticsParams) {
+    val key = DiagnosticUri.normalize(params.uri) ?: return
+    val incoming = params.diagnostics ?: emptyList()
+
+    // Only suspended sources are dropped; diagnostics from every other source still pass through.
+    val tokens = incoming.associateWith {
+      DiagnosticGenerationRegistry.acceptToken(it.source, connectionEpoch)
+    }
+    val accepted = incoming.filter { tokens[it] != null }
+
+    // A non-empty batch that was fully dropped is a no-op: an empty set must not gain the authority
+    // to replace everything the file currently shows.
+    if (incoming.isNotEmpty() && accepted.isEmpty()) return
+
+    val generation = DiagnosticGenerationRegistry.nextGeneration(key, connectionEpoch) ?: return
+
+    // Re-check for sources that were suspended while this batch was being prepared.
+    val finalDiagnostics = accepted.filter { DiagnosticGenerationRegistry.isTokenValid(tokens[it]) }
+    if (accepted.isNotEmpty() && finalDiagnostics.isEmpty()) return
+
+    service<DiagnosticMarkerService>().apply(key, finalDiagnostics, generation, connectionEpoch)
   }
 
   override fun showMessage(message: MessageParams) {
