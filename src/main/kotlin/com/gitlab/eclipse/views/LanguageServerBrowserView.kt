@@ -5,9 +5,13 @@ package com.gitlab.eclipse.views
 import com.gitlab.eclipse.chat.ChatAvailability
 import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.ChatSelectionResolver
+import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
+import com.gitlab.eclipse.chat.webview.ChatIntentAction
+import com.gitlab.eclipse.chat.webview.ChatIntentRouter
 import com.gitlab.eclipse.chat.webview.ChatWebviewCatalog
 import com.gitlab.eclipse.chat.webview.ChatWebviewEntry
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
+import com.gitlab.eclipse.chat.webview.PendingChatIntents
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.NewPromptRequest
@@ -33,14 +37,15 @@ import java.util.concurrent.TimeUnit
  * message page (LS not ready / no candidates / all disabled).
  *
  * Threading contract: all public methods ([refresh], [selectWebview], [requestFocus],
- * [requestClassicPrompt], [setFocus]) must be called on the UI thread. The Language Server
- * metadata future is consumed off the UI thread (`whenComplete`) and its result is applied via
- * `asyncExec` guarded by a generation counter (latest-wins) and a dispose check.
+ * [requestClassicPrompt], [requestAgenticView], [setFocus]) must be called on the UI thread. The
+ * Language Server metadata future is consumed off the UI thread (`whenComplete`) and its result is
+ * applied via `asyncExec` guarded by a generation counter (latest-wins) and a dispose check.
  */
 @Suppress("TooManyFunctions")
 class LanguageServerBrowserView : ViewPart() {
   companion object {
     private const val CLASSIC_WEBVIEW_ID = ChatWebviewCatalog.CLASSIC_WEBVIEW_ID
+    private const val AGENTIC_WEBVIEW_ID = ChatWebviewCatalog.AGENTIC_WEBVIEW_ID
     private const val METADATA_TIMEOUT_SECONDS = 10L
   }
 
@@ -50,6 +55,7 @@ class LanguageServerBrowserView : ViewPart() {
   private val chatAvailabilityService by lazyService<ChatAvailabilityService>()
   private val preferenceStore by lazyService<ScopedPreferenceStore>()
   private val classicWebViewClient by lazyService<GitLabDuoChatWebViewClient>()
+  private val agenticWebViewClient by lazyService<AgenticChatWebViewClient>()
 
   private val stackLayout = StackLayout()
   private var container: Composite? = null
@@ -69,6 +75,7 @@ class LanguageServerBrowserView : ViewPart() {
   /** Transient intents flushed after the next selection resolution (see §17.1/§17.1a). */
   private var focusRequested = false
   private var pendingClassicPrompt: NewPromptRequest? = null
+  private var pendingAgenticView: String? = null
 
   override fun createPartControl(parent: Composite?) {
     val root = Composite(parent, SWT.NONE)
@@ -154,8 +161,8 @@ class LanguageServerBrowserView : ViewPart() {
 
   /**
    * Requests that, once the selection resolves to the classic webview, a `focusChat` prompt is
-   * sent to the classic client. If the resolution lands on agentic, nothing is sent (no classic
-   * queue stranding).
+   * sent to the classic client. If the resolution shows anything else, or no chat at all, nothing
+   * is sent (no classic queue stranding).
    */
   fun requestFocus() {
     focusRequested = true
@@ -164,11 +171,26 @@ class LanguageServerBrowserView : ViewPart() {
 
   /**
    * Forces the selection to the classic webview and sends [payload] to the classic client once
-   * classic is resolved and shown. If classic is not available, the intent is dropped.
+   * classic is resolved and shown. If the resolution shows anything else, or no chat at all, the
+   * intent is dropped.
    */
   fun requestClassicPrompt(payload: NewPromptRequest) {
     selectWebview(CLASSIC_WEBVIEW_ID)
     pendingClassicPrompt = payload
+    refresh()
+  }
+
+  /**
+   * Forces the selection to the agentic webview and asks the agentic client to switch it to [view]
+   * once agentic is resolved and shown. If the resolution shows anything else, or no chat at all,
+   * the intent is dropped.
+   *
+   * This is gate A of design §7.4; gate B — the webview app having reported itself ready — is the
+   * agentic client's own.
+   */
+  fun requestAgenticView(view: String) {
+    selectWebview(AGENTIC_WEBVIEW_ID)
+    pendingAgenticView = view
     refresh()
   }
 
@@ -192,8 +214,8 @@ class LanguageServerBrowserView : ViewPart() {
     }
     selectedId = resolved
 
-    val classicShown = showResolvedSelection(resolved, availability)
-    flushPendingIntents(classicShown)
+    val shownId = showResolvedSelection(resolved, availability)
+    flushPendingIntents(shownId)
   }
 
   /** Applies §12: dispose Browsers of vanished ids, create/reload Browsers of enabled candidates. */
@@ -216,60 +238,72 @@ class LanguageServerBrowserView : ViewPart() {
             browser.setUrl(entry.uri)
             pages[entry.id] = browser
             pageUris[entry.id] = entry.uri
+            closeAgenticLatch(entry.id)
           }
           pageUris[entry.id] != entry.uri -> {
             existing.setUrl(entry.uri)
             pageUris[entry.id] = entry.uri
+            closeAgenticLatch(entry.id)
           }
           // else: id continues with unchanged URI — reuse as-is, chat state preserved.
         }
       }
   }
 
-  /** Sets the top control for the resolved selection; returns whether classic is now shown. */
-  private fun showResolvedSelection(resolved: String?, availability: Map<String, ChatAvailability>): Boolean {
+  /**
+   * Closes the agentic client's readiness latch when [id] is the webview that was just given a
+   * Browser or pointed at a new URI. The latch stands for the page that reported itself ready, and
+   * that page has just been replaced (design §5.3 / §7.4).
+   */
+  private fun closeAgenticLatch(id: String) {
+    if (id == AGENTIC_WEBVIEW_ID) agenticWebViewClient.markNotReady()
+  }
+
+  /** Sets the top control for the resolved selection; returns the webview id now shown, if any. */
+  private fun showResolvedSelection(resolved: String?, availability: Map<String, ChatAvailability>): String? {
     if (resolved == null) {
       logger.warn("No chat webview advertised by the language server")
       showMessagePage("GitLab Duo Chat is currently unavailable: no chat webview is available.")
-      return false
+      return null
     }
 
     if (availability[resolved]?.enabled != true) {
       val reason = availability[resolved]?.disabledReason
       val details = if (reason != null) ": $reason" else "."
       showMessagePage("GitLab Duo Chat is currently disabled$details")
-      return false
+      return null
     }
 
     val page = pages[resolved]
     if (page == null || page.isDisposed) {
       logger.error("No browser exists for enabled webview '$resolved'")
       showMessagePage("GitLab Duo Chat is currently unavailable: no chat webview is available.")
-      return false
+      return null
     }
 
     stackLayout.topControl = page
     container?.layout()
-    return resolved == CLASSIC_WEBVIEW_ID
+    return resolved
   }
 
   /**
-   * §17.1/§17.1a: intents are transient — flushed to the classic client only when classic is the
-   * shown webview after resolution, and cleared (dropped) otherwise.
+   * §17.1/§17.1a: intents are transient — every intent is dropped here whether or not it is routed,
+   * so nothing survives into a later resolution.
+   *
+   * Which of them reach a client is design §7.4's routing rule, and it lives in [ChatIntentRouter]
+   * rather than here so that it can be tested without SWT.
    */
-  private fun flushPendingIntents(classicShown: Boolean) {
-    val focus = focusRequested
-    val prompt = pendingClassicPrompt
+  private fun flushPendingIntents(shownId: String?) {
+    val intents = PendingChatIntents(focusRequested, pendingClassicPrompt, pendingAgenticView)
     focusRequested = false
     pendingClassicPrompt = null
+    pendingAgenticView = null
 
-    if (!classicShown) return
-
-    if (focus) {
-      classicWebViewClient.notify("newPrompt", NewPromptRequest(prompt = "focusChat"))
-    }
-    if (prompt != null) {
-      classicWebViewClient.notify("newPrompt", prompt)
+    ChatIntentRouter.route(shownId, intents).forEach { action ->
+      when (action) {
+        is ChatIntentAction.SendClassicPrompt -> classicWebViewClient.notify("newPrompt", action.payload)
+        is ChatIntentAction.SwitchAgenticView -> agenticWebViewClient.switchView(action.view)
+      }
     }
   }
 

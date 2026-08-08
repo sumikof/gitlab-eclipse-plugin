@@ -28,6 +28,16 @@ fun openDuoChatWindowWithClassicPrompt(payload: NewPromptRequest) {
 }
 
 /**
+ * Reveals the Duo Chat view and hands [view] to the view's pending-intent API: the view
+ * force-selects the agentic webview and asks the agentic client to switch to [view] only after
+ * agentic is resolved and shown, so an agentic command issued while classic is selected is not
+ * stranded.
+ */
+fun openDuoChatWindowWithAgenticView(view: String) {
+  showDuoChatView()?.requestAgenticView(view)
+}
+
+/**
  * Switches the Duo Chat view to the webview [id] and re-resolves it: [LanguageServerBrowserView.selectWebview]
  * alone does not consult availability, so the follow-up [LanguageServerBrowserView.refresh] re-runs the
  * resolver, which falls back to another enabled webview when [id] is disabled and surfaces a
