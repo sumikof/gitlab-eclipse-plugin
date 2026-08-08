@@ -297,6 +297,18 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                name="Show Agentic Chat History"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                name="Start New Agentic Conversation"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ReplyToThread"
                 name="Reply"
                 categoryId="gitlab-eclipse-plugin">
@@ -776,6 +788,16 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
                 class="com.gitlab.eclipse.views.webview.actions.OpenFlowBuilderHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                class="com.gitlab.eclipse.chat.commands.ShowAgenticChatHistoryHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                class="com.gitlab.eclipse.chat.commands.StartNewAgenticConversationHandler"
         />
 
         <handler
@@ -1434,6 +1456,17 @@
                     commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
                     label="Open Duo Agent Platform"
                     tooltip="Open the GitLab Duo Agent Platform view"/>
+
+            <!-- Design §7.5: this menu too, and deliberately not chatSelectorMenu. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                    label="Agentic Chat History"
+                    tooltip="Show the GitLab Duo Agentic Chat conversation history"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                    label="New Agentic Conversation"
+                    tooltip="Start a new GitLab Duo Agentic Chat conversation"/>
 
             <command
                     commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
