@@ -3,6 +3,7 @@ package com.gitlab.eclipse.views.webview
 import com.gitlab.eclipse.lsp.webview.ThemeProvider
 import com.gitlab.eclipse.lsp.webview.WebviewLoadCoordinator
 import com.gitlab.eclipse.lsp.webview.WebviewLoadPipeline
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
@@ -13,23 +14,35 @@ import org.eclipse.swt.widgets.Control
 /**
  * The SWT side of a webview surface. Design §7.2.
  *
- * It bundles the sinks a [WebviewLoadPipeline] drives and calls [load]; the branching and the
- * ordering are the pipeline's. Every member here is confined to the UI thread (design §15).
+ * It bundles the sinks a [WebviewLoadPipeline] drives and calls [load]. Which outcome reaches which
+ * sink, and in what order, is entirely the pipeline's. The conditionals that remain here are
+ * widget-local and decide nothing about an outcome: the two guards that turn a `Browser` refusal
+ * into the throw design §7.2b reads as failure, the loading page's construction fallback, the
+ * shown/hidden choice that is the whole of `setLoadingVisible`, and [newBrowser]'s platform
+ * choice. Every member here is confined to the UI thread (design §15).
  *
- * [coordinator] is taken rather than a ready-made [WebviewLoadPipeline] because the pipeline's
- * sinks are this object's own widgets. One coordinator belongs to one pipeline: a shared one would
- * let two surfaces advance each other's generation, and design §7.2a's `Superseded` means "a newer
- * load owns *this* surface".
+ * [coordinator] is taken rather than a ready-made [WebviewLoadPipeline], which cannot exist before
+ * the widgets its sinks capture: a deviation from design §7.2's listing. One coordinator still
+ * belongs to exactly one pipeline (design §7.2a).
  */
 class WebviewBrowserHost(
   parent: Composite,
   coordinator: WebviewLoadCoordinator,
   setTitle: (String) -> Unit,
 ) {
+  private val logger = logger<WebviewBrowserHost>()
+
   private val stackLayout = StackLayout()
   private val container = Composite(parent, SWT.NONE).apply { layout = stackLayout }
 
-  private val loadingPage = newBrowser().apply { setText(themedHtml("Loading...")) }
+  /**
+   * A refusal here is recorded rather than raised: throwing would abort the caller's
+   * `createPartControl` and cost the whole surface, where this page is transient and a blank one
+   * costs at most an empty background while a load runs.
+   */
+  private val loadingPage = newBrowser().apply {
+    if (!setText(themedHtml("Loading..."))) logger.warn("The browser refused the loading page.")
+  }
   private val messagePage = newBrowser()
   private val contentPage = newBrowser()
 
@@ -41,14 +54,15 @@ class WebviewBrowserHost(
 
   private val pipeline = WebviewLoadPipeline(
     coordinator = coordinator,
+    // Design §7.2b makes a throw the only way either of these two can report that its page is not
+    // on screen, so a refused `Browser` call is raised rather than dropped. Design §17 keeps the
+    // url out of the message.
     showUrl = { url ->
-      // Design §7.2b makes a throw the only way to report that the url is not on screen, so a
-      // refused setUrl is raised rather than dropped. Design §17 keeps the url out of the message.
       if (!contentPage.setUrl(url)) error("The browser refused the resolved url.")
       show(contentPage)
     },
     showMessage = { text ->
-      messagePage.setText(themedHtml(text))
+      if (!messagePage.setText(themedHtml(text))) error("The browser refused the message page.")
       show(messagePage)
     },
     setTitle = setTitle,
