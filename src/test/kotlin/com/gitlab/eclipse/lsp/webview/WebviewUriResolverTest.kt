@@ -10,14 +10,28 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.objenesis.ObjenesisStd
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 private const val WEBVIEW_ID = "root/mcp"
+
+/**
+ * Builds a [WebviewInfo] the way lsp4j's Gson deserialization does: allocated without calling the
+ * constructor (so the declared non-null [WebviewInfo.title] / [WebviewInfo.uris] can genuinely be
+ * `null` at runtime, unlike a normal Kotlin construction call, which Gson bypasses).
+ */
+private fun webviewInfoWithNullFields(id: String): WebviewInfo {
+  val info = ObjenesisStd().newInstance(WebviewInfo::class.java)
+  val idField = WebviewInfo::class.java.getDeclaredField("id").apply { isAccessible = true }
+  idField.set(info, id)
+  return info
+}
 
 class WebviewUriResolverTest : DescribeSpec({
   extensions(LoggingKotestExtension)
@@ -31,6 +45,11 @@ class WebviewUriResolverTest : DescribeSpec({
   fun await(future: CompletableFuture<WebviewResolution>) = future.get(2, TimeUnit.SECONDS)
 
   beforeEach {
+    // The verification-call history on `languageServer` persists across tests within the spec
+    // (Kotest's default SingleInstance isolation shares the mock); clear it here so
+    // `verify(exactly = ...)` below is never order-dependent on which test ran before it.
+    // `answers = false` keeps the per-test `every { ... }` stubs untouched — only clears history.
+    clearMocks(languageServer, answers = false)
     every { wrapper.currentSnapshot } returns handle
   }
 
@@ -114,7 +133,17 @@ class WebviewUriResolverTest : DescribeSpec({
       result shouldBe WebviewResolution.NoUri(WEBVIEW_ID)
     }
 
-    it("resolves the first uri, carrying the session captured at request start rather than read at apply time") {
+    it("resolves a known id to its title and first advertised uri") {
+      every { languageServer.webviewMetadata() } returns CompletableFuture.completedFuture(
+        listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1", "gitlab://webview/mcp/2"))),
+      )
+
+      val result = await(resolver.resolve(WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.Resolved(WEBVIEW_ID, "MCP", "gitlab://webview/mcp/1", session)
+    }
+
+    it("carries the session captured at request start, not the one current when the future completes") {
       val metadataFuture = CompletableFuture<List<WebviewInfo?>?>()
       every { languageServer.webviewMetadata() } returns metadataFuture
 
@@ -124,15 +153,11 @@ class WebviewUriResolverTest : DescribeSpec({
       // The Language Server restarts mid-flight: a new session becomes current before the
       // in-flight request's metadata future completes. §7.1a: the result must still carry
       // the session that was current when the request STARTED, not the one current now.
-      val restartedHandle = LanguageServerHandle(mockk(), LanguageServerSession())
-      every { wrapper.currentSnapshot } returns restartedHandle
+      every { wrapper.currentSnapshot } returns LanguageServerHandle(mockk(), LanguageServerSession())
 
-      metadataFuture.complete(
-        listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1", "gitlab://webview/mcp/2"))),
-      )
+      metadataFuture.complete(listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1"))))
       val result = await(future)
 
-      result shouldBe WebviewResolution.Resolved(WEBVIEW_ID, "MCP", "gitlab://webview/mcp/1", session)
       (result as WebviewResolution.Resolved).session shouldBeSameInstanceAs session
     }
 
@@ -143,6 +168,19 @@ class WebviewUriResolverTest : DescribeSpec({
 
       future.isCompletedExceptionally shouldBe false
       await(future).shouldBeInstanceOf<WebviewResolution.Failed>()
+    }
+
+    it("resolves Failed instead of hanging when the advertised entry has Gson-nulled fields") {
+      // lsp4j deserializes WebviewInfo with Gson, which allocates without calling the
+      // constructor: title/uris can be null at runtime despite their non-null declared type.
+      // A6 must hold even then — the returned future must complete (with Failed), not hang.
+      every { languageServer.webviewMetadata() } returns CompletableFuture.completedFuture(
+        listOf(webviewInfoWithNullFields(WEBVIEW_ID)),
+      )
+
+      val result = await(resolver.resolve(WEBVIEW_ID))
+
+      result.shouldBeInstanceOf<WebviewResolution.Failed>()
     }
   }
 })
