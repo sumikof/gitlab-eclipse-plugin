@@ -405,7 +405,7 @@ class WebviewLoadPipeline(
   val displayedSession: LanguageServerSession?
 }
 
-/** SWT。薄い殻。sink を束ねて applier に渡すだけ。分岐を持たない。 */
+/** SWT。薄い殻。sink を束ねて pipeline に渡すだけ。分岐も順序制御も持たない。 */
 class WebviewBrowserHost(parent: Composite, private val pipeline: WebviewLoadPipeline) {
   fun load(id: String, queryParams: Map<String, String> = emptyMap())  // UI スレッド
   fun setFocus(): Boolean
