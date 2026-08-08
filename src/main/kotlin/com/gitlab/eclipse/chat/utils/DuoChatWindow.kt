@@ -79,16 +79,19 @@ fun refreshDuoChatWindow() {
 /**
  * Reveals the Duo Chat view, or reports why it could not be.
  *
- * Both `null` returns are design §12's `showView` row. They are reported here rather than in each
- * caller so the callers cannot drift apart, which is what `ShowAgenticTabsHandler` /
- * `ShowMcpDashboardHandler` / `OpenFlowBuilderHandler` each do once for their own surface.
- * **This raised both from `warn` to `error` and added the notification**, so the classic Duo Chat
- * commands that predate this file's agentic callers now report a failure they used to record
- * quietly.
+ * All three ways this can fail are design §12's `showView` row and all three report through both
+ * channels: no active page, `showView` throwing, and a part that is not the expected type. They are
+ * reported here rather than in each caller so the callers cannot drift apart, which is what
+ * `ShowAgenticTabsHandler` / `ShowMcpDashboardHandler` / `OpenFlowBuilderHandler` each do once for
+ * their own surface.
  *
- * A `PartInitException` thrown out of `showView` is *not* caught here. It propagates to the
- * workbench's command dispatch, which logs it — one channel, not §12's two. That is a gap this
- * function does not close.
+ * **The first and third were raised from `warn` to `error` and gained the notification**, so the
+ * classic Duo Chat commands that predate this file's agentic callers now report a failure they used
+ * to record quietly.
+ *
+ * The second — `showView`'s declared `PartInitException` — was previously left to propagate.
+ * Catching it adds four instructions to the success path (a `nop`, a `goto` and a slot copy, none
+ * with an observable effect) and closes the row rather than two of its three causes.
  */
 private fun showDuoChatView(): LanguageServerBrowserView? {
   val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
@@ -97,7 +100,17 @@ private fun showDuoChatView(): LanguageServerBrowserView? {
     return null
   }
 
-  val view = page.showView(VIEW_ID) as? LanguageServerBrowserView
+  val part = try {
+    page.showView(VIEW_ID)
+  } catch (e: Exception) {
+    // Wider than the declared `PartInitException`, for the reason the three webview handlers give:
+    // part creation can fail with a `RuntimeException`, and to the user that is the same failure.
+    // Design §17: the type only — never the exception, whose message is outside our control.
+    reportCannotShow("type=${e.javaClass.name}")
+    return null
+  }
+
+  val view = part as? LanguageServerBrowserView
   if (view == null) {
     reportCannotShow("'$VIEW_ID' did not resolve to LanguageServerBrowserView")
   }

@@ -6,6 +6,7 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.just
@@ -22,6 +23,7 @@ import org.eclipse.ui.IViewPart
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPage
 import org.eclipse.ui.IWorkbenchWindow
+import org.eclipse.ui.PartInitException
 import org.eclipse.ui.PlatformUI
 import org.osgi.framework.Bundle
 
@@ -35,7 +37,7 @@ private const val FAILURE_MESSAGE = "Could not open GitLab Duo Chat. See the Err
  * lazy top-level val: whichever `ILog` it resolves on first use is the one it keeps for the rest of
  * the JVM, so a per-test replacement would only be honoured by the first test. Only this spec ever
  * runs `showDuoChatView` for real — every other spec stubs the enclosing window functions — so this
- * spec is what resolves it; and were that ever to stop being true, the two reporting tests below
+ * spec is what resolves it; and were that ever to stop being true, the three reporting tests below
  * would fail on an empty list rather than pass vacuously.
  *
  * The two-argument `error` is deliberately left unstubbed on this strict mock, so attaching an
@@ -91,6 +93,19 @@ class DuoChatWindowTest : DescribeSpec({
 
       errors shouldHaveSize 1
       errors.first() shouldContain "did not resolve to LanguageServerBrowserView"
+      verify(exactly = 1) { NotificationUtils.show(FAILURE_MESSAGE) }
+    }
+
+    // Design §12: the cause `showView` actually declares. Design §17: the type, never the
+    // exception — a PartInitException's message is the platform's, not ours, to constrain.
+    it("reports through both channels when showView throws, naming the type only") {
+      every { page.showView(any()) } throws PartInitException("file:///home/alice/secret-project.yml")
+
+      openDuoChatWindow()
+
+      errors shouldHaveSize 1
+      errors.first() shouldContain "type=org.eclipse.ui.PartInitException"
+      errors.first() shouldNotContain "secret-project"
       verify(exactly = 1) { NotificationUtils.show(FAILURE_MESSAGE) }
     }
 
