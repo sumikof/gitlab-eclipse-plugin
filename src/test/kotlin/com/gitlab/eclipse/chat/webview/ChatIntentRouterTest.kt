@@ -14,7 +14,16 @@ private const val UNRELATED = "root-mcp"
 private const val HISTORY = "history"
 
 private val USER_PROMPT = NewPromptRequest(prompt = "explain this")
-private val FOCUS_CHAT = NewPromptRequest(prompt = ChatIntentRouter.FOCUS_CHAT_PROMPT)
+
+/**
+ * Spelled out rather than built from [ChatIntentRouter.FOCUS_CHAT_PROMPT], which would compare the
+ * constant with itself and stay green when its value changes. This is a wire value the classic
+ * webview on the other side expects, so the literal is the assertion.
+ *
+ * The `CLASSIC` / `AGENTIC` ids above are deliberately NOT spelled out: there the property is
+ * "matches whatever the catalog advertises", so the catalog constant is what the test should follow.
+ */
+private val FOCUS_CHAT = NewPromptRequest(prompt = "focusChat")
 
 /** Every intent pending at once, so a test names only the one thing it is about. */
 private val ALL = PendingChatIntents(
@@ -25,9 +34,11 @@ private val ALL = PendingChatIntents(
 
 class ChatIntentRouterTest : DescribeSpec({
 
-  // A10 (design §21). Every test in this block is keep-behaviour: it pins what
-  // LanguageServerBrowserView.flushPendingIntents already did before the agentic intent existed,
-  // and is green on both sides of that change.
+  // A10 (design §21). Every test in this block is keep-behaviour: it encodes what
+  // LanguageServerBrowserView.flushPendingIntents did inline before the agentic intent existed.
+  // "Encodes", not "was run against": ChatIntentRouter did not exist on the far side of that
+  // change, so these tests cannot ever have been executed against the old code. That the encoding
+  // is faithful was established by reading the old call site, and nothing here re-checks it.
   describe("classic intents (keep-behaviour, A10)") {
 
     it("keep-behaviour: turns a focus request into a focusChat prompt when classic is shown") {

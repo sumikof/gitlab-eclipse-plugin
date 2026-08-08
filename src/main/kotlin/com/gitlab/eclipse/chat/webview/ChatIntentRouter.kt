@@ -40,8 +40,8 @@ object ChatIntentRouter {
    *
    * An intent is routed only when the webview it addresses is the one shown, so a command aimed at
    * one surface is never handed to the other's client. An intent that is not routed is simply
-   * absent from the result; dropping it is the caller's job, and design §7.4 has the caller drop
-   * all of them whether or not they were routed.
+   * absent from the result; dropping it is the caller's job, under the rule stated on
+   * `LanguageServerBrowserView.flushPendingIntents`.
    */
   fun route(shownId: String?, intents: PendingChatIntents): List<ChatIntentAction> = buildList {
     if (shownId == ChatWebviewCatalog.CLASSIC_WEBVIEW_ID) {
