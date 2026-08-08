@@ -38,8 +38,9 @@ class GitLabLanguageServerWrapper {
    * Clears the current connection only while it is still [captured].
    *
    * [captured] must be the very handle the caller registered, not one rebuilt from the same proxy
-   * and session: the comparison is by reference. Returns whether the connection was cleared; false
-   * means a newer one had already taken over and nothing was touched.
+   * and session: the comparison is by reference. Returns whether the connection was cleared. False
+   * means [captured] was no longer the current connection and nothing was touched — either a newer
+   * one had taken over, or an explicit stop had already cleared the snapshot.
    */
   fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean =
     snapshot.compareAndSet(captured, null)

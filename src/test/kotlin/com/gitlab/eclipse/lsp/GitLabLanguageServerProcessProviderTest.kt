@@ -110,7 +110,8 @@ private class FakeLanguageServerProcess(
     } catch (_: IOException) {
       // Pipes closed by destroy(): the fake server is gone.
     } catch (_: InterruptedException) {
-      // Woken while waiting on the gate: the spec is finishing.
+      // Declared by the gate's await(). Nothing in the suite interrupts this daemon thread; the
+      // catch is here so that ending the responder is the answer if anything ever does.
     }
   }.apply {
     isDaemon = true
