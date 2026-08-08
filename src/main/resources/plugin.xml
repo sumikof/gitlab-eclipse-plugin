@@ -279,6 +279,12 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                name="Open GitLab Duo Agent Platform"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ReplyToThread"
                 name="Reply"
                 categoryId="gitlab-eclipse-plugin">
@@ -444,6 +450,15 @@
               category="gitlab-eclipse-plugin"
               class="com.gitlab.eclipse.views.sidebar.GitLabSidebarView"
               name="GitLab"
+              icon="icons/notification.png"
+              inject="true"
+        />
+
+        <!-- `name` is the title the language server advertises for the `agentic-tabs` webview. -->
+        <view id="com.gitlab.eclipse.views.webview.AgenticTabsView"
+              category="gitlab-eclipse-plugin"
+              class="com.gitlab.eclipse.views.webview.AgenticTabsView"
+              name="GitLab Duo Agent Platform"
               icon="icons/notification.png"
               inject="true"
         />
@@ -734,6 +749,11 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
                 class="com.gitlab.eclipse.handlers.RestartLanguageServerHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                class="com.gitlab.eclipse.views.webview.actions.ShowAgenticTabsHandler"
         />
 
         <handler
@@ -1372,6 +1392,12 @@
                     commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
                     label="Open MCP Workspace Configuration"
                     tooltip="Create/open the workspace-level GitLab Duo MCP config"/>
+
+            <!-- Design §7.5: this menu, and deliberately not chatSelectorMenu. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                    label="Open Duo Agent Platform"
+                    tooltip="Open the GitLab Duo Agent Platform view"/>
 
             <command
                     commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
