@@ -243,8 +243,9 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
     }
 
-    // A34 (design §21): the platform log can be gone while the workbench is stopping, which is the
-    // one throw that still escapes applying an outcome.
+    // A34 (design §21): the platform log can be gone while the workbench is stopping, and the log
+    // writes inside `settle`'s `try` block are deliberately left able to throw, so that is what
+    // still escapes applying an outcome and reaches the `finally`.
     it("hides the loading page even when the log that records a sink failure throws") {
       captureLog(failing = true)
       val fixture = Fixture()
@@ -313,9 +314,9 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
     }
 
-    // The mirror of the A34 (design §21) case below, one layer down: the coordinator has no
-    // `finally`, so a dead platform log there would leave its outcome uncompleted and this
-    // pipeline's loading page up for good.
+    // The A34 (design §21) dead-log case one layer down: the coordinator has no `finally`, so a
+    // dead platform log there would leave its outcome uncompleted and this pipeline's loading page
+    // up for good.
     it("hides the loading page even when the log that records a resolution failure throws") {
       captureLog(failing = true)
       val fixture = Fixture()
@@ -326,11 +327,26 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
     }
 
-    // The same, for the one log entry that is written before there is any `finally` to contain it.
+    // The same, for one of the two log writes `beginLoad` can reach. Neither is covered by
+    // `settle`'s `finally`: `beginLoad` runs before that `try`/`finally` is entered at all.
     it("starts the load even when the log that records a failed stable-content probe throws") {
       captureLog(failing = true)
       val fixture = Fixture()
       fixture.sinks.stableContentFailure = IllegalStateException("the stack layout is gone")
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.argsOf(SHOW_URL) shouldContainExactly listOf(BASE_URI)
+    }
+
+    // The other one, and the harder of the two to file correctly: `setLoading` is reached from
+    // `beginLoad` and from `settle`'s own `finally`, and a `finally` does not contain a throw
+    // raised inside itself.
+    it("starts the load even when the log that records a failed loading toggle throws") {
+      captureLog(failing = true)
+      val fixture = Fixture()
+      fixture.sinks.setLoadingFailure = IllegalStateException("the stack layout is gone")
       fixture.resolvesWith(fixture.resolvedTo())
 
       fixture.pipeline.load(WEBVIEW_ID, emptyMap())
@@ -349,8 +365,8 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.sinks.argsOf(SHOW_URL) shouldContainExactly listOf(BASE_URI)
     }
 
-    // A32 (design §21): design §7.2c's mechanism 1 expires the applications already in flight when
-    // dispose runs, so a load that only starts afterwards rests entirely on mechanism 2.
+    // A32 (design §21): the shell is already gone when the load starts and `dispose` is never
+    // called, so neither the generation nor the entry refusal applies — only mechanism 2 is left.
     it("touches no sink for a load started after the shell is gone") {
       val fixture = Fixture()
       fixture.sinks.alive = false

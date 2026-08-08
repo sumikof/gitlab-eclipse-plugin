@@ -19,7 +19,7 @@ class WebviewLoadPipeline(
   private val setTitle: (String) -> Unit,
   /** Whether a url or a message page is already applied. The loading page is not one. Design §7.2a. */
   private val hasStableContent: () -> Boolean,
-  /** Shows and hides the loading page. Contracted not to throw. Design §7.2b. */
+  /** Shows and hides the loading page. Design §7.2b contracts it not to throw; nothing here relies on that. */
   private val setLoadingVisible: (Boolean) -> Unit,
   /**
    * Whether the shell is still usable. Design §7.2c, mechanism 2.
@@ -40,6 +40,12 @@ class WebviewLoadPipeline(
     data object NotApplied : ApplyResult
   }
 
+  /**
+   * Writing to this is a side channel and must never decide what the surface does. Only the writes
+   * inside [settle]'s `try` block are allowed to throw, because that block's `finally` contains
+   * them; every other write is wrapped. The line is the `try` block, not [settle] — [setLoading] is
+   * called from both sides of it, and a `finally` does not contain a throw raised inside itself.
+   */
   private val logger = logger<WebviewLoadPipeline>()
 
   /**
@@ -185,8 +191,14 @@ class WebviewLoadPipeline(
     try {
       setLoadingVisible(visible)
     } catch (t: Throwable) {
-      // §7.2b: contracted not to throw, and swallowed rather than trusted.
-      logger.warn("Webview '$id': the loading page could not be toggled: type=${t.javaClass.name}")
+      // §7.2b: contracted not to throw, and swallowed rather than trusted. Recording it is wrapped
+      // for the same reason the sink call is: this runs from `beginLoad`, which nothing covers, and
+      // from `settle`'s own `finally`, which does not contain a throw raised inside itself.
+      try {
+        logger.warn("Webview '$id': the loading page could not be toggled: type=${t.javaClass.name}")
+      } catch (_: Throwable) {
+        // There is nowhere left to record this: the log is the thing that failed.
+      }
     }
   }
 

@@ -8,13 +8,22 @@ import java.util.concurrent.CompletableFuture
 /**
  * Decides what a webview surface should display, and nothing else. Design §7.2 / §8.1.
  *
- * [onUiThread] is how a decision gets back onto the thread that owns the surface — design §8.1 puts
- * `asyncExec` here, and this class stays free of SWT so that design §20's headless TDD applies.
- * Its own state is confined to that thread (design §15).
+ * This class stays free of SWT so that design §20's headless TDD applies; its state is confined to
+ * the thread [onUiThread] marshals onto (design §15).
  */
 class WebviewLoadCoordinator(
   private val resolver: WebviewUriResolver,
   private val wrapper: GitLabLanguageServerWrapper,
+  /**
+   * How a decision gets back onto the thread that owns the surface. Design §8.1 puts `asyncExec`
+   * here.
+   *
+   * **It may fail only when the display it marshals onto is already gone** — which is the one way
+   * `Display.asyncExec` fails. That failure is deliberately not guarded: it leaves [load]'s future
+   * uncompleted, which would strand a caller's loading page, except that a disposed display has
+   * taken that page with it, so the symptom is unreachable rather than merely unlikely. A
+   * marshaller that can fail for any other reason breaks that argument and must not be passed here.
+   */
   private val onUiThread: (() -> Unit) -> Unit,
 ) {
   /** Design §7.2. */
@@ -34,7 +43,7 @@ class WebviewLoadCoordinator(
 
   private val logger = logger<WebviewLoadCoordinator>()
 
-  /** Design §7.2a. Advanced by every [load]; only the newest load may produce a side effect. */
+  /** Design §7.2a. Advanced by every [load]; a decision made for any older one is [Outcome.Superseded]. */
   private var generation = 0L
 
   fun load(id: String, queryParams: Map<String, String>): CompletableFuture<Outcome> {
