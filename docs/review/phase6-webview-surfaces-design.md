@@ -252,10 +252,17 @@ languageServerWrapper.registerLanguageServer(handle)   // ② 次に snapshot �
 ```
 
 - **handle は 1 度だけ生成し、同じインスタンスを両方に渡す。** `registerLanguageServer` は `(proxy, session)` ではなく **`handle` を受け取る**(内部生成しない)。
-- **① が ② より先**であること。逆順だと ①-② 間に `onExit` が走ったとき解除できない。① が先の場合、`onExit` は「handle は見えるが snapshot は未公開」を観測しうるが、そのとき CAS は失敗し**何もしない**のが正しい(未公開のものは解除対象ではなく、② の直後に `stopLocked` 経路が処理する)。
+- **① が ② より先**であること。**ただし round 5 で書いた「①-② 間に `onExit` が走る」という論拠は誤りだった(round 6 で訂正)。**
+  - **実際のロック順序**: `start`(`:71`)と `restart`(`:84`)は `startLocked` 全体を `synchronized(lifecycleLock)` で囲み、`onExit` callback(`:129`)も**同じロックを取る**。したがって ①-② の間にプロセスが終了しても callback はロック解放まで待ち、**①-② の窓は production の `onExit` からは到達不能**である。
+  - **CAS が必要な本当の理由は初期化 callback である。** `initializeResult.handleAsync`(`:165-193`)は**ロックの外**で走り(`synchronized` は `process !== startedProcess` の判定だけを囲む)、`err != null` 分岐にはロックが一切ない。**ここだけが restart と真に並行しうる。**
+  - **①→② の順序を保つ意味**: 「snapshot が公開されているなら `handleRef` は必ず set 済み」という不変条件を、**ロックに依存せずに**成立させる(初期化 callback はロックを持たないため、この不変条件がロック由来だと当てにできない)。
 - `handleRef` は **`AtomicReference`**(ローカル変数の直接キャプチャにしない。別スレッドから読むため happens-before が要る)。
 
-**A26 / A28 に、各公開境界(① の前 / ① と ② の間 / ② の後)で `onExit` を発火させるテストを含める。**
+**A26 / A28 は到達可能な順序だけを固定する(round 6 で修正)。** 到達不能な ①-② 窓をテストしようとすると、production callback からは観測できず、callback を直接呼ぶ形にすると §20a の入口規約に反する。**固定するのは次の 3 つ。**
+
+1. **実 `Process.onExit()` を `startLocked` の実行中に発火させる** → ロック解放後に callback が走り、snapshot が失効する。
+2. **`startLocked` が例外を投げる** → `restart` の catch が `stopLocked()`(`:103`/`:108`)で**無条件** `unregisterLanguageServer()` を先に実行し、**後から走る `onExit` の CAS は失敗して新しい状態を壊さない**。
+3. **初期化失敗 callback(ロック外)と restart の並行** → **CAS が B の snapshot を守る**。**この 3 番目が CAS の存在理由そのもの**であり、1・2 はロックで直列化されている。
 
 **可視性(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
 
@@ -301,9 +308,14 @@ languageServerWrapper.registerLanguageServer(handle)   // ② 次に snapshot �
 
 ```kotlin
 sealed interface WebviewResolution {
-  /** [session] = 要求開始時に捕捉した LS proxy。適用側が同一性を照合する(§7.1a) */
+  /**
+   * [session] = **要求開始時に捕捉した LS セッション identity**(`wrapper.currentSnapshot!!.session`)。
+   * 適用側が `wrapper.currentSnapshot?.session` と**参照比較**する(§7.1a)。
+   * proxy ではなく session を持つ: proxy 比較と session 比較の 2 方式に分かれると、
+   * 発信元 identity(§6a)と解決結果の判定が食い違い stale URI 防止が崩れる。
+   */
   data class Resolved(
-    val id: String, val title: String, val uri: String, val session: GitLabLanguageServer,
+    val id: String, val title: String, val uri: String, val session: LanguageServerSession,
   ) : WebviewResolution
   /** languageServer が null / webviewMetadata() が null future を返した */
   data object LanguageServerUnavailable : WebviewResolution
@@ -697,7 +709,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 - **世代カウンタ(latest-wins)は `asyncExec` の中で再チェックする。** `whenComplete` の時点でのチェックでは、キューイングと実行の間に新しい `load()` が走った場合を取りこぼす。
 - **世代とは別に LS セッションを照合する(§7.1a)。** 世代は新しい `load()` が無ければ上がらないため、**LS 再起動をまたぐ競合は世代では捕まらない。** 2 つは異なる競合を守っており、片方で他方を代替できない。
 - 複数ウィンドウ: `WebviewEditorOpener` は**アクティブページのみ**を見る(§8.1)。key が内容を含むため、他ウィンドウの同一 key タブは同一内容であり更新の必要が無い。**初版の「全 window/page を走査して再ロード」は撤回した**(別ウィンドウのタブに別の内容を配信していた)。
-- `appReady` は LS のディスパッチスレッドから届く(`PluginMessageService.dispatch` が `CompletableFuture.supplyAsync`。`PluginMessageService.kt:12`)。`markReady()` は **UI スレッドへマーシャルしてから**状態を触る。
+- `appReady` は LS のディスパッチスレッドから届く(`PluginMessageService.dispatch` が `CompletableFuture.supplyAsync`。`PluginMessageService.kt:12`)。`markReady(session)` は **UI スレッドへマーシャルしてから**状態を触る(`session` はバスから運ばれた発信元 identity。§6a)。
 - **`markNotReady()` と遅延 `appReady` の競合**: `syncBrowsers` のリセットが走る前に旧セッションの `appReady` が UI キューに入っていることがある。**§6a で伝播された発信元 identity がこれを受ける**(旧 `LanguageServerSession` は `wrapper.currentSnapshot?.session` と一致しないので latch を開けない)。**処理時に現在値を読み直す形では判別できない**(round 1 の誤り。§7.1a)。リセット単独でも閉じない。
 - **予約済み再送 callback**: `commandGeneration` により、後続コマンド・`markNotReady()`・セッション変更のいずれでも失効する(§7.4a)。callback は実行時に世代とセッションの**両方**を再照合する。
 
@@ -720,7 +732,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 |---|---|
 | メタデータ解決失敗 | コマンドを再実行(自動リトライなし) |
 | LS 再起動 | 次回のコマンドで再解決。**開いたままのタブは、表示内容が旧セッション由来と判定されたときに再 `load` される**(§8.1)。同一セッションなら画面内状態を保つため `activate` のみ |
-| `switchView` 未配送 | 通知を見てコマンドを再実行。webview が ready になっていれば即送信される |
+| `switchView` 未配送(F-b) | **通知は出ない**(観測不能なため。§7.4 / §12 / L-9)。**画面が切り替わらないことを利用者が確認した場合にコマンドを再実行する。** そのときは既に ready なので確実に届く |
 | Browser 生成失敗(SWT) | Error Log。ビュー / エディタを閉じて開き直す |
 
 ## 19. 既存機能への影響
@@ -731,7 +743,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `ChatSelectionResolver` / `ChatAvailabilityService` | **無変更** |
 | `GitLabDuoChatWebViewClient`(classic) | **無変更** |
 | `LanguageServerBrowserView` | フィールド 1・メソッド 1 の追加、`flushPendingIntents` の引数型変更、`syncBrowsers` に `markNotReady()` の呼び出し 2 箇所。**classic の 2 つの intent の挙動は不変** |
-| `AgenticChatWebViewController` | `appReady()` の本体が `Unit` から `markReady()` へ |
+| `AgenticChatWebViewController` | `appReady()` → **`appReady(session: LanguageServerSession)`**(バスから受け取った発信元 identity をそのまま `markReady(session)` へ渡す)。**処理時に current session を読む overload を足さないこと** — 旧 A の遅延通知が B の latch を開く既指摘の競合が再発する |
 | `plugin.xml` | 追加のみ(commands / handlers / menus / views / editors) |
 | **`PluginMessageService` / `PluginRegistry` / `PluginController`** | **§6a: `dispatch` に第 3 引数、登録の引数制約を緩和。既存 4 形状の挙動は不変**(A1b / A1c で固定) |
 | **`GitLabLanguageServerClient`** | `val session` を持ち、4 つの `dispatch` に渡す |
@@ -818,8 +830,9 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A9 | `pending` が 2 件以上溜まらない(latest-wins) | TDD |
 | A10 | classic の 2 つの intent の挙動が不変 | keep-behaviour ラベル付きテスト |
 | A11 | 解決した URI とユーザーのファイルパスがログに現れない | 実装レビュー + テスト |
-| A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入) |
-| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | TDD(`titleFor` が null を返す) |
+| A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入)。**単独タイマの通常経路のみ** |
+| A12b | **旧世代タイマの失効**: ready 前に `history` → 9 秒後に `newConversation` → **10 秒後に発火する旧タイマが新しい `pending` を破棄せず、通知も出さない**。新しい 10 秒の猶予が維持される | TDD。**`commandGeneration` の照合を削除する変異で、A12 は緑のまま A12b だけが落ちること**(§20a 規約 2) |
+| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | **純関数 `titleFor` だけを検査しない**(§20a 規約 1)。タイトル適用先をシーム化し、**production の解決結果適用入口から失敗分岐を駆動して `setPartName` が呼ばれないこと**まで検査する。**`titleFor` 呼び出しの削除 / 条件反転の変異出力を要求する** |
 | A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
 | A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | **純ビルダだけを検査しない**(§20a 規約 1)。ビルダ単体テストに加え、**`WebviewBrowserHost.load(id, queryParams)` に `Resolved` を返した結果として Browser に渡される最終 URL** をシーム経由で検査する。**ビルダ呼び出しの削除 / 直接連結への変異で落ちること**(A23 / A27 も同じビルダなので同様に扱う) |
 | A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD |
