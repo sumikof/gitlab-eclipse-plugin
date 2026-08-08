@@ -34,8 +34,15 @@ class AgenticChatWebViewClient(
   /** The connection whose webview reported itself ready, or null while the latch is closed (§7.1a). */
   private var readySession: LanguageServerSession? = null
 
+  /**
+   * A view waiting for the latch, together with the connection it was issued on. Design §11's
+   * premise is that work started on one connection is not applied to another, and the view alone
+   * cannot say which one it started on. Null [origin] means there was no connection at the time.
+   */
+  private data class PendingView(val view: String, val origin: LanguageServerSession?)
+
   /** One slot, latest-wins (design §7.4). */
-  private var pending: String? = null
+  private var pending: PendingView? = null
 
   /** Design §7.4a. Every callback scheduled below captures it and re-checks it when it runs. */
   private var commandGeneration: Long = 0
@@ -56,8 +63,9 @@ class AgenticChatWebViewClient(
       return
     }
 
-    pending = view
-    armReadinessDeadline(snapshot?.session)
+    val waiting = PendingView(view, snapshot?.session)
+    pending = waiting
+    armReadinessDeadline(waiting.origin)
   }
 
   /**
@@ -79,11 +87,18 @@ class AgenticChatWebViewClient(
     // the new connection, and would deliver to it.
     commandGeneration++
 
-    val view = pending ?: return
+    val waiting = pending ?: return
+    // The guard above says the *sender* is current; it says nothing about where the waiting view
+    // came from. A view issued on a connection that has since been replaced is discarded on exactly
+    // the condition the deadline's quiet outcome uses, so the two agree. A view issued while no
+    // connection was current belongs to none, so any connection may carry it — that is why the
+    // deadline reports it undelivered when it expires rather than refusing to deliver it at all.
+    if (waiting.origin != null && waiting.origin !== snapshot.session) return discardQuietly()
+
     pending = null
     // Scheduled before the send, not after: see [deliver].
-    scheduleResend(view, commandGeneration, RESENDS)
-    deliver(view, snapshot.proxy)
+    scheduleResend(waiting.view, commandGeneration, RESENDS)
+    deliver(waiting.view, snapshot.proxy)
   }
 
   /** Closes the latch for a webview that was just (re)created and has yet to report itself ready. */
@@ -92,8 +107,11 @@ class AgenticChatWebViewClient(
     commandGeneration++
     // A view that is still waiting keeps waiting, so it needs a deadline again: the generation
     // above has just expired the one it had, and nothing else guarantees it reaches a terminal
-    // state (design §12's language-server-session-mismatch row).
-    if (pending != null) armReadinessDeadline(wrapper.currentSnapshot?.session)
+    // state (design §12's language-server-session-mismatch row). The deadline is re-armed on the
+    // connection the view was issued on, not on whichever is current now — that is what the
+    // deadline's outcomes are written against.
+    val waiting = pending ?: return
+    armReadinessDeadline(waiting.origin)
   }
 
   private fun armReadinessDeadline(captured: LanguageServerSession?) {

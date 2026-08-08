@@ -238,6 +238,33 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.sentViews.shouldBeEmpty()
     }
 
+    // Design §11: the latch opening for a connection does not make a view issued on the previous
+    // one deliverable. The guard on the sender cannot see this — it compares the sender with the
+    // current connection, and here they are the same one.
+    it("does not deliver a waiting view to a connection other than the one it was issued on") {
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.appReadyArrives(from = fixture.sessionB)
+
+      fixture.sentViews.shouldBeEmpty()
+    }
+
+    // The other half of that condition: a view issued while nothing was current belongs to no
+    // connection, so the one that arrives may carry it. The deadline reports such a view undelivered
+    // only once it expires, which is not the same as refusing to deliver it in time.
+    it("delivers a waiting view that was issued while no connection was current") {
+      val fixture = Fixture()
+      fixture.current(null)
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionA)
+      fixture.appReadyArrives(from = fixture.sessionA)
+
+      fixture.sentViews shouldContainExactly listOf(HISTORY)
+    }
+
     it("hands the work to the UI thread instead of doing it on the dispatch thread") {
       val fixture = Fixture()
       val queued = mutableListOf<Runnable>()
@@ -261,6 +288,20 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.client.switchView(HISTORY)
 
       fixture.sentViews.shouldBeEmpty()
+    }
+
+    // The re-armed deadline is the waiting view's, so it is judged against the connection that view
+    // was issued on. Reading whichever connection is current instead would report a view whose own
+    // connection had been replaced as undelivered, which is the quiet outcome's condition.
+    it("re-arms on the connection the waiting view was issued on") {
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.client.markNotReady()
+      fixture.timers.fire(1)
+
+      fixture.notifications.shouldBeEmpty()
     }
 
     it("re-arms the readiness deadline of a view that is still waiting") {
@@ -470,7 +511,23 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.notifications.shouldBeEmpty()
     }
 
-    // A12c (design §21), property 2: quiet is not the same as unfinished.
+    // A12c (design §21), property 2: quiet is not the same as unfinished. Probed through the
+    // re-arm, which happens only for an occupied slot, because the delivery-based probe below no
+    // longer reaches this: the origin check in `markReady` refuses a stranded view on its own, so a
+    // quiet outcome that left one behind would look identical from there.
+    it("leaves nothing in the slot when another connection became current") {
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.timers.fire(0)
+      fixture.client.markNotReady()
+
+      fixture.timers.scheduled shouldHaveSize 1
+    }
+
+    // A12c (design §21), property 2, from the delivery side. Kept because it states the property in
+    // the terms that matter — nothing is sent later — but see the test above for what pins it now.
     it("still discards the waiting view when another connection became current") {
       val fixture = Fixture()
 
