@@ -184,6 +184,63 @@ AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEdit
 - `com.gitlab.eclipse.chat.webview` … `AgenticChatWebViewClient`(既存 `GitLabDuoChatWebViewClient` と同居)
 - `com.gitlab.eclipse.chat.commands` / `.actions` … 各ハンドラ
 
+## 6a. LS セッション identity — 共有基盤への変更(**round 2 で追加。スコープ拡大**)
+
+### 6a.1 何が欠けているか(実コードで確認)
+
+`appReady` がホストに届くまでの経路に、**発信元セッションを示す情報が 1 つも無い**:
+
+| 箇所 | 現状 |
+|---|---|
+| `GitLabLanguageServerClient.gitlabPluginNotification`(`:149-160`) | `PluginMessage(pluginId, type, payload)` のみを `dispatch` へ渡す |
+| `PluginMessageService.dispatch(route, payload)`(`:11`) | 引数は 2 つ。`CompletableFuture.supplyAsync` で**別スレッドへ跳ぶ**(`:12`) |
+| `PluginMessageRoute(pluginId, type, method)` | 接続 identity を持たない |
+| `PluginRegistry`(`:26-52`) | `parameterCount > 1` を `error()` で禁止 |
+
+したがって controller 側で「現在の proxy」を読むしかなく、それでは旧セッションの通知を判別できない。
+
+### 6a.2 セッション identity の所在
+
+**`GitLabLanguageServerClient` は LS 起動ごとに新規生成される**(`GitLabLanguageServerProcessProvider.kt:150` の `.setLocalService(GitLabLanguageServerClient())`)。**インスタンスの寿命がそのままセッションの寿命**なので、これを identity の担い手にできる。
+
+controller に client 型そのものを漏らさないため、識別専用の空の型を置く:
+
+```kotlin
+/** 1 つの Language Server 接続の identity。状態を持たず、参照同一性だけが意味を持つ。 */
+class LanguageServerSession
+```
+
+`GitLabLanguageServerClient` が自身の `val session = LanguageServerSession()` を持ち、4 つの `dispatch` 呼び出しすべてに渡す。
+
+### 6a.3 「現在のセッション」の公開(原子的に)
+
+`GitLabLanguageServerWrapper` は現在 companion object の `languageServerProxy` 1 つだけを保持する(`:3-18`)。**proxy と session を別々のフィールドにすると、2 回読む側が `(新 proxy, 旧 session)` を観測しうる。** そこで**単一の不変スナップショットとして公開**する:
+
+```kotlin
+data class LanguageServerHandle(val proxy: GitLabLanguageServer, val session: LanguageServerSession)
+
+val currentSnapshot: LanguageServerHandle?      // 追加
+val languageServer: GitLabLanguageServer?       // 既存。currentSnapshot?.proxy を返す(呼び出し元は無変更)
+fun registerLanguageServer(proxy, session)      // 1 回の代入で組を公開
+fun unregisterLanguageServer()                  // 既存
+```
+
+`registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、`client.session` を一緒に渡す。**既存の `languageServer` プロパティは維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
+
+### 6a.4 バスでの伝播
+
+- `PluginMessageService.dispatch(route, payload, session: LanguageServerSession?)` — 第 3 引数を追加。
+- `PluginRegistry` の引数制約を「**payload 1 つ**、または **payload + `LanguageServerSession`**、または **`LanguageServerSession` のみ**、または**引数なし**」に緩める。判定は**末尾引数の型が `LanguageServerSession` か**で行う(名前ではなく型)。
+- **既存の controller は 1 つも変わらない。** 現行のハンドラはすべて引数 0 か 1(payload のみ)であり、新しい分岐に入らない。
+
+### 6a.5 このスコープ拡大に対する注意
+
+**これは classic Duo Chat も通る共有基盤である。** 「既存への変更は 3 点のみ」という初版の制約は崩れる。したがって:
+
+- **`PluginRegistry` の登録分岐と `PluginMessageService.dispatch` には keep-behaviour テストを必須とする**(既存の 4 形状 — 引数なし通知 / payload つき通知 / 引数なし要求 / payload つき要求 — が**現在とまったく同じように**解決されること)。
+- **`parameterCount > 1` の `error()` を緩めるため、「複数引数の誤ったハンドラが黙って登録される」方向に穴が開いていないか**を明示的に固定する(末尾が `LanguageServerSession` でない 2 引数メソッドは**従来どおり `error()`**)。
+- 受け入れ条件 A1 を更新する(`ChatWebviewCatalog` 等 4 つの差分ゼロは維持。`PluginMessageService` / `PluginRegistry` / `PluginController` / `GitLabLanguageServerClient` / `GitLabLanguageServerWrapper` / `GitLabLanguageServerProcessProvider` は**変更されるが、既存経路の挙動は不変**)。
+
 ## 7. コンポーネントの責務
 
 ### 7.1 `WebviewUriResolver`(SWT フリー・唯一の共有ロジック)
@@ -209,21 +266,24 @@ sealed interface WebviewResolution {
 fun resolve(id: String): CompletableFuture<WebviewResolution>   // 例外完了しない契約
 ```
 
-#### 7.1a LS セッションの捕捉と照合(**必須**)
+#### 7.1a LS セッションの捕捉と照合(**必須。round 2 で全面改稿**)
 
-`resolve` は **要求開始時に `wrapper.languageServer` を 1 度だけ読み、その proxy 参照を `Resolved.session` に載せる**。適用側(`WebviewBrowserHost` / `AgenticChatWebViewClient`)は、UI スレッドで結果を適用する直前に
+**round 1 の形は誤りだった。** 初版は「適用時に `resolution.session !== wrapper.languageServer` を照合する」とし、readiness 側も `markReady(現在の LS proxy)` としていた。**後者は原理的に機能しない**: `appReady` を処理する時点で「現在の proxy」を読めば、旧セッションから来た通知であっても常に一致する。**照合が必ず通るため、実質 no-op だった。** さらに、受け入れ条件 A17 はテストから旧 proxy を直接渡す形だったので、**production が壊れたままでもテストは緑になる**(Phase 5B が繰り返し指摘した非識別的テスト)。
 
-```kotlin
-if (resolution.session !== wrapper.languageServer) return   // 旧セッションの結果は捨てる
-```
+根本原因は、**通知の発信元セッションがバス上のどこにも載っていない**ことである(§6a で確認)。
 
-を必ず行う(**参照比較**。`equals` ではない)。
+**修正: 発信元 identity をバスに載せて controller まで運ぶ。** 詳細は §6a。resolver と client は以下のようになる。
+
+- `resolve` は **要求開始時に `wrapper.currentSnapshot`(proxy と session の原子的な組)を 1 度だけ読み**、`snapshot.proxy` に要求を出し、`snapshot.session` を `Resolved.session` に載せる。
+  - **proxy と session を別々に読まない。** 2 回読むと、その間の再起動で `(新 proxy, 旧 session)` の組ができる。Phase 4 の config 世代 seqlock が閉じたのと同型の穴である。
+- 適用側は UI スレッドで `resolution.session !== wrapper.currentSnapshot?.session` なら破棄する(**参照比較**。`equals` ではない)。
+- `AgenticChatWebViewClient.markReady(session)` の `session` は、**`appReady` を運んできた接続の identity**(§6a で伝播される値)であり、処理時に読み直した現在値ではない。
 
 **なぜ必要か**: 世代カウンタは新しい `load()` が起きたときにしか上がらない。インスタンス A で開始した `webviewMetadata()` が飛行中に LS が再起動(インスタンス切替・`RestartLanguageServer`)すると、**新しい `load()` が無い限り世代は一致したままで、A 時代の URI が B のタブへ適用される。** 資格情報の漏洩が無くても、死んだ URI を表示するだけで機能不全になる。
 
 **既存の前例がある**: `LanguageServerWebviewService.sendThemeChange(server)`(`:26-41`)は同じ理由で「**呼び出し時に捕捉した proxy** に副作用を束縛」しており、その KDoc(`:28-31`)は「rapid restart が queued send を新しい pre-initialize なサーバへ向け直さないようにする」と明記している。`GitLabLanguageServerProcessProvider` も `onExit` に**プロセス同一性ガード(参照比較 `===`)** を持つ(Phase 2 PR-3)。本設計はこの確立済みのパターンを踏襲する。
 
-**同じ照合を `AgenticChatWebViewClient` の readiness にも適用する**(§7.4)。`ready` latch がセッションを跨ぐと、旧 webview の遅延 `appReady` が新セッションの latch を開け、**B の webview が ready になる前に B へ `switchView` を送る**。
+**ただし前例との決定的な差**: 上記 2 例はいずれも**自分が発信した**呼び出しの identity を捕捉している(捕捉点で正しい値が手に入る)。`appReady` は**相手から届く**通知であり、捕捉点が存在しない。だから伝播が要る。round 1 はこの差を見落として前例をそのまま当てはめていた。
 
 **設計判断**
 
@@ -289,18 +349,37 @@ class WebviewBrowserHost(parent: Composite, private val resolver: WebviewUriReso
 
 #### 7.3a `uri` クエリの組み立て規則(**必須・round 1 で追加**)
 
-「解決した URI に `uri=<ファイル URI>` を付ける」だけでは実装が分かれる。**文字列連結を禁止し、以下を規定する。**
+「解決した URI に `uri=<ファイル URI>` を付ける」だけでは実装が分かれる。
 
-1. **URI-aware なビルダを使う。** `java.net.URI` の multi-argument コンストラクタ(`URI(scheme, authority, path, query, fragment)`)は query 値を**一度だけ**符号化する。`resolvedUri + "?uri=" + fileUri` のような連結は行わない。
-2. **既存の query を保存する。** LS が発行する URI が既に query を持つ場合、`uri` を**追加**する(置換しない)。参照実装も `new URL(...)` + `searchParams.append` で追加している(`setup_webviews.ts:116-119`)。
-3. **fragment を保存する。** query を足す際に既存 fragment を落とさない。
-4. **同名 parameter**: LS の URI に既に `uri` がある場合でも**削除・上書きしない**(こちらが後勝ちになる前提を置かない)。`append` のセマンティクスに揃える。
-5. **符号化は 1 回だけ。** ファイル URI(既に percent-encoded な `file:///...`)を query 値として入れる際、`%` が二重符号化されないこと。
+**round 1 の指定(`URI(scheme, authority, path, query, fragment)` に query 全体を渡す)は誤りだった。** この JDK で実測した結果:
+
+```
+new URI("http","h","/p","a=%26b",       null) → http://h/p?a=%2526b
+new URI("http","h","/p","uri=file:///x%20y",null) → http://h/p?uri=file:///x%2520y
+```
+
+multi-argument コンストラクタは query 引数中の `%` を `%25` に量子化する。したがって:
+
+- **raw の既存 query を渡すと** `%26` が `%2526` になり、**既存 parameter の値が変わる。**
+- **decode 済みの query を渡すと** 値の中の `%26` が `&` に戻り、**parameter 境界になってしまう。**
+- 「符号化は 1 回だけ」を最終 URI 文字列に対して適用するという round 1 の言い方も誤りで、**query 値に入れる `file:///...%20...` の `%` は外側では `%25` にしなければならない。**
+
+**したがって規則を以下に置き換える。**
+
+1. **既存の raw query と raw fragment はそのまま保存する。** `URI.getRawQuery()` / `getRawFragment()` を使い、**decode も再符号化もしない**。
+2. **追加する `uri` の値だけを RFC 3986 の query component として一段符号化する。** `unreserved`(`ALPHA` / `DIGIT` / `-` `.` `_` `~`)以外はすべて percent-encode。とくに `%` → `%25` / `&` → `%26` / `=` → `%3D` / `#` → `%23` / 半角空白 → `%20` / `+` → `%2B`。非 ASCII は **UTF-8 バイト列**を percent-encode。
+3. **連結は文字列で行う**: `base` + (`rawQuery == null` ? `"?"` : `"?" + rawQuery + "&"`) + `"uri=" + encodedValue` + (`rawFragment != null` ? `"#" + rawFragment` : `""`)。**multi-argument `URI` コンストラクタは使わない。**
+4. **同名 parameter**: LS の URI に既に `uri` があっても**削除・上書きしない**(`append` のセマンティクス。参照実装 `setup_webviews.ts:116-119` も `searchParams.append`)。
+5. **`java.net.URLEncoder` は使わない。** あれは `application/x-www-form-urlencoded` であり、**半角空白を `+` にする**。query component の符号化とは別物である。
 6. **ファイル URI の取得元**: アクティブエディタの `IFileEditorInput.file.locationURI`(存在しない場合は `IURIEditorInput.uri`)。取得できなければ前提条件違反として §12 の通知経路へ。
 
-**壊れる文字の受け入れテスト**(headless で実施可能 = 純ロジック): ファイル名に `&` / `#` / `=` / `?` / 半角空白 / 非 ASCII(日本語)/ `+` / `%` を含む YAML パス。これらで URI が分断されないこと、および復号すると元の値に戻ることを固定する。
+**受け入れテスト(headless・純ロジック)**
 
-> **既存の前例**: Phase 2 の `PathSegmentEncoder`(RFC 3986 セグメント単位)と `SearchQueryBuilder`(form encode)が同種の問題を扱っている。**どちらもそのままでは使えない**(前者はセグメント用、後者は form 用)ため、query 値としての符号化は本設計で新たに規定する。実装時に既存 2 者と取り違えないこと。
+- ファイル名に `&` / `#` / `=` / `?` / 半角空白 / 非 ASCII(日本語)/ `+` / `%` を含む YAML パス → URI が分断されず、`uri` の値を復号すると元に戻る。
+- **LS の URI が既に `%26` / `%3D` / `%25` を含む query を持つ場合** → **その値が 1 バイトも変化しない**(round 2 の指摘に対応する識別的テスト。round 1 の実装指定ならここで落ちる)。
+- LS の URI が fragment を持つ場合 → fragment が保存され、query の後ろに来る。
+
+> **既存の前例**: Phase 2 の `PathSegmentEncoder`(RFC 3986 セグメント単位)と `SearchQueryBuilder`(form encode)。**どちらもそのままでは使えない**(前者はセグメント用、後者は form 用で空白が `+`)。query component の符号化は本設計で新たに規定する。実装時にこの 2 つと `URLEncoder` の 3 者を取り違えないこと。
 
 **エディタ領域の配置**: 参照実装は `root/flow` を `ViewColumn.Beside` で開く(`setup_webviews.ts:50-59`)。Eclipse には `Beside` の直接対応が無く、Phase 4 PR-4 も同じ理由で **E2「Beside 不可 = 通常タブ」**として通常タブを採用した。同じ判断を踏襲する。
 
@@ -340,14 +419,35 @@ class AgenticChatWebViewClient(
   private val onUndelivered: (String) -> Unit,
   private val scheduleTimer: (Long, Runnable) -> Unit,   // シーム。既定は Display.timerExec
 ) {
-  private var readySession: GitLabLanguageServer? = null  // §7.1a: latch はセッション付き
+  private var readySession: LanguageServerSession? = null // §7.1a: latch はセッション付き
   private var pending: String? = null                     // 1 スロット・latest-wins
+  private var commandGeneration: Long = 0                 // §7.4a: 予約済み callback の失効に使う
 
-  fun switchView(view: String)   // ready かつ同一セッションなら送信+再送予約、でなければ pending
-  fun markReady(session: GitLabLanguageServer)            // appReady 受信時
-  fun markNotReady()                                      // Browser 新規作成 / URI 変更 / LS 再起動
+  fun switchView(view: String)                  // 世代++ 。ready かつ同一セッションなら送信+再送予約
+  fun markReady(session: LanguageServerSession) // appReady を「運んできた接続」の identity(§6a)
+  fun markNotReady()                            // 世代++ 。Browser 新規作成 / URI 変更 / LS 再起動
 }
 ```
+
+#### 7.4a 予約済み callback の失効(**round 2 で追加**)
+
+初版の再送にはコマンド世代が無く、**予約済みの再送 callback が値を捕捉したまま生き残っていた。** その結果:
+
+> `history` を実行 → 送信 + 再送を予約 → その数百 ms 以内に `newConversation` を実行 → `newConversation` が送られる → **しかし残っていた `history` の再送が後から届き、ユーザーを履歴に引き戻す。**
+
+これは L-10(ユーザーの手動移動)とは別物で、**2 つの正規のコマンド間で latest-wins が破れている**。`pending` には latest-wins を効かせながら、**再送スケジュールには効かせていなかった**ための欠陥である。
+
+**規則**:
+
+- `switchView` / `markNotReady` / **セッション変更**のいずれでも `commandGeneration` を進める。
+- 予約された callback は自分の `gen` を捕捉し、**実行時に 3 つすべてを再照合する**: (1) `gen == commandGeneration`、(2) `readySession != null`、(3) `readySession === wrapper.currentSnapshot?.session`。1 つでも外れたら**何もせず終了**(送信も通知もしない)。
+- 世代は単調増加。`markNotReady()` は世代を進めるので、**リセット後に古い再送列が復活する解釈は存在しない。**
+
+**テストで固定する操作列**(受け入れ条件 A18・A20):
+
+1. `history` → 再送予約 → `newConversation` → **`history` の再送が 1 回も送られない**
+2. `history` → 再送予約 → `markNotReady()` → **再送が 1 回も送られない**
+3. `history` → 再送予約 → セッション変更 → **再送が 1 回も送られない**
 
 **F-b への対処 = 境界つき再送**
 
@@ -360,8 +460,8 @@ class AgenticChatWebViewClient(
 **その他の規則**
 
 - **キューは 1 スロット・latest-wins。** `switchView` はビューセレクタであり、古い指示を後から配送する意味がない。classic の無制限 `MutableList`(`GitLabDuoChatWebViewClient.kt:10`)とは**意図的に変える**。
-- `AgenticChatWebViewController.appReady()`(現在 `= Unit`)が `markReady(現在の LS proxy)` を呼ぶ。**`PluginMessageService.dispatch` は `supplyAsync` で別スレッド実行(`:12`)なので、UI スレッドへマーシャルしてから状態を触る。**
-- **latch はセッション付き**(§7.1a)。`switchView` 送信前に `readySession === wrapper.languageServer` を照合する。**旧セッションの遅延 `appReady` が新セッションの latch を開けない。**
+- `AgenticChatWebViewController.appReady(session)` (現在は引数なしで `= Unit`)が `markReady(session)` を呼ぶ。**`session` は §6a でバスから伝播された発信元 identity であり、処理時に読み直した現在値ではない。** `PluginMessageService.dispatch` は `supplyAsync` で別スレッド実行(`:12`)なので、UI スレッドへマーシャルしてから状態を触る。
+- **latch はセッション付き**(§7.1a)。`markReady` は伝播された `session` を `readySession` に格納し、`switchView` の送信前に `readySession === wrapper.currentSnapshot?.session` を照合する。**旧セッションの遅延 `appReady` は伝播された identity が古いので、そもそも latch を開けない。**
 - **latch のリセット点**: `LanguageServerBrowserView.syncBrowsers`(`:200-227`)が agentic id の `Browser` を**新規作成した時**と **URI を差し替えた時**。セッション照合と併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 - 送信は `ExtensionToPluginNotification(pluginId = AGENTIC_WEBVIEW_ID, type = "switchView", payload = mapOf("view" to view))`。
 
@@ -393,7 +493,8 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
   └─ key = (webviewId, queryParams) を構築
   └─ WebviewEditorOpener.openOrReload(input)         [UI スレッド]
        ├─ (1) アクティブページに key 一致のエディタがあるか
-       │        └─ あり → activate して終了(内容は同じなので再ロード不要)
+       │        ├─ あり かつ host の表示内容が現セッション由来 → activate のみ
+       │        └─ あり かつ 別セッション由来 → activate + host.load(...) で再解決
        └─ (2) 無ければ activePage.openEditor(input, EDITOR_ID)
                 └─ WebviewEditorPart.createPartControl
                      └─ WebviewBrowserHost.load(id, params)
@@ -406,6 +507,14 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
 ```
 
 **分岐は「アクティブページ上の一致」でのみ判定する**(初版は「全 window/page の一致」と「アクティブページでの可視化」を混在させており、他ウィンドウに一致があるとき起動元にタブが開かない読みが成立していた)。他ウィンドウに同じ key のタブがあっても**触らない**: 内容が同一なので更新の必要が無く、他ウィンドウのユーザーの表示を勝手に動かす理由も無い。
+
+**「内容が同じ」と「URI が現セッション由来」は別である(round 2 で追加)。** round 1 で key に内容を含めた際、「一致 = 同じ内容 → 再ロード不要」と単純化したが、これは**新しい経路を開いていた**:
+
+> `root/mcp`(または同じ YAML の `root/flow`)のタブを開いたまま LS を再起動 → 同じコマンドを再実行 → key が一致するので `activate` だけで終了 → **旧 LS の死んだ URI が残り続ける。**
+
+しかもこれは **§18 の「LS 再起動 → 次回のコマンドで新しい URI に解決」および実機検証項目 8 と正面から矛盾していた**(どちらも旧設計のまま更新し忘れていた)。
+
+→ **`WebviewBrowserHost` は現在表示している内容がどのセッション由来かを保持する**(`load` が `Resolved` を適用したときの `resolution.session`)。`openOrReload` はそれを問い合わせ、**現セッションと異なるときだけ再 `load` する**。同一セッションなら `activate` のみ(webview の画面内状態を無意味に捨てない)。§18 と実機検証項目 8 もこの形に合わせて修正した。
 
 **`MergedYamlEditorOpener` との差**: あちらは同一 key の内容が更新されうる(再 lint)ため全ページの再 reset が要る。こちらは key が内容を含むので、同一 key = 同一内容であり、**全ページ走査そのものが不要**になる。この違いを実装時に取り違えないこと。
 
@@ -518,7 +627,8 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 - **世代とは別に LS セッションを照合する(§7.1a)。** 世代は新しい `load()` が無ければ上がらないため、**LS 再起動をまたぐ競合は世代では捕まらない。** 2 つは異なる競合を守っており、片方で他方を代替できない。
 - 複数ウィンドウ: `WebviewEditorOpener` は**アクティブページのみ**を見る(§8.1)。key が内容を含むため、他ウィンドウの同一 key タブは同一内容であり更新の必要が無い。**初版の「全 window/page を走査して再ロード」は撤回した**(別ウィンドウのタブに別の内容を配信していた)。
 - `appReady` は LS のディスパッチスレッドから届く(`PluginMessageService.dispatch` が `CompletableFuture.supplyAsync`。`PluginMessageService.kt:12`)。`markReady()` は **UI スレッドへマーシャルしてから**状態を触る。
-- **`markNotReady()` と遅延 `appReady` の競合**: `syncBrowsers` のリセットが走る前に旧セッションの `appReady` が UI キューに入っていることがある。**セッション照合がこれを受ける**(旧 proxy は `wrapper.languageServer` と一致しないので latch を開けない)。リセット単独では閉じない。
+- **`markNotReady()` と遅延 `appReady` の競合**: `syncBrowsers` のリセットが走る前に旧セッションの `appReady` が UI キューに入っていることがある。**§6a で伝播された発信元 identity がこれを受ける**(旧 `LanguageServerSession` は `wrapper.currentSnapshot?.session` と一致しないので latch を開けない)。**処理時に現在値を読み直す形では判別できない**(round 1 の誤り。§7.1a)。リセット単独でも閉じない。
+- **予約済み再送 callback**: `commandGeneration` により、後続コマンド・`markNotReady()`・セッション変更のいずれでも失効する(§7.4a)。callback は実行時に世代とセッションの**両方**を再照合する。
 
 ## 16. 認証と認可
 
@@ -538,7 +648,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | 事象 | 復旧 |
 |---|---|
 | メタデータ解決失敗 | コマンドを再実行(自動リトライなし) |
-| LS 再起動 | 次回のコマンドで新しい URI に解決。エディタは同じ key なので再ロード |
+| LS 再起動 | 次回のコマンドで再解決。**開いたままのタブは、表示内容が旧セッション由来と判定されたときに再 `load` される**(§8.1)。同一セッションなら画面内状態を保つため `activate` のみ |
 | `switchView` 未配送 | 通知を見てコマンドを再実行。webview が ready になっていれば即送信される |
 | Browser 生成失敗(SWT) | Error Log。ビュー / エディタを閉じて開き直す |
 
@@ -552,7 +662,13 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `LanguageServerBrowserView` | フィールド 1・メソッド 1 の追加、`flushPendingIntents` の引数型変更、`syncBrowsers` に `markNotReady()` の呼び出し 2 箇所。**classic の 2 つの intent の挙動は不変** |
 | `AgenticChatWebViewController` | `appReady()` の本体が `Unit` から `markReady()` へ |
 | `plugin.xml` | 追加のみ(commands / handlers / menus / views / editors) |
+| **`PluginMessageService` / `PluginRegistry` / `PluginController`** | **§6a: `dispatch` に第 3 引数、登録の引数制約を緩和。既存 4 形状の挙動は不変**(A1b / A1c で固定) |
+| **`GitLabLanguageServerClient`** | `val session` を持ち、4 つの `dispatch` に渡す |
+| **`GitLabLanguageServerWrapper`** | `currentSnapshot` を追加。**既存の `languageServer` プロパティは維持**(既存呼び出し元は無変更) |
+| **`GitLabLanguageServerProcessProvider`** | `:150` の client をローカルに束ね、`:157` の `registerLanguageServer` に session を併せて渡す(**1 回の代入で原子的に公開**) |
 | `build.gradle.kts` / `detekt.yml` | **差分ゼロ** |
+
+**round 2 でスコープが拡大した。** 初版の「既存への変更は 3 点のみ」は成立しない。拡大先は `appReady` の発信元 identity という**そもそも欠けていた情報**であり、classic Duo Chat も通る共有バスに触れる。§6a.5 の keep-behaviour テストを必須とする。
 
 **`flushPendingIntents` は既存テストが注入している関門である。** 引数型を変えるため、Phase 5B で 3 回起きた「関門を動かすとテストが緑のまま何も覆わなくなる」の再発点になる。§20 の再監査を必須とする。
 
@@ -568,7 +684,12 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `flushPendingIntents` の agentic 分岐 + classic 2 経路の keep-behaviour | ✅ | 既存テストへの追加 |
 | `WebviewBrowserHost` / `WebviewEditorPart` / `AgenticTabsView` / `WebviewEditorOpener` | ❌ | **手動検証手順**(PR 本文) |
 
-**セッション競合のテスト(headless で可能・必須)**: `WebviewUriResolver` が捕捉した proxy と `wrapper.languageServer` が**異なる**状態を MockK で作り、(1) `WebviewBrowserHost` の適用が破棄されること、(2) 旧セッションの `markReady` が latch を開けないこと、を独立した 2 テストで固定する。**世代を変えずに**行うこと(世代で代替できないことがこのテストの主張である)。
+**共有基盤の keep-behaviour テスト(§6a.5・必須)**: `PluginRegistry` の登録分岐と `PluginMessageService.dispatch` を変更するため、**既存 4 形状が現在とまったく同じに解決されること**を keep-behaviour ラベル付きで固定する。あわせて「末尾が `LanguageServerSession` でない 2 引数メソッドは従来どおり `error()`」を固定し、制約を緩めた方向に穴が開いていないことを示す。
+
+**セッション競合のテスト(headless で可能・必須)**
+
+1. `WebviewUriResolver` が捕捉した `snapshot.session` と `wrapper.currentSnapshot?.session` が**異なる**状態を MockK で作り、`WebviewBrowserHost` の適用が破棄されること(A16)。**世代を変えずに**行う — 世代で代替できないことがこのテストの主張である。
+2. **旧セッションの `appReady` が latch を開けないこと(A21)。** **`markReady` を直接呼ぶ形にしない。** production と同じ経路(`dispatch` に旧 `LanguageServerSession` を渡し、controller 経由で `markReady` に届く)で検査する。**round 1 の A17 はテストが旧 proxy を直接渡す形だったため、production が現在値を読んでいても緑になった。同じ形にしないこと。**
 
 **Phase 5B から持ち越す規約(実装ブリーフに明記する)**
 
@@ -584,6 +705,8 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | # | 条件 | 検証 |
 |---|---|---|
 | A1 | `ChatWebviewCatalog` / `ChatSelectionResolver` / `ChatAvailabilityService` / `GitLabDuoChatWebViewClient` の差分がゼロ | `git diff` |
+| A1b | **`PluginRegistry` / `PluginMessageService` の既存 4 形状**(引数なし通知 / payload つき通知 / 引数なし要求 / payload つき要求)**が現在とまったく同じに解決される** | keep-behaviour ラベル付きテスト(§6a.5) |
+| A1c | **末尾が `LanguageServerSession` でない 2 引数ハンドラは従来どおり `error()`** | TDD |
 | A2 | `build.gradle.kts` と `detekt.yml` の差分がゼロ | `git diff` |
 | A3 | `plugin.xml` に削除行がゼロ | `git diff --numstat` |
 | A4 | `.md` の差分がゼロ(ドキュメント非コミット運用) | `git diff` |
@@ -599,8 +722,12 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
 | A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | TDD(§20 の文字集合) |
 | A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD |
-| A17 | **旧 LS セッションの `appReady` が latch を開けない** | TDD |
+| A17 | ~~旧 LS セッションの `appReady` が latch を開けない~~ → **A21 に差し替え**(round 1 の A17 は「テストから旧 proxy を直接渡す」形で、production が壊れたままでも緑になる非識別的テストだった) | — |
 | A18 | **F-b の再送が有限回で打ち切られ、打ち切り時に通知経路を呼ばない** | TDD |
+| A20 | **予約済み再送が、後続コマンド / `markNotReady()` / セッション変更のいずれでも 1 回も送信されない** | TDD(§7.4a の 3 操作列) |
+| A21 | **旧セッションで発信された `appReady` が latch を開けない**(発信元 identity で判定。処理時の現在値ではない) | TDD。**production と同じ経路で `dispatch` に旧 session を渡して検査する** |
+| A22 | **LS 再起動後、開いたままのタブが再解決される**(同一セッションなら再 `load` しない) | TDD(`WebviewEditorOpener` の判定部分を SWT フリーに切り出す) |
+| A23 | **既存 query の `%26` / `%3D` / `%25` が 1 バイトも変化しない** | TDD(round 1 の実装指定ならここで落ちる) |
 | A19 | `1645 + 新規` / `36 failed` / `FAILSET_IDENTICAL` / detekt 0 | `verify.sh` |
 
 **実機でのみ検証可能な項目(PR 本文に手動検証手順として記載)**
@@ -612,7 +739,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 5. **Duo Chat ビューを閉じた状態から `showHistoryView` → 履歴が表示される**(= §5.3a の競合を再送が覆えている)
 6. Duo Chat ビューが開いて agentic 表示中に `showHistoryView` → 即座に切り替わる
 7. LS 未起動状態で各コマンド → message ページ / 通知が出る(無反応にならない)
-8. LS 再起動後に同じコマンド → 新しい URI で再ロードされる
+8. **`root/mcp` のタブを開いたまま LS を再起動 → 同じコマンドを実行 → 新しい URI で再ロードされる**(タブが残っていても死んだ URI のままにならない。round 2 で発見した経路)
 9. ワークベンチ再起動後に webview エディタタブが復元されない
 10. **ウィンドウ A で YAML-1 の Flow Builder を開いた状態で、ウィンドウ B から YAML-2 の Flow Builder を開く** → **B に YAML-2 のタブが開き、A の YAML-1 タブは変化しない**(§7.3 の key 変更が効いている。**初版はここで A が黙って YAML-2 に置き換わっていた**)
 11. 同じ YAML から 2 回 `gl.openFlowBuilder` → タブが増えず、既存タブが前面に来る
@@ -659,7 +786,10 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | R5 | SWT コードが headless で一切検証できない | 実機でのみ露見 | 実装 `opus` × レビュー `fable`(SWT・UI スレッド担当)+ 手動検証 14 項目 |
 | R6 | `org.eclipse.ui.editors` 拡張の新規追加で実機のみの解決失敗 | エディタが開かない | 依存は既に Require-Bundle 済み(`build.gradle.kts:177`)。Phase 4 PR-2 の `org.eclipse.core.expressions` と同型の罠がないことを確認済み |
 | R7 | ワークベンチ再起動時にエディタが復元され死んだ URI を指す | 壊れたタブ | `getPersistable() = null` + `exists() = false`。受け入れ条件 A7・実機検証項目 9 |
-| R8 | **LS 再起動をまたぐ結果適用 / readiness 汚染** | 死んだ URI 表示・早すぎる `switchView` | **§7.1a のセッション捕捉と参照比較**。世代では代替できない。A16 / A17・実機検証項目 14 |
+| R8 | **LS 再起動をまたぐ結果適用 / readiness 汚染** | 死んだ URI 表示・早すぎる `switchView` | 解決側 = §7.1a のスナップショット捕捉。readiness 側 = **§6a の発信元 identity 伝播**(round 1 の「処理時に現在値を読む」形は no-op だった)。A16 / A21・実機検証項目 14 |
+| R10 | **§6a が共有バスを変更する**(classic Duo Chat も通る) | 既存 4 形状の解決が壊れると Duo Chat 全体が無音死 | A1b / A1c の keep-behaviour テスト。`parameterCount` 制約は**緩める方向**なので「誤ったハンドラが黙って登録される」側も固定する(§6a.5) |
+| R11 | **予約済み再送 callback の失効漏れ** | 後続コマンドが古い指示に引き戻される | §7.4a の `commandGeneration`。A20 の 3 操作列。**`pending` にだけ latest-wins を効かせて callback に効かせないのが round 1 の誤りだった** |
+| R12 | **開いたままのタブが旧セッションの URI を保持** | 死んだページが残る | §8.1 のセッション由来判定。A22・実機検証項目 8。**round 1 で key に内容を含めた修正が開いた経路** |
 | R9 | **`uri` クエリの直列化を実装者が文字列連結で書く** | 特殊文字を含むパスで別ファイルを開く / 初期化失敗 | §7.3a の規則 + A15 の文字集合テスト。既存 `PathSegmentEncoder` / `SearchQueryBuilder` は**流用できない**ことを明記済み |
 
 ## 25. 確認できた範囲と、追加情報がなければ判断できない事項
@@ -677,4 +807,5 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 - **LS の webview URI に認証材が含まれるか。** 含まれる前提で扱い、ログに一切出さない(§17)。この前提を緩めない。
 - **`root/mcp` / `root/flow` / `agentic-tabs` の webview アプリが、LS が公開していないホスト機能を必要とするか。** LS 側に転送経路が無い以上、ホストは経路の欠落要因になりえない。**仮に必要であっても VSCode 側も同じ状態であり、パリティは保たれる**(参照実装もこれらに handler を登録しない)。
+- **`LanguageServerSession` の伝播が classic Duo Chat の既存経路に与える影響。** 設計上は既存ハンドラの形状が新しい分岐に入らないため無変更だが、**これは keep-behaviour テスト(A1b / A1c)で経験的に示すべきものであり、設計書の主張だけでは足りない。**
 - **境界つき再送の回数と間隔の最適値。** 2 回 / 数百 ms は §5.3a の非対称(ホスト往復 vs 同一ソケット隣接送信)から見て十分に余裕があるという判断であり、実測に基づく値ではない。**実機検証項目 5 で妥当性を確認する。足りなければ回数を増やすのではなく、LS への ready 信号追加を上流に要求する。**
