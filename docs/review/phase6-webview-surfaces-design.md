@@ -170,7 +170,8 @@ var kz = class {
 ────────────────────────────────                ──────────────────────────────────────
 ChatWebviewCatalog                              WebviewUriResolver        (SWT フリー)
 LanguageServerBrowserView  ◀── §7.4 の intent 追加のみ
-GitLabDuoChatWebViewClient                      WebviewBrowserHost        (SWT・共有)
+GitLabDuoChatWebViewClient                      WebviewLoadCoordinator    (SWT フリー・決定)
+  (classic 専用・focus ゲート)                   WebviewBrowserHost        (SWT・薄い殻)
   (classic 専用・focus ゲート)                   ├─ AgenticTabsView       (ViewPart)
 AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEditorPart    (EditorPart)
                                                      + WebviewEditorInput / Key / Opener
@@ -180,6 +181,7 @@ AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEdit
 配置(ディレクトリ構成変更禁止のため既存パッケージ体系内):
 
 - `com.gitlab.eclipse.lsp.webview` … `WebviewUriResolver`(既存 `LanguageServerWebviewService` と同居)
+- `com.gitlab.eclipse.lsp.webview` … `WebviewLoadCoordinator`(SWT フリー。`WebviewUriResolver` と同居)
 - `com.gitlab.eclipse.views.webview` … `WebviewBrowserHost` / `AgenticTabsView` / `WebviewEditor*`
 - `com.gitlab.eclipse.chat.webview` … `AgenticChatWebViewClient`(既存 `GitLabDuoChatWebViewClient` と同居)
 - `com.gitlab.eclipse.chat.commands` / `.actions` … 各ハンドラ
@@ -260,9 +262,10 @@ languageServerWrapper.registerLanguageServer(handle)   // ② 次に snapshot �
 
 **A26 / A28 は到達可能な順序だけを固定する(round 6 で修正)。** 到達不能な ①-② 窓をテストしようとすると、production callback からは観測できず、callback を直接呼ぶ形にすると §20a の入口規約に反する。**固定するのは次の 3 つ。**
 
-1. **実 `Process.onExit()` を `startLocked` の実行中に発火させる** → ロック解放後に callback が走り、snapshot が失効する。
-2. **`startLocked` が例外を投げる** → `restart` の catch が `stopLocked()`(`:103`/`:108`)で**無条件** `unregisterLanguageServer()` を先に実行し、**後から走る `onExit` の CAS は失敗して新しい状態を壊さない**。
-3. **初期化失敗 callback(ロック外)と restart の並行** → **CAS が B の snapshot を守る**。**この 3 番目が CAS の存在理由そのもの**であり、1・2 はロックで直列化されている。
+1. **実 `Process.onExit()` を `startLocked` の実行中に発火させる** → ロック解放後に callback が走り、`process === startedProcess` が成立して snapshot が失効する。
+2. **`startLocked` が例外を投げる** → `restart` の catch が `stopLocked()`(`:103`/`:108`)を実行する。`stopLocked` は無条件 `unregisterLanguageServer()` を呼び、**`process = null` にする**(`:211`)。したがって**後から走る遅延 `onExit` は `process === startedProcess` の identity ガードで弾かれ、CAS どころか終了処理そのものに到達しない。** **固定するのは「遅延 `onExit` はガードで無視される」ことであり、CAS の成否ではない。**
+   - **round 6 に書いた「後から走る `onExit` の CAS は失敗して〜」は誤りだった(round 7 で訂正)。** この記述に従って production callback から駆動すると期待した CAS を観測できず、テストを通すために解除をガードの外へ出すと**設計外の終了処理を追加してしまう。**
+3. **初期化失敗 callback(ロック外)と restart の並行** → **CAS が B の snapshot を守る**。**CAS の競合確認はこの順序だけに割り当てる。** 1 はロックで直列化され、2 はガードで弾かれるため、**実際に並行しうるのはこの経路だけである。**
 
 **可視性(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
 
@@ -364,17 +367,38 @@ fun resolve(id: String): CompletableFuture<WebviewResolution>   // 例外完了�
 
 **なぜ共有するか**: ViewPart 側とエディタ側で必要なものが完全に一致する(Browser 生成の `SWT.EDGE`/`SWT.WEBKIT` 分岐、loading / message ページ、世代カウンタ、dispose ガード、失敗文言の写像)。2 箇所に書くと、Phase 5B が「同じ欠陥が複数箇所にあるならインスタンスではなくクラスとして閉じる」として最終的に到達した形の逆になる。
 
+**構造(round 7 で分離)**: §20a は production の入口から検査することを要求し、A15 / A16 は `load` の最終 URL と結果適用を対象にしている。**しかし SWT の `Composite` を要求するクラスは headless で生成できない。** そのまま放置すると「入口から検査せよ」と「入口は生成できない」が矛盾し、純ビルダ / 純判定だけへ後退すれば §20a を再び満たさなくなる。**したがって判断と適用を分離する。**
+
 ```kotlin
-class WebviewBrowserHost(parent: Composite, private val resolver: WebviewUriResolver) {
+/** SWT フリー。決定だけを行う production collaborator。headless で入口から検査できる。 */
+class WebviewLoadCoordinator(private val resolver: WebviewUriResolver, private val wrapper: ...) {
+  /** 世代++ して解決を開始し、結果を [Outcome] に落とす。SWT に触れない。 */
+  fun load(id: String, queryParams: Map<String, String>): CompletableFuture<Outcome>
+
+  sealed interface Outcome {
+    /** 適用すべき最終 URL(§7.3a のビルダ結果)とタブ名(§7.3 の titleFor) */
+    data class Show(val url: String, val title: String?) : Outcome
+    data class Message(val text: String) : Outcome
+    /** 世代不一致 / セッション不一致 / dispose 済み。何もしない */
+    data object Discard : Outcome
+  }
+}
+
+/** SWT。薄い殻。Outcome を Browser とタブ名へ適用するだけ。 */
+class WebviewBrowserHost(parent: Composite, private val coordinator: WebviewLoadCoordinator) {
   fun load(id: String, queryParams: Map<String, String> = emptyMap())  // UI スレッド
   fun setFocus(): Boolean
   fun dispose()
 }
 ```
 
+- **`WebviewLoadCoordinator` が A15 / A16 / A22 / A13 の production 入口**になる(headless で検査可能)。
+- `WebviewBrowserHost` に残るのは **`Outcome` の分岐 1 つと SWT 呼び出しだけ**で、手動検証で足りる薄さに保つ。**分岐やロジックをこちら側に足さないこと**(足した瞬間に検証できない領域が増える)。
+- この分離は Phase 4 の **SWT フリー `runCiLint`** と同型である(あちらも「決定は SWT フリー、適用は薄い殻」)。
+
 - Browser 生成は既存 `LanguageServerBrowserView.newBrowser`(`:324-327`)と同一の分岐(Windows = `SWT.EDGE`、他 = `SWT.WEBKIT`)。
 - message ページの HTML は既存 `themedHtml`(`:329-355`)と同一の形(`ThemeProvider.currentTheme()` の CSS 変数)。
-- **3 重ガード**: `whenComplete` → `asyncExec` の**中で**、(1) 世代一致、(2) `isDisposed`、(3) **§7.1a の LS セッション照合**をこの順に再チェックする。**(3) は (1) では代替できない**: 世代は新しい `load()` が無ければ上がらないため、飛行中に LS が再起動しても世代は一致したままになる(既存 `LanguageServerBrowserView.kt:114-116` は (1)(2) しか持たないが、あちらは feature-state 遷移と LS-ready フックが常に新しい `refresh()` を起こすため露出が小さい。本面にはその駆動源が無い)。
+- **3 重ガード**(`WebviewLoadCoordinator` が (1)(3) を、殻が (2) を担う): `whenComplete` → `asyncExec` の**中で**、(1) 世代一致、(2) `isDisposed`、(3) **§7.1a の LS セッション照合**をこの順に再チェックする。**(3) は (1) では代替できない**: 世代は新しい `load()` が無ければ上がらないため、飛行中に LS が再起動しても世代は一致したままになる(既存 `LanguageServerBrowserView.kt:114-116` は (1)(2) しか持たないが、あちらは feature-state 遷移と LS-ready フックが常に新しい `refresh()` を起こすため露出が小さい。本面にはその駆動源が無い)。
 - 失敗しても既存の生きた Browser を破棄しない(既存 `:117-126` と同じ方針)。
 
 ### 7.3 エディタ領域の面(`root/mcp` / `root/flow`)
@@ -545,6 +569,11 @@ class AgenticChatWebViewClient(
 - 規定が無いと次が起きる: ready 前に `history` を実行 → F-a タイマ開始 → **9 秒後**に `newConversation` を実行して新しい `pending` を置く → **10 秒後に最初のタイマが発火し、後から置かれた `newConversation` を破棄して誤ったエラー通知を出す。** これは §12 で避けると宣言した**偽陽性**そのものである。
 - 同様に、`markReady` 後に Browser が再作成されて新しい `pending` が置かれた場合も、旧タイマが残っていれば新しい要求を消す。
 - → **F-a タイマは §7.4a の予約済み callback と同じ規則に従う**(発火時に `gen == commandGeneration` を照合し、不一致なら**何もしない**)。`switchView` / `markReady` によるフラッシュ / `markNotReady()` はいずれも世代を進めるので、明示的な取消し API が無くても失効する。
+- **世代だけでは足りない。タイマは開始時の session も捕捉し、発火時に照合する(round 7 で追加)。**
+  - 世代が進む契機は `switchView` / `markReady` / `markNotReady` であり、`markNotReady` の呼び出し点は §7.4 のとおり **`syncBrowsers` が Browser を新規作成したか URI を変更したとき**だけである。したがって **LS が再起動し、新セッションが同じ URI を広告した場合、`syncBrowsers` は Browser を再利用して `markNotReady` を呼ばず、世代も進まない。**
+  - その結果、**旧セッションで開始した 10 秒タイマが新セッション移行後に発火し、`pending` を破棄して偽のエラー通知を出す。** これは §12 の「セッション不一致は通知せず破棄する」とも食い違う。
+  - → **タイマは `(gen, session)` の両方を捕捉し、発火時に `gen == commandGeneration` かつ `session === wrapper.currentSnapshot?.session` を照合する。** 不一致なら**何もしない**(§12 のとおり通知しない)。
+  - **A12c を追加**: `pending` 中に LS が再起動し**新セッションが同じ URI を広告する**操作列で、旧タイマが `pending` を破棄せず通知も出さないこと。**session 照合を削除する変異でこれだけが落ちること。**
 - **A12 に操作列を追加**: 旧タイマが発火しても、新しい `pending` とその 10 秒の猶予が維持されること。
 
 **タイマはコンストラクタのシームで注入する。** `Display.timerExec` を直接呼ぶと readiness タイムアウトと再送(受け入れ条件 A12)が headless で一切検証できず、本設計の中心的な主張が**テストに裏付けられないまま**になる。既定値が SWT を触るため、既定引数ではなく**オーバーロード**にする(既存 `LanguageServerWebviewService.sendThemeChange`(`:21-32`)が同じ理由でオーバーロードを採っている: Kotlin の `$default` ブリッジは MockK のモック上でも既定式を評価するため)。タイマは UI スレッドで回す(状態が UI スレッド専有のため。§15)。
@@ -579,13 +608,16 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
        │        └─ あり かつ 別セッション由来 → activate + host.load(...) で再解決
        └─ (2) 無ければ activePage.openEditor(input, EDITOR_ID)
                 └─ WebviewEditorPart.createPartControl
-                     └─ WebviewBrowserHost.load(id, params)
-                          ├─ 世代++ / loading ページ表示 / LS proxy を捕捉
-                          ├─ resolver.resolve(id)                  [UI スレッド外]
-                          └─ whenComplete → asyncExec              [UI スレッドへ復帰]
-                               ├─ 世代不一致 / isDisposed / セッション不一致 → 破棄
-                               ├─ Resolved  → browser.setUrl(§7.3a のビルダ結果)
-                               └─ その他    → message ページ
+                     └─ WebviewBrowserHost.load(id, params)   [SWT の薄い殻]
+                          ├─ loading ページ表示
+                          └─ coordinator.load(id, params)       [SWT フリー = A15/A16/A13 の入口]
+                               ├─ 世代++ / LS セッションを捕捉
+                               ├─ resolver.resolve(id)          [UI スレッド外]
+                               └─ whenComplete → asyncExec      [UI スレッドへ復帰]
+                                    ├─ 世代不一致 / セッション不一致 → Outcome.Discard
+                                    ├─ Resolved → Outcome.Show(§7.3a のビルダ結果, titleFor)
+                                    └─ その他   → Outcome.Message
+                          └─ 殻が Outcome を分岐して browser.setUrl / message ページ / setPartName
 ```
 
 **分岐は「アクティブページ上の一致」でのみ判定する**(初版は「全 window/page の一致」と「アクティブページでの可視化」を混在させており、他ウィンドウに一致があるとき起動元にタブが開かない読みが成立していた)。他ウィンドウに同じ key のタブがあっても**触らない**: 内容が同一なので更新の必要が無く、他ウィンドウのユーザーの表示を勝手に動かす理由も無い。
@@ -596,7 +628,7 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
 
 しかもこれは **§18 の「LS 再起動 → 次回のコマンドで新しい URI に解決」および実機検証項目 8 と正面から矛盾していた**(どちらも旧設計のまま更新し忘れていた)。
 
-→ **`WebviewBrowserHost` は現在表示している内容がどのセッション由来かを保持する**(`load` が `Resolved` を適用したときの `resolution.session`)。`openOrReload` はそれを問い合わせ、**現セッションと異なるときだけ再 `load` する**。同一セッションなら `activate` のみ(webview の画面内状態を無意味に捨てない)。§18 と実機検証項目 8 もこの形に合わせて修正した。
+→ **`WebviewLoadCoordinator` が現在表示している内容のセッション由来を保持する**(`Outcome.Show` を返したときの `resolution.session`)。`openOrReload` はそれを問い合わせ、**現セッションと異なるときだけ再 `load` する**。同一セッションなら `activate` のみ(webview の画面内状態を無意味に捨てない)。**この状態を SWT フリー側に置くのは、A22 を headless で入口から検査できるようにするため**(§7.2 / §20a 規約 1)。§18 と実機検証項目 8 もこの形に合わせて修正した。
 
 **`MergedYamlEditorOpener` との差**: あちらは同一 key の内容が更新されうる(再 lint)ため全ページの再 reset が要る。こちらは key が内容を含むので、同一 key = 同一内容であり、**全ページ走査そのものが不要**になる。この違いを実装時に取り違えないこと。
 
@@ -665,7 +697,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 **秘密が含まれるかどうかとは無関係に発生する。** 死んだ URI を表示するだけでも機能不全である。
 
-→ **§7.1a の捕捉・照合を必須とし、`WebviewBrowserHost` の適用時と `AgenticChatWebViewClient` の送信時の両方でセッション同一性を確認する。** `markNotReady()` によるリセットと併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
+→ **§7.1a の捕捉・照合を必須とし、`WebviewLoadCoordinator` の結果判定時と `AgenticChatWebViewClient` の送信時の両方でセッション同一性を確認する。** `markNotReady()` によるリセットと併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 
 ## 12. エラー処理
 
@@ -704,7 +736,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 ## 15. 並行処理
 
-- **`WebviewBrowserHost` / `AgenticChatWebViewClient` / `WebviewEditorOpener` の可変状態はすべて UI スレッド専有。** 同期プリミティブを使わない。
+- **`WebviewLoadCoordinator` / `WebviewBrowserHost` / `AgenticChatWebViewClient` / `WebviewEditorOpener` の可変状態はすべて UI スレッド専有。** 同期プリミティブを使わない。**`WebviewLoadCoordinator` は SWT フリーだが UI スレッド専有である**(SWT に触れないことと、どのスレッドから呼ばれるかは別。headless テストは単一スレッドで駆動する)。
 - メタデータ future は UI スレッド外で消費し、結果適用は `asyncExec` で UI スレッドへマーシャルする。
 - **世代カウンタ(latest-wins)は `asyncExec` の中で再チェックする。** `whenComplete` の時点でのチェックでは、キューイングと実行の間に新しい `load()` が走った場合を取りこぼす。
 - **世代とは別に LS セッションを照合する(§7.1a)。** 世代は新しい `load()` が無ければ上がらないため、**LS 再起動をまたぐ競合は世代では捕まらない。** 2 つは異なる競合を守っており、片方で他方を代替できない。
@@ -773,7 +805,9 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | **`uri` クエリのビルダ**(§7.3a。`&`/`#`/`=`/`?`/空白/非 ASCII/`+`/`%` + 既存 query・fragment 保存) | ✅ | TDD |
 | `AgenticChatWebViewClient`(latest-wins / latch / リセット / **F-a タイムアウト** / **F-b 再送回数** / **セッション照合**) | ✅ | TDD(wrapper は MockK、タイマはシーム注入) |
 | `flushPendingIntents` の agentic 分岐 + classic 2 経路の keep-behaviour | ✅ | 既存テストへの追加 |
-| `WebviewBrowserHost` / `WebviewEditorPart` / `AgenticTabsView` / `WebviewEditorOpener` | ❌ | **手動検証手順**(PR 本文) |
+| **`WebviewLoadCoordinator`**(最終 URL / タブ名 / 破棄判定 = A15・A16・A13 の入口) | ✅ | TDD。**§7.2 で SWT フリーに分離した production collaborator** |
+| `WebviewEditorOpener`(session 由来判定 = A22 の入口。`IWorkbenchPage` をモック) | ✅ | TDD |
+| `WebviewBrowserHost` / `WebviewEditorPart` / `AgenticTabsView` の **SWT 呼び出し部分** | ❌ | **手動検証手順**(PR 本文)。**`Outcome` の分岐 1 つと SWT 呼び出しだけに保つ** |
 
 **共有基盤の keep-behaviour テスト(§6a.5・必須)**: `PluginRegistry` の登録分岐と `PluginMessageService.dispatch` を変更するため、**既存 4 形状が現在とまったく同じに解決されること**を keep-behaviour ラベル付きで固定する。あわせて「末尾が `LanguageServerSession` でない 2 引数メソッドは従来どおり `error()`」を固定し、制約を緩めた方向に穴が開いていないことを示す。
 
@@ -831,11 +865,12 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A10 | classic の 2 つの intent の挙動が不変 | keep-behaviour ラベル付きテスト |
 | A11 | 解決した URI とユーザーのファイルパスがログに現れない | 実装レビュー + テスト |
 | A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入)。**単独タイマの通常経路のみ** |
+| A12c | **セッション遷移時のタイマ失効**: `pending` 中に LS が再起動し**新セッションが同じ URI を広告する**(= `syncBrowsers` が Browser を再利用し `markNotReady` を呼ばない)操作列で、旧タイマが `pending` を破棄せず通知も出さない | TDD。**session 照合を削除する変異でこれだけが落ちること** |
 | A12b | **旧世代タイマの失効**: ready 前に `history` → 9 秒後に `newConversation` → **10 秒後に発火する旧タイマが新しい `pending` を破棄せず、通知も出さない**。新しい 10 秒の猶予が維持される | TDD。**`commandGeneration` の照合を削除する変異で、A12 は緑のまま A12b だけが落ちること**(§20a 規約 2) |
-| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | **純関数 `titleFor` だけを検査しない**(§20a 規約 1)。タイトル適用先をシーム化し、**production の解決結果適用入口から失敗分岐を駆動して `setPartName` が呼ばれないこと**まで検査する。**`titleFor` 呼び出しの削除 / 条件反転の変異出力を要求する** |
+| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | **純関数 `titleFor` だけを検査しない**(§20a 規約 1)。**`WebviewLoadCoordinator.load` が失敗分岐で返す `Outcome` の `title` が null になること**を production 入口から検査する(`WebviewBrowserHost` はそれを見て `setPartName` を呼ばない)。**`titleFor` 呼び出しの削除 / 条件反転の変異出力を要求する** |
 | A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
-| A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | **純ビルダだけを検査しない**(§20a 規約 1)。ビルダ単体テストに加え、**`WebviewBrowserHost.load(id, queryParams)` に `Resolved` を返した結果として Browser に渡される最終 URL** をシーム経由で検査する。**ビルダ呼び出しの削除 / 直接連結への変異で落ちること**(A23 / A27 も同じビルダなので同様に扱う) |
-| A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD |
+| A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | **純ビルダだけを検査しない**(§20a 規約 1)。ビルダ単体テストに加え、**`WebviewLoadCoordinator.load` が `Resolved` に対して返す `Outcome.Show.url`**(= Browser へ渡る最終 URL)を検査する。**ビルダ呼び出しの削除 / 直接連結への変異で落ちること**(A23 / A27 も同じビルダなので同様に扱う) |
+| A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD。**`WebviewLoadCoordinator.load` が `Outcome.Discard` を返すことを production 入口から検査する**(§20a 規約 1) |
 | A17 | ~~旧 LS セッションの `appReady` が latch を開けない~~ → **A21 に差し替え**(round 1 の A17 は「テストから旧 proxy を直接渡す」形で、production が壊れたままでも緑になる非識別的テストだった) | — |
 | A18 | **F-b の再送が有限回で打ち切られ、打ち切り時に通知経路を呼ばない** | TDD |
 | A20 | **予約済み再送が、後続コマンド / `markNotReady()` / セッション変更のいずれでも 1 回も送信されない** | TDD(§7.4a の 3 操作列) |
