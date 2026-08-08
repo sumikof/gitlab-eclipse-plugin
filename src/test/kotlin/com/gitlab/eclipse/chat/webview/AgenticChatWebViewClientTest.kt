@@ -427,10 +427,10 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.sentViews.shouldBeEmpty()
     }
 
-    // A shape design §7.4's table does not enumerate: the deadline was armed while there was no
-    // connection at all, so it captured null, and any connection that arrives before it fires is
-    // "another" one. Pinned as it behaves today — the report argues it is the wrong outcome.
-    it("does not notify when the deadline was armed with no connection and one arrived after") {
+    // The fifth outcome, which design §7.4's four-row table does not carry: a command issued with
+    // no connection to send it on was never delivered by any measure, and the quiet outcome's
+    // premise — that the user swapped connections themselves — is not what happened.
+    it("notifies when the deadline was armed with no connection and one arrived after") {
       val fixture = Fixture()
       fixture.current(null)
 
@@ -438,9 +438,11 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.current(fixture.sessionA)
       fixture.timers.fire(0)
 
-      fixture.notifications.shouldBeEmpty()
+      fixture.notifications shouldHaveSize 1
     }
 
+    // The terminal-state half of the outcome above, and green whichever way the notification goes:
+    // every one of the five outcomes has to leave the slot empty.
     it("still discards the waiting view when the deadline was armed with no connection") {
       val fixture = Fixture()
       fixture.current(null)

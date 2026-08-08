@@ -99,14 +99,29 @@ class AgenticChatWebViewClient(
     scheduleTimer(READINESS_TIMEOUT_MILLIS) { onReadinessDeadline(generation, captured) }
   }
 
-  /** Design §7.4's timer table. */
+  /**
+   * Design §7.4's timer table, plus a fifth outcome the table does not carry: the design document is
+   * frozen, and the divergence is recorded in the PR body instead.
+   *
+   * The fifth outcome is a [captured] of null while a connection is now current, and it is a state
+   * of its own rather than a loosening of the "no current connection" one: there, the connection the
+   * command started on has since gone; here, the command never had one to be sent on. The quiet
+   * outcome below assumes the user swapped connections themselves, which is true of neither, and
+   * this one is known not to have been delivered — so reporting it cannot be the false alarm that
+   * keeps the resend silent.
+   */
   private fun onReadinessDeadline(generation: Long, captured: LanguageServerSession?) {
     if (generation != commandGeneration) return
 
     val current = wrapper.currentSnapshot?.session
     when {
+      // The connection this command started on is gone.
       current == null -> reportUndelivered()
+      // There was no connection to start on.
+      captured == null -> reportUndelivered()
+      // Another connection took over under it.
       current !== captured -> discardQuietly()
+      // Still the same connection, which never reported itself ready.
       else -> reportUndelivered()
     }
   }
