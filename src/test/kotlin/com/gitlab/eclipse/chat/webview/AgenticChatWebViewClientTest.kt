@@ -13,6 +13,7 @@ import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
 import com.gitlab.eclipse.utils.PlatformUtils
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
@@ -20,14 +21,14 @@ import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
-import io.mockk.Runs
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
+import org.eclipse.lsp4j.jsonrpc.JsonRpcException
 import org.osgi.framework.Bundle
+import java.io.IOException
 
 private const val HISTORY = "history"
 private const val NEW_CONVERSATION = "newConversation"
@@ -57,8 +58,11 @@ private class Timers {
    * Runs every callback, including the ones the earlier ones schedule, up to [LIMIT] of them. The
    * limit turns an unbounded resend into a failed assertion instead of a hung test.
    */
-  fun drain() {
-    var index = 0
+  fun drain() = drainFrom(0)
+
+  /** As [drain], but skipping the callbacks before [start] — for the ones already fired by hand. */
+  fun drainFrom(start: Int) {
+    var index = start
     while (index < scheduled.size && index < LIMIT) {
       fire(index)
       index++
@@ -83,8 +87,19 @@ private class Fixture {
 
   val client = AgenticChatWebViewClient(wrapper, { notifications += it }, timers::schedule)
 
+  /**
+   * How many of the upcoming sends throw. The type is what a broken pipe would produce if lsp4j let
+   * it out: `StreamMessageConsumer` wraps the `IOException` in a `JsonRpcException`.
+   */
+  var failingSends = 0
+
   init {
-    every { proxy.pluginNotification(capture(sent)) } just Runs
+    every { proxy.pluginNotification(capture(sent)) } answers {
+      if (failingSends > 0) {
+        failingSends--
+        throw JsonRpcException(IOException("broken pipe"))
+      }
+    }
     current(sessionA)
   }
 
@@ -280,6 +295,46 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.timers.drain()
 
       fixture.notifications.shouldBeEmpty()
+    }
+
+    // The series is scheduled before the send, so a send that throws does not take the mechanism
+    // meant to cover it. [sentViews] records attempts, so three of them is design §13's bound held.
+    it("still runs the series when the first send of a ready command throws") {
+      val fixture = Fixture()
+
+      fixture.appReadyArrives(from = fixture.sessionA)
+      fixture.failingSends = 1
+      shouldThrow<JsonRpcException> { fixture.client.switchView(HISTORY) }
+      fixture.timers.drain()
+
+      fixture.sentViews shouldContainExactly listOf(HISTORY, HISTORY, HISTORY)
+    }
+
+    // The same at the other head: the flush the latch performs. The throw does not surface here —
+    // the registry contains a session-aware notification's failure — which is exactly why the
+    // series has to survive on its own.
+    it("still runs the series when the send that flushes the waiting view throws") {
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.failingSends = 1
+      fixture.appReadyArrives(from = fixture.sessionA)
+      fixture.timers.drain()
+
+      fixture.sentViews shouldContainExactly listOf(HISTORY, HISTORY, HISTORY)
+    }
+
+    // Mid-series the loss is the tail rather than the whole series, and the ordering is the same.
+    it("still runs the rest of the series when a resend throws") {
+      val fixture = Fixture()
+
+      fixture.appReadyArrives(from = fixture.sessionA)
+      fixture.client.switchView(HISTORY)
+      fixture.failingSends = 1
+      shouldThrow<JsonRpcException> { fixture.timers.fire(0) }
+      fixture.timers.drainFrom(1)
+
+      fixture.sentViews shouldContainExactly listOf(HISTORY, HISTORY, HISTORY)
     }
 
     // A20 (design §21), sequence 1.

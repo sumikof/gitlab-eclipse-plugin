@@ -50,8 +50,9 @@ class AgenticChatWebViewClient(
 
     if (snapshot != null && readySession === snapshot.session) {
       pending = null
-      deliver(view, snapshot.proxy)
+      // Scheduled before the send, not after: see [deliver].
       scheduleResend(view, commandGeneration, RESENDS)
+      deliver(view, snapshot.proxy)
       return
     }
 
@@ -80,8 +81,9 @@ class AgenticChatWebViewClient(
 
     val view = pending ?: return
     pending = null
-    deliver(view, snapshot.proxy)
+    // Scheduled before the send, not after: see [deliver].
     scheduleResend(view, commandGeneration, RESENDS)
+    deliver(view, snapshot.proxy)
   }
 
   /** Closes the latch for a webview that was just (re)created and has yet to report itself ready. */
@@ -156,10 +158,23 @@ class AgenticChatWebViewClient(
     val snapshot = wrapper.currentSnapshot ?: return
     if (readySession !== snapshot.session) return
 
-    deliver(view, snapshot.proxy)
+    // Scheduled before the send, not after: see [deliver]. At this point in the series that costs
+    // the tail rather than the whole series, which is the same loss one step smaller.
     scheduleResend(view, generation, remaining - 1)
+    deliver(view, snapshot.proxy)
   }
 
+  /**
+   * Every caller schedules the resend series **before** calling this, so that a send which throws
+   * does not take with it the mechanism that exists to cover a send that did not land. Nothing is
+   * caught here: containing it would hide the failure without repairing it, and the resend is the
+   * repair. The count is unaffected — design §13's three sends are three *attempts*.
+   *
+   * lsp4j does not currently make this reachable: `RemoteEndpoint.notify` catches `Exception` around
+   * `MessageConsumer.consume` and only logs "Failed to send notification message.", so a broken pipe
+   * or a serialisation failure never reaches this frame. The ordering is a property of this class,
+   * not a repair of an observed failure.
+   */
   private fun deliver(view: String, proxy: GitLabLanguageServer) {
     proxy.pluginNotification(
       ExtensionToPluginNotification(
