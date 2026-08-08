@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp.plugins
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
+import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewController
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewController
@@ -41,8 +42,9 @@ class PluginRegistryChatRouteTest : DescribeSpec({
     val agenticController = AgenticChatWebViewController(
       mockk<PlatformUtils>(),
       mockk<CurrentFileContextProvider>(),
-      mockk<InsertCodeSnippetService>()
-    )
+      mockk<InsertCodeSnippetService>(),
+      mockk<AgenticChatWebViewClient>()
+    ) { it.run() }
 
     PluginRegistry(listOf(classicController, agenticController))
   }

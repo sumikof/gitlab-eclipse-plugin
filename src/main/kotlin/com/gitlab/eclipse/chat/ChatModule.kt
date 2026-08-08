@@ -3,10 +3,12 @@ package com.gitlab.eclipse.chat
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
+import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewController
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewController
 import com.gitlab.eclipse.lsp.plugins.PluginController
+import com.gitlab.eclipse.utils.NotificationUtils
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.services.ISourceProviderService
 import org.koin.dsl.bind
@@ -35,11 +37,13 @@ val chatModule = module {
 
   single<GitLabDuoChatWebViewClient> { GitLabDuoChatWebViewClient(get()) }
 
+  single<AgenticChatWebViewClient> { AgenticChatWebViewClient(get(), NotificationUtils::show) }
+
   single<GitLabDuoChatWebViewController> {
     GitLabDuoChatWebViewController(get(), get(), get(), get())
   } bind PluginController::class
 
   single<AgenticChatWebViewController> {
-    AgenticChatWebViewController(get(), get(), get())
+    AgenticChatWebViewController(get(), get(), get(), get())
   } bind PluginController::class
 }
