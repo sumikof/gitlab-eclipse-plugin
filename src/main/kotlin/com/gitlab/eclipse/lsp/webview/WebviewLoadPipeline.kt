@@ -28,6 +28,10 @@ class WebviewLoadPipeline(
    * the shell sets in its own `dispose`. This is the only thing that stops an application already
    * in flight when the shell goes away without [dispose] being reached, so a flag that is set one
    * line too late, or not at all, silently removes that mechanism.
+   *
+   * **It must not throw.** It is read before every sink, including from [beginLoad], which no
+   * `try` in [load] covers, so a throw here reaches [load]'s caller. `Widget.isDisposed` is a field
+   * test and cannot throw, which is the other reason to answer from it.
    */
   private val isAlive: () -> Boolean,
 ) {
@@ -42,9 +46,15 @@ class WebviewLoadPipeline(
 
   /**
    * Writing to this is a side channel and must never decide what the surface does. Only the writes
-   * inside [settle]'s `try` block are allowed to throw, because that block's `finally` contains
-   * them; every other write is wrapped. The line is the `try` block, not [settle] — [setLoading] is
-   * called from both sides of it, and a `finally` does not contain a throw raised inside itself.
+   * inside [settle]'s `try` block are allowed to throw; every other write is wrapped. The line is
+   * the `try` block, not [settle] — [setLoading] is called from both sides of it, and a `finally`
+   * does not contain a throw raised inside itself.
+   *
+   * Two separate things make the allowed ones safe, and both are needed. That block's `finally`
+   * guarantees the loading page still comes down; it does **not** stop the throw, which leaves
+   * [settle] regardless. What keeps it off [load]'s caller is that [settle] runs inside
+   * `CompletableFuture.handle`. Calling [settle] from anywhere else would satisfy the rule above
+   * and still throw out of [load].
    */
   private val logger = logger<WebviewLoadPipeline>()
 

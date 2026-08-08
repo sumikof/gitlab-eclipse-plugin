@@ -342,20 +342,11 @@ class WebviewLoadPipelineTest : DescribeSpec({
 
     // The other one, and the harder of the two to file correctly: `setLoading` is reached from
     // `beginLoad` and from `settle`'s own `finally`, and a `finally` does not contain a throw
-    // raised inside itself.
-    it("starts the load even when the log that records a failed loading toggle throws") {
+    // raised inside itself. This also covers design §7.2b's setLoadingVisible row — the plain
+    // working-log version of it was a strict subset of this setup, so no mutation could fail it
+    // without failing this one too.
+    it("starts the load even when both the loading toggle and the log that records it throw") {
       captureLog(failing = true)
-      val fixture = Fixture()
-      fixture.sinks.setLoadingFailure = IllegalStateException("the stack layout is gone")
-      fixture.resolvesWith(fixture.resolvedTo())
-
-      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
-
-      fixture.sinks.argsOf(SHOW_URL) shouldContainExactly listOf(BASE_URI)
-    }
-
-    // Design §7.2b's setLoadingVisible row.
-    it("applies the outcome even when toggling the loading page throws") {
       val fixture = Fixture()
       fixture.sinks.setLoadingFailure = IllegalStateException("the stack layout is gone")
       fixture.resolvesWith(fixture.resolvedTo())
