@@ -1,11 +1,15 @@
 package com.gitlab.eclipse.chat.utils
 
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.LanguageServerBrowserView
 import org.eclipse.ui.PlatformUI
 
 private const val VIEW_ID = "com.gitlab.eclipse.views.LanguageServerBrowserView"
+
+/** Worded like the three webview handlers' own failure messages, which point at the same log. */
+private const val FAILURE_MESSAGE = "Could not open GitLab Duo Chat. See the Error Log."
 
 // Lazy so that loading this file's class (e.g. mockkStatic in headless unit tests) does not
 // touch the Eclipse Platform log. The type argument only selects the bundle whose log is used.
@@ -72,16 +76,36 @@ fun refreshDuoChatWindow() {
   view.refresh()
 }
 
+/**
+ * Reveals the Duo Chat view, or reports why it could not be.
+ *
+ * Both `null` returns are design §12's `showView` row. They are reported here rather than in each
+ * caller so the callers cannot drift apart, which is what `ShowAgenticTabsHandler` /
+ * `ShowMcpDashboardHandler` / `OpenFlowBuilderHandler` each do once for their own surface.
+ * **This raised both from `warn` to `error` and added the notification**, so the classic Duo Chat
+ * commands that predate this file's agentic callers now report a failure they used to record
+ * quietly.
+ *
+ * A `PartInitException` thrown out of `showView` is *not* caught here. It propagates to the
+ * workbench's command dispatch, which logs it — one channel, not §12's two. That is a gap this
+ * function does not close.
+ */
 private fun showDuoChatView(): LanguageServerBrowserView? {
   val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
   if (page == null) {
-    logger.warn("Cannot show the Duo Chat view: no active workbench page")
+    reportCannotShow("no active workbench page")
     return null
   }
 
   val view = page.showView(VIEW_ID) as? LanguageServerBrowserView
   if (view == null) {
-    logger.warn("Cannot show the Duo Chat view: '$VIEW_ID' did not resolve to LanguageServerBrowserView")
+    reportCannotShow("'$VIEW_ID' did not resolve to LanguageServerBrowserView")
   }
   return view
+}
+
+/** Design §12: the Error Log entry and the notification, never one without the other. */
+private fun reportCannotShow(reason: String) {
+  logger.error("Cannot show the Duo Chat view: $reason")
+  NotificationUtils.show(FAILURE_MESSAGE)
 }
