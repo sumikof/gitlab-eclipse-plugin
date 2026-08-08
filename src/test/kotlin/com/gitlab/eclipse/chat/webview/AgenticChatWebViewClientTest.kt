@@ -317,6 +317,21 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.sentViews shouldContainExactly listOf(HISTORY)
     }
 
+    // The generation `markReady` advances on every match, not only when it flushes. A restart that
+    // reuses the Browser calls no `markNotReady`, so nothing else expires this series: by the time
+    // it runs, both the latch and the current connection would agree on the new one.
+    it("sends nothing more once the latch has been re-opened for another connection") {
+      val fixture = Fixture()
+
+      fixture.appReadyArrives(from = fixture.sessionA)
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.appReadyArrives(from = fixture.sessionB)
+      fixture.timers.fire(0)
+
+      fixture.sentViews shouldContainExactly listOf(HISTORY)
+    }
+
     // A20 (design §21), sequence 3: no command and no reset intervene, only the connection changes.
     it("sends nothing more once another connection has become current") {
       val fixture = Fixture()
@@ -408,6 +423,32 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.current(fixture.sessionB)
       fixture.timers.fire(0)
       fixture.appReadyArrives(from = fixture.sessionB)
+
+      fixture.sentViews.shouldBeEmpty()
+    }
+
+    // A shape design §7.4's table does not enumerate: the deadline was armed while there was no
+    // connection at all, so it captured null, and any connection that arrives before it fires is
+    // "another" one. Pinned as it behaves today — the report argues it is the wrong outcome.
+    it("does not notify when the deadline was armed with no connection and one arrived after") {
+      val fixture = Fixture()
+      fixture.current(null)
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionA)
+      fixture.timers.fire(0)
+
+      fixture.notifications.shouldBeEmpty()
+    }
+
+    it("still discards the waiting view when the deadline was armed with no connection") {
+      val fixture = Fixture()
+      fixture.current(null)
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionA)
+      fixture.timers.fire(0)
+      fixture.appReadyArrives(from = fixture.sessionA)
 
       fixture.sentViews.shouldBeEmpty()
     }

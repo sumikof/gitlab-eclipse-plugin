@@ -42,7 +42,7 @@ class AgenticChatWebViewClient(
 
   /**
    * Sends [view] now if the latch is open for the current connection, and otherwise holds it in the
-   * one slot until the latch opens or the readiness deadline gives up on it.
+   * one slot (design §7.4).
    */
   fun switchView(view: String) {
     commandGeneration++
@@ -72,6 +72,10 @@ class AgenticChatWebViewClient(
     if (snapshot.session !== session) return
 
     readySession = session
+    // Advanced on every match, not only when a view is flushed below. A restart that reuses the
+    // Browser calls no [markNotReady], so without this the resend series of a command issued on the
+    // previous connection would find both its generation and this newly stored latch agreeing with
+    // the new connection, and would deliver to it.
     commandGeneration++
 
     val view = pending ?: return
@@ -86,7 +90,7 @@ class AgenticChatWebViewClient(
     commandGeneration++
     // A view that is still waiting keeps waiting, so it needs a deadline again: the generation
     // above has just expired the one it had, and nothing else guarantees it reaches a terminal
-    // state (design §12's last row).
+    // state (design §12's language-server-session-mismatch row).
     if (pending != null) armReadinessDeadline(wrapper.currentSnapshot?.session)
   }
 

@@ -73,7 +73,9 @@ class AgenticChatWebViewController(
 
   @PluginNotification("focusChange")
   fun focusChange(notification: FocusChangeNotification) {
-    // Intentionally does not update any push-queue focus state (host-to-webview push is deferred).
+    // Deliberately updates no focus state: the agentic push in [AgenticChatWebViewClient] is gated
+    // on a readiness latch rather than on focus, and design §5.4 records that the language server
+    // does not forward `focusChange` for this webview id at all on the pinned version.
     logger.info("Agentic chat focus changed: isFocused=${notification.isFocused}")
   }
 
