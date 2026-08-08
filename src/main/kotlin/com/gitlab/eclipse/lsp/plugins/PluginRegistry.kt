@@ -76,9 +76,12 @@ class PluginRegistry(controllers: List<PluginController>) {
    * Runs a payload-less session-aware handler so that what it throws is logged rather than lost.
    *
    * [PluginMessageService] catches only on its payload arm. A session-aware handler that takes no
-   * payload reaches the other arm, where nothing catches: the future would complete exceptionally,
-   * and for a notification nobody ever looks at that future. Containing it here keeps the two arms
-   * that predate session propagation untouched.
+   * payload reaches the other arm, where nothing catches, so the future would complete
+   * exceptionally. **A payload-less session-aware request takes that arm too**, so the notification
+   * case is not the only one: for a notification nobody ever looks at the future, and for a request
+   * lsp4j turns it into an error response to the sender — which tells the sender, but still records
+   * nothing on this side. Containing it here keeps the two arms that predate session propagation
+   * untouched.
    *
    * Reflection wraps whatever the handler threw in an `InvocationTargetException`, so the cause is
    * the part worth reporting — logged exactly as [PluginMessageService] logs its own invocation

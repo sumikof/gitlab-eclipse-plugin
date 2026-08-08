@@ -39,8 +39,13 @@ class GitLabLanguageServerWrapper {
    *
    * [captured] must be the very handle the caller registered, not one rebuilt from the same proxy
    * and session: the comparison is by reference. Returns whether the connection was cleared. False
-   * means [captured] was no longer the current connection and nothing was touched — either a newer
-   * one had taken over, or an explicit stop had already cleared the snapshot.
+   * means [captured] was not the current connection and nothing was touched; **why** it was not is
+   * not recoverable here, and the causes are not a closed set. A newer connection may have taken
+   * over, an explicit stop may have cleared the snapshot, or this same handle may already have been
+   * revoked — `GitLabLanguageServerProcessProvider` revokes whatever `handleRef` holds from both
+   * the initialize callback and the exit callback, so an initialize rejection followed by the
+   * process dying calls this twice with one handle, and the second call's `false` is caused by the
+   * first call rather than by either of the other two.
    */
   fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean =
     snapshot.compareAndSet(captured, null)

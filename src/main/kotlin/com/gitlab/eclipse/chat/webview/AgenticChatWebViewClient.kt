@@ -117,9 +117,12 @@ class AgenticChatWebViewClient(
 
     val current = wrapper.currentSnapshot?.session
     when {
-      // The connection this command started on is gone.
+      // No connection is current. That covers two states, not one: the connection this command
+      // started on is gone, and — because this arm is reached first — the command having had no
+      // connection to start on either. Neither is the quiet outcome below.
       current == null -> reportUndelivered()
-      // There was no connection to start on.
+      // A connection is current, but this command never had one to be sent on: the KDoc's fifth
+      // outcome, reached only once the arm above has ruled out `current == null`.
       captured == null -> reportUndelivered()
       // Another connection took over under it.
       current !== captured -> discardQuietly()

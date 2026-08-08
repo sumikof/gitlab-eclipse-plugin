@@ -116,13 +116,13 @@ class WebviewBrowserHost(
     container.layout()
   }
 
-  /** The same choice as `LanguageServerBrowserView.newBrowser` (`:324-327`). */
+  /** The same choice as `LanguageServerBrowserView.newBrowser`. Cited by name: a line range goes stale. */
   private fun newBrowser(): Browser {
     val browserStyle = if (SystemUtils.isWindows()) SWT.EDGE else SWT.WEBKIT
     return Browser(container, browserStyle)
   }
 
-  /** The same page as `LanguageServerBrowserView.themedHtml` (`:329-355`). */
+  /** The same page as `LanguageServerBrowserView.themedHtml`. Cited by name: a line range goes stale. */
   private fun themedHtml(message: String): String {
     val colors = ThemeProvider.currentTheme()
 
