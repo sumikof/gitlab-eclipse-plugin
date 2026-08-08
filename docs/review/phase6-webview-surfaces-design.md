@@ -219,13 +219,36 @@ class LanguageServerSession
 ```kotlin
 data class LanguageServerHandle(val proxy: GitLabLanguageServer, val session: LanguageServerSession)
 
-val currentSnapshot: LanguageServerHandle?      // 追加
-val languageServer: GitLabLanguageServer?       // 既存。currentSnapshot?.proxy を返す(呼び出し元は無変更)
-fun registerLanguageServer(proxy, session)      // 1 回の代入で組を公開
-fun unregisterLanguageServer()                  // 既存
+@Volatile private var snapshot: LanguageServerHandle? = null   // 唯一の真実
+
+val currentSnapshot: LanguageServerHandle? get() = snapshot
+val languageServer: GitLabLanguageServer? get() = snapshot?.proxy   // 既存 API・呼び出し元は無変更
+fun registerLanguageServer(proxy, session)          // 1 回の代入で組を公開
+fun unregisterLanguageServer()                      // 既存(無条件・stopLocked から)
+fun unregisterLanguageServer(session)               // 追加(identity-aware。§6a.3b)
 ```
 
-`registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、`client.session` を一緒に渡す。**既存の `languageServer` プロパティは維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
+**`@Volatile` は必須(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
+
+`registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、`client.session` を一緒に渡す。**既存の `languageServer` プロパティのシグネチャと意味は維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
+
+### 6a.3b 異常終了・初期化失敗での失効(**round 3 で追加。既存挙動の変更を含む**)
+
+実コードで確認した現状:
+
+| 経路 | 現状 | 結果 |
+|---|---|---|
+| `onExit`(`:127-142`) | `process = null` / `processListener = null` / `SecurityScanLifecycle.onServerStopped()`。**`unregisterLanguageServer()` を呼ばない** | クラッシュ後も snapshot は A のまま |
+| 初期化失敗(`:167-168`) | `logger.error` のみ | 同上 |
+| `stopLocked`(`:200`) | `unregisterLanguageServer()` を呼ぶ | 正常停止だけが失効する |
+
+このため、**クラッシュ後に「現在のセッション」を問うと死んだ A が返る。** §8.1 の判定は表示中の A と stale な A を「同一セッション」とみなし、**再コマンドでも dead URI を activate するだけ**になる(round 2 で追加した判定が、この経路では効かない)。
+
+**修正: identity-aware な `unregisterLanguageServer(session)` を追加し、`onExit` の identity ガード内と初期化失敗分岐から呼ぶ。**
+
+- **自分の session が現在の session と一致するときだけ失効させる。** superseded なプロセスの遅延失敗が、置き換わった新しい接続を落とさないようにする(既存の `process === startedProcess` ガードと同じ思想)。
+- **これは既存挙動の変更である**: クラッシュ後 `languageServer` は**死んだ proxy ではなく null** を返すようになる。結果として Duo Chat は「language server の起動待ち」表示に落ちる(従来は死んだ proxy へ送って失敗していた)。**より正しい方向だが挙動変更なので、専用のテストを置き、§19 に明記する。**
+- 固定するのは 2 つ: (1) **active なクラッシュで失効すること**、(2) **superseded なサーバの遅延失敗では失効しないこと**。
 
 ### 6a.4 バスでの伝播
 
@@ -368,16 +391,24 @@ multi-argument コンストラクタは query 引数中の `%` を `%25` に量�
 
 1. **既存の raw query と raw fragment はそのまま保存する。** `URI.getRawQuery()` / `getRawFragment()` を使い、**decode も再符号化もしない**。
 2. **追加する `uri` の値だけを RFC 3986 の query component として一段符号化する。** `unreserved`(`ALPHA` / `DIGIT` / `-` `.` `_` `~`)以外はすべて percent-encode。とくに `%` → `%25` / `&` → `%26` / `=` → `%3D` / `#` → `%23` / 半角空白 → `%20` / `+` → `%2B`。非 ASCII は **UTF-8 バイト列**を percent-encode。
-3. **連結は文字列で行う**: `base` + (`rawQuery == null` ? `"?"` : `"?" + rawQuery + "&"`) + `"uri=" + encodedValue` + (`rawFragment != null` ? `"#" + rawFragment` : `""`)。**multi-argument `URI` コンストラクタは使わない。**
-4. **同名 parameter**: LS の URI に既に `uri` があっても**削除・上書きしない**(`append` のセマンティクス。参照実装 `setup_webviews.ts:116-119` も `searchParams.append`)。
-5. **`java.net.URLEncoder` は使わない。** あれは `application/x-www-form-urlencoded` であり、**半角空白を `+` にする**。query component の符号化とは別物である。
-6. **ファイル URI の取得元**: アクティブエディタの `IFileEditorInput.file.locationURI`(存在しない場合は `IURIEditorInput.uri`)。取得できなければ前提条件違反として §12 の通知経路へ。
+3. **適用対象を限定する(round 3 で追加)**: **absolute かつ hierarchical な URI のみ**を受け付ける。`URI.isOpaque()` が真、または `isAbsolute()` が偽なら **`WebviewResolution.Failed` として扱い**、§12 の失敗経路へ流す。opaque URI では `getRawQuery()` が hierarchical な query として分離されないため、下の式が成立しない。
+4. **`base` を厳密に定義する(round 3 で追加)**: `base` = **元の raw 文字列から、最初の `?` または `#`(いずれか早い方)以降を除いた prefix**。
+   - **元の URI 文字列をそのまま `base` に使ってはならない。** 既存の query や fragment が残っていると、その後ろに `?` を足すことになり、**`uri` が fragment の中に入る。**
+   - **components から再構成してもならない。** 再構成は 2. で避けたばかりの raw 値の変換を再導入する。**あくまで raw 文字列の切り出しである。**
+5. **連結は文字列で行う**: `base` + (`rawQuery.isNullOrEmpty()` ? `"?"` : `"?" + rawQuery + "&"`) + `"uri=" + encodedValue` + (`rawFragment != null` ? `"#" + rawFragment` : `""`)。**multi-argument `URI` コンストラクタは使わない。**
+   - `rawQuery` が**空文字列**(URI が `...?` で終わる)の場合は `null` と同じ扱いにする(`"?&uri=..."` にしない)。
+6. **同名 parameter**: LS の URI に既に `uri` があっても**削除・上書きしない**(`append` のセマンティクス。参照実装 `setup_webviews.ts:116-119` も `searchParams.append`)。
+7. **`java.net.URLEncoder` は使わない。** あれは `application/x-www-form-urlencoded` であり、**半角空白を `+` にする**。query component の符号化とは別物である。
+8. **ファイル URI の取得元**: アクティブエディタの `IFileEditorInput.file.locationURI`(存在しない場合は `IURIEditorInput.uri`)。取得できなければ前提条件違反として §12 の通知経路へ。
 
 **受け入れテスト(headless・純ロジック)**
 
 - ファイル名に `&` / `#` / `=` / `?` / 半角空白 / 非 ASCII(日本語)/ `+` / `%` を含む YAML パス → URI が分断されず、`uri` の値を復号すると元に戻る。
 - **LS の URI が既に `%26` / `%3D` / `%25` を含む query を持つ場合** → **その値が 1 バイトも変化しない**(round 2 の指摘に対応する識別的テスト。round 1 の実装指定ならここで落ちる)。
 - LS の URI が fragment を持つ場合 → fragment が保存され、query の後ろに来る。
+- **query 無し + fragment あり** → `base?uri=...#frag` になる(`uri` が fragment に入らない)。
+- **空 query(`...?` で終わる)** → `?&uri=` にならない。
+- **相対 URI / opaque URI** → `Failed` になり、連結を試みない。
 
 > **既存の前例**: Phase 2 の `PathSegmentEncoder`(RFC 3986 セグメント単位)と `SearchQueryBuilder`(form encode)。**どちらもそのままでは使えない**(前者はセグメント用、後者は form 用で空白が `+`)。query component の符号化は本設計で新たに規定する。実装時にこの 2 つと `URLEncoder` の 3 者を取り違えないこと。
 
@@ -461,7 +492,10 @@ class AgenticChatWebViewClient(
 
 - **キューは 1 スロット・latest-wins。** `switchView` はビューセレクタであり、古い指示を後から配送する意味がない。classic の無制限 `MutableList`(`GitLabDuoChatWebViewClient.kt:10`)とは**意図的に変える**。
 - `AgenticChatWebViewController.appReady(session)` (現在は引数なしで `= Unit`)が `markReady(session)` を呼ぶ。**`session` は §6a でバスから伝播された発信元 identity であり、処理時に読み直した現在値ではない。** `PluginMessageService.dispatch` は `supplyAsync` で別スレッド実行(`:12`)なので、UI スレッドへマーシャルしてから状態を触る。
-- **latch はセッション付き**(§7.1a)。`markReady` は伝播された `session` を `readySession` に格納し、`switchView` の送信前に `readySession === wrapper.currentSnapshot?.session` を照合する。**旧セッションの遅延 `appReady` は伝播された identity が古いので、そもそも latch を開けない。**
+- **latch はセッション付き**(§7.1a)。`switchView` の送信前に `readySession === wrapper.currentSnapshot?.session` を照合する。
+- **`markReady` は受信 `session` が現在の session と一致するときだけ格納する(round 3 で追加)。不一致なら何もしない — 既存の latch を保持する。**
+  - **無条件に格納すると新しい latch を壊す**: B の `appReady` で latch が開いた後に、`supplyAsync` / UI キューで遅延した **旧 A の `appReady`** が届くと `readySession` が A に戻る。送信時の照合は A を拒否するだけなので、以後の B 向けコマンドは `pending` に入り、**`appReady` は 1 回しか来ないので誰も latch を開け直さず F-a タイムアウトに落ちる。**
+  - **A21 ではこの汚染を検出できない**(あれは「旧 A 単独では開かない」しか見ていない)。→ **A24 を追加**: `B ready → 遅延 A ready → B の switchView が即送信される`。
 - **latch のリセット点**: `LanguageServerBrowserView.syncBrowsers`(`:200-227`)が agentic id の `Browser` を**新規作成した時**と **URI を差し替えた時**。セッション照合と併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 - 送信は `ExtensionToPluginNotification(pluginId = AGENTIC_WEBVIEW_ID, type = "switchView", payload = mapOf("view" to view))`。
 
@@ -664,11 +698,19 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `plugin.xml` | 追加のみ(commands / handlers / menus / views / editors) |
 | **`PluginMessageService` / `PluginRegistry` / `PluginController`** | **§6a: `dispatch` に第 3 引数、登録の引数制約を緩和。既存 4 形状の挙動は不変**(A1b / A1c で固定) |
 | **`GitLabLanguageServerClient`** | `val session` を持ち、4 つの `dispatch` に渡す |
-| **`GitLabLanguageServerWrapper`** | `currentSnapshot` を追加。**既存の `languageServer` プロパティは維持**(既存呼び出し元は無変更) |
-| **`GitLabLanguageServerProcessProvider`** | `:150` の client をローカルに束ね、`:157` の `registerLanguageServer` に session を併せて渡す(**1 回の代入で原子的に公開**) |
+| **`GitLabLanguageServerWrapper`** | `@Volatile` な `snapshot` を唯一の真実にし、`currentSnapshot` を追加。**既存の `languageServer` はそこから導出**(シグネチャ・意味とも維持、既存呼び出し元は無変更)。`unregisterLanguageServer(session)` を追加 |
+| **`GitLabLanguageServerProcessProvider`** | `:150` の client をローカルに束ね、`:157` の `registerLanguageServer` に session を併せて渡す(**1 回の代入で原子的に公開**)。**`onExit`(`:127-142`)の identity ガード内と初期化失敗分岐(`:167-168`)から `unregisterLanguageServer(session)` を呼ぶ** |
 | `build.gradle.kts` / `detekt.yml` | **差分ゼロ** |
 
 **round 2 でスコープが拡大した。** 初版の「既存への変更は 3 点のみ」は成立しない。拡大先は `appReady` の発信元 identity という**そもそも欠けていた情報**であり、classic Duo Chat も通る共有バスに触れる。§6a.5 の keep-behaviour テストを必須とする。
+
+**round 3 で、意図的な既存挙動の変更が 1 件入った(§6a.3b)。**
+
+> **LS がクラッシュした後、または初期化に失敗した後、`GitLabLanguageServerWrapper.languageServer` は死んだ proxy ではなく `null` を返す。**
+
+現状は `unregisterLanguageServer()` が `stopLocked`(`:200`)からしか呼ばれず、**正常停止だけが失効する**。クラッシュ後に「現在のセッション」を問うと死んだ A が返るため、本設計のセッション照合が誤った判定を下す。
+
+**観測される変化**: クラッシュ直後に Duo Chat を開くと「language server の起動待ち」表示になる(従来は死んだ proxy へ送って失敗していた)。**より正しい方向だが挙動変更である**ため、これを紛れ込ませず、専用テスト(A26)と本節での明示で扱う。**この変更が不要と判断される場合、代替は §8.1 の「同一セッションなら activate のみ」という最適化を撤回すること**(その場合コマンド再実行のたびに webview の画面内状態が失われる)。
 
 **`flushPendingIntents` は既存テストが注入している関門である。** 引数型を変えるため、Phase 5B で 3 回起きた「関門を動かすとテストが緑のまま何も覆わなくなる」の再発点になる。§20 の再監査を必須とする。
 
@@ -728,6 +770,10 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A21 | **旧セッションで発信された `appReady` が latch を開けない**(発信元 identity で判定。処理時の現在値ではない) | TDD。**production と同じ経路で `dispatch` に旧 session を渡して検査する** |
 | A22 | **LS 再起動後、開いたままのタブが再解決される**(同一セッションなら再 `load` しない) | TDD(`WebviewEditorOpener` の判定部分を SWT フリーに切り出す) |
 | A23 | **既存 query の `%26` / `%3D` / `%25` が 1 バイトも変化しない** | TDD(round 1 の実装指定ならここで落ちる) |
+| A24 | **`B ready` → 遅延 `A ready` → `B` の `switchView` が即送信される**(遅延 A が latch を汚染しない) | TDD。**A21 では検出できない性質**なので独立したテストにする |
+| A25 | **`currentSnapshot` が安全に公開される**(`@Volatile` な不変 handle。`languageServer` はそこから導出) | 実装レビュー + `languageServer` の keep-behaviour テスト |
+| A26 | **active なクラッシュ / 初期化失敗で snapshot が失効し、superseded なサーバの遅延失敗では失効しない** | TDD(2 つの独立したテスト) |
+| A27 | **query 無し + fragment / 空 query / 相対 URI / opaque URI** が §7.3a の規則どおりに扱われる | TDD |
 | A19 | `1645 + 新規` / `36 failed` / `FAILSET_IDENTICAL` / detekt 0 | `verify.sh` |
 
 **実機でのみ検証可能な項目(PR 本文に手動検証手順として記載)**
@@ -790,6 +836,9 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | R10 | **§6a が共有バスを変更する**(classic Duo Chat も通る) | 既存 4 形状の解決が壊れると Duo Chat 全体が無音死 | A1b / A1c の keep-behaviour テスト。`parameterCount` 制約は**緩める方向**なので「誤ったハンドラが黙って登録される」側も固定する(§6a.5) |
 | R11 | **予約済み再送 callback の失効漏れ** | 後続コマンドが古い指示に引き戻される | §7.4a の `commandGeneration`。A20 の 3 操作列。**`pending` にだけ latest-wins を効かせて callback に効かせないのが round 1 の誤りだった** |
 | R12 | **開いたままのタブが旧セッションの URI を保持** | 死んだページが残る | §8.1 のセッション由来判定。A22・実機検証項目 8。**round 1 で key に内容を含めた修正が開いた経路** |
+| R13 | **遅延 `appReady` が新しい latch を上書きする** | B 向けコマンドが F-a まで落ちる | §7.4 の「現在 session と一致するときだけ格納」。A24。**A21 では検出できない**ので独立テスト |
+| R14 | **`currentSnapshot` の可視性不足** | 旧 A / null を観測し正しい結果を破棄 | `@Volatile` な不変 handle(A25)。**組の原子性と可視性は別問題** |
+| R15 | **クラッシュ後に snapshot が stale** | dead URI のタブが activate されるだけ | identity-aware unregister(§6a.3b)。A26。**既存挙動の変更を伴う** |
 | R9 | **`uri` クエリの直列化を実装者が文字列連結で書く** | 特殊文字を含むパスで別ファイルを開く / 初期化失敗 | §7.3a の規則 + A15 の文字集合テスト。既存 `PathSegmentEncoder` / `SearchQueryBuilder` は**流用できない**ことを明記済み |
 
 ## 25. 確認できた範囲と、追加情報がなければ判断できない事項
