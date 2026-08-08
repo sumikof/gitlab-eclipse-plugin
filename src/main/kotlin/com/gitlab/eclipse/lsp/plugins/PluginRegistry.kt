@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.plugins
 
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageHandler
@@ -24,7 +25,14 @@ class PluginRegistry(controllers: List<PluginController>) {
   }
 
   private fun List<Method>.register(controller: PluginController) = forEach { method ->
-    if (method.parameterCount > 1) {
+    // A handler asks for the connection a message came from by declaring it as its last parameter,
+    // by type and never by name. Everything before that parameter is the payload, so the count that
+    // has always been constrained — and the type the payload is parsed into — are both taken from
+    // the parameters that remain once the session is set aside.
+    val acceptsSession = method.parameters.lastOrNull()?.type == LanguageServerSession::class.java
+    val payloadParameters = method.parameters.let { if (acceptsSession) it.dropLast(1) else it.toList() }
+
+    if (payloadParameters.size > 1) {
       error("Method ${method.name} is not a valid request handler, multiple arguments found.")
     }
 
@@ -36,11 +44,19 @@ class PluginRegistry(controllers: List<PluginController>) {
       PluginMessageRoute(controller.pluginId, PluginMessageType.NOTIFICATION, type)
     }
 
-    val payloadType = method.parameters.firstOrNull()?.type
-    val handler = PluginMessageHandler(payloadType) { payload ->
+    val payloadType = payloadParameters.firstOrNull()?.type
+    val handler = PluginMessageHandler(payloadType) { payload, session ->
       when {
-        payload == null -> method.invoke(controller)
-        else -> method.invoke(controller, payload)
+        // A handler that asked which connection sent this cannot be handed a substitute: reading
+        // "whichever connection is current" here is the confusion the parameter exists to remove.
+        // So the message is dropped, the way an unparseable payload is dropped.
+        acceptsSession && session == null ->
+          logger.warn("Message for $route names no originating session, which ${method.name} requires. Skipping.")
+
+        payload == null && !acceptsSession -> method.invoke(controller)
+        payload == null -> method.invoke(controller, session)
+        !acceptsSession -> method.invoke(controller, payload)
+        else -> method.invoke(controller, payload, session)
       }
     }
 

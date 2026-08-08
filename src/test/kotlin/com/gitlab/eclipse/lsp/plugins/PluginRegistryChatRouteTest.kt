@@ -10,6 +10,7 @@ import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
 import com.gitlab.eclipse.utils.PlatformUtils
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.mockk.mockk
 
@@ -59,6 +60,18 @@ class PluginRegistryChatRouteTest : DescribeSpec({
 
         registry[route] shouldNotBe null
       }
+    }
+  }
+
+  describe("agentic-duo-chat appReady") {
+    // Its only parameter is the connection the notification came from, which is not a payload. Were
+    // it registered as one, every appReady would arrive with a null payload, fail the payload/type
+    // match and be dropped with a warning — agentic readiness would stop working with no exception
+    // and nothing in the error log.
+    it("registers with no payload type") {
+      val route = PluginMessageRoute("agentic-duo-chat", PluginMessageType.NOTIFICATION, "appReady")
+
+      registry[route]?.type shouldBe null
     }
   }
 

@@ -160,7 +160,8 @@ class GitLabLanguageServerClient(
         pluginId = message.pluginId,
         type = PluginMessageType.NOTIFICATION
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -172,7 +173,8 @@ class GitLabLanguageServerClient(
         pluginId = message.pluginId,
         type = PluginMessageType.REQUEST
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -184,7 +186,8 @@ class GitLabLanguageServerClient(
         pluginId = message.webviewId,
         type = PluginMessageType.NOTIFICATION
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -196,7 +199,8 @@ class GitLabLanguageServerClient(
         pluginId = message.webviewId,
         type = PluginMessageType.REQUEST
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 

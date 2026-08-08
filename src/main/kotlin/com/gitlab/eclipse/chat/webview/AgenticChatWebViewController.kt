@@ -3,6 +3,7 @@ package com.gitlab.eclipse.chat.webview
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
@@ -39,8 +40,13 @@ class AgenticChatWebViewController(
   @PluginNotification("showMessage")
   fun showMessage(notification: ShowMessageNotification) = handlers.showMessage(notification)
 
+  /**
+   * Takes the connection the notification was sent from, so a late one from a connection that has
+   * already been replaced can be told apart from the current one. Nothing consumes it yet.
+   */
+  @Suppress("UnusedParameter")
   @PluginNotification("appReady")
-  fun appReady() = Unit
+  fun appReady(session: LanguageServerSession) = Unit
 
   @PluginNotification("insertCodeSnippet")
   fun insertCodeSnippet(notification: InsertCodeSnippetNotification) = handlers.insertCodeSnippet(notification)
