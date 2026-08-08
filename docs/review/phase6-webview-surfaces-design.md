@@ -219,16 +219,24 @@ class LanguageServerSession
 ```kotlin
 data class LanguageServerHandle(val proxy: GitLabLanguageServer, val session: LanguageServerSession)
 
-@Volatile private var snapshot: LanguageServerHandle? = null   // 唯一の真実
+private val snapshot = AtomicReference<LanguageServerHandle?>(null)   // 唯一の真実
 
-val currentSnapshot: LanguageServerHandle? get() = snapshot
-val languageServer: GitLabLanguageServer? get() = snapshot?.proxy   // 既存 API・呼び出し元は無変更
-fun registerLanguageServer(proxy, session)          // 1 回の代入で組を公開
-fun unregisterLanguageServer()                      // 既存(無条件・stopLocked から)
-fun unregisterLanguageServer(session)               // 追加(identity-aware。§6a.3b)
+val currentSnapshot: LanguageServerHandle? get() = snapshot.get()
+val languageServer: GitLabLanguageServer? get() = snapshot.get()?.proxy  // 既存 API・呼び出し元は無変更
+fun registerLanguageServer(proxy, session)             // snapshot.set(handle)。組を 1 回で公開
+fun unregisterLanguageServer()                         // 既存(無条件・stopLocked から)
+fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean   // §6a.3b。CAS
 ```
 
-**`@Volatile` は必須(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
+**`AtomicReference` は必須(round 4 で修正)。** round 3 は `@Volatile` を指定したが、**それは読み書き単体の可視性しか与えず、条件付き更新の原子性を与えない。** identity-aware な解除を「現在 session を読む → 一致なら null を書く」と実装すると read-modify-write になり、以下が起きる:
+
+> `GitLabLanguageServerProcessProvider.kt:165-193` の初期化 callback は **`lifecycleLock` の外**で走る(`synchronized` で囲まれているのは `process !== startedProcess` の判定だけで、**`err != null` 分岐にはロックが一切ない**)。旧 A の callback が「現在 = A」を確認した直後に restart が B を登録すると、**A が後から B の snapshot を null で上書きする。** チャット・診断起動・テーマ送信など `languageServer` を読む**既存の全読者が、次の restart まで LS 不在になる。**
+
+→ **`unregisterLanguageServer` は `snapshot.compareAndSet(captured, null)` で実装する。** 比較対象は**その callback 自身が登録した handle** であり、読み直した session ではない。CAS が false を返したら**何もしない**(既に別の接続に置き換わっている)。
+
+**呼び出し側が自分の handle を持つ方法**: `onExit` は `:127` で登録され、handle が確定するのは `:157` である(登録の方が先)。したがって start 呼び出しのローカルに `AtomicReference<LanguageServerHandle?>` を 1 つ置き、`:157` で set し、`onExit` と初期化 callback はそこから読む。**ローカル変数の直接キャプチャにしない**(別スレッドから読むため happens-before が要る)。
+
+**可視性(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
 
 `registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、`client.session` を一緒に渡す。**既存の `languageServer` プロパティのシグネチャと意味は維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
 
@@ -742,6 +750,28 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 **検証ベースライン**: `1645 tests completed, 36 failed` + `FAILSET_IDENTICAL (36 failures)` + detekt 0。36 件は headless で実 SWT を要求する既存テストであり、このリポジトリのグリーンベースラインである。
 
+### 20a. 受け入れ条件の識別性(**round 4 で追加。この設計で 3 度繰り返した失敗**)
+
+本レビューで、**「守るべき性質」ではなく「守れている一例」をテストにしていた**受け入れ条件が 3 度見つかった。
+
+| 回 | 条件 | 何が漏れていたか |
+|---|---|---|
+| round 1 | A17 | テストから旧 proxy を直接 `markReady` に渡す形。**production が処理時に現在値を読んでいても緑になる** |
+| round 2 | A21 | 「旧 A **単独**では latch を開かない」しか見ない。**遅延 A が既に開いた B の latch を上書きする**汚染を素通り |
+| round 4 | A22 / A25 / A26 | 純関数だけ / 単一スレッドの値だけ / 3 経路を 2 本に畳む(下記) |
+
+**3 度とも同じ機序である: 性質を実現する経路の一部だけを検査し、production の入口から検査していない。** 実装ブリーフに以下を規約として明記する。
+
+1. **production の入口から検査する。** 内部に切り出した純関数を単体で固定するのは構わないが、**それだけを受け入れ条件にしない。** 呼び出し側が「呼ばない / 結果を反転する / 後続の副作用を起こさない」変異で緑のままなら、その条件は性質を守っていない。
+   - A22: `WebviewEditorOpener.openOrReload` から検査する(`IWorkbenchPage` と session-aware host をモック)。「別 session → activate + 実際の `load`」「同一 session → activate のみ」。
+2. **production の分岐数とテストの本数を一致させる。** 分岐を 1 つ削る変異が**対応する 1 本だけ**を落とすこと。
+   - A26: `onExit` の解除だけ実装して初期化失敗分岐の解除を消しても、2 本構成では両方緑のままだった(プロセスは生存し `initialize` だけ失敗する経路で、**未初期化 proxy が `languageServer` に残る**)。**3 経路 = 3 本**にする。
+3. **値だけでなく構造も固定する。** 「安全に公開される」のような性質は、値の一致だけを見ても**修飾子を外す変異に反応しない**。
+   - A25: (1) reflection で backing field が `AtomicReference` であることを固定する構造テスト、(2) production accessor 経由の一貫性テスト、の**2 本に分ける**。**`AtomicReference` を素の `var` に戻す変異**と、**getter を別 backing field にする変異**の両方で、少なくとも片方が落ちること。
+4. **変異前後の実出力を提出させる。** 実装者に「落ちるはず」を推測で書かせない(Phase 5B から継続)。
+
+**この節は実装ブリーフにそのまま転記する。** 上記 4 点は本設計の受け入れ条件すべて(A1b / A1c / A6〜A28)に適用する。
+
 ## 21. 受け入れ条件
 
 | # | 条件 | 検証 |
@@ -768,11 +798,12 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A18 | **F-b の再送が有限回で打ち切られ、打ち切り時に通知経路を呼ばない** | TDD |
 | A20 | **予約済み再送が、後続コマンド / `markNotReady()` / セッション変更のいずれでも 1 回も送信されない** | TDD(§7.4a の 3 操作列) |
 | A21 | **旧セッションで発信された `appReady` が latch を開けない**(発信元 identity で判定。処理時の現在値ではない) | TDD。**production と同じ経路で `dispatch` に旧 session を渡して検査する** |
-| A22 | **LS 再起動後、開いたままのタブが再解決される**(同一セッションなら再 `load` しない) | TDD(`WebviewEditorOpener` の判定部分を SWT フリーに切り出す) |
+| A22 | **LS 再起動後、開いたままのタブが再解決される**(同一セッションなら再 `load` しない) | TDD。**純関数の判定部分だけを検査しない** — `IWorkbenchPage` と session-aware host をモックし、**production の `openOrReload` エントリポイントから**「別 session → activate + 実際の `load`」「同一 session → activate のみ」を検査する(§20a) |
 | A23 | **既存 query の `%26` / `%3D` / `%25` が 1 バイトも変化しない** | TDD(round 1 の実装指定ならここで落ちる) |
 | A24 | **`B ready` → 遅延 `A ready` → `B` の `switchView` が即送信される**(遅延 A が latch を汚染しない) | TDD。**A21 では検出できない性質**なので独立したテストにする |
-| A25 | **`currentSnapshot` が安全に公開される**(`@Volatile` な不変 handle。`languageServer` はそこから導出) | 実装レビュー + `languageServer` の keep-behaviour テスト |
-| A26 | **active なクラッシュ / 初期化失敗で snapshot が失効し、superseded なサーバの遅延失敗では失効しない** | TDD(2 つの独立したテスト) |
+| A25 | **`currentSnapshot` が安全に公開される**(`AtomicReference` な不変 handle。`languageServer` はそこから導出) | **2 本に分ける**: (1) reflection で backing field が `AtomicReference` であることを固定する構造テスト、(2) register / unregister の各遷移で `languageServer === currentSnapshot?.proxy` を**production accessor 経由**で確認するテスト(§20a) |
+| A26 | **3 つの失効経路がそれぞれ独立に固定される** | **3 本に分ける**(§20a): (1) active crash(`onExit`)、(2) **active な初期化失敗**、(3) superseded サーバの遅延失敗では失効しない。いずれも `GitLabLanguageServerProcessProvider` の実 callback から駆動する |
+| A28 | **CAS の競合**: A の照合と解除の間に B が登録されると、A の解除は**失敗して B の snapshot を残す** | TDD(§20a) |
 | A27 | **query 無し + fragment / 空 query / 相対 URI / opaque URI** が §7.3a の規則どおりに扱われる | TDD |
 | A19 | `1645 + 新規` / `36 failed` / `FAILSET_IDENTICAL` / detekt 0 | `verify.sh` |
 
@@ -837,7 +868,9 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | R11 | **予約済み再送 callback の失効漏れ** | 後続コマンドが古い指示に引き戻される | §7.4a の `commandGeneration`。A20 の 3 操作列。**`pending` にだけ latest-wins を効かせて callback に効かせないのが round 1 の誤りだった** |
 | R12 | **開いたままのタブが旧セッションの URI を保持** | 死んだページが残る | §8.1 のセッション由来判定。A22・実機検証項目 8。**round 1 で key に内容を含めた修正が開いた経路** |
 | R13 | **遅延 `appReady` が新しい latch を上書きする** | B 向けコマンドが F-a まで落ちる | §7.4 の「現在 session と一致するときだけ格納」。A24。**A21 では検出できない**ので独立テスト |
-| R14 | **`currentSnapshot` の可視性不足** | 旧 A / null を観測し正しい結果を破棄 | `@Volatile` な不変 handle(A25)。**組の原子性と可視性は別問題** |
+| R14 | **`currentSnapshot` の可視性不足** | 旧 A / null を観測し正しい結果を破棄 | `AtomicReference` な不変 handle(A25)。**組の原子性・可視性・条件付き更新の原子性は 3 つとも別問題**(round 3 で 2 つ目、round 4 で 3 つ目に気づいた) |
+| R16 | **identity 照合と解除が原子的でない** | **旧 A の解除が新 B の snapshot を消し、既存の全読者が LS 不在になる** | `compareAndSet(captured, null)`。初期化 callback は `lifecycleLock` の外で走る(`:165-193`)ため、ロックに頼れない。A28 |
+| R17 | **受け入れ条件が識別的でない** | production を壊してもテストが緑 | **§20a**(3 度繰り返した失敗の規約化)。入口から検査 / 分岐数とテスト本数の一致 / 構造も固定 / 変異出力の提出 |
 | R15 | **クラッシュ後に snapshot が stale** | dead URI のタブが activate されるだけ | identity-aware unregister(§6a.3b)。A26。**既存挙動の変更を伴う** |
 | R9 | **`uri` クエリの直列化を実装者が文字列連結で書く** | 特殊文字を含むパスで別ファイルを開く / 初期化失敗 | §7.3a の規則 + A15 の文字集合テスト。既存 `PathSegmentEncoder` / `SearchQueryBuilder` は**流用できない**ことを明記済み |
 
