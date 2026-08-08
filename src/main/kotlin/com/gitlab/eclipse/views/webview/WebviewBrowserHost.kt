@@ -14,12 +14,11 @@ import org.eclipse.swt.widgets.Control
 /**
  * The SWT side of a webview surface. Design §7.2.
  *
- * It bundles the sinks a [WebviewLoadPipeline] drives and calls [load]. Which outcome reaches which
- * sink, and in what order, is entirely the pipeline's. The conditionals that remain here are
- * widget-local and decide nothing about an outcome: the two guards that turn a `Browser` refusal
- * into the throw design §7.2b reads as failure, the loading page's construction fallback, the
- * shown/hidden choice that is the whole of `setLoadingVisible`, and [newBrowser]'s platform
- * choice. Every member here is confined to the UI thread (design §15).
+ * It bundles the sinks a [WebviewLoadPipeline] drives and calls [load]. Nothing here decides
+ * *which* [WebviewLoadCoordinator.Outcome] is applied, or in what order the sinks run; that is
+ * entirely the pipeline's. What is decided here is widget-local, and the case worth knowing about
+ * is the pair of guards that turn a `Browser`'s boolean refusal into the throw design §7.2b reads
+ * as failure. Every member here is confined to the UI thread (design §15).
  *
  * [coordinator] is taken rather than a ready-made [WebviewLoadPipeline], which cannot exist before
  * the widgets its sinks capture: a deviation from design §7.2's listing. One coordinator still
@@ -38,10 +37,18 @@ class WebviewBrowserHost(
   /**
    * A refusal here is recorded rather than raised: throwing would abort the caller's
    * `createPartControl` and cost the whole surface, where this page is transient and a blank one
-   * costs at most an empty background while a load runs.
+   * costs at most an empty background while a load runs. The record is wrapped for that same
+   * reason — it runs in that same constructor, so a platform log that is already gone would
+   * otherwise inflict the cost this chose not to inflict.
    */
   private val loadingPage = newBrowser().apply {
-    if (!setText(themedHtml("Loading..."))) logger.warn("The browser refused the loading page.")
+    if (!setText(themedHtml("Loading..."))) {
+      try {
+        logger.warn("The browser refused the loading page.")
+      } catch (_: Throwable) {
+        // There is nowhere left to record this: the log is the thing that failed.
+      }
+    }
   }
   private val messagePage = newBrowser()
   private val contentPage = newBrowser()
