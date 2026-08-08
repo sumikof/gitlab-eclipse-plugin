@@ -211,4 +211,16 @@ class WebviewUriResolverTest : DescribeSpec({
       "${WebviewResolution.Failed(null)}" shouldBe "WebviewResolution.Failed(type=null)"
     }
   }
+
+  // Design §17, on the type `WebviewResolution.Resolved.uri` is read out of. Pinned here rather
+  // than in a spec of its own so the whole chain that carries the advertised uri — metadata entry,
+  // resolution, outcome — is fixed in one place.
+  describe("WebviewInfo's string form") {
+    it("keeps the advertised uris out of it") {
+      val rendered = "${WebviewInfo(WEBVIEW_ID, "MCP", listOf(SECRET_URI))}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "WebviewInfo($WEBVIEW_ID)"
+    }
+  }
 })
