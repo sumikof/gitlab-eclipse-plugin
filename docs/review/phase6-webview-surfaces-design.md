@@ -171,7 +171,8 @@ var kz = class {
 ChatWebviewCatalog                              WebviewUriResolver        (SWT フリー)
 LanguageServerBrowserView  ◀── §7.4 の intent 追加のみ
 GitLabDuoChatWebViewClient                      WebviewLoadCoordinator    (SWT フリー・決定)
-  (classic 専用・focus ゲート)                   WebviewBrowserHost        (SWT・薄い殻)
+  (classic 専用・focus ゲート)                   WebviewOutcomeApplier     (SWT フリー・適用/分岐)
+                                                WebviewBrowserHost        (SWT・sink を束ねるだけ)
   (classic 専用・focus ゲート)                   ├─ AgenticTabsView       (ViewPart)
 AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEditorPart    (EditorPart)
                                                      + WebviewEditorInput / Key / Opener
@@ -181,7 +182,7 @@ AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEdit
 配置(ディレクトリ構成変更禁止のため既存パッケージ体系内):
 
 - `com.gitlab.eclipse.lsp.webview` … `WebviewUriResolver`(既存 `LanguageServerWebviewService` と同居)
-- `com.gitlab.eclipse.lsp.webview` … `WebviewLoadCoordinator`(SWT フリー。`WebviewUriResolver` と同居)
+- `com.gitlab.eclipse.lsp.webview` … `WebviewLoadCoordinator` / `WebviewOutcomeApplier`(いずれも SWT フリー。`WebviewUriResolver` と同居)
 - `com.gitlab.eclipse.views.webview` … `WebviewBrowserHost` / `AgenticTabsView` / `WebviewEditor*`
 - `com.gitlab.eclipse.chat.webview` … `AgenticChatWebViewClient`(既存 `GitLabDuoChatWebViewClient` と同居)
 - `com.gitlab.eclipse.chat.commands` / `.actions` … 各ハンドラ
@@ -384,7 +385,22 @@ class WebviewLoadCoordinator(private val resolver: WebviewUriResolver, private v
   }
 }
 
-/** SWT。薄い殻。Outcome を Browser とタブ名へ適用するだけ。 */
+/**
+ * SWT フリー。Outcome を sink へ適用する。**分岐はここにあり、殻には無い**(round 8 で修正)。
+ * sink は殻が Browser / パートに束ねて渡す。
+ */
+class WebviewOutcomeApplier(
+  private val showUrl: (String) -> Unit,        // browser.setUrl
+  private val showMessage: (String) -> Unit,    // message ページ
+  private val showLoading: () -> Unit,
+  private val setTitle: (String) -> Unit,       // setPartName
+  private val hasContent: () -> Boolean,        // 既に何かを表示しているか
+) {
+  fun beginLoad()                    // §8.1: hasContent() が false のときだけ showLoading()
+  fun apply(outcome: Outcome): Boolean   // 適用に成功したら true(= 表示セッションを記録してよい)
+}
+
+/** SWT。薄い殻。sink を束ねて applier に渡すだけ。分岐を持たない。 */
 class WebviewBrowserHost(parent: Composite, private val coordinator: WebviewLoadCoordinator) {
   fun load(id: String, queryParams: Map<String, String> = emptyMap())  // UI スレッド
   fun setFocus(): Boolean
@@ -392,9 +408,28 @@ class WebviewBrowserHost(parent: Composite, private val coordinator: WebviewLoad
 }
 ```
 
-- **`WebviewLoadCoordinator` が A15 / A16 / A22 / A13 の production 入口**になる(headless で検査可能)。
-- `WebviewBrowserHost` に残るのは **`Outcome` の分岐 1 つと SWT 呼び出しだけ**で、手動検証で足りる薄さに保つ。**分岐やロジックをこちら側に足さないこと**(足した瞬間に検証できない領域が増える)。
+- **`WebviewLoadCoordinator` と `WebviewOutcomeApplier` の 2 つが A13 / A15 / A16 / A22 の production 入口**になる(いずれも headless で検査可能)。**round 7 は Coordinator だけを入口としたが、それでは「殻が `Show` を無視する / 分岐を反転する / 失敗時に `setPartName` を呼ぶ」変異を検出できなかった**(§20a 規約 1 違反)。
+- `WebviewBrowserHost` に残るのは **sink をラムダとして束ねることだけ**。**分岐を一切持たない。**
 - この分離は Phase 4 の **SWT フリー `runCiLint`** と同型である(あちらも「決定は SWT フリー、適用は薄い殻」)。
+
+**`Discard` と loading の関係(round 8 で規定)**
+
+round 7 の「`Discard` なら殻は何もしない」は、§8.1 が先に loading を出す以上**誤りだった**: 解決中に LS セッションだけが変わり後続の `load` が無い場合、**loading が永久に前面へ残る**(保持している既存 Browser は生きているのに見えない、通知も再解決もない silent no-op)。
+
+→ **`beginLoad()` は `hasContent()` が false のときだけ loading を出す**(既存 `LanguageServerBrowserView.showLoadingUnlessChatVisible`(`:283-290`)と同じ規律)。そのうえで `Discard` の扱いを内容の有無で分ける。
+
+| 状況 | `Discard` の扱い |
+|---|---|
+| 既に内容を表示している | **何もしない**(既存の表示がそのまま残る = 利用者から見て変化なし) |
+| まだ何も表示していない(初回) | **message ページを出す**(「language server が切り替わりました。コマンドを再実行してください」)。**自動再解決はしない**(§13 の「自動リトライを入れない」に従う。リトライは「いつ諦めるか」という状態を増やす) |
+
+**どちらの経路でも loading は残らない。**
+
+**表示セッションの記録は適用成功後に行う(round 8 で修正)**
+
+round 7 は **Coordinator が `Outcome.Show` を返した時点**で表示内容の session を記録する形だったが、**決定と適用を分けた以上それは誤りである**: その後に殻が dispose された場合や `showUrl` が throw した場合でも「現セッションを表示済み」と記録され、**同じコマンドを再実行しても `openOrReload` が同一 session と判断して `activate` だけを行い、loading / 旧ページから復旧できない。**
+
+→ **`apply()` が true を返したときにだけ表示セッションを記録する。** `apply()` は `showUrl` が throw したら false を返し、記録しない。**適用失敗後の再実行は必ず `load` に入る**(A30)。
 
 - Browser 生成は既存 `LanguageServerBrowserView.newBrowser`(`:324-327`)と同一の分岐(Windows = `SWT.EDGE`、他 = `SWT.WEBKIT`)。
 - message ページの HTML は既存 `themedHtml`(`:329-355`)と同一の形(`ThemeProvider.currentTheme()` の CSS 変数)。
@@ -572,7 +607,16 @@ class AgenticChatWebViewClient(
 - **世代だけでは足りない。タイマは開始時の session も捕捉し、発火時に照合する(round 7 で追加)。**
   - 世代が進む契機は `switchView` / `markReady` / `markNotReady` であり、`markNotReady` の呼び出し点は §7.4 のとおり **`syncBrowsers` が Browser を新規作成したか URI を変更したとき**だけである。したがって **LS が再起動し、新セッションが同じ URI を広告した場合、`syncBrowsers` は Browser を再利用して `markNotReady` を呼ばず、世代も進まない。**
   - その結果、**旧セッションで開始した 10 秒タイマが新セッション移行後に発火し、`pending` を破棄して偽のエラー通知を出す。** これは §12 の「セッション不一致は通知せず破棄する」とも食い違う。
-  - → **タイマは `(gen, session)` の両方を捕捉し、発火時に `gen == commandGeneration` かつ `session === wrapper.currentSnapshot?.session` を照合する。** 不一致なら**何もしない**(§12 のとおり通知しない)。
+  - → **タイマは `(gen, session)` の両方を捕捉し、発火時に両方を照合する。ただし不一致の種類で扱いを分ける(round 8 で精緻化)。**
+
+| 発火時の状態 | 扱い | 理由 |
+|---|---|---|
+| `gen != commandGeneration` | **何もしない** | 後続コマンドが自分のタイマを持っている。古い列がそれを壊してはならない(§7.4a) |
+| `gen` 一致・**`session` 不一致** | **`pending` を通知なしで破棄する** | その `pending` は旧セッション宛で、もう配送先が無い。**L-11(セッション不一致は通知せず破棄)に一致** |
+| 両方一致 | F-a 成立 → `pending` 破棄 + Error Log + 通知 | 通常経路 |
+
+  - **round 7 の「不一致なら何もしない」は誤りだった。** その形だと次が起きる: A で `pending` とタイマを作る → LS が**同一 URI** の B へ再起動(`syncBrowsers` は Browser を再利用するので `markNotReady` も新しいタイマも発生しない)→ B から `appReady` が来ない → **唯一のタイマが不一致で何もせず終了し、`pending` が永久に残る。** F-a が約束する破棄にも、L-11 が受容する破棄にも到達しない。
+  - **「偽の通知を出さない」と「終端に必ず到達する」は別々の要求であり、両方を満たす必要がある。** 上の表は前者を `session` 不一致で通知しないことで、後者を**必ず `pending` を破棄すること**で満たす。
   - **A12c を追加**: `pending` 中に LS が再起動し**新セッションが同じ URI を広告する**操作列で、旧タイマが `pending` を破棄せず通知も出さないこと。**session 照合を削除する変異でこれだけが落ちること。**
 - **A12 に操作列を追加**: 旧タイマが発火しても、新しい `pending` とその 10 秒の猶予が維持されること。
 
@@ -608,16 +652,20 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
        │        └─ あり かつ 別セッション由来 → activate + host.load(...) で再解決
        └─ (2) 無ければ activePage.openEditor(input, EDITOR_ID)
                 └─ WebviewEditorPart.createPartControl
-                     └─ WebviewBrowserHost.load(id, params)   [SWT の薄い殻]
-                          ├─ loading ページ表示
-                          └─ coordinator.load(id, params)       [SWT フリー = A15/A16/A13 の入口]
+                     └─ WebviewBrowserHost.load(id, params)   [SWT の薄い殻・分岐なし]
+                          ├─ applier.beginLoad()                [内容が無いときだけ loading]
+                          └─ coordinator.load(id, params)       [SWT フリー]
                                ├─ 世代++ / LS セッションを捕捉
                                ├─ resolver.resolve(id)          [UI スレッド外]
                                └─ whenComplete → asyncExec      [UI スレッドへ復帰]
                                     ├─ 世代不一致 / セッション不一致 → Outcome.Discard
                                     ├─ Resolved → Outcome.Show(§7.3a のビルダ結果, titleFor)
                                     └─ その他   → Outcome.Message
-                          └─ 殻が Outcome を分岐して browser.setUrl / message ページ / setPartName
+                          └─ applier.apply(outcome)             [SWT フリー・分岐はここ]
+                               ├─ Show    → showUrl + setTitle(非 null のときだけ) → true
+                               ├─ Message → showMessage → true
+                               └─ Discard → 内容あり: 何もしない / 初回: showMessage
+                          └─ apply() が true のときだけ表示セッションを記録
 ```
 
 **分岐は「アクティブページ上の一致」でのみ判定する**(初版は「全 window/page の一致」と「アクティブページでの可視化」を混在させており、他ウィンドウに一致があるとき起動元にタブが開かない読みが成立していた)。他ウィンドウに同じ key のタブがあっても**触らない**: 内容が同一なので更新の必要が無く、他ウィンドウのユーザーの表示を勝手に動かす理由も無い。
@@ -628,7 +676,7 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
 
 しかもこれは **§18 の「LS 再起動 → 次回のコマンドで新しい URI に解決」および実機検証項目 8 と正面から矛盾していた**(どちらも旧設計のまま更新し忘れていた)。
 
-→ **`WebviewLoadCoordinator` が現在表示している内容のセッション由来を保持する**(`Outcome.Show` を返したときの `resolution.session`)。`openOrReload` はそれを問い合わせ、**現セッションと異なるときだけ再 `load` する**。同一セッションなら `activate` のみ(webview の画面内状態を無意味に捨てない)。**この状態を SWT フリー側に置くのは、A22 を headless で入口から検査できるようにするため**(§7.2 / §20a 規約 1)。§18 と実機検証項目 8 もこの形に合わせて修正した。
+→ **表示内容のセッション由来は `apply()` が true を返したときにだけ記録される**(round 8 で修正。決定時ではなく**適用成功時**)。`openOrReload` はそれを問い合わせ、**現セッションと異なるときだけ再 `load` する**。同一セッションなら `activate` のみ(webview の画面内状態を無意味に捨てない)。**この状態を SWT フリー側に置くのは、A22 を headless で入口から検査できるようにするため**(§7.2 / §20a 規約 1)。§18 と実機検証項目 8 もこの形に合わせて修正した。
 
 **`MergedYamlEditorOpener` との差**: あちらは同一 key の内容が更新されうる(再 lint)ため全ページの再 reset が要る。こちらは key が内容を含むので、同一 key = 同一内容であり、**全ページ走査そのものが不要**になる。この違いを実装時に取り違えないこと。
 
@@ -711,7 +759,8 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `openEditor` / `showView` の失敗 | Error Log + ユーザー通知 |
 | **F-a**: `appReady` が 10 秒以内に来ない | `pending` 破棄 + Error Log + ユーザー通知 |
 | **F-b**: `appReady` は来たが LS の転送ハンドラ未登録 | **境界つき再送**(§7.4)。**通知しない**(観測不能なため、通知すると成功時にも必ず誤通知になる) |
-| LS セッション不一致(§7.1a) | 破棄。**通知しない**(ユーザーが自分で切替えた結果であり、異常ではない)。debug ログのみ |
+| LS セッション不一致(§7.1a) | 破棄。**通知しない**(ユーザーが自分で切替えた結果であり、異常ではない)。debug ログのみ。**ただし「破棄」は必ず終端まで行う** — `pending` を残したまま何もしないのは不可(§7.4 の表・A12c) |
+| `Discard` かつ**まだ何も表示していない**(§7.2) | message ページ(「language server が切り替わりました。コマンドを再実行してください」)。**loading を残さない** |
 
 **silent no-op を作らない。ただし「観測できない事象を起きたことにして通知する」偽陽性も作らない。** 前者は Phase 5B が 9 ラウンド / 12 波を要した「黙って永久に劣化する」クラス、後者は同フェーズが「最悪の誤り方」とした監査の偽陽性である。F-b は前者にも後者にも該当しないよう、**再送で窓を覆いつつ通知は出さず、最終的な確認をユーザーの画面に委ねる**(§23 L-9)。
 
@@ -736,7 +785,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 ## 15. 並行処理
 
-- **`WebviewLoadCoordinator` / `WebviewBrowserHost` / `AgenticChatWebViewClient` / `WebviewEditorOpener` の可変状態はすべて UI スレッド専有。** 同期プリミティブを使わない。**`WebviewLoadCoordinator` は SWT フリーだが UI スレッド専有である**(SWT に触れないことと、どのスレッドから呼ばれるかは別。headless テストは単一スレッドで駆動する)。
+- **`WebviewLoadCoordinator` / `WebviewOutcomeApplier` / `WebviewBrowserHost` / `AgenticChatWebViewClient` / `WebviewEditorOpener` の可変状態はすべて UI スレッド専有。** 同期プリミティブを使わない。**`WebviewLoadCoordinator` は SWT フリーだが UI スレッド専有である**(SWT に触れないことと、どのスレッドから呼ばれるかは別。headless テストは単一スレッドで駆動する)。
 - メタデータ future は UI スレッド外で消費し、結果適用は `asyncExec` で UI スレッドへマーシャルする。
 - **世代カウンタ(latest-wins)は `asyncExec` の中で再チェックする。** `whenComplete` の時点でのチェックでは、キューイングと実行の間に新しい `load()` が走った場合を取りこぼす。
 - **世代とは別に LS セッションを照合する(§7.1a)。** 世代は新しい `load()` が無ければ上がらないため、**LS 再起動をまたぐ競合は世代では捕まらない。** 2 つは異なる競合を守っており、片方で他方を代替できない。
@@ -805,7 +854,8 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | **`uri` クエリのビルダ**(§7.3a。`&`/`#`/`=`/`?`/空白/非 ASCII/`+`/`%` + 既存 query・fragment 保存) | ✅ | TDD |
 | `AgenticChatWebViewClient`(latest-wins / latch / リセット / **F-a タイムアウト** / **F-b 再送回数** / **セッション照合**) | ✅ | TDD(wrapper は MockK、タイマはシーム注入) |
 | `flushPendingIntents` の agentic 分岐 + classic 2 経路の keep-behaviour | ✅ | 既存テストへの追加 |
-| **`WebviewLoadCoordinator`**(最終 URL / タブ名 / 破棄判定 = A15・A16・A13 の入口) | ✅ | TDD。**§7.2 で SWT フリーに分離した production collaborator** |
+| **`WebviewLoadCoordinator`**(最終 URL / タブ名 / 破棄判定) | ✅ | TDD。**§7.2 で SWT フリーに分離した production collaborator** |
+| **`WebviewOutcomeApplier`**(各 `Outcome` から sink 呼び出しまで = A13・A15・A29・A30・A31 の入口) | ✅ | TDD。sink はラムダで注入 |
 | `WebviewEditorOpener`(session 由来判定 = A22 の入口。`IWorkbenchPage` をモック) | ✅ | TDD |
 | `WebviewBrowserHost` / `WebviewEditorPart` / `AgenticTabsView` の **SWT 呼び出し部分** | ❌ | **手動検証手順**(PR 本文)。**`Outcome` の分岐 1 つと SWT 呼び出しだけに保つ** |
 
@@ -865,7 +915,10 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A10 | classic の 2 つの intent の挙動が不変 | keep-behaviour ラベル付きテスト |
 | A11 | 解決した URI とユーザーのファイルパスがログに現れない | 実装レビュー + テスト |
 | A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入)。**単独タイマの通常経路のみ** |
-| A12c | **セッション遷移時のタイマ失効**: `pending` 中に LS が再起動し**新セッションが同じ URI を広告する**(= `syncBrowsers` が Browser を再利用し `markNotReady` を呼ばない)操作列で、旧タイマが `pending` を破棄せず通知も出さない | TDD。**session 照合を削除する変異でこれだけが落ちること** |
+| A12c | **セッション遷移時**: `pending` 中に LS が再起動し**新セッションが同じ URI を広告する**(= `syncBrowsers` が Browser を再利用し `markNotReady` を呼ばない)操作列で、**(1) 通知が出ない かつ (2) `pending` が必ず終端に到達する(破棄される)** | TDD。**2 つの性質を別々のテストにする**(§20a 規約 2)。session 照合の削除で (1) が、破棄の削除で (2) が落ちること |
+| A29 | **`Discard` 後に loading が残らない**: 内容ありなら既存表示が残り、初回なら message ページが出る | TDD(`WebviewOutcomeApplier` の入口から。`hasContent` をモック) |
+| A30 | **適用失敗後の再実行が必ず `load` に入る**: `showUrl` が throw すると `apply()` が false を返し、表示セッションが記録されない | TDD |
+| A31 | **殻が分岐を持たない**: 各 `Outcome` について、対応する sink が**呼ばれること / 呼ばれないこと**を `WebviewOutcomeApplier` の入口から検査する | TDD。**`Show` を無視する / 分岐を反転する / 失敗時に `setTitle` を呼ぶ変異で落ちること**(§20a 規約 1) |
 | A12b | **旧世代タイマの失効**: ready 前に `history` → 9 秒後に `newConversation` → **10 秒後に発火する旧タイマが新しい `pending` を破棄せず、通知も出さない**。新しい 10 秒の猶予が維持される | TDD。**`commandGeneration` の照合を削除する変異で、A12 は緑のまま A12b だけが落ちること**(§20a 規約 2) |
 | A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | **純関数 `titleFor` だけを検査しない**(§20a 規約 1)。**`WebviewLoadCoordinator.load` が失敗分岐で返す `Outcome` の `title` が null になること**を production 入口から検査する(`WebviewBrowserHost` はそれを見て `setPartName` を呼ばない)。**`titleFor` 呼び出しの削除 / 条件反転の変異出力を要求する** |
 | A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
