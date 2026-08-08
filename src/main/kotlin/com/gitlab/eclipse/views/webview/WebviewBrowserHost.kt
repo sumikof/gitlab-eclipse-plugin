@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.webview
 
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.webview.ThemeProvider
 import com.gitlab.eclipse.lsp.webview.WebviewLoadCoordinator
 import com.gitlab.eclipse.lsp.webview.WebviewLoadPipeline
@@ -82,6 +83,10 @@ class WebviewBrowserHost(
     // a field test.
     isAlive = { !container.isDisposed },
   )
+
+  /** Design §7.2b / §8.1, for [WebviewEditorOpener]. */
+  val displayedSession: LanguageServerSession?
+    get() = pipeline.displayedSession
 
   /** Design §7.2. */
   fun load(id: String, queryParams: Map<String, String> = emptyMap()) {

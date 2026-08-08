@@ -1406,6 +1406,16 @@
         </menuContribution>
     </extension>
 
+    <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
+    <extension point="org.eclipse.ui.editors">
+        <editor
+                id="com.gitlab.eclipse.views.webview.WebviewEditorPart"
+                class="com.gitlab.eclipse.views.webview.WebviewEditorPart"
+                name="GitLab Webview"
+                icon="icons/notification.png"
+        />
+    </extension>
+
     <extension point="org.eclipse.ui.editors.annotationTypes">
         <type
                 name="codeSuggestionsMarker"
