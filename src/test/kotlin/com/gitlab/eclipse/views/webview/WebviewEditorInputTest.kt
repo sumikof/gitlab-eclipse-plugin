@@ -83,6 +83,16 @@ class WebviewEditorInputTest : DescribeSpec({
     }
   }
 
+  describe("WebviewEditorKey") {
+    // Design §17: a data class prints every component, and this one holds the user's file path.
+    it("keeps the queried path out of its own string form") {
+      val rendered = "${WebviewEditorKey(FLOW_ID, mapOf("uri" to SECRET_PATH))}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "WebviewEditorKey($FLOW_ID)"
+    }
+  }
+
   describe("WebviewEditorInput factories") {
     it("names the MCP dashboard with the title the language server advertises") {
       WebviewEditorInput.mcp().name shouldBe "MCP Dashboard"

@@ -285,6 +285,18 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                name="Open MCP Dashboard"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                name="Open Flow Builder"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ReplyToThread"
                 name="Reply"
                 categoryId="gitlab-eclipse-plugin">
@@ -757,6 +769,16 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                class="com.gitlab.eclipse.views.webview.actions.ShowMcpDashboardHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                class="com.gitlab.eclipse.views.webview.actions.OpenFlowBuilderHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ReplyToThread"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.ReplyToThreadHandler"
         />
@@ -1024,6 +1046,14 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.RunSecurityScan"
                         label="Run Remote Scan (SAST)"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep4" visible="true"/>
+
+                <!-- Design §7.5: the active editor is the YAML file this opens the flow for. -->
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                        label="Open Flow Builder"
                 />
             </menu>
         </menuContribution>
@@ -1392,6 +1422,12 @@
                     commandId="gitlab-eclipse-plugin.commands.OpenMcpWorkspaceConfig"
                     label="Open MCP Workspace Configuration"
                     tooltip="Create/open the workspace-level GitLab Duo MCP config"/>
+
+            <!-- Design §7.5: this menu. Design §23 U-3: the label is what tells it from the two above. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                    label="Open MCP Dashboard"
+                    tooltip="Open the GitLab Duo MCP Dashboard"/>
 
             <!-- Design §7.5: this menu, and deliberately not chatSelectorMenu. -->
             <command
