@@ -223,7 +223,7 @@ private val snapshot = AtomicReference<LanguageServerHandle?>(null)   // 唯一�
 
 val currentSnapshot: LanguageServerHandle? get() = snapshot.get()
 val languageServer: GitLabLanguageServer? get() = snapshot.get()?.proxy  // 既存 API・呼び出し元は無変更
-fun registerLanguageServer(proxy, session)             // snapshot.set(handle)。組を 1 回で公開
+fun registerLanguageServer(handle: LanguageServerHandle)   // snapshot.set(handle)。組を 1 回で公開
 fun unregisterLanguageServer()                         // 既存(無条件・stopLocked から)
 fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean   // §6a.3b。CAS
 ```
@@ -234,11 +234,32 @@ fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean   // §6a.
 
 → **`unregisterLanguageServer` は `snapshot.compareAndSet(captured, null)` で実装する。** 比較対象は**その callback 自身が登録した handle** であり、読み直した session ではない。CAS が false を返したら**何もしない**(既に別の接続に置き換わっている)。
 
-**呼び出し側が自分の handle を持つ方法**: `onExit` は `:127` で登録され、handle が確定するのは `:157` である(登録の方が先)。したがって start 呼び出しのローカルに `AtomicReference<LanguageServerHandle?>` を 1 つ置き、`:157` で set し、`onExit` と初期化 callback はそこから読む。**ローカル変数の直接キャプチャにしない**(別スレッドから読むため happens-before が要る)。
+**handle の生成と公開の順序を厳密に規定する(round 5 で修正)。** round 4 の記述には 2 つの欠陥があった。
+
+1. **`registerLanguageServer(proxy, session)` が内部で handle を生成する形**では、解除側が CAS の期待値を得られない。`AtomicReference.compareAndSet` は**参照同一性**で比較するため、呼び出し側が同値の `data class` を作り直しても**常に CAS が失敗する**(active crash も初期化失敗も解除できない)。
+2. **登録メソッドが handle を返し、それをローカルへ格納する形**でも、**snapshot の公開とローカルへの格納の間に `onExit` が走る窓**が残り、その窓で死んだ snapshot を解除できない。
+
+**したがって順序を逆にする。**
+
+```kotlin
+// GitLabLanguageServerProcessProvider.start() の中
+val handleRef = AtomicReference<LanguageServerHandle?>(null)   // callback から見えるローカル
+// ... :127 の onExit と初期化 callback は handleRef.get() を読む ...
+
+val handle = LanguageServerHandle(languageServerProxy.remoteProxy, client.session)  // 一度だけ生成
+handleRef.set(handle)                                  // ① 先に callback へ公開する
+languageServerWrapper.registerLanguageServer(handle)   // ② 次に snapshot を公開する
+```
+
+- **handle は 1 度だけ生成し、同じインスタンスを両方に渡す。** `registerLanguageServer` は `(proxy, session)` ではなく **`handle` を受け取る**(内部生成しない)。
+- **① が ② より先**であること。逆順だと ①-② 間に `onExit` が走ったとき解除できない。① が先の場合、`onExit` は「handle は見えるが snapshot は未公開」を観測しうるが、そのとき CAS は失敗し**何もしない**のが正しい(未公開のものは解除対象ではなく、② の直後に `stopLocked` 経路が処理する)。
+- `handleRef` は **`AtomicReference`**(ローカル変数の直接キャプチャにしない。別スレッドから読むため happens-before が要る)。
+
+**A26 / A28 に、各公開境界(① の前 / ① と ② の間 / ② の後)で `onExit` を発火させるテストを含める。**
 
 **可視性(round 3 で追加)。** 組が裂けないことと、他スレッドから見えることは別問題である。**現在の `languageServerProxy` には `@Volatile` が無い**(`GitLabLanguageServerWrapper.kt:5`)。登録・解除は LS ライフサイクルのスレッド、照合は `PluginMessageService` の `supplyAsync` スレッドと UI スレッドから行われるため、素の `var` のままでは読み手が旧 A や null を観測し、**正しい B の結果を破棄したり、A 由来のタブを現セッション由来と誤判定したりできる。** `languageServer` も必ずこの安全に公開された値から導出する(2 つの別フィールドにしない)。
 
-`registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、`client.session` を一緒に渡す。**既存の `languageServer` プロパティのシグネチャと意味は維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
+`registerLanguageServer` は `GitLabLanguageServerProcessProvider.kt:157` の 1 箇所から呼ばれる。同 `:150` で生成した client をローカルに束ね、その `session` から上記の順序で `handle` を作って渡す。**既存の `languageServer` プロパティのシグネチャと意味は維持する**ので、それを読んでいる既存コードは 1 行も変わらない。
 
 ### 6a.3b 異常終了・初期化失敗での失効(**round 3 で追加。既存挙動の変更を含む**)
 
@@ -252,7 +273,7 @@ fun unregisterLanguageServer(captured: LanguageServerHandle): Boolean   // §6a.
 
 このため、**クラッシュ後に「現在のセッション」を問うと死んだ A が返る。** §8.1 の判定は表示中の A と stale な A を「同一セッション」とみなし、**再コマンドでも dead URI を activate するだけ**になる(round 2 で追加した判定が、この経路では効かない)。
 
-**修正: identity-aware な `unregisterLanguageServer(session)` を追加し、`onExit` の identity ガード内と初期化失敗分岐から呼ぶ。**
+**修正: identity-aware な `unregisterLanguageServer(captured: LanguageServerHandle)` を追加し、`onExit` の identity ガード内と初期化失敗分岐から `handleRef.get()` を渡して呼ぶ。**
 
 - **自分の session が現在の session と一致するときだけ失効させる。** superseded なプロセスの遅延失敗が、置き換わった新しい接続を落とさないようにする(既存の `process === startedProcess` ガードと同じ思想)。
 - **これは既存挙動の変更である**: クラッシュ後 `languageServer` は**死んだ proxy ではなく null** を返すようになる。結果として Duo Chat は「language server の起動待ち」表示に落ちる(従来は死んだ proxy へ送って失敗していた)。**より正しい方向だが挙動変更なので、専用のテストを置き、§19 に明記する。**
@@ -507,6 +528,13 @@ class AgenticChatWebViewClient(
 - **latch のリセット点**: `LanguageServerBrowserView.syncBrowsers`(`:200-227`)が agentic id の `Browser` を**新規作成した時**と **URI を差し替えた時**。セッション照合と併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 - 送信は `ExtensionToPluginNotification(pluginId = AGENTIC_WEBVIEW_ID, type = "switchView", payload = mapOf("view" to view))`。
 
+**F-a タイマも `commandGeneration` を捕捉し、発火時に照合する(round 5 で追加)。**
+
+- 規定が無いと次が起きる: ready 前に `history` を実行 → F-a タイマ開始 → **9 秒後**に `newConversation` を実行して新しい `pending` を置く → **10 秒後に最初のタイマが発火し、後から置かれた `newConversation` を破棄して誤ったエラー通知を出す。** これは §12 で避けると宣言した**偽陽性**そのものである。
+- 同様に、`markReady` 後に Browser が再作成されて新しい `pending` が置かれた場合も、旧タイマが残っていれば新しい要求を消す。
+- → **F-a タイマは §7.4a の予約済み callback と同じ規則に従う**(発火時に `gen == commandGeneration` を照合し、不一致なら**何もしない**)。`switchView` / `markReady` によるフラッシュ / `markNotReady()` はいずれも世代を進めるので、明示的な取消し API が無くても失効する。
+- **A12 に操作列を追加**: 旧タイマが発火しても、新しい `pending` とその 10 秒の猶予が維持されること。
+
 **タイマはコンストラクタのシームで注入する。** `Display.timerExec` を直接呼ぶと readiness タイムアウトと再送(受け入れ条件 A12)が headless で一切検証できず、本設計の中心的な主張が**テストに裏付けられないまま**になる。既定値が SWT を触るため、既定引数ではなく**オーバーロード**にする(既存 `LanguageServerWebviewService.sendThemeChange`(`:21-32`)が同じ理由でオーバーロードを採っている: Kotlin の `$default` ブリッジは MockK のモック上でも既定式を評価するため)。タイマは UI スレッドで回す(状態が UI スレッド専有のため。§15)。
 
 ### 7.5 起動口(`plugin.xml`・追加のみ)
@@ -579,8 +607,9 @@ key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview か�
                                               + readiness タイマ(10s)開始
 
     …後刻、webview → LS → host の appReady 到達      [別スレッド → UI へマーシャル]
-      └─ AgenticChatWebViewController.appReady() → client.markReady(現 LS proxy)
-           ├─ readySession = 現 LS proxy / readiness タイマ解除
+      └─ AgenticChatWebViewController.appReady(発信元 session) → client.markReady(発信元 session)
+           ├─ 発信元 session が現 session と一致するときだけ readySession に格納(§7.4)
+           │    不一致 → 何もしない(既存 latch を保持)
            └─ pending があれば送信 + 境界つき再送を予約(F-b 対策・有限回で打ち切り)
 
     …10 秒経過しても appReady が来ない場合(F-a)
@@ -706,8 +735,8 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `plugin.xml` | 追加のみ(commands / handlers / menus / views / editors) |
 | **`PluginMessageService` / `PluginRegistry` / `PluginController`** | **§6a: `dispatch` に第 3 引数、登録の引数制約を緩和。既存 4 形状の挙動は不変**(A1b / A1c で固定) |
 | **`GitLabLanguageServerClient`** | `val session` を持ち、4 つの `dispatch` に渡す |
-| **`GitLabLanguageServerWrapper`** | `@Volatile` な `snapshot` を唯一の真実にし、`currentSnapshot` を追加。**既存の `languageServer` はそこから導出**(シグネチャ・意味とも維持、既存呼び出し元は無変更)。`unregisterLanguageServer(session)` を追加 |
-| **`GitLabLanguageServerProcessProvider`** | `:150` の client をローカルに束ね、`:157` の `registerLanguageServer` に session を併せて渡す(**1 回の代入で原子的に公開**)。**`onExit`(`:127-142`)の identity ガード内と初期化失敗分岐(`:167-168`)から `unregisterLanguageServer(session)` を呼ぶ** |
+| **`GitLabLanguageServerWrapper`** | **`AtomicReference` な `snapshot`** を唯一の真実にし、`currentSnapshot` を追加。**既存の `languageServer` はそこから導出**(シグネチャ・意味とも維持、既存呼び出し元は無変更)。`registerLanguageServer` は `handle` を受け取る形に。**CAS 版 `unregisterLanguageServer(captured)` を追加** |
+| **`GitLabLanguageServerProcessProvider`** | `handle` を 1 度だけ生成し、**`handleRef` へ格納してから** `registerLanguageServer(handle)` で公開する(§6a.3 の ①→② 順序)。**`onExit`(`:127-142`)の identity ガード内と初期化失敗分岐(`:167-168`)から `unregisterLanguageServer(handleRef.get())` を呼ぶ** |
 | `build.gradle.kts` / `detekt.yml` | **差分ゼロ** |
 
 **round 2 でスコープが拡大した。** 初版の「既存への変更は 3 点のみ」は成立しない。拡大先は `appReady` の発信元 identity という**そもそも欠けていた情報**であり、classic Duo Chat も通る共有バスに触れる。§6a.5 の keep-behaviour テストを必須とする。
@@ -792,7 +821,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入) |
 | A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | TDD(`titleFor` が null を返す) |
 | A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
-| A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | TDD(§20 の文字集合) |
+| A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | **純ビルダだけを検査しない**(§20a 規約 1)。ビルダ単体テストに加え、**`WebviewBrowserHost.load(id, queryParams)` に `Resolved` を返した結果として Browser に渡される最終 URL** をシーム経由で検査する。**ビルダ呼び出しの削除 / 直接連結への変異で落ちること**(A23 / A27 も同じビルダなので同様に扱う) |
 | A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD |
 | A17 | ~~旧 LS セッションの `appReady` が latch を開けない~~ → **A21 に差し替え**(round 1 の A17 は「テストから旧 proxy を直接渡す」形で、production が壊れたままでも緑になる非識別的テストだった) | — |
 | A18 | **F-b の再送が有限回で打ち切られ、打ち切り時に通知経路を呼ばない** | TDD |
