@@ -251,6 +251,20 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.sentViews.shouldBeEmpty()
     }
 
+    // Design §12 makes the discard reach a terminal state, not merely decline to send. Probed
+    // through the re-arm, which happens only for an occupied slot: the assertion above this one
+    // holds whether the slot was emptied or just skipped, so it cannot state this half.
+    it("leaves nothing in the slot when it refuses a view from another connection") {
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.appReadyArrives(from = fixture.sessionB)
+      fixture.client.markNotReady()
+
+      fixture.timers.scheduled shouldHaveSize 1
+    }
+
     // The other half of that condition: a view issued while nothing was current belongs to no
     // connection, so the one that arrives may carry it. The deadline reports such a view undelivered
     // only once it expires, which is not the same as refusing to deliver it in time.

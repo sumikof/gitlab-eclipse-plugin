@@ -63,9 +63,8 @@ class AgenticChatWebViewClient(
       return
     }
 
-    val waiting = PendingView(view, snapshot?.session)
-    pending = waiting
-    armReadinessDeadline(waiting.origin)
+    pending = PendingView(view, snapshot?.session)
+    armReadinessDeadline()
   }
 
   /**
@@ -107,16 +106,22 @@ class AgenticChatWebViewClient(
     commandGeneration++
     // A view that is still waiting keeps waiting, so it needs a deadline again: the generation
     // above has just expired the one it had, and nothing else guarantees it reaches a terminal
-    // state (design §12's language-server-session-mismatch row). The deadline is re-armed on the
-    // connection the view was issued on, not on whichever is current now — that is what the
-    // deadline's outcomes are written against.
-    val waiting = pending ?: return
-    armReadinessDeadline(waiting.origin)
+    // state (design §12's language-server-session-mismatch row). Which connection the re-armed
+    // deadline judges the view against is [armReadinessDeadline]'s to say, not this call site's.
+    if (pending == null) return
+    armReadinessDeadline()
   }
 
-  private fun armReadinessDeadline(captured: LanguageServerSession?) {
+  /**
+   * Both values are read here, at arming time, and never again: the deadline judges the view that
+   * was waiting when it was armed. Reading the origin off the slot rather than taking it as a
+   * parameter is what stops a caller from arming a deadline against some other connection — the
+   * divergence becomes unwritable instead of merely tested for.
+   */
+  private fun armReadinessDeadline() {
     val generation = commandGeneration
-    scheduleTimer(READINESS_TIMEOUT_MILLIS) { onReadinessDeadline(generation, captured) }
+    val origin = pending?.origin
+    scheduleTimer(READINESS_TIMEOUT_MILLIS) { onReadinessDeadline(generation, origin) }
   }
 
   /**
