@@ -21,7 +21,14 @@ class WebviewLoadPipeline(
   private val hasStableContent: () -> Boolean,
   /** Shows and hides the loading page. Contracted not to throw. Design §7.2b. */
   private val setLoadingVisible: (Boolean) -> Unit,
-  /** Whether the shell is still usable. Design §7.2c. */
+  /**
+   * Whether the shell is still usable. Design §7.2c, mechanism 2.
+   *
+   * Answer it from the widget's own disposed state — `{ !container.isDisposed }` — not from a flag
+   * the shell sets in its own `dispose`. This is the only thing that stops an application already
+   * in flight when the shell goes away without [dispose] being reached, so a flag that is set one
+   * line too late, or not at all, silently removes that mechanism.
+   */
   private val isAlive: () -> Boolean,
 ) {
   /** Design §7.2b. */
@@ -43,19 +50,34 @@ class WebviewLoadPipeline(
    */
   private var generation = 0L
 
+  /**
+   * Whether [dispose] has run. Separate from [generation] because it answers a different question:
+   * [generation] expires the applications that were already in flight, while this one refuses loads
+   * that start afterwards, which would otherwise capture the advanced generation and pass its check.
+   *
+   * It is deliberately checked at [load]'s entry and nowhere else. Checking it at the sink sites
+   * would stop the in-flight applications as well, which is [generation]'s job there, and would
+   * then leave design §21's A32 mechanism 1 with no mutation that can expose it.
+   */
+  private var disposed = false
+
   /** Design §7.2b / §8.1. */
   var displayedSession: LanguageServerSession? = null
     private set
 
   fun load(id: String, queryParams: Map<String, String>): CompletableFuture<Unit> {
+    // §7.2c: a surface that is gone drives no sink and asks the language server for nothing.
+    if (disposed) return CompletableFuture.completedFuture(Unit)
+
     val myGeneration = generation
     val hadStableContent = beginLoad(id, myGeneration)
     return coordinator.load(id, queryParams)
       .handle { outcome, _ -> settle(id, myGeneration, outcome, hadStableContent) }
   }
 
-  /** Design §7.2c, mechanism 1. */
+  /** Design §7.2c, mechanism 1, plus the [disposed] refusal [load] makes. */
   fun dispose() {
+    disposed = true
     generation++
   }
 
@@ -66,8 +88,14 @@ class WebviewLoadPipeline(
     val stable = try {
       hasStableContent()
     } catch (t: Throwable) {
-      // §7.2b: falls to the side that shows the loading page.
-      logger.info("Webview '$id': stable-content probe failed: type=${t.javaClass.name}")
+      // §7.2b: falls to the side that shows the loading page. Recording it cannot fail the load —
+      // this runs before `settle`'s finally exists to contain anything, so a platform log that is
+      // already gone would otherwise escape `load` and the load would never start at all.
+      try {
+        logger.info("Webview '$id': stable-content probe failed: type=${t.javaClass.name}")
+      } catch (_: Throwable) {
+        // There is nowhere left to record this: the log is the thing that failed.
+      }
       false
     }
 
@@ -168,6 +196,6 @@ class WebviewLoadPipeline(
   companion object {
     /** Design §12's message-page row for a session change with nothing stable on screen. */
     internal const val MESSAGE_SESSION_CHANGED =
-      "The GitLab Language Server was restarted. Run the command again."
+      "The GitLab Language Server was switched. Run the command again."
   }
 }

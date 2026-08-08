@@ -90,10 +90,19 @@ class WebviewLoadCoordinator(
    * Design §12's Error Log entry. Design §17 limits it to the webview id and the category, plus the
    * *type* of [cause] — never the advertised uri, never the file path a caller put in `queryParams`,
    * and never [cause] itself, whose message can carry either.
+   *
+   * Writing it cannot fail the load. Nothing here unwinds the way [WebviewLoadPipeline]'s `finally`
+   * does, so a platform log that is already gone — which is what a stopping workbench leaves behind
+   * — would escape [decide], fail again inside [load]'s catch handler when that calls this same
+   * method, and leave `outcome` uncompleted along with the caller's loading page.
    */
   private fun failure(id: String, category: String, cause: Throwable?, text: String): Outcome.Message {
-    val type = cause?.let { " type=${it.javaClass.name}" }.orEmpty()
-    logger.error("Cannot show webview '$id': $category$type")
+    try {
+      val type = cause?.let { " type=${it.javaClass.name}" }.orEmpty()
+      logger.error("Cannot show webview '$id': $category$type")
+    } catch (_: Throwable) {
+      // There is nowhere left to record this: the log is the thing that failed.
+    }
     return Outcome.Message(text)
   }
 

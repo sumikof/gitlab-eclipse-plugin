@@ -16,6 +16,7 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
 import org.eclipse.core.runtime.Platform
@@ -312,6 +313,31 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
     }
 
+    // The mirror of the A34 (design §21) case below, one layer down: the coordinator has no
+    // `finally`, so a dead platform log there would leave its outcome uncompleted and this
+    // pipeline's loading page up for good.
+    it("hides the loading page even when the log that records a resolution failure throws") {
+      captureLog(failing = true)
+      val fixture = Fixture()
+      fixture.resolvesWith(CompletableFuture.completedFuture(WebviewResolution.NotAdvertised(WEBVIEW_ID)))
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
+    }
+
+    // The same, for the one log entry that is written before there is any `finally` to contain it.
+    it("starts the load even when the log that records a failed stable-content probe throws") {
+      captureLog(failing = true)
+      val fixture = Fixture()
+      fixture.sinks.stableContentFailure = IllegalStateException("the stack layout is gone")
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.argsOf(SHOW_URL) shouldContainExactly listOf(BASE_URI)
+    }
+
     // Design §7.2b's setLoadingVisible row.
     it("applies the outcome even when toggling the loading page throws") {
       val fixture = Fixture()
@@ -333,6 +359,28 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.pipeline.load(WEBVIEW_ID, emptyMap())
 
       fixture.sinks.calls.shouldBeEmpty()
+    }
+
+    // Design §7.2c: advancing the generation only expires the applications already in flight, so a
+    // load that starts after dispose needs its own refusal at the entry.
+    it("touches no sink for a load called after dispose") {
+      val fixture = Fixture()
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.dispose()
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.calls.shouldBeEmpty()
+    }
+
+    it("asks the language server for nothing on a load called after dispose") {
+      val fixture = Fixture()
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.dispose()
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      verify(exactly = 0) { fixture.resolver.resolve(any()) }
     }
 
     // A32 (design §21), mechanism 1 of design §7.2c: the shell is still alive here, so only the
