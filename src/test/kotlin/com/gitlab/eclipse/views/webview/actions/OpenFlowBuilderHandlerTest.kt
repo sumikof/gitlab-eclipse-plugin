@@ -5,6 +5,8 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.views.webview.WebviewEditorInput
 import com.gitlab.eclipse.views.webview.WebviewEditorPart
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.just
@@ -12,6 +14,7 @@ import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.runs
+import io.mockk.slot
 import io.mockk.unmockkAll
 import io.mockk.verify
 import org.eclipse.core.resources.IFile
@@ -37,7 +40,20 @@ private const val SECRET_URI = "file:///home/alice/secret-project.yml"
 
 class OpenFlowBuilderHandlerTest : DescribeSpec({
   val wrapper = mockk<GitLabLanguageServerWrapper>()
-  val log = mockk<ILog>(relaxUnitFun = true)
+
+  /**
+   * Records the message of every single-argument `error`, and nothing else.
+   *
+   * Every other message-carrying member of `ILog` — `log(IStatus)`, `info` / `warn` / `error` in
+   * their `String` **and** `String, Throwable` forms — is left unstubbed on this strict mock, so
+   * calling one throws out of the handler and fails the test. That is what makes the leak pin below
+   * bite: matching the `Throwable` argument with `any()` would accept the very mutation design §17
+   * names (Phase 4 PR-4, Codex P1-1: a `Bearer <token>` reached the Error Log through an attached
+   * exception), because here the attached exception is the `PartInitException` whose message *is*
+   * the path. The pattern is `AgenticChatWebViewClientTest.captureErrorLog`'s.
+   */
+  val logged = mutableListOf<String>()
+  val log = mockk<ILog>()
   val page = mockk<IWorkbenchPage>(relaxUnitFun = true)
   val window = mockk<IWorkbenchWindow>()
   val workbench = mockk<IWorkbench>()
@@ -61,6 +77,10 @@ class OpenFlowBuilderHandlerTest : DescribeSpec({
   }
 
   beforeEach {
+    // Re-armed every test because `afterEach`'s `clearAllMocks()` drops answers as well as calls.
+    logged.clear()
+    val message = slot<String>()
+    every { log.error(capture(message)) } answers { logged += message.captured }
     every { Platform.getLog(any<Bundle>()) } returns log
     every { NotificationUtils.show(any()) } just runs
     every { PlatformUI.getWorkbench() } returns workbench
@@ -120,17 +140,10 @@ class OpenFlowBuilderHandlerTest : DescribeSpec({
 
       OpenFlowBuilderHandler().execute(mockk())
 
-      // Every message-carrying member of ILog, not just the one the handler happens to use:
-      // `javap org.eclipse.core.runtime.ILog` lists log(IStatus) plus info/warn/error in their
-      // String and String+Throwable forms, and a leak through any of them is the same leak.
-      val leaks: (String) -> Boolean = { it.contains("secret-project") }
-      verify(exactly = 0) { log.error(match(leaks)) }
-      verify(exactly = 0) { log.error(match(leaks), any()) }
-      verify(exactly = 0) { log.warn(match(leaks)) }
-      verify(exactly = 0) { log.warn(match(leaks), any()) }
-      verify(exactly = 0) { log.info(match(leaks)) }
-      verify(exactly = 0) { log.info(match(leaks), any()) }
-      verify(exactly = 0) { log.log(match { it.message.contains("secret-project") }) }
+      // The handler did report the failure: an entry that never happened cannot leak, so without
+      // this the next line would pass over an empty list.
+      logged shouldHaveSize 1
+      logged.single() shouldNotContain "secret-project"
       verify(exactly = 0) { NotificationUtils.show(match { it.contains("secret-project") }) }
     }
   }
