@@ -120,8 +120,17 @@ class OpenFlowBuilderHandlerTest : DescribeSpec({
 
       OpenFlowBuilderHandler().execute(mockk())
 
-      verify(exactly = 0) { log.error(match { it.contains("secret-project") }) }
-      verify(exactly = 0) { log.error(match { it.contains("secret-project") }, any()) }
+      // Every message-carrying member of ILog, not just the one the handler happens to use:
+      // `javap org.eclipse.core.runtime.ILog` lists log(IStatus) plus info/warn/error in their
+      // String and String+Throwable forms, and a leak through any of them is the same leak.
+      val leaks: (String) -> Boolean = { it.contains("secret-project") }
+      verify(exactly = 0) { log.error(match(leaks)) }
+      verify(exactly = 0) { log.error(match(leaks), any()) }
+      verify(exactly = 0) { log.warn(match(leaks)) }
+      verify(exactly = 0) { log.warn(match(leaks), any()) }
+      verify(exactly = 0) { log.info(match(leaks)) }
+      verify(exactly = 0) { log.info(match(leaks), any()) }
+      verify(exactly = 0) { log.log(match { it.message.contains("secret-project") }) }
       verify(exactly = 0) { NotificationUtils.show(match { it.contains("secret-project") }) }
     }
   }

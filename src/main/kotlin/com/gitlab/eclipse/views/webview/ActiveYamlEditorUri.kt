@@ -5,7 +5,7 @@ import org.eclipse.ui.IFileEditorInput
 import org.eclipse.ui.IURIEditorInput
 import java.net.URI
 
-/** The sentence `open_flow_builder.ts:8` shows; design §12 sends every violation below to it. */
+/** The sentence `open_flow_builder.ts:7` shows; design §12 sends every violation below to it. */
 private const val YAML_REQUIRED_MESSAGE = "Please open a YAML file to use the Flow Builder."
 
 private val YAML_EXTENSIONS = setOf("yml", "yaml")
@@ -20,7 +20,15 @@ private val YAML_EXTENSIONS = setOf("yml", "yaml")
  */
 sealed interface ActiveYamlEditorUri {
   /** Design §7.3a rule 8's uri, in ASCII form. */
-  data class Resolved(val fileUri: String) : ActiveYamlEditorUri
+  data class Resolved(val fileUri: String) : ActiveYamlEditorUri {
+    /**
+     * Design §17, for the same reason as `WebviewEditorKey.toString`: a data class prints every
+     * component, and [fileUri] is the user's file. This one is the more exposed of the two — it is
+     * a public member of a public interface, and `OpenFlowBuilderHandler` already interpolates a
+     * property of its sibling [Rejected] into a log line, so `"$resolved"` is a plausible next edit.
+     */
+    override fun toString(): String = "ActiveYamlEditorUri.Resolved"
+  }
 
   /**
    * Design §12's precondition-violation row. [category] is what the Error Log is told and [message]

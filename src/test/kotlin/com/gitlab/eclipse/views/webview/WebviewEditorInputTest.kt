@@ -93,6 +93,16 @@ class WebviewEditorInputTest : DescribeSpec({
     }
   }
 
+  describe("ActiveYamlEditorUri.Resolved") {
+    // Design §17: the same channel as the key's, on the type that carries the path to it.
+    it("keeps the resolved file out of its own string form") {
+      val rendered = "${ActiveYamlEditorUri.Resolved(SECRET_PATH)}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "ActiveYamlEditorUri.Resolved"
+    }
+  }
+
   describe("WebviewEditorInput factories") {
     it("names the MCP dashboard with the title the language server advertises") {
       WebviewEditorInput.mcp().name shouldBe "MCP Dashboard"

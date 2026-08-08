@@ -75,6 +75,10 @@ class ActiveYamlEditorUriTest : DescribeSpec({
       ActiveYamlEditorUri.of(fileInput(name = "notes.txt")) shouldBe ActiveYamlEditorUri.Rejected.NOT_YAML
     }
 
+    it("rejects a file whose name carries no extension at all") {
+      ActiveYamlEditorUri.of(uriInput(name = "yml")) shouldBe ActiveYamlEditorUri.Rejected.NOT_YAML
+    }
+
     it("accepts the .yaml spelling as well as .yml") {
       ActiveYamlEditorUri.of(uriInput(name = "flow.yaml")) shouldBe ActiveYamlEditorUri.Resolved(EXTERNAL_URI)
     }
