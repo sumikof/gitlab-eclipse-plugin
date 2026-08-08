@@ -13,11 +13,27 @@ sealed interface WebviewResolution {
     val title: String,
     val uri: String,
     val session: LanguageServerSession,
-  ) : WebviewResolution
+  ) : WebviewResolution {
+    /**
+     * Design §17, for the same reason as `WebviewEditorKey.toString`: a data class prints every
+     * component, and [uri] is the advertised webview URI that §17 keeps out of the log. Nothing
+     * stringifies a resolution today; this replaces the generated form rather than resting on that,
+     * because one interpolation anywhere would be enough.
+     */
+    override fun toString(): String = "WebviewResolution.Resolved($id)"
+  }
 
   data object LanguageServerUnavailable : WebviewResolution
 
-  data class Failed(val cause: Throwable?) : WebviewResolution
+  data class Failed(val cause: Throwable?) : WebviewResolution {
+    /**
+     * Design §17, and the second form of the exception-attachment leak the same section cites
+     * (Phase 4 PR-4, Codex P1-1): the generated form calls `cause.toString()`, which is the class
+     * name *and the message* — and the message is where a URI or a user's file path arrives. Only
+     * the type survives here, which is what §17 permits of an exception.
+     */
+    override fun toString(): String = "WebviewResolution.Failed(type=${cause?.javaClass?.name})"
+  }
 
   data class NotAdvertised(val id: String) : WebviewResolution
 

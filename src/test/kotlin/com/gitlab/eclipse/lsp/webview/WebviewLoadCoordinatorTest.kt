@@ -8,6 +8,7 @@ import com.gitlab.eclipse.lsp.LanguageServerSession
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
@@ -199,6 +200,19 @@ class WebviewLoadCoordinatorTest : DescribeSpec({
       await(outcome).shouldBeNull()
       queued.forEach { it() }
       (await(outcome) as WebviewLoadCoordinator.Outcome.Show).session shouldBeSameInstanceAs session
+    }
+  }
+
+  // Design §17. Same class of pin as `WebviewEditorInputTest`'s two and `WebviewUriResolverTest`'s.
+  // This branch is what put the user's file path into `url`, so `Show` is the newest carrier of it.
+  describe("Outcome.Show's string form") {
+    it("keeps the queried path out of it") {
+      val url = "$BASE_URI?uri=file%3A%2F%2F%2Fhome%2Falice%2Fsecret-project.yml"
+
+      val rendered = "${WebviewLoadCoordinator.Outcome.Show(url, "Flow Builder", LanguageServerSession())}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "Outcome.Show(title=Flow Builder)"
     }
   }
 })

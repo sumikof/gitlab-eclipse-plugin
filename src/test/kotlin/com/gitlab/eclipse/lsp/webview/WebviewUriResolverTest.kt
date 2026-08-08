@@ -6,30 +6,35 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.LanguageServerHandle
 import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.WebviewInfo
+import com.google.gson.Gson
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
-import org.objenesis.ObjenesisStd
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 private const val WEBVIEW_ID = "root/mcp"
+private const val SECRET_URI = "gitlab://webview/mcp?uri=file:///home/alice/secret-project.yml"
 
 /**
- * Builds a [WebviewInfo] the way lsp4j's Gson deserialization does: allocated without calling the
- * constructor (so the declared non-null [WebviewInfo.title] / [WebviewInfo.uris] can genuinely be
- * `null` at runtime, unlike a normal Kotlin construction call, which Gson bypasses).
+ * Builds a [WebviewInfo] the way lsp4j does — by handing the JSON to Gson, which allocates without
+ * calling the constructor, so the declared non-null [WebviewInfo.title] / [WebviewInfo.uris] are
+ * genuinely `null` at runtime. This is the deserializer on lsp4j's own path, not a stand-in for it.
  */
 private fun webviewInfoWithNullFields(id: String): WebviewInfo {
-  val info = ObjenesisStd().newInstance(WebviewInfo::class.java)
-  val idField = WebviewInfo::class.java.getDeclaredField("id").apply { isAccessible = true }
-  idField.set(info, id)
+  val info: WebviewInfo = Gson().fromJson("""{"id":"$id"}""", WebviewInfo::class.java)
+  // The premise, checked rather than assumed: were a future Gson to fill these in, the test that
+  // uses this fixture would keep passing while no longer exercising anything.
+  val title: String? = info.title
+  val uris: List<String>? = info.uris
+  check(title == null && uris == null) { "Gson no longer leaves WebviewInfo's declared non-nulls null" }
   return info
 }
 
@@ -181,6 +186,29 @@ class WebviewUriResolverTest : DescribeSpec({
       val result = await(resolver.resolve(WEBVIEW_ID))
 
       result.shouldBeInstanceOf<WebviewResolution.Failed>()
+    }
+  }
+
+  // Design §17. Same class of pin as `WebviewEditorInputTest`'s two, on the types design §7.1
+  // leaves holding an advertised uri and an exception. Interpolation is the shape a leak takes.
+  describe("WebviewResolution's string form") {
+    it("keeps the advertised uri out of Resolved's") {
+      val rendered = "${WebviewResolution.Resolved(WEBVIEW_ID, "MCP", SECRET_URI, session)}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "WebviewResolution.Resolved($WEBVIEW_ID)"
+    }
+
+    // The generated form calls `cause.toString()`, which is the class name *and* the message.
+    it("keeps the cause's message out of Failed's, and its type in") {
+      val rendered = "${WebviewResolution.Failed(IllegalStateException(SECRET_URI))}"
+
+      rendered shouldNotContain "secret-project"
+      rendered shouldBe "WebviewResolution.Failed(type=java.lang.IllegalStateException)"
+    }
+
+    it("says so when Failed carries no cause at all") {
+      "${WebviewResolution.Failed(null)}" shouldBe "WebviewResolution.Failed(type=null)"
     }
   }
 })

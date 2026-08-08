@@ -32,7 +32,16 @@ class WebviewLoadCoordinator(
       val url: String,
       val title: String?,
       val session: LanguageServerSession,
-    ) : Outcome
+    ) : Outcome {
+      /**
+       * Design §17, for the same reason as `WebviewEditorKey.toString`: a data class prints every
+       * component, and [url] is the advertised URI *with the query appended* — for `root/flow` that
+       * query carries the path of the user's file. Nothing stringifies an outcome today; this
+       * replaces the generated form rather than resting on that, because one interpolation anywhere
+       * would be enough.
+       */
+      override fun toString(): String = "Outcome.Show(title=$title)"
+    }
 
     data class Message(val text: String) : Outcome
 
