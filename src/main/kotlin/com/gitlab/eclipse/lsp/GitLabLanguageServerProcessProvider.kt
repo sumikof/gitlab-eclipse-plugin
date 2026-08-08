@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 @Suppress("ForbiddenVoid")
 class GitLabLanguageServerProcessProvider(
@@ -125,29 +126,20 @@ class GitLabLanguageServerProcessProvider(
     // untouched: this connection runs at the one the previous stop advanced to.
     DiagnosticGenerationRegistry.onServerStarted()
 
-    startedProcess.onExit().thenApply {
-      synchronized(lifecycleLock) {
-        // A late exit notification from a previous process must not clobber the
-        // state of a newer process started by restart().
-        if (process === startedProcess) {
-          logger.info("Language Server exited.")
-          process = null
-          processListener = null
-          // A crash or a self-inflicted exit never reaches stopLocked(), so the connection teardown
-          // has to run here too — inside the identity guard, so a superseded process cannot tear
-          // down the connection that replaced it. Idempotent with stopLocked() for one connection,
-          // and it never throws, so it cannot break this notification chain.
-          SecurityScanLifecycle.onServerStopped()
-        }
-      }
-    }
+    // This connection's published handle, once there is one. An AtomicReference rather than a
+    // captured local because the callbacks below read it from other threads, and the initialize
+    // callback reads it without holding lifecycleLock.
+    val handleRef = AtomicReference<LanguageServerHandle?>(null)
+
+    tearDownOnExit(startedProcess, handleRef)
 
     if (!BuildConfig.IS_EQUO_IDE) {
       startedProcess.pullStdErrLogs()
     }
 
+    val client = GitLabLanguageServerClient()
     val languageServerProxy = Launcher.Builder<GitLabLanguageServer>()
-      .setLocalService(GitLabLanguageServerClient())
+      .setLocalService(client)
       .setRemoteInterface(GitLabLanguageServer::class.java)
       .setInput(startedProcess.inputStream)
       .setOutput(startedProcess.outputStream)
@@ -155,7 +147,13 @@ class GitLabLanguageServerProcessProvider(
       .also { processListener = it.startListening() }
 
     logger.info("Language server started successfully.")
-    languageServerWrapper.registerLanguageServer(languageServerProxy.remoteProxy)
+    // Built once and handed to both, so the revocations below compare the very handle that was
+    // published — compareAndSet is by reference, and an equal copy would never match. Stored in
+    // handleRef first, so "the snapshot is published" implies "handleRef is set" without relying
+    // on lifecycleLock, which the initialize callback does not hold.
+    val handle = LanguageServerHandle(languageServerProxy.remoteProxy, client.session)
+    handleRef.set(handle)
+    languageServerWrapper.registerLanguageServer(handle)
 
     val initializeResult = languageServerProxy
       .remoteProxy
@@ -166,6 +164,11 @@ class GitLabLanguageServerProcessProvider(
       .handleAsync { result, err ->
         if (err != null) {
           logger.error("Failed to initialize Language Server", err)
+          // The process can outlive a rejected handshake, so nothing else would take the
+          // un-initialized proxy back. This branch holds no lock, so it is the one that can truly
+          // run beside a restart: the conditional revocation is what stops a superseded server's
+          // late failure from clearing the connection that replaced it.
+          handleRef.get()?.let { languageServerWrapper.unregisterLanguageServer(it) }
         } else if (synchronized(lifecycleLock) { process !== startedProcess }) {
           // A superseded server's late init response must not run the readiness side
           // effects. They are bound to this callback's own proxy (below), so they could
@@ -192,6 +195,31 @@ class GitLabLanguageServerProcessProvider(
         }
       }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
     return initializeResult
+  }
+
+  /**
+   * Arranges for [startedProcess]'s own exit to tear its connection down, using whatever handle
+   * [handleRef] holds by then. Only the process that is still the tracked one may do so.
+   */
+  private fun tearDownOnExit(startedProcess: Process, handleRef: AtomicReference<LanguageServerHandle?>) {
+    startedProcess.onExit().thenApply {
+      synchronized(lifecycleLock) {
+        // A late exit notification from a previous process must not clobber the
+        // state of a newer process started by restart().
+        if (process === startedProcess) {
+          logger.info("Language Server exited.")
+          process = null
+          processListener = null
+          // A crash or a self-inflicted exit never reaches stopLocked(), so the connection teardown
+          // has to run here too — inside the identity guard, so a superseded process cannot tear
+          // down the connection that replaced it. Both steps below are idempotent with stopLocked()
+          // for one connection, and neither of them throws (the revocation is a compare-and-set),
+          // so they cannot break this notification chain.
+          handleRef.get()?.let { languageServerWrapper.unregisterLanguageServer(it) }
+          SecurityScanLifecycle.onServerStopped()
+        }
+      }
+    }
   }
 
   private fun stopLocked() {

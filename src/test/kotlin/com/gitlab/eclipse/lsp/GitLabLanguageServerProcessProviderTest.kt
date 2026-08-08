@@ -8,6 +8,7 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import io.kotest.assertions.nondeterministic.continually
 import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
@@ -17,6 +18,7 @@ import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IPath
 import org.eclipse.core.runtime.Platform
 import org.koin.core.context.startKoin
@@ -30,7 +32,10 @@ import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 private enum class InitializeReply { SUCCESS, FAILURE, SUCCESS_THEN_EXIT }
@@ -45,6 +50,11 @@ private enum class InitializeReply { SUCCESS, FAILURE, SUCCESS_THEN_EXIT }
  */
 private class FakeLanguageServerProcess(
   private val initializeReply: InitializeReply = InitializeReply.SUCCESS,
+  /**
+   * Held shut until [releaseInitializeReply], so a test can place other work — another start,
+   * an assertion — between the initialize request and the answer to it. Open by default.
+   */
+  private val initializeGate: CountDownLatch = CountDownLatch(0),
 ) : Process() {
   private val exit = CompletableFuture<Process>()
 
@@ -68,6 +78,7 @@ private class FakeLanguageServerProcess(
         // Notifications (initialized, didChangeConfiguration, ...) have no id: skip them.
         val id = REQUEST_ID.find(body)?.groupValues?.get(1)
         if (id != null) {
+          initializeGate.await()
           if (initializeReply == InitializeReply.SUCCESS_THEN_EXIT) {
             // Deterministic respond-then-die: exit is observably done BEFORE the reply is
             // written, so whichever race arm restart sees first (exit or reply), the
@@ -98,6 +109,8 @@ private class FakeLanguageServerProcess(
       }
     } catch (_: IOException) {
       // Pipes closed by destroy(): the fake server is gone.
+    } catch (_: InterruptedException) {
+      // Woken while waiting on the gate: the spec is finishing.
     }
   }.apply {
     isDaemon = true
@@ -136,6 +149,10 @@ private class FakeLanguageServerProcess(
 
   fun completeExit() {
     exit.complete(this)
+  }
+
+  fun releaseInitializeReply() {
+    initializeGate.countDown()
   }
 
   override fun getOutputStream(): OutputStream = stdin
@@ -186,8 +203,9 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     factory: (ProcessBuilder) -> Process = {
       FakeLanguageServerProcess(nextInitializeReply).also { fake -> spawnedProcesses += fake }
     },
+    wrapper: GitLabLanguageServerWrapper = languageServerWrapper,
   ) = GitLabLanguageServerProcessProvider(
-    languageServerWrapper,
+    wrapper,
     configurationService,
     openFilesService,
     proxyManager,
@@ -211,8 +229,12 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     // The diagnostics registry is a process-wide object and every stop below moves its epoch, so
     // each test starts from a known one rather than from whatever the previous test left.
     DiagnosticGenerationRegistry.resetForTest()
+    // The wrapper's snapshot is process-wide too, and the revocation tests below read a real one.
+    GitLabLanguageServerWrapper().unregisterLanguageServer()
     nextInitializeReply = InitializeReply.SUCCESS
     every { installer.install() } returns "/fake/language-server"
+    // Not covered by relaxUnitFun: the identity-aware revocation returns whether it cleared.
+    every { languageServerWrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
     every { proxyManager.getHttpProxyUrl() } returns null
     every { proxyManager.getHttpsProxyUrl() } returns null
     every { proxyManager.getBypassHosts() } returns null
@@ -406,6 +428,77 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       // connection that replaced it.
       DiagnosticGenerationRegistry.currentEpoch shouldBe afterRestart
       provider.isRunning shouldBe true
+      provider.stop()
+    }
+  }
+
+  describe("session revocation") {
+    // Design §21 A26 (1): the running server dies.
+    it("revokes the current snapshot when the running server exits on its own") {
+      val wrapper = GitLabLanguageServerWrapper()
+      val provider = newProvider(wrapper = wrapper)
+      provider.start(bundle)
+      wrapper.currentSnapshot.shouldNotBeNull()
+
+      // A crash or a self-inflicted exit: nothing goes through stop(), so the exit notification
+      // is the only place the snapshot can be revoked.
+      spawnedProcesses[0].completeExit()
+
+      eventually(2.seconds) { wrapper.currentSnapshot shouldBe null }
+    }
+
+    // Design §21 A26 (2): the process survives, only the handshake fails.
+    it("revokes the current snapshot when the running server rejects initialization") {
+      val wrapper = GitLabLanguageServerWrapper()
+      val fake = FakeLanguageServerProcess(InitializeReply.FAILURE, CountDownLatch(1))
+      val provider = newProvider(
+        factory = { fake.also { spawnedProcesses += it } },
+        wrapper = wrapper,
+      )
+
+      provider.start(bundle)
+      // Held before the rejection so the registration is observable: an un-initialized proxy is
+      // published first, and only the initialize callback can take it back.
+      wrapper.currentSnapshot.shouldNotBeNull()
+      fake.releaseInitializeReply()
+
+      eventually(2.seconds) { wrapper.currentSnapshot shouldBe null }
+      // The process itself never died, so this cannot be the exit notification's doing.
+      provider.isRunning shouldBe true
+      provider.stop()
+    }
+
+    // Design §21 A26 (3): a superseded server's late failure must not disturb its successor.
+    it("keeps the newer snapshot when a superseded server's initialization fails late") {
+      // The rejection is logged first thing in the branch under test, so waiting for that line
+      // proves the branch ran without waiting on the revocation this test is about — a wait on
+      // the revocation would also fail when the revocation is simply deleted.
+      val log = mockk<ILog>(relaxUnitFun = true)
+      val rejectionLogged = CountDownLatch(1)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { log.error("Failed to initialize Language Server", any<Throwable>()) } answers {
+        rejectionLogged.countDown()
+      }
+      val wrapper = GitLabLanguageServerWrapper()
+      val superseded = FakeLanguageServerProcess(InitializeReply.FAILURE, CountDownLatch(1))
+      val pending = mutableListOf(superseded, FakeLanguageServerProcess(InitializeReply.SUCCESS))
+      val provider = newProvider(
+        factory = { pending.removeFirst().also { spawnedProcesses += it } },
+        wrapper = wrapper,
+      )
+
+      // The first server's initialize is still unanswered when the second one takes over. This is
+      // the one ordering that really races the lock: the initialize callback runs outside it.
+      provider.start(bundle)
+      provider.start(bundle)
+      val newest = wrapper.currentSnapshot.shouldNotBeNull()
+
+      superseded.releaseInitializeReply()
+      rejectionLogged.await(5, TimeUnit.SECONDS) shouldBe true
+
+      // The revocation runs right after the line above, so the window has to stay open long
+      // enough for an unconditional one to be seen clearing the successor.
+      continually(500.milliseconds) { wrapper.currentSnapshot shouldBe newest }
       provider.stop()
     }
   }
