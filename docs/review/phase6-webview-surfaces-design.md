@@ -113,6 +113,24 @@ a.onNotification("webviewReady", async () => {
 
 **`webviewReady` より前にホストが送った `switchView` は、LS 側にハンドラが無いため捨てられる。** 「履歴を開く」はビューが閉じた状態から呼ばれるのが主要経路なので、この窓は例外ではなく常態である。
 
+### 5.3a 送信順序 — **実測により確定(旧 U-1 は解消)**
+
+webview アプリのアセットが LS に同梱されている(`build/gitlab-lsp/bin/webviews/agentic-duo-chat/assets/index.91120bee.js`)。送信側は以下である:
+
+```js
+notifyAppReady(){ this.sendNotification("appReady"), this.sendNotification("webviewReady") }
+```
+
+**`appReady` が先、`webviewReady` が後。** 両者は同一の webview → LS 接続上で隣接して送られる。
+
+**帰結(本設計の中心)**
+
+1. **ホストが `appReady` を観測した時点で、LS が `switchView` 転送ハンドラを登録済みである保証は無い。** ホストが観測するのは `appReady` の LS 経由の転送であり、`webviewReady` はホストからは観測できない。
+2. 実務上の非対称は本設計に有利である: ホスト側の経路は `appReady` → LS → host → `switchView` → LS の**往復**であるのに対し、`webviewReady` は同一ソケット上で `appReady` の**直後**に送られる。したがって通常は `webviewReady` が先に LS に届く。
+3. **しかしこれは競合であって保証ではない。** 順序を強制する仕組みは JSON-RPC にも LS 実装にも存在しない。**「通常は勝つ」を根拠に silent no-op を許容しない。**
+
+この確定を受け、§7.4 は**故障モードを 2 つに分離**して扱う(旧設計は 1 つの機構で受けようとしており、その結果 `markReady()` がタイマまで解除して**取りこぼし時に無反応かつ無通知**になっていた)。
+
 ### 5.4 readiness 信号
 
 | プラグイン | ホストへ転送される webview → host 通知 |
@@ -121,7 +139,22 @@ a.onNotification("webviewReady", async () => {
 | **agentic (`agentic-duo-chat`)** | `openUrl` / **`appReady`** / `copyCodeSnippet` / `insertCodeSnippet` / `copyMessage` / `openFile` — **`focusChange` を含まない** |
 
 **帰結 1**: `AgenticChatWebViewController.focusChange`(`:48-52`)は pin 8.80.0 では呼ばれないと考えられる。既存 `GitLabDuoChatWebViewClient` と同じ focus ゲートは agentic では原理的に開かない。
-**帰結 2**: agentic に対して確認できる唯一の readiness 信号は **`appReady`** である。現在 `AgenticChatWebViewController.appReady()` は `= Unit`(`:42-43`)。
+**帰結 2**: agentic に対してホストが観測できる唯一の readiness 信号は **`appReady`** である。現在 `AgenticChatWebViewController.appReady()` は `= Unit`(`:42-43`)。**ただし §5.3a のとおり、これは「LS が `switchView` を受け付けられる」ことを意味しない。**
+
+### 5.4a `agentic-tabs` のホスト向け経路 — **実測により確定(read-only)**
+
+LS 8.80.0 の `agentic-tabs` プラグイン実装は以下がすべてである:
+
+```js
+var kz = class {
+  id = "agentic-tabs"; title = "GitLab Duo Agent Platform";
+  setup(e){ let { webview: r } = e; r.onInstanceConnected(() => { this.#e.debug("Duo Tabs created") }) }
+};   // DefaultAgenticTabsWebviewPlugin
+```
+
+**`onNotification` / `onRequest` の登録は 1 つも無く、拡張機能チャネル(host)への転送も存在しない。** 参照実装側も `setup_webviews.ts:152-158` で素の `LsWebviewController` を割り当てるのみで、`registerDuoChatHandlers` は呼ばない(呼ぶのは `CHAT_WEBVIEW_IDS` のみ)。
+
+**帰結**: `agentic-tabs` は**ホスト側のメッセージ経路を必要としない面**である。「未確認だが未登録なら warn で無視されるので安全」という消極的な根拠ではなく、**LS と参照実装の両方で経路が存在しないことを確認した**うえで read-only 面として設計する。したがって本面に host handler・認可・入力検証の設計要素は無い(webview 内の操作はすべて LS が直接処理する)。
 
 ### 5.5 環境・ビルド制約
 
@@ -159,7 +192,10 @@ AgenticChatWebViewController ◀── appReady 実装のみ  └─ WebviewEdit
 
 ```kotlin
 sealed interface WebviewResolution {
-  data class Resolved(val id: String, val title: String, val uri: String) : WebviewResolution
+  /** [session] = 要求開始時に捕捉した LS proxy。適用側が同一性を照合する(§7.1a) */
+  data class Resolved(
+    val id: String, val title: String, val uri: String, val session: GitLabLanguageServer,
+  ) : WebviewResolution
   /** languageServer が null / webviewMetadata() が null future を返した */
   data object LanguageServerUnavailable : WebviewResolution
   /** タイムアウト、または future の例外完了 */
@@ -172,6 +208,22 @@ sealed interface WebviewResolution {
 
 fun resolve(id: String): CompletableFuture<WebviewResolution>   // 例外完了しない契約
 ```
+
+#### 7.1a LS セッションの捕捉と照合(**必須**)
+
+`resolve` は **要求開始時に `wrapper.languageServer` を 1 度だけ読み、その proxy 参照を `Resolved.session` に載せる**。適用側(`WebviewBrowserHost` / `AgenticChatWebViewClient`)は、UI スレッドで結果を適用する直前に
+
+```kotlin
+if (resolution.session !== wrapper.languageServer) return   // 旧セッションの結果は捨てる
+```
+
+を必ず行う(**参照比較**。`equals` ではない)。
+
+**なぜ必要か**: 世代カウンタは新しい `load()` が起きたときにしか上がらない。インスタンス A で開始した `webviewMetadata()` が飛行中に LS が再起動(インスタンス切替・`RestartLanguageServer`)すると、**新しい `load()` が無い限り世代は一致したままで、A 時代の URI が B のタブへ適用される。** 資格情報の漏洩が無くても、死んだ URI を表示するだけで機能不全になる。
+
+**既存の前例がある**: `LanguageServerWebviewService.sendThemeChange(server)`(`:26-41`)は同じ理由で「**呼び出し時に捕捉した proxy** に副作用を束縛」しており、その KDoc(`:28-31`)は「rapid restart が queued send を新しい pre-initialize なサーバへ向け直さないようにする」と明記している。`GitLabLanguageServerProcessProvider` も `onExit` に**プロセス同一性ガード(参照比較 `===`)** を持つ(Phase 2 PR-3)。本設計はこの確立済みのパターンを踏襲する。
+
+**同じ照合を `AgenticChatWebViewClient` の readiness にも適用する**(§7.4)。`ready` latch がセッションを跨ぐと、旧 webview の遅延 `appReady` が新セッションの latch を開け、**B の webview が ready になる前に B へ `switchView` を送る**。
 
 **設計判断**
 
@@ -198,7 +250,7 @@ class WebviewBrowserHost(parent: Composite, private val resolver: WebviewUriReso
 
 - Browser 生成は既存 `LanguageServerBrowserView.newBrowser`(`:324-327`)と同一の分岐(Windows = `SWT.EDGE`、他 = `SWT.WEBKIT`)。
 - message ページの HTML は既存 `themedHtml`(`:329-355`)と同一の形(`ThemeProvider.currentTheme()` の CSS 変数)。
-- **世代カウンタ + dispose ガード**: `load()` ごとに世代を上げ、`whenComplete` → `asyncExec` の**中で**世代一致と `isDisposed` を再チェックする(既存 `LanguageServerBrowserView.kt:114-116` と同じ規律)。
+- **3 重ガード**: `whenComplete` → `asyncExec` の**中で**、(1) 世代一致、(2) `isDisposed`、(3) **§7.1a の LS セッション照合**をこの順に再チェックする。**(3) は (1) では代替できない**: 世代は新しい `load()` が無ければ上がらないため、飛行中に LS が再起動しても世代は一致したままになる(既存 `LanguageServerBrowserView.kt:114-116` は (1)(2) しか持たないが、あちらは feature-state 遷移と LS-ready フックが常に新しい `refresh()` を起こすため露出が小さい。本面にはその駆動源が無い)。
 - 失敗しても既存の生きた Browser を破棄しない(既存 `:117-126` と同じ方針)。
 
 ### 7.3 エディタ領域の面(`root/mcp` / `root/flow`)
@@ -207,22 +259,48 @@ class WebviewBrowserHost(parent: Composite, private val resolver: WebviewUriReso
 
 | 型 | 責務 |
 |---|---|
-| `WebviewEditorKey(webviewId: String)` | 同一性。**webview id のみ** |
+| `WebviewEditorKey(webviewId: String, queryParams: Map<String, String>)` | 同一性。**webview id + クエリ(= 表示内容の識別子)** |
 | `WebviewEditorInput(key, fallbackTitle, queryParams)` | `equals`/`hashCode` は **`key` のみ**に依存。`exists() = false`、`getPersistable() = null`、`getAdapter() = null` |
 | `WebviewEditorPart` | `EditorPart` + `WebviewBrowserHost` を 1 つ保持。`isDirty() = false`、`doSave`/`doSaveAs` は no-op、`isSaveAsAllowed() = false` |
 
 **タブ名の解決順序**: タブ名は `openEditor` の時点で必要になるが、正しい title は解決後(`WebviewResolution.Resolved.title`)にしか分からない。したがって `WebviewEditorInput.getName()` は **id ごとの固定 `fallbackTitle`** を返し(`root/mcp` → `MCP Dashboard`、`root/flow` → `Flow Builder`。§5.2 の実測値)、解決が成功した時点で `WebviewEditorPart` が `setPartName` で置き換える。**解決に失敗した場合は `fallbackTitle` のままにする**(失敗を示すのは message ページの役目であり、タブ名を書き換えると閉じたタブ履歴に紛らわしい名前が残る)。`fallbackTitle` は表示専用で、同一性(`equals`)には一切関与しない。
 
 この判断は **SWT フリーの純関数 `WebviewEditorTitles.titleFor(resolution): String?`**(null = 変更しない)に切り出す。`EditorPart` の中に埋めると headless で検証できず、受け入れ条件 A13 が主張だけになる。
-| `WebviewEditorOpener` | `openOrReload(input)`: 全 window / page の一致エディタを新しい URI で再ロードし、アクティブページで可視化。無ければ `openEditor` |
+| `WebviewEditorOpener` | `openOrReload(input)`: **アクティブページ上**の key 一致エディタを activate。無ければ `activePage.openEditor`。**他ウィンドウは走査しない**(§8.1) |
 
-**キーが webview id のみである理由**: 参照実装 `setup_webviews.ts:80-135` は webview id ごとに**パネルを 1 つだけ**保持し、空でない `initState` が来たら `panel.dispose()` して作り直す。同じ id で異なる `uri` を開いても新しいタブは増えない。この挙動に合わせる。`equals` が `queryParams` を見ないことは意図であり、`openOrReload` は一致した既存エディタを**新しい `queryParams` で再ロード**する。
+**キーが `queryParams` を含む理由(設計変更・round 1 で修正)**
 
-> **注意点として明記**: `equals` が `queryParams` を無視する以上、`WebviewEditorInput` は「同一性の担い手」であって「表示内容の担い手」ではない。表示内容は `openOrReload` が明示的に流し込む。この非対称は `MergedYamlEditorInput`(内容を `MergedYamlContent` の共有インスタンスで持つ)とは異なる形なので、実装時に混同しないこと。
+参照実装 `setup_webviews.ts:80-135` は webview id ごとに**パネルを 1 つだけ**保持し、空でない `initState` が来たら `panel.dispose()` して作り直す。当初はこれに合わせて **key = webview id のみ**とし、`equals` が `queryParams` を無視する設計にしていた。**これは誤りだった。**
+
+- VSCode の「id あたり 1 パネル」は **1 つの extension host ウィンドウ内での同一性**である。初版はこれを `MergedYamlEditorOpener` 由来の**全ワークベンチウィンドウ走査**と組み合わせていたため、**ウィンドウ A の Flow Builder タブに、ウィンドウ B から開いた別 YAML の内容が黙って流し込まれる**状態になっていた。起動元 B のユーザーには何も起きず、A のユーザーは自分の開いていた flow が別ファイルに置き換わる。
+- 根本原因は `MergedYamlEditorKey` との非対称にある。あちらの key は `(instanceUrl, projectId, sourceId)` = **内容の出所を含む**。こちらは内容の識別子(`queryParams`)を意図的に落としていたため、「別の内容を同じタブへ配信する」ことが仕様どおりになってしまっていた。
+
+**したがって `queryParams` を key に含め、内容ごとに 1 タブとする。**
+
+- `root/mcp` は `queryParams` が空なので、従来どおり**常に 1 タブ**(挙動不変)。
+- `root/flow` は **YAML ファイルごとに 1 タブ**。Eclipse の「ファイルごとに 1 エディタ」という慣行に一致し、ウィンドウ間ブロードキャストという故障クラスが**構造的に消える**(インスタンス修正ではなくクラス修正)。
+- `WebviewEditorInput` は同一性と表示内容の**両方**の担い手になり、`MergedYamlEditorInput` との非対称が解消する。
+
+**タブの増殖について**: 上限はユーザーが Flow Builder を開いた YAML の数であり、通常のエディタタブと同じ性質である。参照実装からの逸脱であることは受容済みの制限として記録する(§23 L-新)。
 
 **`getPersistable() = null` は必須**。ワークベンチ再起動後にエディタが復元されると、**前セッションの LS が発行した死んだ URI** を指すタブが出る。`exists() = false` と併せて `EditorHistory` とワークベンチ memento の両方から外す(`MergedYamlEditorInput.kt:23,31` と同じ理由)。
 
-**`root/flow` の前提条件**: 参照実装 `src/desktop/commands/open_flow_builder.ts:5-8` はアクティブエディタが YAML でなければエラーメッセージを出して何もしない。同じ前提を課す。YAML の場合は解決した URI に `uri=<アクティブファイルの URI>` をクエリとして付ける(参照実装 `setup_webviews.ts:116-120`)。
+**`root/flow` の前提条件**: 参照実装 `src/desktop/commands/open_flow_builder.ts:5-8` はアクティブエディタが YAML でなければエラーメッセージを出して何もしない。同じ前提を課す。
+
+#### 7.3a `uri` クエリの組み立て規則(**必須・round 1 で追加**)
+
+「解決した URI に `uri=<ファイル URI>` を付ける」だけでは実装が分かれる。**文字列連結を禁止し、以下を規定する。**
+
+1. **URI-aware なビルダを使う。** `java.net.URI` の multi-argument コンストラクタ(`URI(scheme, authority, path, query, fragment)`)は query 値を**一度だけ**符号化する。`resolvedUri + "?uri=" + fileUri` のような連結は行わない。
+2. **既存の query を保存する。** LS が発行する URI が既に query を持つ場合、`uri` を**追加**する(置換しない)。参照実装も `new URL(...)` + `searchParams.append` で追加している(`setup_webviews.ts:116-119`)。
+3. **fragment を保存する。** query を足す際に既存 fragment を落とさない。
+4. **同名 parameter**: LS の URI に既に `uri` がある場合でも**削除・上書きしない**(こちらが後勝ちになる前提を置かない)。`append` のセマンティクスに揃える。
+5. **符号化は 1 回だけ。** ファイル URI(既に percent-encoded な `file:///...`)を query 値として入れる際、`%` が二重符号化されないこと。
+6. **ファイル URI の取得元**: アクティブエディタの `IFileEditorInput.file.locationURI`(存在しない場合は `IURIEditorInput.uri`)。取得できなければ前提条件違反として §12 の通知経路へ。
+
+**壊れる文字の受け入れテスト**(headless で実施可能 = 純ロジック): ファイル名に `&` / `#` / `=` / `?` / 半角空白 / 非 ASCII(日本語)/ `+` / `%` を含む YAML パス。これらで URI が分断されないこと、および復号すると元の値に戻ることを固定する。
+
+> **既存の前例**: Phase 2 の `PathSegmentEncoder`(RFC 3986 セグメント単位)と `SearchQueryBuilder`(form encode)が同種の問題を扱っている。**どちらもそのままでは使えない**(前者はセグメント用、後者は form 用)ため、query 値としての符号化は本設計で新たに規定する。実装時に既存 2 者と取り違えないこと。
 
 **エディタ領域の配置**: 参照実装は `root/flow` を `ViewColumn.Beside` で開く(`setup_webviews.ts:50-59`)。Eclipse には `Beside` の直接対応が無く、Phase 4 PR-4 も同じ理由で **E2「Beside 不可 = 通常タブ」**として通常タブを採用した。同じ判断を踏襲する。
 
@@ -243,34 +321,51 @@ class WebviewBrowserHost(parent: Composite, private val resolver: WebviewUriReso
 
 **関門 B — agentic webview アプリが `webviewReady` を送り終えていること**(§5.3)
 
+#### 故障モードを 2 つに分離する(**round 1 で全面改稿**)
+
+初版は「`appReady` を受けたらフラッシュしてタイマを解除する」という**単一**の機構だった。§5.3a で `appReady` が `webviewReady` より**先**に送られると確定した以上、この形は以下のように破綻する。
+
+> ホストが `appReady` を観測 → `switchView` を送信 → LS にまだ転送ハンドラが無く**破棄** → 同時に `pending` とタイマも解除 → **無反応・無ログ・無通知。**
+
+つまり初版の「必ず気づける」という根拠(旧 R1)は、**まさに守ろうとした経路で成立していなかった。** 故障は 2 つあり、別々の機構で受ける必要がある。
+
+| | 故障 | 観測できるか | 機構 |
+|---|---|---|---|
+| **F-a** | `appReady` が来ない(webview が読み込まれない・LS が落ちた) | できる(latch が開かない) | **readiness タイムアウト**(10 秒)→ `pending` 破棄 + Error Log + ユーザー通知 |
+| **F-b** | `appReady` は来たが、LS の `switchView` 転送ハンドラが未登録 | **できない**(ack が無い) | **境界つき再送**(§下記) |
+
 ```kotlin
 class AgenticChatWebViewClient(
   private val wrapper: GitLabLanguageServerWrapper,
   private val onUndelivered: (String) -> Unit,
-  // タイマのシーム。既定は Display.timerExec(UI スレッド)。テストは即時/手動発火に差し替える
-  private val scheduleTimeout: (Long, Runnable) -> Unit = ...,
+  private val scheduleTimer: (Long, Runnable) -> Unit,   // シーム。既定は Display.timerExec
 ) {
-  private var ready = false
-  private var pending: String? = null          // 1 スロット・latest-wins
+  private var readySession: GitLabLanguageServer? = null  // §7.1a: latch はセッション付き
+  private var pending: String? = null                     // 1 スロット・latest-wins
 
-  fun switchView(view: String)                 // ready なら送信、でなければ pending に格納
-  fun markReady()                              // appReady 受信時。pending をフラッシュ
-  fun markNotReady()                           // Browser の新規作成 / URI 変更時
+  fun switchView(view: String)   // ready かつ同一セッションなら送信+再送予約、でなければ pending
+  fun markReady(session: GitLabLanguageServer)            // appReady 受信時
+  fun markNotReady()                                      // Browser 新規作成 / URI 変更 / LS 再起動
 }
 ```
 
-**タイマはコンストラクタのシームで注入する。** `Display.timerExec` を直接呼ぶと未配送タイムアウト(受け入れ条件 A12)が headless で一切検証できず、「取りこぼしに必ず気づける」という本設計の中心的な主張が**テストに裏付けられないまま**になる。既定値が SWT を触るため、既定引数ではなく**オーバーロード**にする(既存 `LanguageServerWebviewService.sendThemeChange`(`:21-32`)が同じ理由でオーバーロードを採っている: Kotlin の `$default` ブリッジは MockK のモック上でも既定式を評価するため)。
+**F-b への対処 = 境界つき再送**
+
+`switchView` は同一 `view` について冪等(§14)であり、送信時点は webview が開いた直後でユーザーがまだ操作していない。したがって**同じ `switchView` を短い間隔で有限回(2 回・合計 3 送信)再送する**ことで、`webviewReady` の処理が遅れた窓を覆う。
+
+- これは「遅延を置いて競合を隠す」のとは**異なる**。遅延は順序を 1 点で賭けるが、再送は窓全体を覆う。
+- **再送を無限にしない。** 有限回で打ち切り、以後は何もしない(F-b は観測できないため、打ち切り後に通知を出すと**成功時にも必ず誤通知が出る**= Phase 5B が「最悪の誤り方」とした偽陽性そのものになる)。
+- **ユーザーへの最終的な確認は画面である**: 履歴に切り替わったかどうかはユーザーが直接見る。F-b が残った場合、ユーザーはコマンドを再実行でき、そのときは既に ready なので確実に届く。この受容を §23 に制限として明記する。
+
+**その他の規則**
 
 - **キューは 1 スロット・latest-wins。** `switchView` はビューセレクタであり、古い指示を後から配送する意味がない。classic の無制限 `MutableList`(`GitLabDuoChatWebViewClient.kt:10`)とは**意図的に変える**。
-- `AgenticChatWebViewController.appReady()`(現在 `= Unit`)が `markReady()` を呼ぶ。
-- **latch のリセット点は 1 箇所**: `LanguageServerBrowserView.syncBrowsers`(`:200-227`)が agentic id の `Browser` を**新規作成した時**と **URI を差し替えた時**。LS 再起動・インスタンス切替・feature 無効化からの復帰はすべてこの経路を通る。
+- `AgenticChatWebViewController.appReady()`(現在 `= Unit`)が `markReady(現在の LS proxy)` を呼ぶ。**`PluginMessageService.dispatch` は `supplyAsync` で別スレッド実行(`:12`)なので、UI スレッドへマーシャルしてから状態を触る。**
+- **latch はセッション付き**(§7.1a)。`switchView` 送信前に `readySession === wrapper.languageServer` を照合する。**旧セッションの遅延 `appReady` が新セッションの latch を開けない。**
+- **latch のリセット点**: `LanguageServerBrowserView.syncBrowsers`(`:200-227`)が agentic id の `Browser` を**新規作成した時**と **URI を差し替えた時**。セッション照合と併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 - 送信は `ExtensionToPluginNotification(pluginId = AGENTIC_WEBVIEW_ID, type = "switchView", payload = mapOf("view" to view))`。
 
-**未配送タイムアウト**: `pending` が格納されてから 10 秒以内にフラッシュされなかった場合、`pending` を破棄し **Error Log + ユーザー通知**を出す。
-
-- タイマは **`Display.timerExec`**(UI スレッド)で回す。`AgenticChatWebViewClient` の状態は UI スレッド専有(§15)であり、別スレッドのタイマを入れると同期が必要になる。
-- **`pending` を上書きしたときはタイマも張り直す**(latest-wins のセマンティクスに合わせる)。`markReady()` によるフラッシュ時と `markNotReady()` 時はタイマを解除する。
-- **この機構を入れる理由(採用の根拠)**: §23 の U-1 により `appReady` ゲートで取りこぼす可能性が消せない。取りこぼした場合に何もしないと「コマンドを押しても無反応」という、headless では絶対に検出できず実機でも原因が分からない失敗になる。Phase 5B で 9 ラウンド / 12 波を要したのはまさにこのクラス(「黙って永久に劣化する」)であり、**窓が狭いことを繰り越しの理由にしない**という同フェーズの裁定を適用する。
+**タイマはコンストラクタのシームで注入する。** `Display.timerExec` を直接呼ぶと readiness タイムアウトと再送(受け入れ条件 A12)が headless で一切検証できず、本設計の中心的な主張が**テストに裏付けられないまま**になる。既定値が SWT を触るため、既定引数ではなく**オーバーロード**にする(既存 `LanguageServerWebviewService.sendThemeChange`(`:21-32`)が同じ理由でオーバーロードを採っている: Kotlin の `$default` ブリッジは MockK のモック上でも既定式を評価するため)。タイマは UI スレッドで回す(状態が UI スレッド専有のため。§15)。
 
 ### 7.5 起動口(`plugin.xml`・追加のみ)
 
@@ -289,23 +384,30 @@ class AgenticChatWebViewClient(
 
 ### 8.1 エディタ領域 webview を開く(`root/mcp` / `root/flow`)
 
+key に `queryParams` が入った(§7.3)ため、**一致 = 同じ webview かつ同じ内容**である。したがって「一致したタブを別の内容で再ロードする」経路そのものが存在しない。
+
 ```
 ハンドラ (UI スレッド)
-  └─ root/flow のみ: アクティブエディタが YAML か検査
+  └─ root/flow のみ: アクティブエディタが YAML か検査 + ファイル URI を取得
        └─ 違反 → ユーザー通知して終了(silent no-op にしない)
+  └─ key = (webviewId, queryParams) を構築
   └─ WebviewEditorOpener.openOrReload(input)         [UI スレッド]
-       └─ 全 window/page の一致エディタを列挙
-            ├─ 一致あり → 各エディタの host.load(id, params) / アクティブページのものを activate
-            └─ 一致なし → activePage.openEditor(input, EDITOR_ID)
-                            └─ WebviewEditorPart.createPartControl
-                                 └─ WebviewBrowserHost.load(id, params)
-                                      ├─ 世代++ / loading ページ表示
-                                      ├─ resolver.resolve(id)            [UI スレッド外]
-                                      └─ whenComplete → asyncExec        [UI スレッドへ復帰]
-                                           ├─ 世代不一致 or isDisposed → 破棄
-                                           ├─ Resolved  → browser.setUrl(uri + query)
-                                           └─ その他    → message ページ
+       ├─ (1) アクティブページに key 一致のエディタがあるか
+       │        └─ あり → activate して終了(内容は同じなので再ロード不要)
+       └─ (2) 無ければ activePage.openEditor(input, EDITOR_ID)
+                └─ WebviewEditorPart.createPartControl
+                     └─ WebviewBrowserHost.load(id, params)
+                          ├─ 世代++ / loading ページ表示 / LS proxy を捕捉
+                          ├─ resolver.resolve(id)                  [UI スレッド外]
+                          └─ whenComplete → asyncExec              [UI スレッドへ復帰]
+                               ├─ 世代不一致 / isDisposed / セッション不一致 → 破棄
+                               ├─ Resolved  → browser.setUrl(§7.3a のビルダ結果)
+                               └─ その他    → message ページ
 ```
+
+**分岐は「アクティブページ上の一致」でのみ判定する**(初版は「全 window/page の一致」と「アクティブページでの可視化」を混在させており、他ウィンドウに一致があるとき起動元にタブが開かない読みが成立していた)。他ウィンドウに同じ key のタブがあっても**触らない**: 内容が同一なので更新の必要が無く、他ウィンドウのユーザーの表示を勝手に動かす理由も無い。
+
+**`MergedYamlEditorOpener` との差**: あちらは同一 key の内容が更新されうる(再 lint)ため全ページの再 reset が要る。こちらは key が内容を含むので、同一 key = 同一内容であり、**全ページ走査そのものが不要**になる。この違いを実装時に取り違えないこと。
 
 ### 8.2 `gl.agenticChat.showHistoryView`
 
@@ -321,15 +423,20 @@ class AgenticChatWebViewClient(
                            └─ agentic の Browser を新規作成 / URI 変更 → client.markNotReady()
                       └─ showResolvedSelection → 解決 id を flushPendingIntents へ
                            └─ agentic が表示された場合のみ client.switchView("history")
-                                ├─ ready   → pluginNotification 送信
-                                └─ !ready  → pending = "history"(latest-wins)+ 10s タイマ開始
+                                ├─ ready かつ同一セッション → 送信 + 境界つき再送を予約
+                                └─ それ以外 → pending = "history"(latest-wins)
+                                              + readiness タイマ(10s)開始
 
-    …後刻、webview → LS → host の appReady 到達
-      └─ AgenticChatWebViewController.appReady() → client.markReady()
-           └─ pending をフラッシュして送信 / タイマ解除
-    …10 秒経過してもフラッシュされない場合
+    …後刻、webview → LS → host の appReady 到達      [別スレッド → UI へマーシャル]
+      └─ AgenticChatWebViewController.appReady() → client.markReady(現 LS proxy)
+           ├─ readySession = 現 LS proxy / readiness タイマ解除
+           └─ pending があれば送信 + 境界つき再送を予約(F-b 対策・有限回で打ち切り)
+
+    …10 秒経過しても appReady が来ない場合(F-a)
       └─ pending 破棄 + Error Log + ユーザー通知
 ```
+
+**再送は通知を伴わない**(F-b は観測不能なので、打ち切り時に通知すると成功時にも必ず誤通知になる。§7.4)。**readiness タイムアウト(F-a)だけが通知経路を持つ。**
 
 ## 9. API / インターフェース
 
@@ -349,7 +456,24 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 該当なし。すべての操作は単一の LS 通知または単一の UI 操作であり、複数リソースにまたがる原子性を要求しない。
 
-**接続の固定(Phase 4 / 5 の `ConnectionSnapshot` / 世代 seqlock)は適用しない。** 理由: 本設計のホスト側コードは GitLab インスタンスへ 1 度も送信せず、表示するのは LS が発行した URI のみである。インスタンス切替時は LS が再起動し、次回の解決で新しい URI になる(同じ `WebviewEditorKey` なのでタブは増えず再ロードされる)。**この判断が誤っている条件は「LS の webview URI がインスタンス固有の秘密を含み、かつ切替後も古い URI が有効なままである」場合であり、その場合は再検討を要する。**
+**Phase 4 / 5 の `ConnectionSnapshot` / config 世代 seqlock は適用しない。しかし LS セッションの固定は必要である(round 1 で修正)。**
+
+初版はこの 2 つを混同していた。初版の根拠は「ホストは GitLab へ送信しないので接続固定は不要」であり、これは**資格情報の cross-instance 漏洩**という問いへの答えである。実際のリスクはそれではない。
+
+| | 何を守るか | 本設計で必要か |
+|---|---|---|
+| `ConnectionSnapshot` / config 世代 seqlock(Phase 4/5) | GitLab への送信が `(新 URL, 旧 token)` の組で飛ぶこと | **不要**。ホストから GitLab への送信が 1 本も無い(§9) |
+| **LS セッションの捕捉と照合(§7.1a)** | **旧 LS セッションで開始した処理の結果が、新セッションに適用されること** | **必要** |
+
+**後者が現実に起きる経路**(初版が見落としていた):
+
+1. インスタンス A で `webviewMetadata()` を発行 → 飛行中にユーザーがインスタンスを切替 → LS が再起動。
+2. **世代カウンタは上がらない**(新しい `load()` が無い)。A 時代の解決結果が B のタブへ適用され、**死んだ URI を表示する。**
+3. 旧 Browser の遅延 `appReady` が共有 latch を開ける → `wrapper.languageServer` は既に B → **B の webview が ready になる前に B へ `switchView` を送る。**
+
+**秘密が含まれるかどうかとは無関係に発生する。** 死んだ URI を表示するだけでも機能不全である。
+
+→ **§7.1a の捕捉・照合を必須とし、`WebviewBrowserHost` の適用時と `AgenticChatWebViewClient` の送信時の両方でセッション同一性を確認する。** `markNotReady()` によるリセットと併せて二重に守る(リセットが届く前に旧 `appReady` が来る競合を照合が受ける)。
 
 ## 12. エラー処理
 
@@ -361,23 +485,29 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | `NoUri` | 同上の文言。ログ上は `NotAdvertised` と区別する |
 | `root/flow` の YAML 前提違反 | ユーザー通知(参照実装と同じ文言意図) |
 | `openEditor` / `showView` の失敗 | Error Log + ユーザー通知 |
-| `switchView` 未配送(10 秒) | `pending` 破棄 + Error Log + ユーザー通知 |
+| **F-a**: `appReady` が 10 秒以内に来ない | `pending` 破棄 + Error Log + ユーザー通知 |
+| **F-b**: `appReady` は来たが LS の転送ハンドラ未登録 | **境界つき再送**(§7.4)。**通知しない**(観測不能なため、通知すると成功時にも必ず誤通知になる) |
+| LS セッション不一致(§7.1a) | 破棄。**通知しない**(ユーザーが自分で切替えた結果であり、異常ではない)。debug ログのみ |
 
-**silent no-op を作らない。** これは Phase 5B が 9 ラウンド / 12 波を要した「黙って永久に劣化する」クラスへの直接の対策である。
+**silent no-op を作らない。ただし「観測できない事象を起きたことにして通知する」偽陽性も作らない。** 前者は Phase 5B が 9 ラウンド / 12 波を要した「黙って永久に劣化する」クラス、後者は同フェーズが「最悪の誤り方」とした監査の偽陽性である。F-b は前者にも後者にも該当しないよう、**再送で窓を覆いつつ通知は出さず、最終的な確認をユーザーの画面に委ねる**(§23 L-9)。
 
 ## 13. タイムアウトとリトライ
 
 | 対象 | タイムアウト | リトライ |
 |---|---|---|
 | `webviewMetadata()` | 10 秒(`orTimeout`) | **自動リトライしない。** ユーザーがコマンドを再実行すれば新しい解決が走る |
-| `switchView` の配送 | 10 秒 | **リトライしない。** 破棄して通知する |
+| `appReady` の到達(F-a) | 10 秒 | **リトライしない。** `pending` を破棄して通知する |
+| `switchView` の配送(F-b) | — | **境界つき再送 2 回(合計 3 送信)。** 有限回で打ち切り、通知しない |
 
-自動リトライを入れない理由: リトライは「いつ諦めるか」という状態を追加し、その状態が漏れると Phase 5B と同じクラスになる。ユーザー起動のコマンドであり、再実行が自然な回復手段である。
+**メタデータ解決に自動リトライを入れない理由**: リトライは「いつ諦めるか」という状態を追加し、その状態が漏れると Phase 5B と同じクラスになる。ユーザー起動のコマンドであり、再実行が自然な回復手段である。
+
+**`switchView` にだけ再送を入れる理由**: こちらは**確認手段が原理的に存在しない**(ack が無い)ため「諦めの判断」を持てない。有限回に固定し、状態を持たないことで同じ罠を避ける。
 
 ## 14. 冪等性
 
-- `WebviewEditorOpener.openOrReload` は冪等。同じ key で複数回呼んでもタブは増えず、URI が再ロードされるだけ。
-- `switchView` は同じ `view` について冪等(同じビューへ 2 回切り替えても結果は同じ)。ただし **1 スロット latest-wins のキューにより、実際に二重送信は起きない**(`ready` なら即送信して `pending` は空、`!ready` なら `pending` を上書きするだけ)。
+- `WebviewEditorOpener.openOrReload` は冪等。同じ key で複数回呼んでもタブは増えない(key が内容を含むため、内容が違えば別タブ = これも決定的)。
+- **`switchView` は同じ `view` について冪等であり、境界つき再送(§7.4)はこの冪等性に依存している。** 同じビューへ複数回切り替えても結果は同じ。
+- 再送の窓(数百 ms 規模・有限回)は webview が開いた直後であり、ユーザーが手動で別ビューへ移動してから再送が届く可能性は実質的に無い。**ただし理論上は存在する**ため受容済みの制限として §23 に記録する。
 - `markNotReady()` は冪等。
 
 ## 15. 並行処理
@@ -385,8 +515,10 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 - **`WebviewBrowserHost` / `AgenticChatWebViewClient` / `WebviewEditorOpener` の可変状態はすべて UI スレッド専有。** 同期プリミティブを使わない。
 - メタデータ future は UI スレッド外で消費し、結果適用は `asyncExec` で UI スレッドへマーシャルする。
 - **世代カウンタ(latest-wins)は `asyncExec` の中で再チェックする。** `whenComplete` の時点でのチェックでは、キューイングと実行の間に新しい `load()` が走った場合を取りこぼす。
-- 複数ウィンドウ: `WebviewEditorOpener` は `PlatformUI.getWorkbench().workbenchWindows` の全 page を走査する(`MergedYamlEditorOpener.kt:61-62` と同じ)。分割・クローンされたエディタも `MATCH_INPUT` で拾う。
+- **世代とは別に LS セッションを照合する(§7.1a)。** 世代は新しい `load()` が無ければ上がらないため、**LS 再起動をまたぐ競合は世代では捕まらない。** 2 つは異なる競合を守っており、片方で他方を代替できない。
+- 複数ウィンドウ: `WebviewEditorOpener` は**アクティブページのみ**を見る(§8.1)。key が内容を含むため、他ウィンドウの同一 key タブは同一内容であり更新の必要が無い。**初版の「全 window/page を走査して再ロード」は撤回した**(別ウィンドウのタブに別の内容を配信していた)。
 - `appReady` は LS のディスパッチスレッドから届く(`PluginMessageService.dispatch` が `CompletableFuture.supplyAsync`。`PluginMessageService.kt:12`)。`markReady()` は **UI スレッドへマーシャルしてから**状態を触る。
+- **`markNotReady()` と遅延 `appReady` の競合**: `syncBrowsers` のリセットが走る前に旧セッションの `appReady` が UI キューに入っていることがある。**セッション照合がこれを受ける**(旧 proxy は `wrapper.languageServer` と一致しないので latch を開けない)。リセット単独では閉じない。
 
 ## 16. 認証と認可
 
@@ -428,12 +560,15 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 | 対象 | headless | 方法 |
 |---|---|---|
-| `WebviewUriResolver`(sealed 5 分岐 + never-throws) | ✅ | TDD |
-| `WebviewEditorKey` / `WebviewEditorInput`(`equals`/`hashCode`/`exists`/`getPersistable`) | ✅ | TDD |
+| `WebviewUriResolver`(sealed 5 分岐 + never-throws + セッション捕捉) | ✅ | TDD |
+| `WebviewEditorKey` / `WebviewEditorInput`(`equals`/`hashCode`/`exists`/`getPersistable`。**`queryParams` 差で別 key**) | ✅ | TDD |
 | `WebviewEditorTitles.titleFor`(解決成功時のみ改名) | ✅ | TDD |
-| `AgenticChatWebViewClient`(1 スロット latest-wins / latch / リセット / タイムアウト) | ✅ | TDD(wrapper は MockK、タイマはシーム注入) |
+| **`uri` クエリのビルダ**(§7.3a。`&`/`#`/`=`/`?`/空白/非 ASCII/`+`/`%` + 既存 query・fragment 保存) | ✅ | TDD |
+| `AgenticChatWebViewClient`(latest-wins / latch / リセット / **F-a タイムアウト** / **F-b 再送回数** / **セッション照合**) | ✅ | TDD(wrapper は MockK、タイマはシーム注入) |
 | `flushPendingIntents` の agentic 分岐 + classic 2 経路の keep-behaviour | ✅ | 既存テストへの追加 |
 | `WebviewBrowserHost` / `WebviewEditorPart` / `AgenticTabsView` / `WebviewEditorOpener` | ❌ | **手動検証手順**(PR 本文) |
+
+**セッション競合のテスト(headless で可能・必須)**: `WebviewUriResolver` が捕捉した proxy と `wrapper.languageServer` が**異なる**状態を MockK で作り、(1) `WebviewBrowserHost` の適用が破棄されること、(2) 旧セッションの `markReady` が latch を開けないこと、を独立した 2 テストで固定する。**世代を変えずに**行うこと(世代で代替できないことがこのテストの主張である)。
 
 **Phase 5B から持ち越す規約(実装ブリーフに明記する)**
 
@@ -459,9 +594,14 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 | A9 | `pending` が 2 件以上溜まらない(latest-wins) | TDD |
 | A10 | classic の 2 つの intent の挙動が不変 | keep-behaviour ラベル付きテスト |
 | A11 | 解決した URI とユーザーのファイルパスがログに現れない | 実装レビュー + テスト |
-| A12 | 未配送タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマは注入可能なシームにする) |
-| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | TDD(`setPartName` 呼び出しの有無) |
-| A14 | `1645 + 新規` / `36 failed` / `FAILSET_IDENTICAL` / detekt 0 | `verify.sh` |
+| A12 | **F-a** タイムアウトが発火すると `pending` が破棄され通知経路が呼ばれる | TDD(タイマはシーム注入) |
+| A13 | 解決失敗時にタブ名が `fallbackTitle` のまま変わらない | TDD(`titleFor` が null を返す) |
+| A14 | **`queryParams` が異なれば別 key**(同一 key は同一内容) | TDD |
+| A15 | **`uri` クエリが特殊文字で分断されず、往復で元の値に戻る**。既存 query / fragment が保存される | TDD(§20 の文字集合) |
+| A16 | **旧 LS セッションの解決結果が適用されない**(世代は一致させた状態で) | TDD |
+| A17 | **旧 LS セッションの `appReady` が latch を開けない** | TDD |
+| A18 | **F-b の再送が有限回で打ち切られ、打ち切り時に通知経路を呼ばない** | TDD |
+| A19 | `1645 + 新規` / `36 failed` / `FAILSET_IDENTICAL` / detekt 0 | `verify.sh` |
 
 **実機でのみ検証可能な項目(PR 本文に手動検証手順として記載)**
 
@@ -469,11 +609,16 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 2. `root/mcp` がエディタタブとして開く
 3. YAML エディタで `gl.openFlowBuilder` → Flow Builder タブが開き、LS 側の保存が効く
 4. YAML でないエディタで `gl.openFlowBuilder` → エラー通知が出て何も開かない
-5. **Duo Chat ビューを閉じた状態から `showHistoryView` → 履歴が表示される**(= `appReady` ゲートが機能している)
+5. **Duo Chat ビューを閉じた状態から `showHistoryView` → 履歴が表示される**(= §5.3a の競合を再送が覆えている)
 6. Duo Chat ビューが開いて agentic 表示中に `showHistoryView` → 即座に切り替わる
 7. LS 未起動状態で各コマンド → message ページ / 通知が出る(無反応にならない)
 8. LS 再起動後に同じコマンド → 新しい URI で再ロードされる
 9. ワークベンチ再起動後に webview エディタタブが復元されない
+10. **ウィンドウ A で YAML-1 の Flow Builder を開いた状態で、ウィンドウ B から YAML-2 の Flow Builder を開く** → **B に YAML-2 のタブが開き、A の YAML-1 タブは変化しない**(§7.3 の key 変更が効いている。**初版はここで A が黙って YAML-2 に置き換わっていた**)
+11. 同じ YAML から 2 回 `gl.openFlowBuilder` → タブが増えず、既存タブが前面に来る
+12. **ファイル名に `&` / 空白 / 日本語を含む YAML** から Flow Builder を開く → 正しいファイルが開き、LS 側の保存がそのファイルに効く
+13. `root/mcp` を 2 回開く → タブが 1 つのまま
+14. **インスタンス切替の直後に各コマンドを実行** → 新しい LS の URI が表示され、古い URI のページが残らない
 
 ## 22. 移行方法 / ロールバック方法
 
@@ -483,12 +628,7 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 
 ## 23. 未決事項
 
-**U-1(最重要)`appReady` と `webviewReady` の到達順序**
-両者は同じ webview アプリが発する**別々の**信号である。§5.3 の `switchView` 転送ハンドラは `webviewReady` で登録され、§5.4 の `appReady` はホストへ転送される。**両者の順序は LS バイナリからは確認できなかった。** `appReady` が `webviewReady` より先に届く実装であれば、`appReady` ゲートでも取りこぼす。
-
-- 本設計は「取りこぼした場合に**黙って何も起きない**にはならない」形(§12 の 10 秒タイムアウト + 通知)で受ける。
-- **実機検証項目 5 が真偽を判定する。** 偽であった場合の代替は「`appReady` 受信後に短い遅延を置く」ではなく(競合を隠すだけ)、LS 側に host 向け ready 信号を要求するか、`switchView` を数回再送する形の再設計になる。
-- **推測で確定しない。** 実装時にこの前提を「確認済み」として扱わないこと。
+**U-1 は解消した(round 1)。** `appReady` が先・`webviewReady` が後であることを webview アセットの実ソースで確定した(§5.3a)。設計はこの確定を前提に §7.4 で故障モードを 2 分割して書き直した。**「未確定だから防御的に受ける」ではなく、「確定した順序に対して competing する経路を有限再送で覆う」形になっている。**
 
 **U-2 `AgenticChatWebViewController.focusChange` の生存**
 §5.4 の実測から pin 8.80.0 では呼ばれないと考えられるが、**本設計では削除も変更もしない**(スコープ外の挙動変更を作らないため)。
@@ -499,20 +639,42 @@ Eclipse 設定ストアへの新規キーの書き込みは無い(既存 `DUO_CH
 **U-4 `agentic-tabs` ビューの初期表示タイミング**
 `ViewPart` は `showView` で初めて生成されるため、LS 未起動時に開くと message ページが出る。**LS が ready になったときの自動再解決は行わない**(既存 Duo Chat ビューは `refreshDuoChatWindow()` フックを持つが、それはチャット可用性のためのもの)。ユーザーがビューを開き直せば再解決される。**この判断は「無反応」ではない**(message ページが理由を示す)が、UX として弱い点は認識している。
 
+## 23a. 意図的に受容した制限(round 1 で追加)
+
+| # | 制限 | 根拠 |
+|---|---|---|
+| L-1 | `root/flow` は **YAML ごとに 1 タブ**(参照実装の「id あたり 1 パネル」から逸脱) | あちらは 1 extension ウィンドウ内の同一性であり、Eclipse の複数ワークベンチウィンドウを根拠づけない(§7.3)。タブ数の上限はユーザーが開いた YAML 数で、通常のエディタと同じ性質 |
+| L-9 | **F-b(`switchView` の未配送)は通知しない** | ack が無く観測不能。打ち切り時に通知すると**成功時にも必ず誤通知**が出る = Phase 5B が「最悪の誤り方」とした偽陽性。最終確認はユーザーの画面で行われ、再実行で確実に届く |
+| L-10 | **境界つき再送の窓中にユーザーが手動で別ビューへ移動すると、再送が引き戻す** | 窓は webview を開いた直後の数百 ms・有限回。理論上のみ存在する |
+| L-11 | LS セッション不一致で結果を破棄する際は**通知しない** | ユーザー自身の切替操作の結果であり異常ではない。debug ログのみ |
+
 ## 24. 想定されるリスク
 
 | # | リスク | 影響 | 緩和 |
 |---|---|---|---|
-| R1 | U-1 が偽で `switchView` が届かない | コマンド 2 件が機能しない | 10 秒タイムアウト + 通知で**必ず気づける**。実機検証項目 5 |
+| R1 | §5.3a の競合で `switchView` が LS に捨てられる | コマンド 2 件が届かない | **F-b = 境界つき再送**で窓を覆う(§7.4)。冪等性に依存。実機検証項目 5。**初版の「タイムアウトで必ず気づける」は成立していなかった**(`markReady` がタイマも解除していたため)。現行は F-a と F-b を別機構で受ける |
 | R2 | `flushPendingIntents` の引数型変更で既存テストが緑のまま無効化される | classic の回帰が検出されない | §20 の全件再監査を必須化。keep-behaviour ラベル |
-| R3 | `WebviewEditorInput.equals` が `queryParams` を無視することの誤解 | 別の `uri` で開いたのに前の内容が出る | `openOrReload` が必ず再ロードする。§7.3 の注意点をコード KDoc にも書く |
+| R3 | ~~`equals` が `queryParams` を無視することの誤解~~ → **key に含めたので消滅**(§7.3) | — | クラスごと閉じた。残るのは「実装者が初版の設計を参照して id のみの key を書く」ことだけで、A14 が固定する |
 | R4 | LS の webview URI に秘密が含まれる | ログ経由の漏洩 | §17 で URI を一切ログに出さない |
-| R5 | SWT コードが headless で一切検証できない | 実機でのみ露見 | 実装 `opus` × レビュー `fable`(SWT・UI スレッド担当)+ 手動検証 9 項目 |
+| R5 | SWT コードが headless で一切検証できない | 実機でのみ露見 | 実装 `opus` × レビュー `fable`(SWT・UI スレッド担当)+ 手動検証 14 項目 |
 | R6 | `org.eclipse.ui.editors` 拡張の新規追加で実機のみの解決失敗 | エディタが開かない | 依存は既に Require-Bundle 済み(`build.gradle.kts:177`)。Phase 4 PR-2 の `org.eclipse.core.expressions` と同型の罠がないことを確認済み |
 | R7 | ワークベンチ再起動時にエディタが復元され死んだ URI を指す | 壊れたタブ | `getPersistable() = null` + `exists() = false`。受け入れ条件 A7・実機検証項目 9 |
+| R8 | **LS 再起動をまたぐ結果適用 / readiness 汚染** | 死んだ URI 表示・早すぎる `switchView` | **§7.1a のセッション捕捉と参照比較**。世代では代替できない。A16 / A17・実機検証項目 14 |
+| R9 | **`uri` クエリの直列化を実装者が文字列連結で書く** | 特殊文字を含むパスで別ファイルを開く / 初期化失敗 | §7.3a の規則 + A15 の文字集合テスト。既存 `PathSegmentEncoder` / `SearchQueryBuilder` は**流用できない**ことを明記済み |
 
 ## 25. 確認できた範囲と、追加情報がなければ判断できない事項
 
-**実ソース / バイナリで確認済み**: webview id・title・コマンド ID の導出規則・`switchView` のペイロード形状・`switchView` 転送ハンドラの登録条件・agentic / classic それぞれのホスト向けフォワーダの内容・`root/mcp` と `root/flow` がホスト側処理を要さないこと・`root/flow` の保存が LS 内で完結すること・`org.eclipse.ui.editors` が Require-Bundle 済みであること・既存 `plugin.xml` の該当箇所。
+**実ソース / バイナリ / webview アセットで確認済み**: webview id・title・コマンド ID の導出規則・`switchView` のペイロード形状・`switchView` 転送ハンドラの登録条件・**`appReady` と `webviewReady` の送信順序(§5.3a)**・agentic / classic それぞれのホスト向けフォワーダの内容・**`agentic-tabs` がハンドラを 1 つも登録しないこと(§5.4a)**・`root/mcp` と `root/flow` がホスト側処理を要さないこと・`root/flow` の保存が LS 内で完結すること・`org.eclipse.ui.editors` が Require-Bundle 済みであること・既存 `plugin.xml` の該当箇所。
 
-**確認できていない事項**: U-1(`appReady` / `webviewReady` の順序)。LS の webview URI に認証材が含まれるか(含まれる前提で扱う)。`agentic-tabs` webview が host 向けに何らかのメッセージを送るか(LS 内にクラス実装があることは確認したが、ホストへの転送は未確認。**送ってきた場合は `PluginRegistry` に登録が無いため `PluginMessageService.dispatch` が warn ログを出して無視する**(`PluginMessageService.kt:13-14`)= 安全側に倒れる)。
+**round 1 で新たに確定したもの**(いずれも「未確認だから安全側に倒す」から「確認したので断定する」に変わった):
+
+| 旧 | 新 | 根拠 |
+|---|---|---|
+| U-1「順序は確認できなかった」 | **`appReady` が先・`webviewReady` が後** | `bin/webviews/agentic-duo-chat/assets/index.91120bee.js` の `notifyAppReady()` |
+| 「`agentic-tabs` が host にメッセージを送るかは未確認」 | **送らない。LS 側の `setup` はハンドラを 1 つも登録しない** | LS 8.80.0 の `DefaultAgenticTabsWebviewPlugin` + 参照実装 `setup_webviews.ts:152-158` |
+
+**なお確認できていない事項**:
+
+- **LS の webview URI に認証材が含まれるか。** 含まれる前提で扱い、ログに一切出さない(§17)。この前提を緩めない。
+- **`root/mcp` / `root/flow` / `agentic-tabs` の webview アプリが、LS が公開していないホスト機能を必要とするか。** LS 側に転送経路が無い以上、ホストは経路の欠落要因になりえない。**仮に必要であっても VSCode 側も同じ状態であり、パリティは保たれる**(参照実装もこれらに handler を登録しない)。
+- **境界つき再送の回数と間隔の最適値。** 2 回 / 数百 ms は §5.3a の非対称(ホスト往復 vs 同一ソケット隣接送信)から見て十分に余裕があるという判断であり、実測に基づく値ではない。**実機検証項目 5 で妥当性を確認する。足りなければ回数を増やすのではなく、LS への ready 信号追加を上流に要求する。**
