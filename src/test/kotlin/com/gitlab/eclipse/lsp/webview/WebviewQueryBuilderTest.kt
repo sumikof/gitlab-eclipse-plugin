@@ -1,11 +1,32 @@
 package com.gitlab.eclipse.lsp.webview
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.navigation.PathSegmentEncoder
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
-import java.net.URLDecoder
+
+/**
+ * RFC 3986 percent-*decoding*, deliberately not [java.net.URLDecoder]: that class implements
+ * `application/x-www-form-urlencoded`, which turns a literal `+` into a space — the exact
+ * mismatch design §7.3a rule 7 exists to keep out of a query-component encoder/decoder pair.
+ */
+private fun percentDecode(s: String): String {
+  val bytes = ArrayList<Byte>(s.length)
+  var i = 0
+  while (i < s.length) {
+    val c = s[i]
+    if (c == '%' && i + 3 <= s.length) {
+      bytes.add(s.substring(i + 1, i + 3).toInt(16).toByte())
+      i += 3
+    } else {
+      bytes.add(c.code.toByte())
+      i += 1
+    }
+  }
+  return String(bytes.toByteArray(), Charsets.UTF_8)
+}
 
 class WebviewQueryBuilderTest : DescribeSpec({
   extensions(LoggingKotestExtension)
@@ -34,15 +55,16 @@ class WebviewQueryBuilderTest : DescribeSpec({
       WebviewQueryBuilder.append(base, mapOf("uri" to "AZaz09-._~")) shouldBe "$base?uri=AZaz09-._~"
     }
 
-    it("round-trips a value containing & # = ? space non-ASCII + and %") {
+    it("produces the exact RFC 3986 percent-encoding for & # = ? space non-ASCII + and %, and round-trips") {
       val base = "https://gitlab.example.com/root/flow"
       val original = "a&b#c=d?e f+g%h日本語i"
+      val expectedEncoded = "a%26b%23c%3Dd%3Fe%20f%2Bg%25h%E6%97%A5%E6%9C%AC%E8%AA%9Ei"
 
       val result = WebviewQueryBuilder.append(base, mapOf("uri" to original))
 
-      result.shouldNotBeNull()
-      val encoded = result!!.removePrefix("$base?uri=")
-      URLDecoder.decode(encoded, "UTF-8") shouldBe original
+      result shouldBe "$base?uri=$expectedEncoded"
+      val nonNullResult = result.shouldNotBeNull()
+      percentDecode(nonNullResult.removePrefix("$base?uri=")) shouldBe original
     }
 
     it("preserves an existing raw query byte-for-byte, including %26 %3D %25") {
@@ -53,7 +75,7 @@ class WebviewQueryBuilderTest : DescribeSpec({
       result shouldBe "https://gitlab.example.com/root/mcp?existing=%26%3D%25&uri=x"
     }
 
-    it("appends without removing or overwriting an existing uri parameter") {
+    it("keep-behaviour: appends without removing or overwriting an existing uri parameter") {
       val base = "https://gitlab.example.com/root/flow?uri=old-value"
 
       val result = WebviewQueryBuilder.append(base, mapOf("uri" to "new-value"))
@@ -83,6 +105,26 @@ class WebviewQueryBuilderTest : DescribeSpec({
       val result = WebviewQueryBuilder.append(base, mapOf("uri" to "x"))
 
       result shouldBe "https://gitlab.example.com/root/flow?uri=x"
+    }
+
+    it("preserves a bare trailing '#' (empty raw fragment) verbatim") {
+      val base = "https://gitlab.example.com/root/flow#"
+
+      val result = WebviewQueryBuilder.append(base, mapOf("uri" to "x"))
+
+      result shouldBe "https://gitlab.example.com/root/flow?uri=x#"
+    }
+
+    it("encodes a value identically to PathSegmentEncoder.encodeSegment (shared RFC 3986 primitive)") {
+      val base = "https://gitlab.example.com/root/flow"
+      val shared = "AZaz09-._~ /?#[]@!$&'()*+,;=%\n日本語"
+
+      val result = WebviewQueryBuilder.append(base, mapOf("k" to shared))
+
+      val fromQueryBuilder = result.shouldNotBeNull().removePrefix("$base?k=")
+      val fromPathSegmentEncoder = PathSegmentEncoder.encodeSegment(shared)
+      fromQueryBuilder shouldBe fromPathSegmentEncoder
+      fromQueryBuilder shouldBe "AZaz09-._~%20%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D%25%0A%E6%97%A5%E6%9C%AC%E8%AA%9E"
     }
   }
 })

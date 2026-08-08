@@ -1,14 +1,17 @@
 package com.gitlab.eclipse.lsp.webview
 
+import com.gitlab.eclipse.utils.percentEncodeUnreserved
 import java.net.URI
 import java.net.URISyntaxException
 
 /** Design §7.3a. */
 object WebviewQueryBuilder {
-  private const val BYTE_MASK = 0xFF
-  private const val HEX_RADIX = 16
-
-  /** Design §7.3a rules 1-8. */
+  /**
+   * Design §7.3a rules 1-7. Returns null when [baseUri] is not absolute+hierarchical or is
+   * unparseable; the caller treats null as a failure. When [params] is empty, [baseUri] is
+   * returned verbatim — a bare trailing `?` is not normalized away, unlike the empty-raw-query
+   * case below.
+   */
   fun append(baseUri: String, params: Map<String, String>): String? {
     val uri = try {
       URI(baseUri)
@@ -24,26 +27,10 @@ object WebviewQueryBuilder {
     val rawQuery = uri.rawQuery
     val queryPrefix = if (rawQuery.isNullOrEmpty()) "?" else "?$rawQuery&"
     val appended = params.entries.joinToString("&") { (key, value) ->
-      "${encodeComponent(key)}=${encodeComponent(value)}"
+      "${percentEncodeUnreserved(key)}=${percentEncodeUnreserved(value)}"
     }
     val fragmentSuffix = uri.rawFragment?.let { "#$it" }.orEmpty()
 
     return base + queryPrefix + appended + fragmentSuffix
-  }
-
-  private fun isUnreserved(byte: Int): Boolean =
-    byte in 'A'.code..'Z'.code || byte in 'a'.code..'z'.code || byte in '0'.code..'9'.code ||
-      byte == '-'.code || byte == '_'.code || byte == '.'.code || byte == '~'.code
-
-  private fun encodeComponent(value: String): String = buildString {
-    for (raw in value.toByteArray(Charsets.UTF_8)) {
-      val byte = raw.toInt() and BYTE_MASK
-      if (isUnreserved(byte)) {
-        append(byte.toChar())
-      } else {
-        append('%')
-        append(byte.toString(HEX_RADIX).uppercase().padStart(2, '0'))
-      }
-    }
   }
 }
