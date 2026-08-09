@@ -19,6 +19,7 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import io.mockk.every
@@ -291,7 +292,9 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.appReadyArrives(from = fixture.sessionB)
 
       recorded shouldHaveSize 1
+      recorded.first() shouldContain ChatWebviewCatalog.AGENTIC_WEBVIEW_ID
       recorded.first() shouldContain AgenticChatWebViewClient.CATEGORY_READY_ON_ANOTHER_CONNECTION
+      recorded.first() shouldNotContain "/"
     }
 
     // The other half of that condition: a view issued while nothing was current belongs to no
@@ -484,6 +487,16 @@ class AgenticChatWebViewClientTest : DescribeSpec({
     }
   }
 
+  describe("the categories of the two silent discards") {
+    // The tests that check each call site read the wording through these constants, so giving both
+    // the same value would satisfy them. The distinction is the whole diagnostic value, and
+    // shortening one of the two is a likelier edit than swapping them at the call sites.
+    it("differ, so the log can tell the two states apart") {
+      AgenticChatWebViewClient.CATEGORY_READY_ON_ANOTHER_CONNECTION shouldNotBe
+        AgenticChatWebViewClient.CATEGORY_CONNECTION_REPLACED
+    }
+  }
+
   describe("the readiness deadline") {
     // A12 (design §21): the plain path, one deadline and nothing else.
     it("notifies when the webview never reports itself ready") {
@@ -564,7 +577,9 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.timers.fire(0)
 
       recorded shouldHaveSize 1
+      recorded.first() shouldContain ChatWebviewCatalog.AGENTIC_WEBVIEW_ID
       recorded.first() shouldContain AgenticChatWebViewClient.CATEGORY_CONNECTION_REPLACED
+      recorded.first() shouldNotContain "/"
     }
 
     // A12c (design §21), property 2: quiet is not the same as unfinished. Probed through the
