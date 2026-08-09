@@ -279,6 +279,36 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                name="Open GitLab Duo Agent Platform"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                name="Open MCP Dashboard"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                name="Open Flow Builder"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                name="Show Agentic Chat History"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                name="Start New Agentic Conversation"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ReplyToThread"
                 name="Reply"
                 categoryId="gitlab-eclipse-plugin">
@@ -444,6 +474,15 @@
               category="gitlab-eclipse-plugin"
               class="com.gitlab.eclipse.views.sidebar.GitLabSidebarView"
               name="GitLab"
+              icon="icons/notification.png"
+              inject="true"
+        />
+
+        <!-- `name` is the title the language server advertises for the `agentic-tabs` webview. -->
+        <view id="com.gitlab.eclipse.views.webview.AgenticTabsView"
+              category="gitlab-eclipse-plugin"
+              class="com.gitlab.eclipse.views.webview.AgenticTabsView"
+              name="GitLab Duo Agent Platform"
               icon="icons/notification.png"
               inject="true"
         />
@@ -737,6 +776,31 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                class="com.gitlab.eclipse.views.webview.actions.ShowAgenticTabsHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                class="com.gitlab.eclipse.views.webview.actions.ShowMcpDashboardHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                class="com.gitlab.eclipse.views.webview.actions.OpenFlowBuilderHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                class="com.gitlab.eclipse.chat.commands.ShowAgenticChatHistoryHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                class="com.gitlab.eclipse.chat.commands.StartNewAgenticConversationHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ReplyToThread"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.ReplyToThreadHandler"
         />
@@ -1004,6 +1068,14 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.RunSecurityScan"
                         label="Run Remote Scan (SAST)"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep4" visible="true"/>
+
+                <!-- Design §7.5: the active editor is the YAML file this opens the flow for. -->
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                        label="Open Flow Builder"
                 />
             </menu>
         </menuContribution>
@@ -1373,11 +1445,44 @@
                     label="Open MCP Workspace Configuration"
                     tooltip="Create/open the workspace-level GitLab Duo MCP config"/>
 
+            <!-- Design §7.5: this menu. Design §23 U-3: the label is what tells it from the two above. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                    label="Open MCP Dashboard"
+                    tooltip="Open the GitLab Duo MCP Dashboard"/>
+
+            <!-- Design §7.5: this menu, and deliberately not chatSelectorMenu. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
+                    label="Open Duo Agent Platform"
+                    tooltip="Open the GitLab Duo Agent Platform view"/>
+
+            <!-- Design §7.5: this menu too, and deliberately not chatSelectorMenu. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
+                    label="Agentic Chat History"
+                    tooltip="Show the GitLab Duo Agentic Chat conversation history"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.StartNewAgenticConversation"
+                    label="New Agentic Conversation"
+                    tooltip="Start a new GitLab Duo Agentic Chat conversation"/>
+
             <command
                     commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
                     label="Restart Language Server"
                     tooltip="Stop and restart the GitLab Language Server"/>
         </menuContribution>
+    </extension>
+
+    <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
+    <extension point="org.eclipse.ui.editors">
+        <editor
+                id="com.gitlab.eclipse.views.webview.WebviewEditorPart"
+                class="com.gitlab.eclipse.views.webview.WebviewEditorPart"
+                name="GitLab Webview"
+                icon="icons/notification.png"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.editors.annotationTypes">

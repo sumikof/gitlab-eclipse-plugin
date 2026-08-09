@@ -3,10 +3,12 @@ package com.gitlab.eclipse.chat.webview
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.utils.PlatformUtils
+import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 
 /**
@@ -15,16 +17,33 @@ import com.gitlab.eclipse.utils.logger
  * Registers the same shared handler set as the classic controller, mirroring
  * `registerDuoChatHandlers` in gitlab-workflow which wires both webview ids identically.
  *
- * Host-to-webview push for Agentic chat is not implemented yet (deferred slice), so this
- * controller has no [GitLabDuoChatWebViewClient]: `focusChange`/`appReady` are accepted
- * without side effects. Agentic focus must never drive the classic client's push queue —
- * [GitLabDuoChatWebViewClient] is classic-only (its `pluginId` is `duo-chat-v2`).
+ * Host-to-webview push for Agentic chat goes through [AgenticChatWebViewClient], never through
+ * [GitLabDuoChatWebViewClient], which is classic-only (its `pluginId` is `duo-chat-v2`). Agentic
+ * focus drives no push state at all.
+ *
+ * [onUiThread] is injected as an overload rather than a default argument, the shape design §7.4
+ * requires of the client's timer seam.
  */
 class AgenticChatWebViewController(
   platformUtils: PlatformUtils,
   currentFileContextProvider: CurrentFileContextProvider,
-  insertCodeSnippetService: InsertCodeSnippetService
+  insertCodeSnippetService: InsertCodeSnippetService,
+  private val client: AgenticChatWebViewClient,
+  private val onUiThread: (Runnable) -> Unit,
 ) : PluginController(ChatWebviewCatalog.AGENTIC_WEBVIEW_ID) {
+  constructor(
+    platformUtils: PlatformUtils,
+    currentFileContextProvider: CurrentFileContextProvider,
+    insertCodeSnippetService: InsertCodeSnippetService,
+    client: AgenticChatWebViewClient,
+  ) : this(
+    platformUtils,
+    currentFileContextProvider,
+    insertCodeSnippetService,
+    client,
+    { task -> currentDisplay.asyncExec(task) },
+  )
+
   private val logger by lazy { logger<AgenticChatWebViewController>() }
 
   private val handlers = ChatWebViewMessageHandlers(
@@ -39,15 +58,24 @@ class AgenticChatWebViewController(
   @PluginNotification("showMessage")
   fun showMessage(notification: ShowMessageNotification) = handlers.showMessage(notification)
 
+  /**
+   * Takes the connection the notification was sent from, so a late one from a connection that has
+   * already been replaced can be told apart from the current one (design §7.1a).
+   *
+   * The bus dispatches on its own thread, so the client's state is reached through [onUiThread]
+   * (design §15).
+   */
   @PluginNotification("appReady")
-  fun appReady() = Unit
+  fun appReady(session: LanguageServerSession) = onUiThread(Runnable { client.markReady(session) })
 
   @PluginNotification("insertCodeSnippet")
   fun insertCodeSnippet(notification: InsertCodeSnippetNotification) = handlers.insertCodeSnippet(notification)
 
   @PluginNotification("focusChange")
   fun focusChange(notification: FocusChangeNotification) {
-    // Intentionally does not update any push-queue focus state (host-to-webview push is deferred).
+    // Deliberately updates no focus state: the agentic push in [AgenticChatWebViewClient] is gated
+    // on a readiness latch rather than on focus, and design §5.4 records that the language server
+    // does not forward `focusChange` for this webview id at all on the pinned version.
     logger.info("Agentic chat focus changed: isFocused=${notification.isFocused}")
   }
 

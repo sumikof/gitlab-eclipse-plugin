@@ -40,8 +40,8 @@ class PluginMessageServiceTest : DescribeSpec({
     val route2 = PluginMessageRoute(pluginId = "another-test", type = PluginMessageType.REQUEST, method = "request")
     val payload = null
 
-    val result1 = service<PluginMessageService>().dispatch(route1, payload).get()
-    val result2 = service<PluginMessageService>().dispatch(route2, payload).get()
+    val result1 = service<PluginMessageService>().dispatch(route1, payload, session = null).get()
+    val result2 = service<PluginMessageService>().dispatch(route2, payload, session = null).get()
 
     result1 shouldBe 123
     result2 shouldBe 789
@@ -51,7 +51,7 @@ class PluginMessageServiceTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request")
     val payload = null
 
-    val result = service<PluginMessageService>().dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
     result shouldBe 123
   }
@@ -60,7 +60,7 @@ class PluginMessageServiceTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.REQUEST, method = "request-payload")
     val payload = JsonObject().apply { add("message", JsonPrimitive("Hello World!")) }
 
-    val result = service<PluginMessageService>().dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
     result shouldBe "Hello World!"
   }
@@ -69,7 +69,7 @@ class PluginMessageServiceTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notification")
     val payload = null
 
-    val result = service<PluginMessageService>().dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
     result shouldBe 456
   }
@@ -78,7 +78,7 @@ class PluginMessageServiceTest : DescribeSpec({
     val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notif-payload")
     val payload = JsonObject().apply { add("message", JsonPrimitive("Hello World!")) }
 
-    val result = service<PluginMessageService>().dispatch(route, payload).get()
+    val result = service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
     result shouldBe "Hello World!"
   }

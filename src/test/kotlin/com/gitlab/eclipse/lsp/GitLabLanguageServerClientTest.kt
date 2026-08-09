@@ -12,6 +12,8 @@ import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
+import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
+import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.security.CommandWaiters
 import com.gitlab.eclipse.security.SecurityScanResponse
 import com.gitlab.eclipse.security.SecurityScanStatusReporter
@@ -439,6 +441,51 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       endpoint.request("\$/gitlab/ai-context/editor-selection", null).get() shouldBe
         EditorSelectionContext("a/main.kt", "def")
+    }
+  }
+
+  describe("plugin bus dispatch") {
+    // Dispatch hops to another thread, so the connection that sent a message has to travel with it.
+    // Each of the four entry points is checked on its own: one of them left holding null is exactly
+    // the defect this parameter exists to prevent, and it would be silent.
+    // [LanguageServerSession] declares no `equals`, so matching on `client.session` matches by
+    // identity — a session belonging to some other connection would not satisfy it.
+    fun busClient(): Pair<GitLabLanguageServerClient, PluginMessageService> {
+      val service = mockk<PluginMessageService>()
+      every { service.dispatch(any(), any(), any()) } returns CompletableFuture.completedFuture(null)
+      return GitLabLanguageServerClient(service) to service
+    }
+
+    it("sends its own session with a plugin notification") {
+      val (client, service) = busClient()
+
+      client.gitlabPluginNotification(PluginMessage("duo-chat-v2", "appReady", null))
+
+      verify(exactly = 1) { service.dispatch(any(), any(), client.session) }
+    }
+
+    it("sends its own session with a plugin request") {
+      val (client, service) = busClient()
+
+      client.gitlabPluginRequest(PluginMessage("duo-chat-v2", "getCurrentFileContext", null))
+
+      verify(exactly = 1) { service.dispatch(any(), any(), client.session) }
+    }
+
+    it("sends its own session with a webview notification") {
+      val (client, service) = busClient()
+
+      client.gitlabWebviewNotification(WebViewMessage("duo-chat-v2", "appReady", null))
+
+      verify(exactly = 1) { service.dispatch(any(), any(), client.session) }
+    }
+
+    it("sends its own session with a webview request") {
+      val (client, service) = busClient()
+
+      client.gitlabWebviewRequest(WebViewMessage("duo-chat-v2", "getCurrentFileContext", null))
+
+      verify(exactly = 1) { service.dispatch(any(), any(), client.session) }
     }
   }
 })

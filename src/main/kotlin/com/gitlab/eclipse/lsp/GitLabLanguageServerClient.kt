@@ -45,6 +45,12 @@ class GitLabLanguageServerClient(
   private val logger by lazy { logger<GitLabLanguageServerClient>() }
 
   /**
+   * The identity of the connection this client serves. Bound to this instance, which for the
+   * reason given on [connectionEpoch] below means bound to exactly one connection.
+   */
+  val session: LanguageServerSession = LanguageServerSession()
+
+  /**
    * Connection epoch captured when this client is constructed. A new client is built for every
    * language server start, and `restart()` stops before it starts, so a new client always sees a
    * newer epoch than the one it replaces. Every diagnostics callback checks the captured value so
@@ -154,7 +160,8 @@ class GitLabLanguageServerClient(
         pluginId = message.pluginId,
         type = PluginMessageType.NOTIFICATION
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -166,7 +173,8 @@ class GitLabLanguageServerClient(
         pluginId = message.pluginId,
         type = PluginMessageType.REQUEST
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -178,7 +186,8 @@ class GitLabLanguageServerClient(
         pluginId = message.webviewId,
         type = PluginMessageType.NOTIFICATION
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 
@@ -190,7 +199,8 @@ class GitLabLanguageServerClient(
         pluginId = message.webviewId,
         type = PluginMessageType.REQUEST
       ),
-      payload = message.payload
+      payload = message.payload,
+      session = session
     )
   }
 

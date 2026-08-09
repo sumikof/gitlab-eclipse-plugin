@@ -1,11 +1,15 @@
 package com.gitlab.eclipse.chat.utils
 
 import com.gitlab.eclipse.lsp.NewPromptRequest
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.LanguageServerBrowserView
 import org.eclipse.ui.PlatformUI
 
 private const val VIEW_ID = "com.gitlab.eclipse.views.LanguageServerBrowserView"
+
+/** Worded like the three webview handlers' own failure messages, which point at the same log. */
+private const val FAILURE_MESSAGE = "Could not open GitLab Duo Chat. See the Error Log."
 
 // Lazy so that loading this file's class (e.g. mockkStatic in headless unit tests) does not
 // touch the Eclipse Platform log. The type argument only selects the bundle whose log is used.
@@ -25,6 +29,16 @@ fun openDuoChatWindow() {
  */
 fun openDuoChatWindowWithClassicPrompt(payload: NewPromptRequest) {
   showDuoChatView()?.requestClassicPrompt(payload)
+}
+
+/**
+ * Reveals the Duo Chat view and hands [view] to the view's pending-intent API: the view
+ * force-selects the agentic webview and asks the agentic client to switch to [view] only after
+ * agentic is resolved and shown, so an agentic command issued while classic is selected is not
+ * stranded.
+ */
+fun openDuoChatWindowWithAgenticView(view: String) {
+  showDuoChatView()?.requestAgenticView(view)
 }
 
 /**
@@ -62,16 +76,49 @@ fun refreshDuoChatWindow() {
   view.refresh()
 }
 
+/**
+ * Reveals the Duo Chat view, or reports why it could not be.
+ *
+ * All three ways this can fail are design §12's `showView` row and all three report through both
+ * channels: no active page, `showView` throwing, and a part that is not the expected type. They are
+ * reported here rather than in each caller so the callers cannot drift apart, which is what
+ * `ShowAgenticTabsHandler` / `ShowMcpDashboardHandler` / `OpenFlowBuilderHandler` each do once for
+ * their own surface.
+ *
+ * **The first and third were raised from `warn` to `error` and gained the notification**, so the
+ * classic Duo Chat commands that predate this file's agentic callers now report a failure they used
+ * to record quietly.
+ *
+ * The second — `showView`'s declared `PartInitException` — was previously left to propagate.
+ * Catching it adds four instructions to the success path (a `nop`, a `goto` and a slot copy, none
+ * with an observable effect) and closes the row rather than two of its three causes.
+ */
 private fun showDuoChatView(): LanguageServerBrowserView? {
   val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
   if (page == null) {
-    logger.warn("Cannot show the Duo Chat view: no active workbench page")
+    reportCannotShow("no active workbench page")
     return null
   }
 
-  val view = page.showView(VIEW_ID) as? LanguageServerBrowserView
+  val part = try {
+    page.showView(VIEW_ID)
+  } catch (e: Exception) {
+    // Wider than the declared `PartInitException`, for the reason the three webview handlers give:
+    // part creation can fail with a `RuntimeException`, and to the user that is the same failure.
+    // Design §17: the type only — never the exception, whose message is outside our control.
+    reportCannotShow("type=${e.javaClass.name}")
+    return null
+  }
+
+  val view = part as? LanguageServerBrowserView
   if (view == null) {
-    logger.warn("Cannot show the Duo Chat view: '$VIEW_ID' did not resolve to LanguageServerBrowserView")
+    reportCannotShow("'$VIEW_ID' did not resolve to LanguageServerBrowserView")
   }
   return view
+}
+
+/** Design §12: the Error Log entry and the notification, never one without the other. */
+private fun reportCannotShow(reason: String) {
+  logger.error("Cannot show the Duo Chat view: $reason")
+  NotificationUtils.show(FAILURE_MESSAGE)
 }
