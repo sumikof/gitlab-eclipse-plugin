@@ -114,7 +114,7 @@ Phase 6 優先 1(webview 面の開放・PR #55)のブランチ全体レビュー
 | 1 | `com.gitlab.eclipse.authentication.GitLabAuthorizationToken` | `accessToken`, `refreshToken`, `tokenExpirationTimestamp` | 要 |
 | 2 | `com.gitlab.eclipse.api.ConnectionSnapshot` | `token` | 要 |
 | 3 | `com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams` | `token`, `ignoreCertificateErrors` | 要 |
-| 4 | `…GitLabLanguageServerConfigurationParams$HttpAgentOptions` | `cert`, `certKey` | 要 |
+| 4 | `…GitLabLanguageServerConfigurationParams$HttpAgentOptions` | `cert`, `certKey`, **`ca`(§7.2 の明示リスト)** | 要 |
 | 5 | `com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest` | `token` | 要 |
 | 6 | `com.gitlab.eclipse.api.http.EgressConfigSnapshot` | `caCertificatePath`, `clientCertificatePath`, `clientCertificateKeyPath`, `ignoreCertificateErrors` | 要 |
 | 7 | `com.gitlab.eclipse.lsp.proxy.ProxyConfig` | `password` | 不要(既に安全・先例) |
@@ -160,7 +160,23 @@ Phase 6 優先 1(webview 面の開放・PR #55)のブランチ全体レビュー
   `token` / `secret` / `password` / `credential` / `passphrase` / `key` / `cert`
 - **D2**: フィールドの型が `Throwable` に代入可能
 
+- **明示リスト**: 上記に当たらないが、**明示的に秘匿と宣言された**フィールド
+
 D1 に**型の制限を課さない**。制限の代わりに §7.3 の性質を使う。
+
+**明示リストは exemption(§7.3.1)の対称形である。** 名前パターンが取りこぼす秘匿値のうち
+**既知のもの**をここで宣言する。リストは A5 の pin に含まれるので、追加・削除は目に見える承認行為になる。
+
+| フィールド | 理由 |
+|---|---|
+| `…HttpAgentOptions.ca: String?` | CA 証明書のパスまたは内容。名前 `ca` は D1 のどの語にも一致せず型も `Throwable` ではないが、§15 の秘匿対象である |
+
+**明示リストが無いと、宣言と検出が食い違う。** §9.1 は `ca` を伏せると定め §22.2 は null ケースを
+要求しているのに、検出写像に入らなければ A1 の比較組に入らず、`ca` を `Base64` で出す変異は
+A2 しか落とさない。**「秘匿である」と書いた場所と、それを検査する場所を一致させる。**
+
+**L-1 は明示リストで消えない。** ここで宣言できるのは**既知の**取りこぼしだけであり、
+`WebviewEditorKey.queryParams` のように**気づかれていない**ものは依然として検出されない。
 
 **判定はフィールド単位のこの 2 つだけである。保持関係を辿る推移閉包は置かない**(理由と残る穴は §7.6)。
 
@@ -476,6 +492,7 @@ A1 も有限個の A2 標本もすべて通り抜ける(L-8)。
     ※ LinkageError は捕まえて「検査不能」集合に記録
  4. KClass.isData == true でないものを除外(§7.1)
  5. getDeclaredFields() を §7.2 の D1 / D2 で判定 → 秘匿フィールドの写像を得る
+    ※ §7.2 の明示リストに載るフィールドは秘匿に加える
     ※ §7.3.1 の exemption リストに載るフィールドは秘匿から外す
  6. 走査総数 > 0 を確認(A3)/ 検査不能集合が空であることを確認(A4)/
     秘匿クラス集合 + exemption リストを手書き期待リストと双方向照合(A5)
@@ -683,7 +700,7 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 | A2 | 12 クラスそれぞれについて、`toString()` の出力が期待リテラルと完全一致する。期待リテラルは production の定数を経由せずテスト側に直接書かれている。**加えて次の 2 つを固定する** — (a) **出力に残す非秘匿成分、および秘匿値の許された投影(§9.2 の例外型)ごとに、その値だけを変えた標本の出力が対応して変わること**(§22.1 の「定数文字列への置換」を落とすため。これが無いと R5 が固定されない)。**例外型の標本は A1 の 2 値とは別に取る** — A1 は §7.3 により同一クラスの 2 値を使うので、型の投影は A1 では変化しない。(b) **nullable なすべての秘匿成分について null の場合の出力**(実測した全 11 成分 = §22.2)。§7.4 は常に非 null の sentinel を注入するため、**null 経路は A1 では一度も通らない** |
 | A3 | 規約テストが走査したクラス数 > 0 |
 | A4 | 検査不能クラス集合が**空である**(§8.2) |
-| A5 | 秘匿フィールドを持つ `data class` の集合が、手書きの期待リスト(§6 の FQCN + 契機フィールド名 + §7.3.1 の exemption リスト)と**両方向で**一致する |
+| A5 | 秘匿フィールドを持つ `data class` の集合が、手書きの期待リスト(§6 の FQCN + 契機フィールド名 + §7.2 の**明示リスト** + §7.3.1 の exemption リスト)と**両方向で**一致する |
 | A6 | 組み立て不能なクラス、`toString()` の呼び出し自体が throw したクラス、秘匿フィールドの型に §7.3 の合成戦略が無いクラス、入れ子に循環があるクラスが 1 つでもあれば失敗する(§13.1) |
 | A7 | `./gradlew build` が `1846 tests + 新規 / 36 failed / FAILSET_IDENTICAL`(36 件は実 SWT ディスプレイを要する既存テストで headless devcontainer では動かせないベースライン)、`./gradlew detekt --rerun-tasks` が OK |
 | A8 | `build.gradle.kts` / `detekt.yml` / `plugin.xml` / `.md` の差分ゼロ。新規 OSGi 依存ゼロ |
