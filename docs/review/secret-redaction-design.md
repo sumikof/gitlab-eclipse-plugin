@@ -172,11 +172,11 @@ D1 に**型の制限を課さない**。制限の代わりに §7.3 の性質を
 
 | フィールド型 | 植える 2 値 |
 |---|---|
-| `String` / `CharSequence` | **1 文字も共有しない** 2 つの sentinel 文字列 |
+| `String` / `CharSequence` | **1 文字も共有せず、長さも異なる** 2 つの sentinel 文字列 |
 | `Throwable` に代入可能 | **同一クラス**のまま、message・`cause`・stack trace・`suppressed` の **4 成分をすべて**独立に変えた 2 つの `RuntimeException` |
 | 整数型 / 浮動小数点型 | 十進表記も 16 進表記も共有しない 2 つの値 |
 | `Instant` | 異なる 2 つの時刻 |
-| `ByteArray` | 1 バイトも共有しない 2 つの配列 |
+| `ByteArray` | **1 バイトも共有せず、長さも異なる** 2 つの配列 |
 | 上記に当てはまらない型 | **合成戦略なし → 失敗**(A6) |
 
 **「出力に sentinel が現れないこと」では足りない。それは表現に依存した条件である。**
@@ -188,6 +188,9 @@ D1 に**型の制限を課さない**。制限の代わりに §7.3 の性質を
 
 - **2 値が 1 文字も共有しない**必要があるのは、`toString()` が秘匿値の一部だけを出す場合
   (先頭 4 文字など)に、共有部分が偶然一致して不変性が成立するのを防ぐため。
+- **長さも異ならせる**必要があるのは、`token.length` のような**値そのものではない投影**を
+  出力する実装を捕まえるため。文字を共有しなくても長さが同じなら不変性が成立してしまう。
+  同じ理由で `ByteArray` の 2 値も長さを変える。
 - **`Throwable` の 2 値を同一クラスにする**のは、§9.2 が**型は出力してよい**と定めているため。
   クラスが異なると `type=` が変わり、正しい実装が不変性を破ってしまう。
 - **クラス以外はすべて変える。** message だけを変えると `cause` / `suppressed` / stack trace が
@@ -670,13 +673,28 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 | ID | 条件 |
 |---|---|
 | A1 | **検出されたすべてのクラスの、exemption を除くすべての秘匿フィールド**について、**その秘匿フィールドだけが異なる 2 つのインスタンス**を組み立て、`toString()` の出力が完全に一致する(出力不変性・§7.3)。**加えて §7.5 の対象については、「入れ子インスタンスの秘匿フィールドだけが異なる」外側の組についても出力が一致する。** 固定件数の条件にしない(実測: 現在の対象は 14 クラス。これは条件ではなく現況である) |
-| A2 | 12 クラスそれぞれについて、`toString()` の出力が期待リテラルと完全一致する。期待リテラルは production の定数を経由せずテスト側に直接書かれている。**加えて次の 2 つを固定する** — (a) **出力に残す非秘匿成分ごとに、その値だけを変えた標本の出力が対応して変わること**(§22.1 の「定数文字列への置換」を落とすため。これが無いと R5 が固定されない)。(b) **nullable なすべての秘匿成分について null の場合の出力**(`PushOutcome.Failed.cause` / `CheckoutResult.Failed.cause` / `WebviewResolution.Failed.cause` に加え、**`GitLabLanguageServerConfigurationParams.token` / `HttpAgentOptions.cert` / `.certKey`**。§7.4 は常に非 null の sentinel を注入するため、null 経路は A1 では一度も通らない) |
+| A2 | 12 クラスそれぞれについて、`toString()` の出力が期待リテラルと完全一致する。期待リテラルは production の定数を経由せずテスト側に直接書かれている。**加えて次の 2 つを固定する** — (a) **出力に残す非秘匿成分ごとに、その値だけを変えた標本の出力が対応して変わること**(§22.1 の「定数文字列への置換」を落とすため。これが無いと R5 が固定されない)。(b) **nullable なすべての秘匿成分について null の場合の出力**(実測した全 11 成分 = §22.2)。§7.4 は常に非 null の sentinel を注入するため、**null 経路は A1 では一度も通らない** |
 | A3 | 規約テストが走査したクラス数 > 0 |
 | A4 | 検査不能クラス集合が**空である**(§8.2) |
 | A5 | 秘匿フィールドを持つ `data class` の集合が、手書きの期待リスト(§6 の FQCN + 契機フィールド名 + §7.3.1 の exemption リスト)と**両方向で**一致する |
 | A6 | 組み立て不能なクラス、`toString()` の呼び出し自体が throw したクラス、秘匿フィールドの型に §7.3 の合成戦略が無いクラス、入れ子に循環があるクラスが 1 つでもあれば失敗する(§13.1) |
 | A7 | `./gradlew build` が `1846 tests + 新規 / 36 failed / FAILSET_IDENTICAL`(36 件は実 SWT ディスプレイを要する既存テストで headless devcontainer では動かせないベースライン)、`./gradlew detekt --rerun-tasks` が OK |
 | A8 | `build.gradle.kts` / `detekt.yml` / `plugin.xml` / `.md` の差分ゼロ。新規 OSGi 依存ゼロ |
+
+### §22.2 A2(b) が固定する nullable 秘匿成分(実測・全 11)
+
+| クラス | 成分 | 備考 |
+|---|---|---|
+| `GitLabLanguageServerConfigurationParams` | `token: String? = null` | |
+| `…HttpAgentOptions` | `ca: String?` / `cert: String? = null` / `certKey: String? = null` | `ca` は名前パターンに掛からないが §9.1 で秘匿対象 |
+| `EgressConfigSnapshot` | `caCertificatePath` / `clientCertificatePath` / `clientCertificateKeyPath`(いずれも `String?`) | |
+| `ProxyConfig` | `password: String?` | **修正不要クラスだが null ケースのテストが無い。追加する** |
+| `PushOutcome.Failed` | `cause: Throwable?` | |
+| `CheckoutResult.Failed` | `cause: Throwable?` | |
+| `WebviewResolution.Failed` | `cause: Throwable?` | 修正不要クラス。**既存の `WebviewUriResolverTest.kt:211` が既に固定済み** |
+
+`DiscussionsLoader.Failed` / `DiscussionWriteOutcome.Definite` / `.Ambiguous` / `LoadOutcome.Failed` の
+`cause` は**非 null**(`Throwable`)なので対象外。
 
 ### §22.1 受け入れ条件の識別性
 
@@ -691,7 +709,8 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 | 任意の 1 クラスの `toString()` 上書きを削除 | A1(そのクラス)+ A2(そのクラス) |
 | 任意の 1 クラスの `toString()` を `""` にする | A2 のみ(A1 は通る。空文字列は不変) |
 | 任意の 1 クラスの `toString()` が秘匿値を `Base64` で符号化して出す | A1 + A2 |
-| 任意の 1 クラスの `toString()` を、その標本の値を埋め込んだ**定数文字列**にする | **A2(a) のみ**(A1 は通る。定数は秘匿値に依存しない。標本 1 組だけの照合では期待リテラルとも一致する) |
+| **出力に非秘匿成分を残すクラス**の `toString()` を、その標本の値を埋め込んだ**定数文字列**にする | **A2(a) のみ**(A1 は通る。定数は秘匿値に依存しない。標本 1 組だけの照合では期待リテラルとも一致する) |
+| `HttpAgentOptions` の `toString()` を基準標本と同じ定数にする | **A2(b)**(A2(a) ではない)。§9.1 により `ca` / `cert` / `certKey` をすべて伏せるため**出力に残る非秘匿成分が無く A2(a) は空**。定数化は null 標本の期待形と食い違うため A2(b) が落ちる |
 | nullable な秘匿成分の参照を `!!` にする(`token!!` / `certKey!!`) | **A2(b) のみ**(A1 も A6 も通る。§7.4 は常に非 null を注入するため null 経路を通らない) |
 | §9.2 で例外の型を出力から落とす | A2 |
 | `cause?.javaClass?.name` を `cause!!.javaClass.name` にする | A2(null ケース)。§13.1 |
