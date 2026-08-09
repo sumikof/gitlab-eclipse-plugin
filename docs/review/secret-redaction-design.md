@@ -29,9 +29,10 @@ Phase 6 優先 1(webview 面の開放・PR #55)のブランチ全体レビュー
 1. 秘匿成分を持つ `data class` の `toString()` 上書き(§6 の 12 クラス)。
 2. 上記の性質をリポジトリ全体に対して固定する規約テスト(§7・§8)。
 3. 各 `toString()` の出力形を固定するクラス単位テスト 12 本(§9)。
-4. 検出器自身の識別性を固定するテスト — D1 の各語の単体 fixture(A9)と
-   `LinkageError` 記録の注入 fixture(A10)。**検出器の各分岐が個別に固定されていなければ、
-   検出器の退行が沈黙する**(§8.1・§8.2)。
+4. 検出器自身の識別性を固定するテスト群(A9〜A13)。**検出器は production クラスを標本にして
+   動くため、production が今たまたま通らない分岐は、消しても何も落ちない**(§8.3)。
+   検査対象クラスの供給元とクラス読み込み関数を**注入可能な seam**にし、専用 fixture で
+   各分岐を個別に固定する。
 
 ## §3 対象外
 
@@ -322,6 +323,54 @@ U1 の見込みどおり検査不能集合が空なら、**変異実行中に `L
 → **A10**: クラス読み込みを注入可能な関数として切り出し、指定した FQCN に対して決定的に
 `LinkageError` を投げる fixture を置く。その FQCN が検査不能集合に記録されない実装では必ず失敗させる。
 
+### §8.3 検出器の分岐は production を標本にしては固定できない(構造的要件)
+
+§8.1 と §8.2 は個別の事例ではなく、**1 つの構造的な問題の 2 つの現れ**である。
+
+> **規約テストは production クラスを標本にして動く。したがって、production が今たまたま
+> 通らない分岐は、その分岐を消しても何も落ちない。**
+
+初版と第 2 版の変異表を、この観点で**全行掃引した**結果、発火する入力を持たない(または citation が
+誤っていた)行が **8 行**あった。内訳は Codex 設計レビュー #58 の round 1 で 2 行・round 2 で 3 行、
+**残る 3 行は本掃引で発見**。行ごとに直すのではなく、機構として閉じる。
+
+| 行 | 発火入力が無かった理由 | 発見 |
+|---|---|---|
+| D1 から `key` を落とす | `key` 一致フィールドは全て `cert` にも一致(§8.1) | round 1 |
+| `LinkageError` を読み飛ばす | 検査不能集合が空なら発火しない(§8.2) | round 1 |
+| 秘匿引数をデフォルトに委ねる | **sentinel が注入されないと A1 の否定条件は自明に成立する** | round 2 |
+| 入れ子に `null` を渡す | 同上 | round 2 |
+| 合成戦略の無い型を skip にする | production の被検出秘匿フィールドは `String` / `Throwable` / exemption 済みのみ | round 2 |
+| 組み立て失敗を skip にする | 組み立てに失敗する production クラスが無い | **本掃引** |
+| `toString()` の throw を読み飛ばす | `toString()` が throw する production クラスが無い | **本掃引** |
+| 全 `String` フィールドに sentinel を植える | citation の `CodeCompletion.disabledSupportedLanguages` は `List<String>` であって `String` ではない。正しい発火入力は `ConnectionSnapshot.instanceUrl` / `authFingerprint` | **本掃引** |
+
+**構造的要件**: 検出器は次の 2 つを**注入可能な入力**として受け取る。
+
+1. **検査対象クラスの供給元** — production 実行ではコンパイル出力ディレクトリ、
+   fixture テストでは手で組んだクラスのリスト
+2. **クラス読み込み関数** — fixture テストでは指定 FQCN に `LinkageError` を投げられる
+
+この 2 つの seam により、production が通らない分岐を**専用 fixture で個別に固定できる**(A9・A10・A12・A13)。
+
+### §8.4 否定条件は「検査が行われたこと」を含意しない(A11 の理由)
+
+A1 は「出力に sentinel が現れない」という**否定条件**である。
+**sentinel がそもそもインスタンスに入っていなければ、この条件は自明に成立する。**
+
+したがって §7.4(秘匿引数をデフォルトに委ねない)と §7.5(入れ子を再帰的に組み立てる)は、
+**A1 では固定できない**。どちらも「sentinel が注入されない」方向の退行であり、A1 を緑のまま通す。
+これは round 1 の P1-1 / P1-3 を直すために追加した規則が、**その退行を検出できない**という状態だった。
+
+→ **A11**: 組み立て後、リフレクションで**各秘匿フィールドが実際に sentinel を保持していること**を
+確認する(入れ子については、入れ子インスタンスが非 null であり、かつ自分の sentinel を保持していること)。
+**否定条件の前に、肯定条件で「検査が成立している」ことを確かめる。**
+
+→ **A13**: さらに、意図的に漏らす control fixture(生成 `toString()` を持つ秘匿名フィールド付き
+`data class`)を検査対象に注入し、**検出器がそれを必ず捕まえること**を固定する。
+A11 が「注入された」を確かめるのに対し、A13 は **検出 → 組み立て → assert の全経路が
+実際の漏洩を捕まえられる**ことを端から端まで確かめる。
+
 sentinel は**フィールドごとに一意**にする。どのフィールドが漏れたかが失敗メッセージから直接わかるため。
 
 ## §9 修正の形
@@ -391,14 +440,18 @@ toString() 上書き ←──                     秘匿フィールドを持�
 
 ## §11 処理フロー(規約テスト)
 
+検出器は「検査対象クラスの供給元」と「クラス読み込み関数」を**注入可能な入力**として受け取る
+(§8.3)。以下は production 実行の経路。fixture テストはステップ 1-2 を差し替える。
+
 ```
 1. ConnectionSnapshot::class.java.protectionDomain.codeSource.location
    → プラグイン本体のコンパイル出力ディレクトリ
    ※ パスをハードコードしない(Gradle のレイアウト変更に影響されない)
 2. ディレクトリを再帰走査し .class を列挙
-3. 各クラスを Class.forName(name, initialize = false, loader) で読む
+3. 注入されたクラス読み込み関数で読む
+   (production 実装 = Class.forName(name, initialize = false, loader))
    ※ 初期化しない = Eclipse 依存の静的初期化子を headless で走らせない
-   ※ LinkageError は捕まえて「検査不能」集合に記録(A4)
+   ※ LinkageError は捕まえて「検査不能」集合に記録(A4・識別性は A10)
 4. KClass.isData == true でないものを除外(§7.1)
 5. getDeclaredFields() を §7.2 の D1 / D2 で判定 → 秘匿フィールドの写像を得る
    ※ §7.3.1 の exemption リストに載るフィールドは秘匿から外す
@@ -407,8 +460,11 @@ toString() 上書き ←──                     秘匿フィールドを持�
 7. 秘匿フィールドを持つ各クラスについて §7.4 で組み立て
    ※ 秘匿引数はデフォルトに委ねず必ず sentinel を渡す
    ※ 型が被検出クラスのフィールドは §7.5 で再帰的に組み立てて渡す
-   ※ 合成戦略が無い / 組み立て不能 / 循環 は fail(A6)
-8. toString() を呼び、自分の sentinel と入れ子の sentinel が
+   ※ 合成戦略が無い / 組み立て不能 / 循環 は fail(A6・識別性は A12)
+8. 組み立て結果をリフレクションで読み戻し、各秘匿フィールドが
+   実際に sentinel を保持していることを確認(A11)
+   ※ この肯定条件が無いと、次の否定条件は自明に成立し得る(§8.4)
+9. toString() を呼び、自分の sentinel と入れ子の sentinel が
    1 つも現れないことを assert(A1)
 ```
 
@@ -585,12 +641,14 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 |---|---|
 | 規約テスト(`SecretRedactionConventionTest`) | R1・R2・R3。リポジトリ全体に対する性質(A1・A3〜A6) |
 | クラス単位の厳密形テスト 12 本 | R4・R5。各 `toString()` が何と言うか(A2) |
-| D1 判定関数の語ごとの fixture | 検出器の各語が個別に固定されること(A9・§8.1) |
-| `LinkageError` 記録の注入 fixture | 検出器のエラー記録が個別に固定されること(A10・§8.2) |
+| D1 判定関数の語ごとの fixture(7 語) | 検出器の各語が個別に固定されること(A9・§8.1) |
+| `LinkageError` を投げる注入 loader の fixture | エラー記録が個別に固定されること(A10・§8.2) |
+| 失敗分岐の fixture 4 種(合成戦略なし / 組み立て失敗 / `toString()` の throw / 循環) | 各失敗分岐が個別に固定されること(A12・§8.3) |
+| 意図的に漏らす control fixture | 検出 → 組み立て → assert の全経路が実際の漏洩を捕まえること(A13・§8.4) |
 
-**後半 2 種は「検出器そのものを検査する」テストである。** 検出器は production クラスを標本にして
-動くため、production の現況によっては**分岐を消しても何も落ちない**(§8.1 の `key` が実例)。
-標本ではなく専用 fixture で各分岐を固定する。
+**後半 4 種は「検出器そのものを検査する」テストである。** 検出器は production クラスを標本にして
+動くため、production の現況によっては**分岐を消しても何も落ちない**。
+掃引の結果、変異表の 8 行がこれに該当していた(§8.3)。標本ではなく専用 fixture で各分岐を固定する。
 
 規約テストの配置は `src/test/kotlin/com/gitlab/eclipse/SecretRedactionConventionTest.kt`
 (横断的な規約のため既存の `GitLabEclipseStartupTest.kt` と同じくルート直下)。
@@ -608,7 +666,7 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 
 | ID | 条件 |
 |---|---|
-| A1 | 12 クラスそれぞれについて、秘匿成分に一意の sentinel を植えて `toString()` を呼び、sentinel が出力に現れない |
+| A1 | **検出されたすべてのクラスの、exemption を除くすべての秘匿フィールド**について、一意の sentinel を植えて `toString()` を呼び、sentinel が出力に現れない。**固定件数の条件にしない** — 件数で書くと、将来 D1/D2 に一致するクラスが増えて A5 の期待リストを正しく更新した後も、その新クラスが sentinel 検査を受けず R2 が成立しなくなる。(実測: 現在の対象は 14 クラス。検出 15 から、exemption 済みフィールドしか持たない `CodeCompletion` を除いた数。この 14 は条件ではなく現況である) |
 | A2 | 12 クラスそれぞれについて、`toString()` の出力が期待リテラルと完全一致する。期待リテラルは production の定数を経由せずテスト側に直接書かれている。nullable な秘匿成分を持つクラス(`PushOutcome.Failed` / `CheckoutResult.Failed`)は null の場合も固定する |
 | A3 | 規約テストが走査したクラス数 > 0 |
 | A4 | production の走査で得た検査不能クラス集合が**空である**。非空を pin して合格させることはしない(§17 U1) |
@@ -616,6 +674,9 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 | A6 | 組み立て不能なクラス、`toString()` の呼び出し自体が throw したクラス、秘匿フィールドの型に §7.3 の合成戦略が無いクラス、入れ子に循環があるクラスが 1 つでもあれば失敗する |
 | A9 | D1 の判定関数について、パターンの各語(`token` / `secret` / `password` / `credential` / `passphrase` / `key` / `cert`)がそれぞれ**単独で**一致する専用 fixture があり、語を 1 つ削る変異が対応する 1 本だけを落とす(§8.1) |
 | A10 | 注入した class loader が特定 FQCN に対して決定的に `LinkageError` を投げる fixture があり、その FQCN が検査不能集合に記録されない実装では失敗する(§8.2) |
+| A11 | 組み立て後、各秘匿フィールドが**実際に sentinel を保持していること**をリフレクションで確認する。入れ子については、入れ子インスタンスが非 null であり自分の sentinel を保持していること(§8.4) |
+| A12 | 検出器の各失敗分岐に専用 fixture がある — (a) 合成戦略の無い型を持つ `data class`、(b) 組み立てが失敗する `data class`、(c) `toString()` が throw する `data class`、(d) 入れ子が循環する `data class`。**各分岐を「失敗」から「読み飛ばし」に変える変異が、対応する 1 本だけを落とす**(§8.3) |
+| A13 | 意図的に漏らす control fixture(生成 `toString()` を持つ秘匿名フィールド付き `data class`)を検査対象に注入し、検出器がそれを必ず捕まえる。検出 → 組み立て → assert の全経路を端から端まで固定する(§8.4) |
 | A7 | `./gradlew build` が `1846 tests + 新規 / 36 failed / FAILSET_IDENTICAL`(36 件は実 SWT ディスプレイを要する既存テストで headless devcontainer では動かせないベースライン)、`./gradlew detekt --rerun-tasks` が OK |
 | A8 | `build.gradle.kts` / `detekt.yml` / `plugin.xml` / `.md` の差分ゼロ。新規 OSGi 依存ゼロ |
 
@@ -631,16 +692,19 @@ production の制御フロー・データ形式・ワイヤ形式に触れない
 | D1 のパターンから `key` を落とす | **A9 のみ**(A5 は落ちない。§8.1 に実測の根拠) |
 | D1 のパターンから `cert` を落とす | A9 + A5(`HttpAgentOptions` が集合から消える) |
 | D2 の判定を削除 | A5 |
-| 秘匿引数をデフォルト値に委ねる(§7.4 の区別を消す) | A1(`Params.token` / `HttpAgentOptions.cert` / `.certKey`) |
-| 入れ子の被検出クラスに null を渡す(§7.5 の再帰を消す) | A1(外側 2 クラスの入れ子 sentinel) |
-| 合成戦略の無い型を失敗させず読み飛ばす(§7.3) | A6 |
+| 秘匿引数をデフォルト値に委ねる(§7.4 の区別を消す) | **A11 のみ**(A1 は落ちない。sentinel が注入されなければ否定条件は自明に成立する。§8.4) |
+| 入れ子の被検出クラスに null を渡す(§7.5 の再帰を消す) | **A11 のみ**(同上) |
+| 合成戦略の無い型を失敗させず読み飛ばす(§7.3) | **A12(a) のみ**(A6 は落ちない。production の被検出秘匿フィールドは `String` / `Throwable` / exemption 済みのみで、この分岐に発火入力が無い) |
 | §7.3.1 の exemption リストを空にする | A5(exemption も pin の一部) |
 | §7.3.1 の exemption リストに新しい項目を勝手に足す | A5 |
 | §7.1 の `isData` 判定を削除 | A5(サービス群が集合に入る)+ A6 |
 | 走査ディレクトリの解決を壊す | A3 |
 | `LinkageError` を捕まえて読み飛ばす | **A10 のみ**(A4 は落ちない。検査不能集合が空なら通常実行で `LinkageError` が起きないため。§8.2) |
-| 組み立て失敗を skip にする | A6 |
-| sentinel を秘匿フィールドだけでなくクラス内の全 `String` フィールドに植える(§7.3 の後段に反する) | A1(`CodeCompletion.disabledSupportedLanguages` 等が偽陽性で落ちる) |
+| 組み立て失敗を skip にする | **A12(b) のみ**(A6 は落ちない。組み立てに失敗する production クラスが無い。**本掃引で発見**) |
+| `toString()` が throw した場合に skip にする | **A12(c) のみ**(A6 は落ちない。`toString()` が throw する production クラスが無い。**本掃引で発見**) |
+| 入れ子の循環検出を消す | **A12(d) のみ**(今日の被検出クラスに循環が無い) |
+| sentinel を秘匿フィールドだけでなくクラス内の全 `String` フィールドに植える(§7.3.2 に反する) | A1(`ConnectionSnapshot.instanceUrl` / `authFingerprint` が偽陽性で落ちる。**初版の citation `CodeCompletion.disabledSupportedLanguages` は `List<String>` であって `String` ではなく、発火入力になっていなかった — 本掃引で訂正**) |
+| 検出 → 組み立て → assert のいずれかを無効化する | A13(control fixture の漏洩が捕まらなくなる) |
 | §9.2 で例外の型を出力から落とす | A2 |
 | `cause?.javaClass?.name` を `cause!!.javaClass.name` にする | A2(null ケース)。§13.1 |
 | `toString()` 呼び出しの throw を捕まえて読み飛ばす | A6 |
