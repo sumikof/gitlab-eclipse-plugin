@@ -92,7 +92,9 @@ class AgenticChatWebViewClient(
     // the condition the deadline's quiet outcome uses, so the two agree. A view issued while no
     // connection was current belongs to none, so any connection may carry it — that is why the
     // deadline reports it undelivered when it expires rather than refusing to deliver it at all.
-    if (waiting.origin != null && waiting.origin !== snapshot.session) return discardQuietly()
+    if (waiting.origin != null && waiting.origin !== snapshot.session) {
+      return discardQuietly(CATEGORY_READY_ON_ANOTHER_CONNECTION)
+    }
 
     pending = null
     // Scheduled before the send, not after: see [deliver].
@@ -148,7 +150,7 @@ class AgenticChatWebViewClient(
       // outcome, reached only once the arm above has ruled out `current == null`.
       captured == null -> reportUndelivered()
       // Another connection took over under it.
-      current !== captured -> discardQuietly()
+      current !== captured -> discardQuietly(CATEGORY_CONNECTION_REPLACED)
       // Still the same connection, which never reported itself ready.
       else -> reportUndelivered()
     }
@@ -162,10 +164,18 @@ class AgenticChatWebViewClient(
     onUndelivered(UNDELIVERED_MESSAGE)
   }
 
-  /** Design §12's session-mismatch row: discarded without notifying, recorded in the log only. */
-  private fun discardQuietly() {
+  /**
+   * Design §12's session-mismatch row: discarded without notifying, recorded in the log only.
+   *
+   * [category] separates the two states that reach here, which the row treats alike but which mean
+   * different things to whoever is reading the log: a latch that opened on a connection the waiting
+   * view does not belong to, and a deadline that expired to find the view's connection replaced.
+   * Same silence, same discard, different diagnosis — as `WebviewLoadCoordinator` does for
+   * `NotAdvertised` and `NoUri`.
+   */
+  private fun discardQuietly(category: String) {
     pending = null
-    logger.info("Webview '${ChatWebviewCatalog.AGENTIC_WEBVIEW_ID}': switchView dropped, category=session-changed")
+    logger.info("Webview '${ChatWebviewCatalog.AGENTIC_WEBVIEW_ID}': switchView dropped, category=$category")
   }
 
   private fun scheduleResend(view: String, generation: Long, remaining: Int) {
@@ -223,6 +233,13 @@ class AgenticChatWebViewClient(
 
     /** Design §14 puts the window at a few hundred milliseconds and fixes no exact value. */
     private const val RESEND_INTERVAL_MILLIS = 300L
+
+    /**
+     * Design §17 allows the surface and the category, and these carry neither a session identifier
+     * nor anything from a uri or a path.
+     */
+    internal const val CATEGORY_READY_ON_ANOTHER_CONNECTION = "another connection became ready"
+    internal const val CATEGORY_CONNECTION_REPLACED = "connection replaced while waiting"
 
     internal const val UNDELIVERED_MESSAGE =
       "GitLab Duo Chat could not switch the view: the agentic chat did not become ready."

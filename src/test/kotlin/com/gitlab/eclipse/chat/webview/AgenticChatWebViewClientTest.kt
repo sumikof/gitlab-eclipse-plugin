@@ -149,6 +149,20 @@ private fun captureErrorLog(): List<String> {
   return recorded
 }
 
+/**
+ * Records the message of every single-argument `info` the client logs. Nothing else is stubbed on
+ * purpose: a call at another level, or with an exception attached, throws instead of passing.
+ */
+private fun captureInfoLog(): List<String> {
+  val recorded = mutableListOf<String>()
+  val log = mockk<ILog>()
+  val message = slot<String>()
+  every { log.info(capture(message)) } answers { recorded += message.captured }
+  every { Platform.getLog(any<Bundle>()) } returns log
+  every { Platform.getLog(any<Class<*>>()) } returns log
+  return recorded
+}
+
 class AgenticChatWebViewClientTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
@@ -263,6 +277,21 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.client.markNotReady()
 
       fixture.timers.scheduled shouldHaveSize 1
+    }
+
+    // Design §17 / §12: silent to the user, and distinguishable in the log from the deadline's own
+    // discard — the two states are diagnosed differently even though the outcome is the same.
+    it("records that another connection became ready when it refuses a waiting view") {
+      // Installed first: the client resolves its log when it is constructed.
+      val recorded = captureInfoLog()
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.appReadyArrives(from = fixture.sessionB)
+
+      recorded shouldHaveSize 1
+      recorded.first() shouldContain AgenticChatWebViewClient.CATEGORY_READY_ON_ANOTHER_CONNECTION
     }
 
     // The other half of that condition: a view issued while nothing was current belongs to no
@@ -523,6 +552,19 @@ class AgenticChatWebViewClientTest : DescribeSpec({
       fixture.timers.fire(0)
 
       fixture.notifications.shouldBeEmpty()
+    }
+
+    // The counterpart of the latch's own refusal: same silence, different diagnosis.
+    it("records that the connection was replaced when the deadline finds another one") {
+      val recorded = captureInfoLog()
+      val fixture = Fixture()
+
+      fixture.client.switchView(HISTORY)
+      fixture.current(fixture.sessionB)
+      fixture.timers.fire(0)
+
+      recorded shouldHaveSize 1
+      recorded.first() shouldContain AgenticChatWebViewClient.CATEGORY_CONNECTION_REPLACED
     }
 
     // A12c (design §21), property 2: quiet is not the same as unfinished. Probed through the
