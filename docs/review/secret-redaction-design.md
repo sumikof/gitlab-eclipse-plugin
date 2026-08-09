@@ -450,9 +450,16 @@ A1 も有限個の A2 標本もすべて通り抜ける(L-8)。
 §15 の秘匿対象である。**パターンは検出器であって、修正の範囲を決めるものではない。**
 (検出側は §7.2 の明示リストで揃えてある。)
 
-**被検出クラスを保持するフィールドは、入れ子の `toString()` に委譲して出力する。**
-`Params` は `httpAgentOptions=$httpAgentOptions`、`EgressConfigSnapshot` は `proxy=$proxy` の形で出す。
+**§7.5 の再帰対象**(= **非 exemption の秘匿フィールドを持つ被検出クラス**)**を保持するフィールドは、
+入れ子の `toString()` に委譲して出力する。**
+対象は §7.5 の表と同じ 2 フィールドだけである — `Params` は `httpAgentOptions=$httpAgentOptions`、
+`EgressConfigSnapshot` は `proxy=$proxy` の形で出す。
 **入れ子の中身に直接手を伸ばさない**(`httpAgentOptions?.certKey` のような補間を書かない)。
+
+**`Params.codeCompletion` は対象外である。** `CodeCompletion` は exemption だけを持つため
+§7.5 の再帰対象ではなく、A1 後段も存在しない。委譲を課す理由(下記 2)が当てはまらないので、
+出力するかどうかは §9.1 冒頭の一般規則(診断に有用な成分を明示的に選ぶ)に従う。
+**この限定が無いと、L-4 で避けたはずの「生成形の再現」を実装者に強いることになる。**
 
 理由は 2 つある。
 
