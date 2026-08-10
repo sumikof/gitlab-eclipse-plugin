@@ -112,8 +112,14 @@ internal object ConventionScan {
 
 /**
  * 設計 §7.3。秘匿フィールドだけが異なる 2 インスタンスを作るための値。
- * variant 0 と 1 は **1 文字も共有せず長さも異なる**(設計 §7.3 — 先頭 N 文字のような部分投影と、
- * `token.length` のような値そのものではない投影の両方を捕まえるため)。
+ * **要件は型ごとに違う。** 一方の要件をもう一方に読み替えないこと。
+ *
+ * - `String` / `CharSequence`([forString]): 2 値は **1 文字も共有せず、長さも異なる**。
+ *   先頭 N 文字のような部分投影と、`token.length` のような値そのものではない投影を捕まえるため。
+ * - `Throwable`([forThrowable]): 2 値は**同じクラス**のまま、message・cause・stack trace・suppressed の
+ *   **4 成分すべて**が異なる。型は §9.2 が出力を許すのでクラスを変えてはならず、型以外のあらゆる投影が
+ *   不変性を破るように 4 成分を動かす。**こちらに「1 文字も共有しない」要件は無い** —
+ *   実際 `"AAAA-msg"` と `"bbbbbbbb-msg"` は `-msg` を、合成フレームは `A…Class` を共有している。
  */
 internal object Sentinels {
   /**
@@ -205,21 +211,55 @@ internal object Synthesizer {
   fun verifySamplesDiffer(target: DetectedClass, a: Any, b: Any) {
     target.secrets.forEach { s ->
       val f = target.kClass.java.getDeclaredField(s.name).apply { isAccessible = true }
-      val formA = observableForm(f.get(a))
-      val formB = observableForm(f.get(b))
-      if (formA == formB) {
-        throw SynthesisFailure("${target.fqcn}#${s.name}: both samples hold the same value ($formA)")
+      val valueA = f.get(a)
+      val valueB = f.get(b)
+      if (valueA is Throwable && valueB is Throwable) {
+        verifyThrowablesDiffer("${target.fqcn}#${s.name}", valueA, valueB)
+      } else if (observableForm(valueA) == observableForm(valueB)) {
+        val form = observableForm(valueA)
+        throw SynthesisFailure("${target.fqcn}#${s.name}: both samples hold the same value ($form)")
+      }
+    }
+  }
+
+  /** 設計 §7.3 が `Throwable` の 2 値に独立の変化を求める 4 成分。 */
+  private val THROWABLE_COMPONENTS: List<Pair<String, (Throwable) -> String>> = listOf(
+    "message" to { t -> t.message.orEmpty() },
+    "cause message" to { t -> t.cause?.message.orEmpty() },
+    "stack trace" to { t -> t.stackTrace.joinToString() },
+    "suppressed" to { t -> t.suppressed.joinToString { it.message.orEmpty() } },
+  )
+
+  /**
+   * 設計 §7.3 の `Throwable` 要件を、**組み上がった 2 標本から読み戻して**固定する
+   * (sentinel 生成器を生成器自身と突き合わせるとトートロジーになるので、そうはしない)。
+   *
+   * 4 成分のうち **1 つでも一致していたら失敗**させる。1 成分でも共通だと、
+   * ちょうどその成分を出力する production の `toString()`(`cause.stackTrace` や
+   * `cause.cause?.message` など)が、不変性を破らないまま通り抜けてしまうためである。
+   * §7.3 が 4 成分すべてを動かせと言うのは、**型以外のあらゆる投影**を不変性で禁じるためである。
+   *
+   * 逆にクラスは**一致していなければならない**。§9.2 は型の出力を許しているので、
+   * 2 標本のクラスが違うと、型だけを出す正しい実装が不変性を破って落ちてしまう。
+   */
+  private fun verifyThrowablesDiffer(id: String, a: Throwable, b: Throwable) {
+    if (a.javaClass != b.javaClass) {
+      throw SynthesisFailure("$id: samples must share a class (${a.javaClass.name} vs ${b.javaClass.name})")
+    }
+    THROWABLE_COMPONENTS.forEach { (component, read) ->
+      if (read(a) == read(b)) {
+        throw SynthesisFailure("$id: both samples hold the same $component (${read(a)})")
       }
     }
   }
 
   /**
-   * 秘匿値の**観測可能な形**。2 標本が異なることの判定に使う。
+   * 秘匿値の**観測可能な形**。`Throwable` の対でない秘匿値について、2 標本が異なることの判定に使う。
+   * 2 標本がどちらも `Throwable` の場合は、より強い [verifyThrowablesDiffer] が受け持つ。
    *
    * `Throwable` を参照同一性で比べてはならない。`forThrowable` が variant を無視して
    * message も cause も stack trace も suppressed も同じ 2 つの例外を返しても、別オブジェクトである
-   * 以上「異なる」と判定されてしまうためである。設計 §7.3 が独立に変えることを要求する 4 成分を
-   * そのまま比較対象にする。
+   * 以上「異なる」と判定されてしまうためである。
    */
   private fun observableForm(v: Any?): String =
     when (v) {
