@@ -105,5 +105,25 @@ class GitLabLanguageServerConfigurationParamsTest : DescribeSpec({
         "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
         "token=null, ignoreCertificateErrors=true, httpAgentOptions=null)"
     }
+
+    // A2(a): httpAgentOptions だけを変えた標本。成分は 3 つとも秘匿なので値を変えても出力は動かないが、
+    // null かどうかは出力に出る。これが本物の委譲と、入れ子のリテラルを焼き込んだ実装
+    // (`httpAgentOptions?.let { "HttpAgentOptions(ca=***, cert=***, certKey=***)" }`)とを分ける唯一の標本である。
+    // Task 8 の不変性検査は入れ子の秘匿値だけを変えるため、焼き込みを素通しさせる。
+    it("reflects a partially populated httpAgentOptions") {
+      val params = GitLabLanguageServerConfigurationParams(
+        baseUrl = "https://gitlab.example.com",
+        httpAgentOptions = GitLabLanguageServerConfigurationParams.HttpAgentOptions(
+          ca = null,
+          cert = "/home/user/client.pem",
+          certKey = null,
+        ),
+      )
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=false, " +
+        "httpAgentOptions=HttpAgentOptions(ca=null, cert=***, certKey=null))"
+    }
   }
 })
