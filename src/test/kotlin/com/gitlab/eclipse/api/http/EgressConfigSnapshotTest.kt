@@ -51,5 +51,28 @@ class EgressConfigSnapshotTest : DescribeSpec({
         "EgressConfigSnapshot(ignoreCertificateErrors=true, caCertificatePath=null, " +
         "clientCertificatePath=null, clientCertificateKeyPath=null, proxy=null)"
     }
+
+    // A2(a): proxy だけを変えた標本。これが無いと、入れ子のリテラルを直書きした
+    // toString も通ってしまう(= 本当の委譲と区別が付かない)。
+    it("reflects a changed proxy") {
+      val snapshot = EgressConfigSnapshot(
+        ignoreCertificateErrors = false,
+        caCertificatePath = null,
+        clientCertificatePath = null,
+        clientCertificateKeyPath = null,
+        proxy = ProxyConfig(
+          host = "other.host",
+          port = 3128,
+          bypassHosts = emptyList(),
+          username = null,
+          password = null,
+        ),
+      )
+
+      "$snapshot" shouldBe
+        "EgressConfigSnapshot(ignoreCertificateErrors=false, caCertificatePath=null, " +
+        "clientCertificatePath=null, clientCertificateKeyPath=null, " +
+        "proxy=ProxyConfig(host=other.host, port=3128, bypassHosts=[], username=null, password=null))"
+    }
   }
 })
