@@ -19,6 +19,8 @@ private val SECRET_NAME_WORDS =
 /** 設計 §7.2 の明示リスト。名前パターンに当たらないが秘匿であるフィールド。 */
 private val EXPLICIT_SECRETS = setOf(
   "com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams\$HttpAgentOptions#ca",
+  // production が `username=***` と伏せているプロキシ資格情報。D1 のどの語にも当たらない
+  "com.gitlab.eclipse.lsp.proxy.ProxyConfig#username",
 )
 
 /** 設計 §7.3.1 の exemption。名前パターンに当たるが秘匿ではないフィールド。 */
@@ -44,7 +46,7 @@ private val EXPECTED_SECRET_CLASSES: Map<String, Set<String>> = mapOf(
   "com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams" to setOf("token"),
   "com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams\$HttpAgentOptions" to
     setOf("ca", "cert", "certKey"),
-  "com.gitlab.eclipse.lsp.proxy.ProxyConfig" to setOf("password"),
+  "com.gitlab.eclipse.lsp.proxy.ProxyConfig" to setOf("username", "password"),
   "com.gitlab.eclipse.lsp.webview.WebviewResolution\$Failed" to setOf("cause"),
   "com.gitlab.eclipse.mergerequests.CheckoutResult\$Failed" to setOf("cause"),
   "com.gitlab.eclipse.mergerequests.PushOutcome\$Failed" to setOf("cause"),
