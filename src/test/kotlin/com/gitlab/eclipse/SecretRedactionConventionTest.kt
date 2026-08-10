@@ -63,6 +63,9 @@ internal object ConventionScan {
   var scanned = 0
     private set
 
+  /** 走査中に出会った `data class`(秘匿フィールドの有無を問わない)。2 度目の走査を避けるため。 */
+  val dataClasses = mutableMapOf<String, KClass<*>>()
+
   fun run(): List<DetectedClass> {
     val loader = ConnectionSnapshot::class.java.classLoader
     val detected = mutableListOf<DetectedClass>()
@@ -86,6 +89,7 @@ internal object ConventionScan {
         return@forEach
       }
       if (!kClass.isData) return@forEach
+      dataClasses[fqcn] = kClass
       val fields = try {
         java.declaredFields
       } catch (e: LinkageError) {
@@ -225,6 +229,28 @@ class SecretRedactionConventionTest : DescribeSpec({
     it("matches the hand-written expectation") {
       detected.associate { it.fqcn to it.secrets.map(SecretField::name).toSet() } shouldBe
         EXPECTED_SECRET_CLASSES
+    }
+  }
+
+  describe("the hand-written field lists") {
+    /*
+     * 固定するのは「各項目が実在の `data class` の実在フィールドを指している」ことだけである。
+     * 一覧が網羅的であること・分類(秘匿か非秘匿か)が正しいことは、この検査では**分からない**。
+     *
+     * 捕まえるのは A5 が捕まえない 2 つの形 — どちらも今日は不活性で、後から効き始める。
+     *  - フィールド改名後に取り残された項目。検出結果は変わらないので A5 は緑のまま。
+     *  - まだ存在しないクラスへの先回り登録。後の PR がその `FQCN#field` を持つ data class を
+     *    追加した瞬間、そのフィールドは黙って exemption され、クラスは検出集合に入らない。
+     *    R2(新しい秘匿クラスがビルドを壊す)が、どの表明も間違えないまま無効化される。
+     */
+    it("names only fields that really exist") {
+      val entries = (EXEMPTIONS + EXPLICIT_SECRETS).sorted()
+      val unresolved = entries.filterNot { entry ->
+        val fqcn = entry.substringBefore('#')
+        val field = entry.substringAfter('#')
+        ConventionScan.dataClasses[fqcn]?.java?.declaredFields?.any { it.name == field } == true
+      }
+      unresolved.shouldBeEmpty()
     }
   }
 
