@@ -18,7 +18,10 @@ sealed interface LoadOutcome {
   object Superseded : LoadOutcome
 
   /** The fetch threw [cause]; the node now shows its failure children in state `FAILED`. */
-  data class Failed(val cause: Throwable) : LoadOutcome
+  data class Failed(val cause: Throwable) : LoadOutcome {
+    /** 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。 */
+    override fun toString(): String = "LoadOutcome.Failed(type=${cause.javaClass.name})"
+  }
 
   /**
    * The connection gate rejected the load (instance URL or credential changed, or the

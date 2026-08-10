@@ -249,4 +249,22 @@ class MrBranchCheckoutServiceTest : DescribeSpec({
       result.shouldBeInstanceOf<CheckoutResult.Failed>()
     }
   }
+
+  describe("CheckoutResult.Failed.toString") {
+    it("keeps the cause's message out and its type in") {
+      "${CheckoutResult.Failed(java.io.IOException("/home/user/secret-repo not found"))}" shouldBe
+        "CheckoutResult.Failed(type=java.io.IOException)"
+    }
+
+    // A2(a): 例外型は「秘匿値の許された投影」。型を変えたら出力も変わる。
+    // これが無いと toString を固定の定数にしても通る(設計 §22.1 の (v) 群)。
+    it("reflects a different cause type") {
+      "${CheckoutResult.Failed(IllegalStateException("/home/user/secret-repo not found"))}" shouldBe
+        "CheckoutResult.Failed(type=java.lang.IllegalStateException)"
+    }
+
+    it("says so when it carries no cause at all") {
+      "${CheckoutResult.Failed(null)}" shouldBe "CheckoutResult.Failed(type=null)"
+    }
+  }
 })

@@ -492,4 +492,29 @@ class DiscussionsLoaderTest : DescribeSpec({
       (h.outcomes.single() as LoadOutcome.Failed).cause.message shouldBe marker
     }
   }
+
+  describe("FetchOutcome.Failed.toString") {
+    // FetchOutcome は private sealed interface(DiscussionsLoader.kt:60)なので名前で構築できない。
+    // production の可視性は変えず、リフレクションで組み立てて出力形だけを固定する。
+    val binaryName =
+      "com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader\$FetchOutcome\$Failed"
+
+    fun render(cause: Throwable): String {
+      val failedClass = Class.forName(binaryName)
+      val ctor = failedClass.declaredConstructors.single().apply { isAccessible = true }
+      return "${ctor.newInstance(cause)}"
+    }
+
+    it("keeps the cause's message out and its type in") {
+      render(java.io.IOException("https://gitlab.example.com/secret")) shouldBe
+        "FetchOutcome.Failed(type=java.io.IOException)"
+    }
+
+    // A2(a): 例外型は「秘匿値の許された投影」。型を変えたら出力も変わる。
+    // これが無いと toString を固定の定数にしても通る(設計 §22.1 の (v) 群)。
+    it("reflects a different cause type") {
+      render(IllegalStateException("https://gitlab.example.com/secret")) shouldBe
+        "FetchOutcome.Failed(type=java.lang.IllegalStateException)"
+    }
+  }
 })

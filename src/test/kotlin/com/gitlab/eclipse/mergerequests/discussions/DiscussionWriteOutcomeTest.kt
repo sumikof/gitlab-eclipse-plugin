@@ -109,4 +109,28 @@ class DiscussionWriteOutcomeTest : DescribeSpec({
       cause.message shouldNotContain "SECRET-MARKER"
     }
   }
+
+  describe("toString") {
+    it("keeps the cause's message out of Definite and its type in") {
+      "${DiscussionWriteOutcome.Definite(java.io.IOException("https://gitlab.example.com/secret"))}" shouldBe
+        "DiscussionWriteOutcome.Definite(type=java.io.IOException)"
+    }
+
+    it("keeps the cause's message out of Ambiguous and its type in") {
+      "${DiscussionWriteOutcome.Ambiguous(java.io.IOException("https://gitlab.example.com/secret"))}" shouldBe
+        "DiscussionWriteOutcome.Ambiguous(type=java.io.IOException)"
+    }
+
+    // A2(a): 例外型は「秘匿値の許された投影」。型を変えたら出力も変わる。
+    // これが無いと toString を固定の定数にしても通る(設計 §22.1 の (v) 群)。
+    it("reflects a different cause type on Definite") {
+      "${DiscussionWriteOutcome.Definite(IllegalStateException("https://gitlab.example.com/secret"))}" shouldBe
+        "DiscussionWriteOutcome.Definite(type=java.lang.IllegalStateException)"
+    }
+
+    it("reflects a different cause type on Ambiguous") {
+      "${DiscussionWriteOutcome.Ambiguous(IllegalStateException("https://gitlab.example.com/secret"))}" shouldBe
+        "DiscussionWriteOutcome.Ambiguous(type=java.lang.IllegalStateException)"
+    }
+  }
 })
