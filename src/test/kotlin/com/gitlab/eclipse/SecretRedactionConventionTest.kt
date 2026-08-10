@@ -112,16 +112,23 @@ internal object ConventionScan {
 
 /**
  * 設計 §7.3。秘匿フィールドだけが異なる 2 インスタンスを作るための値。
- * variant 0 と 1 は **1 文字も共有せず長さも異なる**(設計 §7.3 — `token.length` のような
- * 値そのものではない投影を捕まえるため)。
+ * variant 0 と 1 は **1 文字も共有せず長さも異なる**(設計 §7.3 — 先頭 N 文字のような部分投影と、
+ * `token.length` のような値そのものではない投影の両方を捕まえるため)。
  */
 internal object Sentinels {
+  /**
+   * variant 1 に `#` を使うのは、**Kotlin の識別子に現れ得ない文字**だからである。
+   * variant 0 はフィールド名を埋め込むので、識別子に使える文字を選ぶと
+   * (`bbbbbbbb` に対する `bearerToken` のように)将来のフィールド名が偶然その文字を含んだ瞬間、
+   * 「1 文字も共有しない」が黙って破れる。長さも 8 と `9 + field.length` で必ず異なる。
+   */
   fun forString(field: String, variant: Int): String =
-    if (variant == 0) "AAAA-$field-AAAA" else "bbbbbbbb"
+    if (variant == 0) "AAAA-$field-AAAA" else "########"
 
-  fun forThrowable(declared: Class<*>, variant: Int): Throwable {
-    require(declared.isAssignableFrom(RuntimeException::class.java)) {
-      "no synthesis strategy for Throwable subtype ${declared.name}"
+  fun forThrowable(fqcn: String, field: String, declared: Class<*>, variant: Int): Throwable {
+    if (!declared.isAssignableFrom(RuntimeException::class.java)) {
+      // 設計 §13.1: FQCN・フィールド名・型を報告する。戦略を広げるのは設計判断なのでここではしない
+      throw SynthesisFailure("$fqcn#$field: no synthesis strategy for Throwable subtype ${declared.name}")
     }
     val inner = if (variant == 0) RuntimeException("AAAA-inner") else RuntimeException("bbbbbbbb-inner")
     val outer = RuntimeException(if (variant == 0) "AAAA-msg" else "bbbbbbbb-msg", inner)
@@ -172,24 +179,66 @@ internal object Synthesizer {
   }
 
   /**
-   * 設計 §7.4 末尾。出力不変性は 2 値が実際に注入されて初めて意味を持つ。
-   * 注入されていなければ 2 インスタンスは同一になり、不変性が自明に成立してしまう。
+   * 単一インスタンスについて「渡した値をそのまま保持している」ことを確認する。
+   * 引数として渡されなかった秘匿フィールドはその時点で失敗させる —
+   * これが無いと、渡していない場合も `null` を渡した場合も期待値が `null` になり、
+   * **秘匿引数をデフォルトに委ねてしまう誤り(設計 §7.4 が最も間違えやすいと呼ぶ形)を
+   * この検査自身が見逃す。**
+   *
+   * これは「引数を無視するコンストラクタ」を捕まえる検査であって、
+   * 2 標本が実際に異なることを保証するものではない。そちらは [verifySamplesDiffer] が受け持つ。
    */
   private fun verifyInjected(target: DetectedClass, instance: Any, args: Map<KParameter, Any?>) {
     target.secrets.forEach { s ->
+      val passed = args.entries.firstOrNull { it.key.name == s.name }
+        ?: throw SynthesisFailure("${target.fqcn}#${s.name}: no sentinel was passed to the constructor")
       val f = target.kClass.java.getDeclaredField(s.name).apply { isAccessible = true }
-      val held = f.get(instance)
-      val expected = args.entries.firstOrNull { it.key.name == s.name }?.value
-      if (held != expected) {
+      if (f.get(instance) != passed.value) {
         throw SynthesisFailure("${target.fqcn}#${s.name}: sentinel was not injected")
       }
     }
   }
 
+  /**
+   * 設計 §7.4 末尾が求める前提の**直接の測定**。出力不変性は 2 標本の秘匿値が実際に異なって
+   * 初めて意味を持つ — 同じなら不変性は自明に成立し、テストは何も検査しないまま緑になる。
+   * 組み立て手順ではなく、**組み上がった 2 インスタンスから読み出した値**を比べる。
+   */
+  fun verifySamplesDiffer(target: DetectedClass, a: Any, b: Any) {
+    target.secrets.forEach { s ->
+      val f = target.kClass.java.getDeclaredField(s.name).apply { isAccessible = true }
+      val formA = observableForm(f.get(a))
+      val formB = observableForm(f.get(b))
+      if (formA == formB) {
+        throw SynthesisFailure("${target.fqcn}#${s.name}: both samples hold the same value ($formA)")
+      }
+    }
+  }
+
+  /**
+   * 秘匿値の**観測可能な形**。2 標本が異なることの判定に使う。
+   *
+   * `Throwable` を参照同一性で比べてはならない。`forThrowable` が variant を無視して
+   * message も cause も stack trace も suppressed も同じ 2 つの例外を返しても、別オブジェクトである
+   * 以上「異なる」と判定されてしまうためである。設計 §7.3 が独立に変えることを要求する 4 成分を
+   * そのまま比較対象にする。
+   */
+  private fun observableForm(v: Any?): String =
+    when (v) {
+      null -> "null"
+      is Throwable -> listOf(
+        v.message,
+        v.cause?.message,
+        v.stackTrace.joinToString(),
+        v.suppressed.joinToString { it.message.orEmpty() },
+      ).joinToString("|")
+      else -> v.toString()
+    }
+
   private fun synthesizeSecret(fqcn: String, name: String, java: Class<*>, variant: Int): Any =
     when {
       java == String::class.java || java == CharSequence::class.java -> Sentinels.forString(name, variant)
-      Throwable::class.java.isAssignableFrom(java) -> Sentinels.forThrowable(java, variant)
+      Throwable::class.java.isAssignableFrom(java) -> Sentinels.forThrowable(fqcn, name, java, variant)
       else -> throw SynthesisFailure("$fqcn#$name: no synthesis strategy for ${java.name}")
     }
 
@@ -282,10 +331,13 @@ class SecretRedactionConventionTest : DescribeSpec({
      * 一覧が網羅的であること・分類(秘匿か非秘匿か)が正しいことは、この検査では**分からない**。
      *
      * 捕まえるのは A5 が捕まえない 2 つの形 — どちらも今日は不活性で、後から効き始める。
-     *  - フィールド改名後に取り残された項目。検出結果は変わらないので A5 は緑のまま。
+     *  - フィールド改名後に取り残された項目。どのフィールドにも当たらないので検出結果は変わらず、
+     *    A5 は緑のままになる。
      *  - まだ存在しないクラスへの先回り登録。後の PR がその `FQCN#field` を持つ data class を
-     *    追加した瞬間、そのフィールドは黙って exemption され、クラスは検出集合に入らない。
-     *    R2(新しい秘匿クラスがビルドを壊す)が、どの表明も間違えないまま無効化される。
+     *    追加した瞬間に効き始める。**危険なのは `EXEMPTIONS` 側**で、そのフィールドは黙って
+     *    除外され、他に秘匿フィールドが無ければクラスは検出集合に入らないため、
+     *    R2(新しい秘匿クラスがビルドを壊す)がどの表明も間違えないまま無効化される。
+     *    `EXPLICIT_SECRETS` 側は逆にクラスが検出集合に入るので、その時点で A5 が落ちて気づける。
      */
     it("names only fields that really exist") {
       val entries = (EXEMPTIONS + EXPLICIT_SECRETS).sorted()
@@ -304,6 +356,8 @@ class SecretRedactionConventionTest : DescribeSpec({
       it("does not depend on the secret components of ${target.fqcn}") {
         val a = Synthesizer.build(target, 0)
         val b = Synthesizer.build(target, 1)
+        // 2 標本が実際に違う秘匿値を持っていなければ、この下の一致は何も意味しない
+        Synthesizer.verifySamplesDiffer(target, a, b)
 
         val rendered = try {
           "$a" to "$b"
