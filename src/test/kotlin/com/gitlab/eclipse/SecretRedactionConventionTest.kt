@@ -164,9 +164,7 @@ internal object Synthesizer {
     val args = mutableMapOf<KParameter, Any?>()
     val secretNames = target.secrets.map(SecretField::name).toSet()
     params.forEach { p ->
-      val name = p.name ?: throw SynthesisFailure("${target.fqcn}: unnamed parameter")
-      val java = (p.type.classifier as? KClass<*>)?.java
-        ?: throw SynthesisFailure("${target.fqcn}#$name: unresolvable type")
+      val (name, java) = nameAndTypeOf(target.fqcn, p)
       when {
         // 設計 §7.4: 秘匿引数はデフォルトの有無にかかわらず必ず明示的に渡す
         name in secretNames -> args[p] = synthesizeSecret(target.fqcn, name, java, variant)
@@ -253,7 +251,7 @@ internal object Synthesizer {
   /**
    * 設計 §7.5。型が再帰対象(非 exemption の秘匿フィールドを持つ被検出クラス)のフィールドには、
    * null ではなく sentinel 入りの実インスタンスを渡す。
-   * `detected` は秘匿フィールドを 1 つ以上持つクラスだけなので、exemption だけの `CodeCompletion` は
+   * [all] は秘匿フィールドを 1 つ以上持つクラスだけなので、exemption だけの `CodeCompletion` は
    * そもそも含まれない(= §7.5 の限定が集合の作り方で満たされる)。
    *
    * `build` は再帰しないので、この再帰は**深さ 1 で止まる**。今日の被検出クラスに循環は無い(§7.5)。
@@ -301,6 +299,17 @@ internal object Synthesizer {
       else -> throw SynthesisFailure("$fqcn#$name: cannot synthesize non-null ${java.name}")
     }
 }
+
+/**
+ * 型が被検出クラスであるコンストラクタ引数 = 設計 §7.5 の再帰対象を保持するフィールド。
+ * A1 後段の describe と、その空回りを見張る guard の**両方**がこれを呼ぶ。
+ * 別々に書くと片方だけが変わって guard が見張る対象を静かに失う。
+ */
+internal fun nestedParametersOf(outer: DetectedClass, all: List<DetectedClass>): List<KParameter> =
+  outer.kClass.constructors.first().parameters.filter { p ->
+    val java = (p.type.classifier as? KClass<*>)?.java
+    all.any { it.kClass.java == java }
+  }
 
 class SecretRedactionConventionTest : DescribeSpec({
   val detected = ConventionScan.run()
@@ -377,15 +386,13 @@ class SecretRedactionConventionTest : DescribeSpec({
    *
    * 捕まえるのは「外側が入れ子の中に手を伸ばして秘匿値を漏らす」形である。
    * 外側が入れ子の描画の代わりに**定数リテラル**を出す形は捕まえられない(定数は自明に不変)。
-   * そちらは各クラスのテスト(Task 3 / Task 4)が固定している。
+   * そちらを分けているのは、`GitLabLanguageServerConfigurationParamsTest` の
+   * `reflects a partially populated httpAgentOptions` と `EgressConfigSnapshotTest` の
+   * `reflects a changed proxy` である。
    */
   describe("output invariance through nested detected classes") {
     detected.forEach { outer ->
-      val nestedFields = outer.kClass.constructors.first().parameters.filter { p ->
-        val java = (p.type.classifier as? KClass<*>)?.java
-        detected.any { it.kClass.java == java }
-      }
-      nestedFields.forEach { p ->
+      nestedParametersOf(outer, detected).forEach { p ->
         it("does not depend on the secrets inside ${outer.fqcn}#${p.name}") {
           val a = Synthesizer.buildWithNested(outer, detected, outerVariant = 0, nestedVariant = 0)
           val b = Synthesizer.buildWithNested(outer, detected, outerVariant = 0, nestedVariant = 1)
@@ -393,6 +400,29 @@ class SecretRedactionConventionTest : DescribeSpec({
           "$a" shouldBe "$b"
         }
       }
+    }
+  }
+
+  describe("the nested pairs are not vacuous") {
+    /*
+     * 上の describe は 2 つの空回りに対して無防備で、どちらも suite を緑のまま素通りする。
+     *  - フィルタが 0 件を返すと、テストが 1 つも**生成されない**。
+     *  - `buildWithNested` の分岐順序が変わって入れ子に null が渡ると、2 標本とも同じ
+     *    `null` を描画するので、どちらのテストも自明に一致して通る。
+     *
+     * 固定するのは「実インスタンスが実際に植わった組が 1 つ以上ある」ことだけである
+     * (A3 の `scanned > 0` と同じ形)。**件数そのものは条件にしない** — 設計 §22 A1 が
+     * 固定件数の条件を禁じている。何件あるべきかは条件ではなく現況である。
+     */
+    it("plants a real nested instance in at least one field") {
+      val planted = detected.flatMap { outer ->
+        nestedParametersOf(outer, detected).mapNotNull { p ->
+          val sample = Synthesizer.buildWithNested(outer, detected, outerVariant = 0, nestedVariant = 0)
+          p.name?.let { outer.kClass.java.getDeclaredField(it).apply { isAccessible = true }.get(sample) }
+        }
+      }
+
+      planted.size shouldBeGreaterThan 0
     }
   }
 })
