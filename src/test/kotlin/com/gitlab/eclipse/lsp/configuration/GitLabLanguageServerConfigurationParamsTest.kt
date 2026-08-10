@@ -28,4 +28,102 @@ class GitLabLanguageServerConfigurationParamsTest : DescribeSpec({
       json.has("duo") shouldBe false
     }
   }
+
+  describe("HttpAgentOptions.toString") {
+    it("redacts all three credential components") {
+      val options = GitLabLanguageServerConfigurationParams.HttpAgentOptions(
+        ca = "/home/user/ca.pem",
+        cert = "/home/user/client.pem",
+        certKey = "/home/user/client.key",
+      )
+
+      "$options" shouldBe "HttpAgentOptions(ca=***, cert=***, certKey=***)"
+    }
+
+    // §22.2: nullable 秘匿成分の null ケース。`!!` への退行を止める。
+    it("says so when the components are absent") {
+      val options = GitLabLanguageServerConfigurationParams.HttpAgentOptions(ca = null)
+
+      "$options" shouldBe "HttpAgentOptions(ca=null, cert=null, certKey=null)"
+    }
+  }
+
+  describe("GitLabLanguageServerConfigurationParams.toString") {
+    it("redacts the token and delegates to the nested HttpAgentOptions") {
+      val params = GitLabLanguageServerConfigurationParams(
+        baseUrl = "https://gitlab.example.com",
+        logLevel = "info",
+        token = "s3cret",
+        httpAgentOptions = GitLabLanguageServerConfigurationParams.HttpAgentOptions(
+          ca = "/home/user/ca.pem",
+          cert = "/home/user/client.pem",
+          certKey = "/home/user/client.key",
+        ),
+        ignoreCertificateErrors = true,
+      )
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=info, " +
+        "token=***, ignoreCertificateErrors=true, " +
+        "httpAgentOptions=HttpAgentOptions(ca=***, cert=***, certKey=***))"
+    }
+
+    it("says so when the token and the agent options are absent") {
+      val params = GitLabLanguageServerConfigurationParams(baseUrl = "https://gitlab.example.com")
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=false, httpAgentOptions=null)"
+    }
+
+    // A2(a): 非秘匿成分は値を変えたら出力も変わる。これが無いと toString を定数にしても通る。
+    it("reflects a changed logLevel") {
+      val params = GitLabLanguageServerConfigurationParams(baseUrl = "https://gitlab.example.com", logLevel = "debug")
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=debug, " +
+        "token=null, ignoreCertificateErrors=false, httpAgentOptions=null)"
+    }
+
+    // A2(a): baseUrl だけを変えた標本。これが無いと baseUrl をリテラルで焼き込んでも通る。
+    it("reflects a changed baseUrl") {
+      val params = GitLabLanguageServerConfigurationParams(baseUrl = "https://other.example.com")
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://other.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=false, httpAgentOptions=null)"
+    }
+
+    // A2(a): ignoreCertificateErrors だけを変えた標本。これが無いと他成分から導いても通る。
+    it("reflects a changed ignoreCertificateErrors") {
+      val params = GitLabLanguageServerConfigurationParams(
+        baseUrl = "https://gitlab.example.com",
+        ignoreCertificateErrors = true,
+      )
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=true, httpAgentOptions=null)"
+    }
+
+    // A2(a): httpAgentOptions だけを変えた標本。成分は 3 つとも秘匿なので値を変えても出力は動かないが、
+    // null かどうかは出力に出る。これが本物の委譲と、入れ子のリテラルを焼き込んだ実装
+    // (`httpAgentOptions?.let { "HttpAgentOptions(ca=***, cert=***, certKey=***)" }`)とを分ける唯一の標本である。
+    // Task 8 の不変性検査は入れ子の秘匿値だけを変えるため、焼き込みを素通しさせる。
+    it("reflects a partially populated httpAgentOptions") {
+      val params = GitLabLanguageServerConfigurationParams(
+        baseUrl = "https://gitlab.example.com",
+        httpAgentOptions = GitLabLanguageServerConfigurationParams.HttpAgentOptions(
+          ca = null,
+          cert = "/home/user/client.pem",
+          certKey = null,
+        ),
+      )
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=false, " +
+        "httpAgentOptions=HttpAgentOptions(ca=null, cert=***, certKey=null))"
+    }
+  }
 })

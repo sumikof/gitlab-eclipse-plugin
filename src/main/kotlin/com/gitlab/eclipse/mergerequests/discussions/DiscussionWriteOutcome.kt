@@ -18,8 +18,16 @@ import java.io.IOException
  */
 sealed interface DiscussionWriteOutcome {
   object Success : DiscussionWriteOutcome
-  data class Definite(val cause: Throwable) : DiscussionWriteOutcome
-  data class Ambiguous(val cause: Throwable) : DiscussionWriteOutcome
+  data class Definite(val cause: Throwable) : DiscussionWriteOutcome {
+    /** 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。 */
+    override fun toString(): String = "DiscussionWriteOutcome.Definite(type=${cause.javaClass.name})"
+  }
+
+  data class Ambiguous(val cause: Throwable) : DiscussionWriteOutcome {
+    /** 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。 */
+    override fun toString(): String = "DiscussionWriteOutcome.Ambiguous(type=${cause.javaClass.name})"
+  }
+
   object GateRejected : DiscussionWriteOutcome
   object Aborted : DiscussionWriteOutcome
 }

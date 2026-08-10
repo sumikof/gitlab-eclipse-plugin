@@ -59,7 +59,12 @@ class DiscussionsLoader(
   /** What the background stage produced, carried to the UI-thread `finish` stage. */
   private sealed interface FetchOutcome {
     data class Fetched(val result: DiscussionsReadResult) : FetchOutcome
-    data class Failed(val cause: Throwable) : FetchOutcome
+    data class Failed(val cause: Throwable) : FetchOutcome {
+      /**
+       * 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。
+       */
+      override fun toString(): String = "FetchOutcome.Failed(type=${cause.javaClass.name})"
+    }
     object GateRejected : FetchOutcome
   }
 

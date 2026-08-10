@@ -25,7 +25,10 @@ sealed interface PushOutcome {
   data class Rejected(val status: RemoteRefUpdate.Status?) : PushOutcome
 
   /** Any thrown failure (transport, auth, missing repository...). */
-  data class Failed(val cause: Throwable?) : PushOutcome
+  data class Failed(val cause: Throwable?) : PushOutcome {
+    /** 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。 */
+    override fun toString(): String = "PushOutcome.Failed(type=${cause?.javaClass?.name})"
+  }
 
   /** Another guarded git operation is already running on this repository
    *  ([GitOperationGuard.withRepo] rejected the call); nothing was done. */

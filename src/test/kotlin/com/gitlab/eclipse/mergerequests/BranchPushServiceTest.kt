@@ -201,4 +201,22 @@ class BranchPushServiceTest : DescribeSpec({
       service().push(context, "master").shouldBeInstanceOf<PushOutcome.Failed>()
     }
   }
+
+  describe("PushOutcome.Failed.toString") {
+    it("keeps the cause's message out and its type in") {
+      "${PushOutcome.Failed(java.io.IOException("/home/user/secret-repo not found"))}" shouldBe
+        "PushOutcome.Failed(type=java.io.IOException)"
+    }
+
+    // A2(a): 例外型は「秘匿値の許された投影」。型を変えたら出力も変わる。
+    // これが無いと toString を固定の定数にしても通る(設計 §22.1 の (v) 群)。
+    it("reflects a different cause type") {
+      "${PushOutcome.Failed(IllegalStateException("/home/user/secret-repo not found"))}" shouldBe
+        "PushOutcome.Failed(type=java.lang.IllegalStateException)"
+    }
+
+    it("says so when it carries no cause at all") {
+      "${PushOutcome.Failed(null)}" shouldBe "PushOutcome.Failed(type=null)"
+    }
+  }
 })

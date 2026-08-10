@@ -16,4 +16,14 @@ data class EgressConfigSnapshot(
   val clientCertificatePath: String?,
   val clientCertificateKeyPath: String?,
   val proxy: ProxyConfig?,
-)
+) {
+  /**
+   * 設計 §9.1。3 つのパスはユーザーのファイルパスで設計 §15 の秘匿対象。
+   * [proxy] は入れ子の `toString` に委譲する — 中身に直接手を伸ばさない。
+   */
+  override fun toString(): String =
+    "EgressConfigSnapshot(ignoreCertificateErrors=$ignoreCertificateErrors, " +
+      "caCertificatePath=${caCertificatePath?.let { "***" }}, " +
+      "clientCertificatePath=${clientCertificatePath?.let { "***" }}, " +
+      "clientCertificateKeyPath=${clientCertificateKeyPath?.let { "***" }}, proxy=$proxy)"
+}

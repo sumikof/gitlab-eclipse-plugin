@@ -17,6 +17,16 @@ data class GitLabLanguageServerConfigurationParams(
   val duo: Duo? = null,
   val securityScannerOptions: SecurityScannerOptions? = null,
 ) {
+  /**
+   * 設計 §9.1。生成形は [token] を平文で載せる。成分は 12 個あるが生成形の再現は目指さず、
+   * 診断に有用なものだけを選ぶ(設計 L-4)。[httpAgentOptions] は入れ子の `toString` に
+   * 委譲する(設計 §9.1)— 中身に直接手を伸ばさない。
+   */
+  override fun toString(): String =
+    "GitLabLanguageServerConfigurationParams(baseUrl=$baseUrl, logLevel=$logLevel, " +
+      "token=${token?.let { "***" }}, ignoreCertificateErrors=$ignoreCertificateErrors, " +
+      "httpAgentOptions=$httpAgentOptions)"
+
   data class CodeCompletion(
     val enabled: Boolean = true,
     val enableSecretRedaction: Boolean = true,
@@ -44,7 +54,14 @@ data class GitLabLanguageServerConfigurationParams(
 
   data class AgentPlatform(val enabled: Boolean)
 
-  data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null)
+  data class HttpAgentOptions(val ca: String?, val cert: String? = null, val certKey: String? = null) {
+    /**
+     * 設計 §9.1。[ca] は名前パターンに当たらないが CA 証明書のパスまたは内容であり、
+     * 設計 §7.2 の明示リストで秘匿と宣言している。
+     */
+    override fun toString(): String =
+      "HttpAgentOptions(ca=${ca?.let { "***" }}, cert=${cert?.let { "***" }}, certKey=${certKey?.let { "***" }})"
+  }
 
   data class Telemetry(
     val enabled: Boolean,

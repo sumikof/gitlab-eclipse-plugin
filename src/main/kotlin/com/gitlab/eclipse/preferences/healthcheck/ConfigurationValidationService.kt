@@ -61,4 +61,7 @@ class ConfigurationValidationService(
 data class ConfigurationValidationRequest(
   val baseUrl: String,
   val token: String
-)
+) {
+  /** 設計 §9.1。生成形は [token] を平文で載せる。 */
+  override fun toString(): String = "ConfigurationValidationRequest(baseUrl=$baseUrl, token=***)"
+}

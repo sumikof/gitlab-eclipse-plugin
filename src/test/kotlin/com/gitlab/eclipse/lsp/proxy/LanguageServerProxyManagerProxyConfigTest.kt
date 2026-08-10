@@ -38,4 +38,20 @@ class LanguageServerProxyManagerProxyConfigTest : DescribeSpec({
       LanguageServerProxyManager(service).getHttpsProxyConfig() shouldBe null
     }
   }
+
+  describe("ProxyConfig.toString") {
+    // 設計 §22.2: password は nullable。`password!!` への退行を止める。
+    it("says so when the proxy carries no credentials") {
+      val config = ProxyConfig(
+        host = "proxy.internal",
+        port = 8080,
+        bypassHosts = emptyList(),
+        username = null,
+        password = null,
+      )
+
+      "$config" shouldBe
+        "ProxyConfig(host=proxy.internal, port=8080, bypassHosts=[], username=null, password=null)"
+    }
+  }
 })

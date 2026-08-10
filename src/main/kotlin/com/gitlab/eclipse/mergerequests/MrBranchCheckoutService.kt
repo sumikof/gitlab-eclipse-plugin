@@ -46,7 +46,10 @@ sealed interface CheckoutResult {
   data object Busy : CheckoutResult
 
   /** Precondition violation (fork MR, missing branch/SHA) or any thrown failure. */
-  data class Failed(val cause: Throwable?) : CheckoutResult
+  data class Failed(val cause: Throwable?) : CheckoutResult {
+    /** 設計 §9.2。生成形は `cause.toString()`(クラス名 **と** message)を載せる。型だけ残す。 */
+    override fun toString(): String = "CheckoutResult.Failed(type=${cause?.javaClass?.name})"
+  }
 }
 
 /**
