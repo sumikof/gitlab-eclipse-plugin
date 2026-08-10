@@ -27,7 +27,15 @@ data class GitLabAuthorizationToken(
   val tokenExpirationTimestamp: Instant = Instant.ofEpochSecond(
     createdAt.plus(expiresIn).minus(TOKEN_EXPIRATION_BUFFER_SECONDS)
   )
-)
+) {
+  /**
+   * 設計 §9.1。生成形は [accessToken] / [refreshToken] を平文で載せる。
+   * [tokenExpirationTimestamp] は有効期限であってトークンではない(設計 §7.3.1)ので残す。
+   */
+  override fun toString(): String =
+    "GitLabAuthorizationToken(accessToken=***, refreshToken=***, expiresIn=$expiresIn, " +
+      "createdAt=$createdAt, tokenExpirationTimestamp=$tokenExpirationTimestamp)"
+}
 
 class GitLabAuthorizationTokenDeserializer : JsonDeserializer<GitLabAuthorizationToken> {
   override fun deserialize(
