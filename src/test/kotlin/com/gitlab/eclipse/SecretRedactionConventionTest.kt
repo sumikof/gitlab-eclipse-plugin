@@ -193,6 +193,50 @@ internal object Synthesizer {
       else -> throw SynthesisFailure("$fqcn#$name: no synthesis strategy for ${java.name}")
     }
 
+  /** 引数名と実行時型を取り出す。取れない引数は合成不能として失敗させる(設計 §13.1)。 */
+  private fun nameAndTypeOf(fqcn: String, p: KParameter): Pair<String, Class<*>> {
+    val name = p.name ?: throw SynthesisFailure("$fqcn: unnamed parameter")
+    val java = (p.type.classifier as? KClass<*>)?.java
+      ?: throw SynthesisFailure("$fqcn#$name: unresolvable type")
+    return name to java
+  }
+
+  /**
+   * 設計 §7.5。型が再帰対象(非 exemption の秘匿フィールドを持つ被検出クラス)のフィールドには、
+   * null ではなく sentinel 入りの実インスタンスを渡す。
+   * `detected` は秘匿フィールドを 1 つ以上持つクラスだけなので、exemption だけの `CodeCompletion` は
+   * そもそも含まれない(= §7.5 の限定が集合の作り方で満たされる)。
+   *
+   * `build` は再帰しないので、この再帰は**深さ 1 で止まる**。今日の被検出クラスに循環は無い(§7.5)。
+   * 将来 `build` 側にも再帰が要るようになったら、訪問済み集合で循環を検出して失敗させること(§13.1)。
+   */
+  fun buildWithNested(
+    target: DetectedClass,
+    all: List<DetectedClass>,
+    outerVariant: Int,
+    nestedVariant: Int,
+  ): Any {
+    val ctor = target.kClass.constructors.firstOrNull()
+      ?: throw SynthesisFailure("${target.fqcn}: no constructor")
+    val args = mutableMapOf<KParameter, Any?>()
+    val secretNames = target.secrets.map(SecretField::name).toSet()
+    ctor.parameters.forEach { p ->
+      val (name, java) = nameAndTypeOf(target.fqcn, p)
+      val nested = all.firstOrNull { it.kClass.java == java }
+      when {
+        name in secretNames -> args[p] = synthesizeSecret(target.fqcn, name, java, outerVariant)
+        nested != null -> args[p] = build(nested, nestedVariant) // ← 再帰。null にしない
+        p.isOptional -> Unit
+        else -> args[p] = synthesizeNeutral(target.fqcn, name, java, p.type.isMarkedNullable)
+      }
+    }
+    return try {
+      ctor.callBy(args)
+    } catch (e: Throwable) {
+      throw SynthesisFailure("${target.fqcn}: callBy failed (${e.javaClass.name})", e)
+    }
+  }
+
   private fun synthesizeNeutral(fqcn: String, name: String, java: Class<*>, nullable: Boolean): Any? =
     when {
       nullable -> null
@@ -268,6 +312,32 @@ class SecretRedactionConventionTest : DescribeSpec({
         }
 
         rendered.first shouldBe rendered.second
+      }
+    }
+  }
+
+  /*
+   * A1 後段。前段は各クラスの**自分の**秘匿フィールドしか動かさないため、入れ子の中身は
+   * §7.4 の中立規則で null になり、外側の出力は `httpAgentOptions=null` としか読まれない。
+   * ここでは入れ子に sentinel 入りの実インスタンスを植え、その秘匿値だけを変える。
+   *
+   * 捕まえるのは「外側が入れ子の中に手を伸ばして秘匿値を漏らす」形である。
+   * 外側が入れ子の描画の代わりに**定数リテラル**を出す形は捕まえられない(定数は自明に不変)。
+   * そちらは各クラスのテスト(Task 3 / Task 4)が固定している。
+   */
+  describe("output invariance through nested detected classes") {
+    detected.forEach { outer ->
+      val nestedFields = outer.kClass.constructors.first().parameters.filter { p ->
+        val java = (p.type.classifier as? KClass<*>)?.java
+        detected.any { it.kClass.java == java }
+      }
+      nestedFields.forEach { p ->
+        it("does not depend on the secrets inside ${outer.fqcn}#${p.name}") {
+          val a = Synthesizer.buildWithNested(outer, detected, outerVariant = 0, nestedVariant = 0)
+          val b = Synthesizer.buildWithNested(outer, detected, outerVariant = 0, nestedVariant = 1)
+
+          "$a" shouldBe "$b"
+        }
       }
     }
   }
