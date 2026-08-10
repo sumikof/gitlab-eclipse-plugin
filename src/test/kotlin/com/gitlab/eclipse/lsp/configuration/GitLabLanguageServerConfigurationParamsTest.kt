@@ -84,5 +84,26 @@ class GitLabLanguageServerConfigurationParamsTest : DescribeSpec({
         "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=debug, " +
         "token=null, ignoreCertificateErrors=false, httpAgentOptions=null)"
     }
+
+    // A2(a): baseUrl だけを変えた標本。これが無いと baseUrl をリテラルで焼き込んでも通る。
+    it("reflects a changed baseUrl") {
+      val params = GitLabLanguageServerConfigurationParams(baseUrl = "https://other.example.com")
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://other.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=false, httpAgentOptions=null)"
+    }
+
+    // A2(a): ignoreCertificateErrors だけを変えた標本。これが無いと他成分から導いても通る。
+    it("reflects a changed ignoreCertificateErrors") {
+      val params = GitLabLanguageServerConfigurationParams(
+        baseUrl = "https://gitlab.example.com",
+        ignoreCertificateErrors = true,
+      )
+
+      "$params" shouldBe
+        "GitLabLanguageServerConfigurationParams(baseUrl=https://gitlab.example.com, logLevel=null, " +
+        "token=null, ignoreCertificateErrors=true, httpAgentOptions=null)"
+    }
   }
 })
