@@ -25,6 +25,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import com.gitlab.eclipse.lsp.utils.workspaceFolders as eclipseWorkspaceFolders
 
 @Suppress("ForbiddenVoid")
 class GitLabLanguageServerProcessProvider(
@@ -317,7 +318,9 @@ class GitLabLanguageServerProcessProvider(
         "version" to Platform.getBundle("org.eclipse.platform").version.toString()
       ),
     )
-    workspaceFolders = workspaceFolders
+    // Aliased import: inside this `apply`, the receiver's own `workspaceFolders` member shadows a
+    // plain import of the top-level one, which turns this line into a silent self-assignment.
+    workspaceFolders = eclipseWorkspaceFolders
   }
 
   private fun ProcessBuilder.injectHttpProxyEnvironmentVariables() {
