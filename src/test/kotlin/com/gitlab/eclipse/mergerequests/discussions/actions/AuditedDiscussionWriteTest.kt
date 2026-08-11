@@ -41,13 +41,24 @@ class AuditedDiscussionWriteTest : DescribeSpec({
   )
   val key = DiscussionWriteKey.forNote(target.instanceUrl, target.authFingerprint, "gid://gitlab/Note/1")
 
+  // The gate compares the instance url inside captureConnectionIf, before the credential is read
+  // (issue #49), so the stub honors the predicate the way the real client does.
+  fun stubCapture(snapshot: ConnectionSnapshot) {
+    every { apiClient.captureConnectionIf(any()) } answers {
+      val accept = firstArg<(String) -> Boolean>()
+      if (accept(snapshot.instanceUrl)) snapshot else null
+    }
+  }
+
   beforeEach {
     clearMocks(apiClient, log)
-    every { apiClient.captureConnection() } returns ConnectionSnapshot(
-      instanceUrl = "https://gitlab.example.com",
-      token = "secret-token",
-      authFingerprint = "fp-node",
-      configGeneration = 1L,
+    stubCapture(
+      ConnectionSnapshot(
+        instanceUrl = "https://gitlab.example.com",
+        token = "secret-token",
+        authFingerprint = "fp-node",
+        configGeneration = 1L,
+      ),
     )
   }
 
@@ -96,11 +107,13 @@ class AuditedDiscussionWriteTest : DescribeSpec({
 
     it("returns GateRejected unchanged when the audit log throws") {
       every { log.info(any<String>()) } throws IllegalStateException("log backend down")
-      every { apiClient.captureConnection() } returns ConnectionSnapshot(
-        instanceUrl = "https://other.example.com",
-        token = "other-token",
-        authFingerprint = "fp-other",
-        configGeneration = 1L,
+      stubCapture(
+        ConnectionSnapshot(
+          instanceUrl = "https://other.example.com",
+          token = "other-token",
+          authFingerprint = "fp-other",
+          configGeneration = 1L,
+        ),
       )
 
       write { error("mutate must not run behind a closed gate") } shouldBe DiscussionWriteOutcome.GateRejected

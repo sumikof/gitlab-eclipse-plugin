@@ -39,8 +39,14 @@ class DiscussionWriteFlowTest : DescribeSpec({
 
   beforeEach { clearMocks(apiClient) }
 
+  // The gate hands the instance-url comparison to captureConnectionIf so it runs before the
+  // credential is read (issue #49), so the stub must honor the predicate the way the real client
+  // does: a url the predicate rejects yields null, with the snapshot never handed out.
   fun stubCapture(snapshot: ConnectionSnapshot) {
-    every { apiClient.captureConnection() } returns snapshot
+    every { apiClient.captureConnectionIf(any()) } answers {
+      val accept = firstArg<(String) -> Boolean>()
+      if (accept(snapshot.instanceUrl)) snapshot else null
+    }
   }
 
   describe("runDiscussionWrite connection gate (design §15.3)") {
@@ -69,7 +75,7 @@ class DiscussionWriteFlowTest : DescribeSpec({
     }
 
     it("rejects an unstable connection (capture throws) with GateRejected and zero mutate calls") {
-      every { apiClient.captureConnection() } throws UnstableConnectionException()
+      every { apiClient.captureConnectionIf(any()) } throws UnstableConnectionException()
       var mutateCalls = 0
 
       val outcome = runDiscussionWrite(apiClient, nodeUrl, nodeFingerprint, startEpoch = 0L) {
@@ -170,9 +176,9 @@ class DiscussionWriteFlowTest : DescribeSpec({
       seenSnapshot shouldBeSameInstanceAs matchingSnapshot
       // Pins that mutate receives the snapshot from the ONE gate capture, never a second,
       // re-captured one: the stub returns the same instance on every call, so a regression that
-      // called `mutate(apiClient.captureConnection())` would still pass the identity assertion
-      // above but fail this count.
-      verify(exactly = 1) { apiClient.captureConnection() }
+      // called `mutate(apiClient.captureConnectionIf { true })` would still pass the identity
+      // assertion above but fail this count.
+      verify(exactly = 1) { apiClient.captureConnectionIf(any()) }
     }
   }
 

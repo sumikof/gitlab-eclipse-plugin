@@ -56,8 +56,13 @@ private class ReloadHarness {
   )
 
   fun givenSuccess() {
-    every { apiClient.captureConnection() } returns
-      ConnectionSnapshot(RELOAD_INSTANCE_URL, "tok-123", RELOAD_AUTH_FINGERPRINT, 1L)
+    // The gate compares the instance url inside captureConnectionIf, before the credential is read
+    // (issue #49), so the stub honors the predicate the way the real client does.
+    val snapshot = ConnectionSnapshot(RELOAD_INSTANCE_URL, "tok-123", RELOAD_AUTH_FINGERPRINT, 1L)
+    every { apiClient.captureConnectionIf(any()) } answers {
+      val accept = firstArg<(String) -> Boolean>()
+      if (accept(RELOAD_INSTANCE_URL)) snapshot else null
+    }
     every { discussionService.getDiscussions(any(), any(), any(), any(), any(), any()) } returns
       DiscussionsReadResult(true, emptyList(), null)
   }
