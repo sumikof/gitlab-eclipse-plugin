@@ -96,11 +96,15 @@ val arch = when (System.getProperty("os.arch")) {
   "aarch64" -> "aarch64"
   else -> "x86_64"
 }
-val osgiPlatform = when (System.getProperty("os.name")) {
-  "Mac OS X" -> "cocoa.macosx.$arch"
-  "Windows 11" -> "win32.win32.$arch"
+// `os.name` carries the Windows release ("Windows 10", "Windows 11", "Windows Server 2022", ...),
+// so match on the prefix: an equality check against a single release silently resolves the Linux
+// SWT and Language Server artifacts on every other Windows release.
+fun osgiPlatformFor(osName: String, arch: String) = when {
+  osName == "Mac OS X" -> "cocoa.macosx.$arch"
+  osName.startsWith("Windows") -> "win32.win32.$arch"
   else -> "gtk.linux.$arch"
 }
+val osgiPlatform = osgiPlatformFor(System.getProperty("os.name") ?: "", arch)
 // Transform the string `${osgi.platform}` into an explicit artifactId
 // for transient Maven dependencies since Gradle does not support
 // properties inside of artifact name/versions.
