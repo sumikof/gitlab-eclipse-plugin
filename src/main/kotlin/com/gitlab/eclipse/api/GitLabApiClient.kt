@@ -17,9 +17,10 @@ import java.time.Duration
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Thrown by [GitLabApiClient.captureConnection] when the connection config generation keeps
- * changing (or stays in the update-in-progress state) across reads and never settles within the
- * bounded retry budget, so no self-consistent snapshot can be returned.
+ * Thrown by [GitLabApiClient.captureConnection] and [GitLabApiClient.captureConnectionIf] when
+ * the connection config generation keeps changing (or stays in the update-in-progress state)
+ * across reads and never settles within the bounded retry budget, so no self-consistent snapshot
+ * can be returned.
  */
 class UnstableConnectionException : RuntimeException("GitLab connection settings changed during capture")
 
@@ -174,13 +175,42 @@ class GitLabApiClient(
    *
    * Both the READ and WRITE paths obtain their pinned connection through this method; the raw
    * (untrimmed) url is kept — trailing-slash trimming happens in [buildUri].
+   *
+   * Delegates to [captureConnectionIf] with an always-true predicate; the `?:` branch is
+   * unreachable (the predicate never rejects) and exists only to satisfy the nullable return
+   * type, so this method's signature and meaning are unchanged.
    */
-  fun captureConnection(): ConnectionSnapshot {
+  fun captureConnection(): ConnectionSnapshot =
+    captureConnectionIf { true } ?: throw UnstableConnectionException()
+
+  /**
+   * Captures the connection only when the configured instance URL is accepted by
+   * [acceptInstanceUrl]; otherwise returns null WITHOUT reading the credential (#49). The URL
+   * check runs inside the seqlock read — before [tokenManager] is touched — so a gate miss on a
+   * mismatched URL cannot trigger an OAuth token refresh (HTTP, persistence, secure-storage
+   * writes, LS config notification, user-visible notifications). A rejection is committed only
+   * against a settled URL: if the generation moved while the URL was read, the read is discarded
+   * and retried, never judged. A rejection observed at a stable generation is final even if the
+   * settings change immediately afterwards (no retry on that side).
+   *
+   * [acceptInstanceUrl] must be pure (no side effects), may be invoked multiple times because of
+   * retries, and must not throw; an exception from it is a contract violation and propagates to
+   * the caller unhandled. Throws [UnstableConnectionException] if the generation never settles
+   * within [MAX_CAPTURE_ATTEMPTS].
+   */
+  fun captureConnectionIf(acceptInstanceUrl: (String) -> Boolean): ConnectionSnapshot? {
     repeat(MAX_CAPTURE_ATTEMPTS) {
       val g1 = readGeneration()
       if (g1 % 2 != 0L) return@repeat // update in progress -> retry
       val url = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
-      val token = tokenManager.getToken()
+      if (!acceptInstanceUrl(url)) {
+        // Mismatch — but before committing the rejection, verify via the generation that the URL
+        // read was not racing an update. Rejecting unverified could drop, based on a mid-update
+        // value, a URL that would have matched once settled.
+        if (readGeneration() == g1) return null // settled mismatch -> bail, credentials untouched
+        return@repeat // read raced an update -> retry
+      }
+      val token = tokenManager.getToken() // only reached when the predicate accepted
       val g2 = readGeneration()
       if (g1 == g2) { // even and unchanged -> consistent pair
         return ConnectionSnapshot(url, token, authFingerprint(token), g1)
@@ -301,7 +331,7 @@ class GitLabApiClient(
     private const val SUCCESS_STATUS_MIN = 200
     private const val SUCCESS_STATUS_MAX = 299
 
-    /** Bounded retry budget of the seqlock read loop in [captureConnection]. */
+    /** Bounded retry budget of the seqlock read loop in [captureConnectionIf]. */
     private const val MAX_CAPTURE_ATTEMPTS = 8
   }
 }

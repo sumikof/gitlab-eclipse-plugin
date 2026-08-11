@@ -38,9 +38,17 @@ sealed interface CiLintOutcome {
 /**
  * SWT-free CI lint orchestration (design §8.4), mirroring [com.gitlab.eclipse.ci.actions.runCreatePipeline]:
  * capture → same-instance gate → lint, with the gate provably BEFORE the lint call. [capture]
- * returns the pinned snapshot (or throws [UnstableConnectionException]); [lint] performs the
- * lint call. [lint] is NEVER invoked when the gate fails or the connection is unstable, so a
- * mismatch never sends the yaml to the wrong instance.
+ * returns the pinned snapshot, or null when the configured instance url did not match the
+ * context — the caller binds that comparison as a capture-time predicate so a mismatch is
+ * rejected WITHOUT reading the credential (#49) — or throws [UnstableConnectionException];
+ * [lint] performs the lint call. Null → [CiLintOutcome.InstanceMismatch] and the throw →
+ * [CiLintOutcome.ConnectionUnstable] stay distinct outcomes with distinct audit reasons.
+ * [lint] is NEVER invoked when the gate fails or the connection is unstable, so a mismatch never
+ * sends the yaml to the wrong instance.
+ *
+ * The in-function [sameConfiguredInstance] check is a safety boundary, NOT a redundancy: [capture]
+ * is bound by the CALLER and [ConnectionSnapshot] does not encode which predicate validated it, so
+ * a caller that binds the wrong predicate (or none) is still stopped here before the yaml is sent.
  *
  * Unlike [com.gitlab.eclipse.ci.actions.classifyWrite] (which is `() -> PostResult`-specific),
  * the classification here is inlined because the success payload is [CiLintResult]. A thrown
@@ -48,14 +56,16 @@ sealed interface CiLintOutcome {
  */
 fun runCiLint(
   contextInstanceUrl: String,
-  capture: () -> ConnectionSnapshot,
+  capture: () -> ConnectionSnapshot?,
   lint: (ConnectionSnapshot) -> CiLintResult,
 ): CiLintOutcome {
   val connection = try {
     capture()
   } catch (ignored: UnstableConnectionException) {
     return CiLintOutcome.ConnectionUnstable
-  }
+  } ?: return CiLintOutcome.InstanceMismatch
+  // Already compared by the capture-time predicate, but the seam is bound OUTSIDE this function:
+  // kept as a postcondition so a caller's mis-bound predicate cannot send the yaml elsewhere.
   if (!sameConfiguredInstance(contextInstanceUrl, connection.instanceUrl)) {
     return CiLintOutcome.InstanceMismatch
   }

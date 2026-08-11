@@ -110,9 +110,15 @@ private class LoaderHarness(
     }
   }
 
+  // The gate compares the instance url inside captureConnectionIf, before the credential is read
+  // (issue #49), so the stub honors the predicate exactly as the real client does: a url the
+  // predicate rejects yields null and the snapshot is never handed out.
   fun givenConnection(instanceUrl: String = NODE_INSTANCE_URL, authFingerprint: String = NODE_AUTH_FINGERPRINT) {
-    every { apiClient.captureConnection() } returns
-      ConnectionSnapshot(instanceUrl, "tok-123", authFingerprint, 1L)
+    val snapshot = ConnectionSnapshot(instanceUrl, "tok-123", authFingerprint, 1L)
+    every { apiClient.captureConnectionIf(any()) } answers {
+      val accept = firstArg<(String) -> Boolean>()
+      if (accept(instanceUrl)) snapshot else null
+    }
   }
 
   fun givenSuccess(result: DiscussionsReadResult = DiscussionsReadResult(true, emptyList(), null)) {
@@ -258,7 +264,7 @@ class DiscussionsLoaderTest : DescribeSpec({
 
     it("UnstableConnectionException from captureConnection yields GateRejected, zero API calls, nothing escapes") {
       val h = LoaderHarness()
-      every { h.apiClient.captureConnection() } throws UnstableConnectionException()
+      every { h.apiClient.captureConnectionIf(any()) } throws UnstableConnectionException()
 
       h.load()
 
@@ -269,7 +275,7 @@ class DiscussionsLoaderTest : DescribeSpec({
     it("a non-UnstableConnectionException from captureConnection funnels into Failed and clears the placeholder") {
       val h = LoaderHarness()
       val cause = IllegalStateException("secure storage read failed")
-      every { h.apiClient.captureConnection() } throws cause
+      every { h.apiClient.captureConnectionIf(any()) } throws cause
 
       h.load()
 
@@ -283,7 +289,7 @@ class DiscussionsLoaderTest : DescribeSpec({
 
     it("CancellationException from captureConnection propagates and delivers no outcome") {
       val h = LoaderHarness()
-      every { h.apiClient.captureConnection() } throws CancellationException("cancelled during capture")
+      every { h.apiClient.captureConnectionIf(any()) } throws CancellationException("cancelled during capture")
 
       shouldThrow<CancellationException> { h.load() }
 

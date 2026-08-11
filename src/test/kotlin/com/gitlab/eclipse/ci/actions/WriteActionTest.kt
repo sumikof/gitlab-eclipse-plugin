@@ -14,6 +14,7 @@ import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import java.net.http.HttpTimeoutException
@@ -72,24 +73,19 @@ class WriteActionTest : DescribeSpec({
         authFingerprint = "fp-node",
         configGeneration = 1L,
       )
-      every { apiClient.captureConnection() } returns snapshot
+      every { apiClient.captureConnectionIf(any()) } returns snapshot
 
       pinnedConnectionFor(apiClient, nodeUrl, nodeFingerprint) shouldBe snapshot
     }
 
-    it("returns null when the instance url changed (FR-8)") {
-      every { apiClient.captureConnection() } returns ConnectionSnapshot(
-        instanceUrl = "https://other.example.com",
-        token = "secret-token",
-        authFingerprint = "fp-node",
-        configGeneration = 2L,
-      )
+    it("returns null when the capture rejected the instance url via the predicate (FR-8)") {
+      every { apiClient.captureConnectionIf(any()) } returns null
 
       pinnedConnectionFor(apiClient, nodeUrl, nodeFingerprint).shouldBeNull()
     }
 
     it("returns null when the auth fingerprint changed on the same url (9A)") {
-      every { apiClient.captureConnection() } returns ConnectionSnapshot(
+      every { apiClient.captureConnectionIf(any()) } returns ConnectionSnapshot(
         instanceUrl = "https://gitlab.example.com",
         token = "other-token",
         authFingerprint = "fp-other-account",
@@ -100,9 +96,22 @@ class WriteActionTest : DescribeSpec({
     }
 
     it("returns null when the connection is unstable (capture throws)") {
-      every { apiClient.captureConnection() } throws UnstableConnectionException()
+      every { apiClient.captureConnectionIf(any()) } throws UnstableConnectionException()
 
       pinnedConnectionFor(apiClient, nodeUrl, nodeFingerprint).shouldBeNull()
+    }
+
+    it("hands the capture a predicate that absorbs a trailing-slash difference") {
+      // The predicate is what runs inside the seqlock before the credential is read (#49), so the
+      // url normalization must live in it — not only in the postcondition.
+      val predicate = slot<(String) -> Boolean>()
+      every { apiClient.captureConnectionIf(capture(predicate)) } returns null
+
+      pinnedConnectionFor(apiClient, nodeUrl, nodeFingerprint).shouldBeNull()
+
+      predicate.captured("https://gitlab.example.com/") shouldBe true
+      predicate.captured("https://gitlab.example.com") shouldBe true
+      predicate.captured("https://other.example.com") shouldBe false
     }
   }
 

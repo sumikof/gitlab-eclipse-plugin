@@ -51,11 +51,14 @@ fun classifyWrite(call: () -> PostResult): WriteOutcome =
  * Validates that the connection a sidebar node was loaded over is still the CURRENT connection,
  * and returns the snapshot to pin the write to — or null when the write must not run.
  *
- * ONE atomic [GitLabApiClient.captureConnection] provides both the comparison value and the
- * pinned snapshot (no mixed-snapshot window; design §8.7-2b, closes 6A/7B/10B). Rejects a
- * changed instance url (FR-8), a changed credential on the same url (9A), and an unstable
- * connection ([UnstableConnectionException] → null). A null return means the caller notifies
- * the user and issues NO write.
+ * ONE atomic [GitLabApiClient.captureConnectionIf] provides both the comparison value and the
+ * pinned snapshot (no mixed-snapshot window; design §8.7-2b, closes 6A/7B/10B). The instance-url
+ * comparison is handed to the capture as a predicate so it runs INSIDE the seqlock, before the
+ * credential is read: a changed instance url (FR-8) rejects the gate without ever touching the
+ * token manager (#49). A changed credential on the same url (9A) still rejects here, after the
+ * capture — the fingerprint is derived from the token, so that case cannot be decided earlier.
+ * An unstable connection ([UnstableConnectionException] → null). A null return means the caller
+ * notifies the user and issues NO write.
  */
 fun pinnedConnectionFor(
   apiClient: GitLabApiClient,
@@ -63,11 +66,14 @@ fun pinnedConnectionFor(
   nodeAuthFingerprint: String,
 ): ConnectionSnapshot? {
   val snapshot = try {
-    apiClient.captureConnection()
+    // A url mismatch yields null with the credentials untouched (#49).
+    apiClient.captureConnectionIf { url -> sameConfiguredInstance(nodeInstanceUrl, url) }
   } catch (ignored: UnstableConnectionException) {
     return null
-  }
-  val sameInstance = normalizeInstanceUrl(snapshot.instanceUrl) == normalizeInstanceUrl(nodeInstanceUrl)
+  } ?: return null
+  // The url match is already guaranteed by the capture-time predicate; kept as a postcondition so
+  // the invariant stays locally readable at the point the snapshot is returned.
+  val sameInstance = sameConfiguredInstance(nodeInstanceUrl, snapshot.instanceUrl)
   val sameAccount = snapshot.authFingerprint == nodeAuthFingerprint
   return if (sameInstance && sameAccount) snapshot else null
 }
