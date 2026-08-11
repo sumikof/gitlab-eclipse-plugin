@@ -6,6 +6,7 @@ import com.gitlab.eclipse.api.PostResult
 import com.gitlab.eclipse.api.UnstableConnectionException
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 
@@ -33,7 +34,23 @@ class CreatePipelineTest : DescribeSpec({
   }
 
   describe("runCreatePipeline") {
-    it("does NOT call create when the instance gate fails (returns InstanceMismatch)") {
+    it("does NOT call create when capture returns null because the url was rejected (InstanceMismatch)") {
+      var createCalls = 0
+      val result = runCreatePipeline(
+        contextInstanceUrl = "https://gl.example.com",
+        capture = { null },
+        create = {
+          createCalls++
+          PostResult(201, null)
+        },
+      )
+      createCalls shouldBe 0
+      result shouldBe CreateResult.InstanceMismatch
+    }
+
+    // Safety boundary (AC-3a): capture is bound by the CALLER, so a mis-bound predicate can hand
+    // back a NON-NULL snapshot from another instance. The in-function postcondition must stop it.
+    it("does NOT call create when a NON-null snapshot's url differs from the context (InstanceMismatch)") {
       var createCalls = 0
       val result = runCreatePipeline(
         contextInstanceUrl = "https://gl.example.com",
@@ -73,6 +90,8 @@ class CreatePipelineTest : DescribeSpec({
       )
       createCalls shouldBe 0
       result shouldBe CreateResult.ConnectionUnstable
+      // Unstable stays distinguishable from the null (url-rejected) case: distinct audit reasons.
+      result shouldNotBe CreateResult.InstanceMismatch
     }
 
     it("maps a GitLabApiException from create to Failed(http)") {

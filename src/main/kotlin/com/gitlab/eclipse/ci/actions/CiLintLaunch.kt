@@ -26,11 +26,14 @@ internal const val GENERIC_CI_LINT_ERROR = "GitLab: Couldn't validate the CI con
 
 /**
  * Pins the connection and runs one CI lint in the background (top-level on purpose — same shape
- * as [launchDisplayJobLog]). The pin ([GitLabApiClient.captureConnection]) runs INSIDE the
- * launch, on the scope's IO dispatcher: capturing the connection reads the token, which in OAuth
- * mode may perform a synchronous refresh HTTP call that must never block the UI thread. The
- * capture → same-instance gate → lint sequencing lives in [runCiLint]; a gate failure means the
- * yaml is NEVER sent to the wrong instance — notify instead. [myGen] was assigned on the UI
+ * as [launchDisplayJobLog]). The pin ([GitLabApiClient.captureConnectionIf]) runs INSIDE the
+ * launch, on the scope's IO dispatcher: once the instance url matches, capturing the connection
+ * reads the token, which in OAuth mode may perform a synchronous refresh HTTP call that must
+ * never block the UI thread. The instance-url comparison is bound here as the capture predicate
+ * so it runs before the credential is read and a mismatched url never triggers that refresh
+ * (#49); the capture → same-instance gate → lint sequencing lives in [runCiLint], which re-checks
+ * the url as a postcondition. A gate failure means the yaml is NEVER sent to the wrong instance —
+ * notify instead. [myGen] was assigned on the UI
  * thread by the caller; [onLinted] runs on the UI thread only after the latest-generation gate
  * passes. CancellationException is rethrown so cancellation propagates cleanly and neither
  * reflects nor notifies; any other unclassified throwable is caught here — it must never escape
@@ -55,7 +58,7 @@ internal fun launchCiLint(
     try {
       val outcome = runCiLint(
         contextInstanceUrl = context.instanceUrl,
-        capture = { apiClient.captureConnection() },
+        capture = { apiClient.captureConnectionIf { url -> sameConfiguredInstance(context.instanceUrl, url) } },
         lint = { connection -> service.validate(connection, context.projectId, content) },
       )
       val audit = buildCiLintAuditMessage(context.instanceUrl, context.projectId, key.command, outcome)

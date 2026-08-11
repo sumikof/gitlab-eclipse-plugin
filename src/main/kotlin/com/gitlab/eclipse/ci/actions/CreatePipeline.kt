@@ -34,22 +34,34 @@ sealed interface CreateResult {
 
 /**
  * SWT-free create orchestration (design §8.5, Codex P1): capture → same-instance gate → POST,
- * with the gate provably BEFORE the POST. [capture] returns the pinned snapshot (or throws
- * [UnstableConnectionException]); [create] performs the POST. [create] is NEVER invoked when the
- * gate fails or the connection is unstable, so a mismatch issues no write. Exceptions from
- * [create] are classified via [classifyWrite]; a thrown [kotlinx.coroutines.CancellationException]
- * from within [classifyWrite] propagates (it never becomes a Failed).
+ * with the gate provably BEFORE the POST. [capture] returns the pinned snapshot, or null when the
+ * configured instance url did not match the context — the caller binds that comparison as a
+ * capture-time predicate so a mismatch is rejected WITHOUT reading the credential (#49) — or
+ * throws [UnstableConnectionException]; [create] performs the POST. Null →
+ * [CreateResult.InstanceMismatch] and the throw → [CreateResult.ConnectionUnstable] stay distinct
+ * outcomes with distinct audit reasons. [create] is NEVER invoked when the gate fails or the
+ * connection is unstable, so a mismatch issues no write.
+ *
+ * The in-function [sameConfiguredInstance] check is a safety boundary, NOT a redundancy: [capture]
+ * is bound by the CALLER and [ConnectionSnapshot] does not encode which predicate validated it, so
+ * a caller that binds the wrong predicate (or none) is still stopped here before the POST.
+ *
+ * Exceptions from [create] are classified via [classifyWrite]; a thrown
+ * [kotlinx.coroutines.CancellationException] from within [classifyWrite] propagates (it never
+ * becomes a Failed).
  */
 fun runCreatePipeline(
   contextInstanceUrl: String,
-  capture: () -> ConnectionSnapshot,
+  capture: () -> ConnectionSnapshot?,
   create: (ConnectionSnapshot) -> PostResult,
 ): CreateResult {
   val connection = try {
     capture()
   } catch (ignored: UnstableConnectionException) {
     return CreateResult.ConnectionUnstable
-  }
+  } ?: return CreateResult.InstanceMismatch
+  // Already compared by the capture-time predicate, but the seam is bound OUTSIDE this function:
+  // kept as a postcondition so a caller's mis-bound predicate cannot POST to another instance.
   if (!sameConfiguredInstance(contextInstanceUrl, connection.instanceUrl)) {
     return CreateResult.InstanceMismatch
   }

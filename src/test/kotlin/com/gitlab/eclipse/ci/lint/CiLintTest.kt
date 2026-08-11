@@ -8,6 +8,7 @@ import com.gitlab.eclipse.ci.actions.WriteOutcome
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import kotlinx.coroutines.CancellationException
@@ -33,7 +34,23 @@ class CiLintTest : DescribeSpec({
       result shouldBe CiLintOutcome.Linted(expected)
     }
 
-    it("does NOT call lint when the instance gate fails (returns InstanceMismatch)") {
+    it("does NOT call lint when capture returns null because the url was rejected (InstanceMismatch)") {
+      var lintCalls = 0
+      val result = runCiLint(
+        contextInstanceUrl = "https://a.example.com",
+        capture = { null },
+        lint = {
+          lintCalls++
+          CiLintResult(valid = true, mergedYaml = null, errors = emptyList())
+        },
+      )
+      lintCalls shouldBe 0
+      result shouldBe CiLintOutcome.InstanceMismatch
+    }
+
+    // Safety boundary (AC-3a): capture is bound by the CALLER, so a mis-bound predicate can hand
+    // back a NON-NULL snapshot from another instance. The in-function postcondition must stop it.
+    it("does NOT call lint when a NON-null snapshot's url differs from the context (InstanceMismatch)") {
       var lintCalls = 0
       val result = runCiLint(
         contextInstanceUrl = "https://a.example.com",
@@ -74,6 +91,8 @@ class CiLintTest : DescribeSpec({
       )
       lintCalls shouldBe 0
       result shouldBe CiLintOutcome.ConnectionUnstable
+      // Unstable stays distinguishable from the null (url-rejected) case: distinct audit reasons.
+      result shouldNotBe CiLintOutcome.InstanceMismatch
     }
 
     it("maps a GitLabApiException from lint to Failed(http)") {

@@ -26,7 +26,9 @@ import java.io.File
  * (no pipeline node required). Flow: interactive repo resolution (UI) → branch read + ref
  * resolution (IO) → confirm dialog (UI) → in-flight guard (UI) → capture + same-instance gate
  * + POST (IO) → refresh originating window on success (UI). The connection is captured OFF the
- * UI thread ([GitLabApiClient.captureConnection] may block on an OAuth refresh). Nothing escapes
+ * UI thread ([GitLabApiClient.captureConnectionIf] may block on an OAuth refresh once the
+ * instance url matches; the url comparison is bound as the capture predicate so a mismatch
+ * returns null without reading the credential, #49). Nothing escapes
  * the shared IO scope: CancellationException is rethrown, any other throwable is caught + audited.
  */
 @Suppress("unused")
@@ -96,7 +98,7 @@ class CreatePipelineHandler(
       try {
         val result = runCreatePipeline(
           contextInstanceUrl = context.instanceUrl,
-          capture = { apiClient.captureConnection() },
+          capture = { apiClient.captureConnectionIf { url -> sameConfiguredInstance(context.instanceUrl, url) } },
           create = { conn -> actionService.create(conn, context.projectId, ref) },
         )
         val audit = buildCreateAuditMessage(context.instanceUrl, context.projectId, ref, result)
