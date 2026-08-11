@@ -44,8 +44,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
 
-    // Invalidate any CI lint / discussion generations left in `latest` by a previous stop (stop
-    // lets in-flight work finish) so their stale results cannot reapply.
+    // Invalidate any CI lint / discussion / job-log generations left in `latest` by a previous
+    // stop (stop lets in-flight work finish) so their stale results cannot reapply, and restore
+    // each registry's `active` flag that the stop hook cleared.
     // Runs after the state-dir property is set so a degraded-path log4j2 touch here
     // (this warn) cannot pin a misconfigured log location for the whole session.
     activateGenerationRegistries()
@@ -228,6 +229,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
           try {
             CiLintGenerationRegistry.onActivate()
             DiscussionGenerationRegistry.onActivate()
+            // The stop hook clears JobLogGenerationRegistry.active and nothing else restores it:
+            // without this call a stop->start cycle in the same class loader leaves every
+            // shouldAct() false forever and "Display Log" silently stops reflecting.
+            JobLogGenerationRegistry.onActivate()
           } catch (_: SWTException) {
             /* Display disposed mid-activation: registries stay at their initial fresh state. */
           }

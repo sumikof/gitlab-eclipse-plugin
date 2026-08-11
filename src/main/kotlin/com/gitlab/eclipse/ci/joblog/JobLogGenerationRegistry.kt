@@ -36,6 +36,22 @@ object JobLogGenerationRegistry {
   fun shouldAct(key: JobLogKey, generation: Long): Boolean = active && isLatest(key, generation)
 
   /**
+   * UI thread only (the start hook calls this via `display.syncExec`). Clears every latest
+   * generation recorded before this activation, so an in-flight trace fetch launched pre-stop can
+   * never reflect into a freshly (re)activated UI: its generation is no longer [latest] for its
+   * key, so [isLatest]/[shouldAct] fail it unconditionally. Also restores [active], which the stop
+   * hook cleared -- without this, a stop->start cycle in the same class loader would leave every
+   * [shouldAct] false forever and "Display Log" silently dead.
+   *
+   * Never touches [counter]: the monotonic sequence is preserved across activations, so a
+   * post-activation generation can never collide with a pre-stop one (no ABA).
+   */
+  fun onActivate() {
+    latest.clear()
+    active = true
+  }
+
+  /**
    * Test-only: the registry is a process-wide singleton, so tests reset it between runs to keep
    * generation numbers and activation state from leaking across tests. Never called in
    * production code.

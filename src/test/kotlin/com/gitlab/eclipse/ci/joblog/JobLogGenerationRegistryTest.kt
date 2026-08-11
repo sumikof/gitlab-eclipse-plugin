@@ -72,4 +72,47 @@ class JobLogGenerationRegistryTest : DescribeSpec({
       JobLogGenerationRegistry.shouldAct(k1, g) shouldBe false
     }
   }
+
+  describe("onActivate (stop -> start in the same class loader)") {
+    it("restores active after the stop hook cleared it, so shouldAct can pass again") {
+      JobLogGenerationRegistry.active = false
+
+      JobLogGenerationRegistry.onActivate()
+
+      JobLogGenerationRegistry.active shouldBe true
+      val g = JobLogGenerationRegistry.nextGeneration(k1)
+      JobLogGenerationRegistry.shouldAct(k1, g) shouldBe true
+    }
+
+    it("clears latest so an in-flight generation from before stop never reflects post-restart") {
+      val gen = JobLogGenerationRegistry.nextGeneration(k1)
+      JobLogGenerationRegistry.active = false
+
+      JobLogGenerationRegistry.onActivate()
+
+      JobLogGenerationRegistry.isLatest(k1, gen) shouldBe false
+      JobLogGenerationRegistry.shouldAct(k1, gen) shouldBe false
+    }
+
+    it("clears latest for every key, not just the most recently used one") {
+      val g1 = JobLogGenerationRegistry.nextGeneration(k1)
+      val g2 = JobLogGenerationRegistry.nextGeneration(k2)
+
+      JobLogGenerationRegistry.onActivate()
+
+      JobLogGenerationRegistry.isLatest(k1, g1) shouldBe false
+      JobLogGenerationRegistry.isLatest(k2, g2) shouldBe false
+    }
+
+    it("keeps counter monotonic (no ABA): a post-activate generation exceeds a pre-activate one") {
+      val gen = JobLogGenerationRegistry.nextGeneration(k1)
+
+      JobLogGenerationRegistry.onActivate()
+      val gen2 = JobLogGenerationRegistry.nextGeneration(k1)
+
+      (gen2 > gen) shouldBe true
+      JobLogGenerationRegistry.isLatest(k1, gen) shouldBe false
+      JobLogGenerationRegistry.shouldAct(k1, gen2) shouldBe true
+    }
+  }
 })
