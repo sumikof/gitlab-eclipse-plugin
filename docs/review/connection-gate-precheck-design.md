@@ -3,7 +3,7 @@
 対象 issue: #49
 関連: PR #48 の Codex レビュー https://github.com/sumikof/gitlab-eclipse-plugin/pull/48#discussion_r3703790506
 対象ブランチ(設計時点): `develop` @ `2f1ec61`
-改訂: round 2(Codex round 1 の P1 / P2 を反映。経緯は §25)
+改訂: round 3(Codex round 1 の P1/P2、round 2 の P1-A/P1-B を反映。経緯は §25)
 
 > 本書はレビュー専用。実装 PR およびマージ先ブランチには含めない。
 
@@ -95,7 +95,8 @@ seqlock が保証するのは **(url, token) の原子性**であって、「URL
 |---|---|
 | R-1 | 確定した設定 URL がノード/コンテキストの期待 URL と一致しない場合、資格情報(`tokenManager.getToken()`)を読まずにゲートを不成立にすること |
 | R-2 | R-1 の不成立が観測可能な副作用(HTTP・設定書き込み・secure storage 書き込み・LS 設定通知・ユーザー通知)を一切起こさないこと |
-| R-3 | ゲートの判定結果(成立/不成立)が現行と**完全に一致**すること。緩める方向にも厳しくする方向にも変えない |
+| R-3 | ゲートの判定が、**呼び出し中のある瞬間に実際に設定されていた URL(= ある安定世代の値)に対して線形化可能**であること。存在しなかった設定値や更新途中の中間状態に基づく判定を行わないこと。**現行実装のタイミング依存挙動をビット単位で再現することは要求しない**(理由と競合時の帰結は §9.4) |
+| R-3a | 資格情報を読まないことによって、**別インスタンスへの送信が起きる方向**の緩みが生じないこと。すなわち「不一致なのに成立する」判定は一切増やさないこと |
 | R-4 | ゲート不成立時の戻り値・監査ログ・ユーザー通知が、呼び出し元から見て現状と同一であること |
 | R-5 | URL の正規化が単一の実装(`normalizeInstanceUrl`)に統一されたままであること |
 | R-6 | 6 経路すべてに適用されること(§2.1) |
@@ -138,7 +139,15 @@ seqlock が保証するのは **(url, token) の原子性**であって、「URL
 
 ### 8.3 `CiLint.runCiLint` / `CreatePipeline.runCreatePipeline`(変更)
 
-責務は不変。`capture` seam の型を `() -> ConnectionSnapshot` から `() -> ConnectionSnapshot?` に変え、`null` を `InstanceMismatch` に対応させる。関数内の `sameConfiguredInstance` 呼び出しは削除する(判定が捕捉側へ移るため)。呼び出し元(経路 5・6)が述語を束縛する。
+責務は不変。`capture` seam の型を `() -> ConnectionSnapshot` から `() -> ConnectionSnapshot?` に変え、`null` を `InstanceMismatch` に対応させる。呼び出し元(経路 5・6)が述語を束縛する。
+
+**関数内の既存の `sameConfiguredInstance` 呼び出しは削除せず、postcondition として残す。** これは冗長ではなく**安全境界**である。理由:
+
+- `pinnedConnectionFor` は述語を**関数内で束縛**する(§9.2)ため、述語と照合対象が同一関数に閉じており構造的に安全である。
+- 対して `runCiLint` / `runCreatePipeline` は `capture` seam を**呼び出し元から受け取る**。束縛は外部にあり、`ConnectionSnapshot?` という型には**「どの述語で検証されたスナップショットか」が符号化されていない**。呼び出し元が述語を誤る(あるいは `{ true }` を渡す)と、ヘルパは別インスタンスへ lint YAML や pipeline 作成要求を送ってしまう。現行はヘルパ自身の照合がこれを止めている。
+- したがって、述語は「資格情報に触れないため」の早期判定、`sameConfiguredInstance` は「別インスタンスへ送らないため」の最終判定であり、**役割が異なる**。前者を入れても後者は外せない(R-3a)。
+
+`pinnedConnectionFor` 側でも同じ postcondition を残す(§9.2)。そちらでは構造的に真であることが保証されるが、不変条件が局所的に読み取れることの価値を優先する。
 
 ## 9. 処理フロー
 
@@ -193,31 +202,56 @@ fun pinnedConnectionFor(
   } catch (ignored: UnstableConnectionException) {
     return null
   } ?: return null
-  // instanceUrl の一致は捕捉時点で構造的に保証済み。残るアカウント照合のみを行う。
-  return if (snapshot.authFingerprint == nodeAuthFingerprint) snapshot else null
+  // instanceUrl の一致は捕捉時の述語で保証済みだが、postcondition として残す(§8.3・R-3a)。
+  val sameInstance = sameConfiguredInstance(nodeInstanceUrl, snapshot.instanceUrl)
+  val sameAccount = snapshot.authFingerprint == nodeAuthFingerprint
+  return if (sameInstance && sameAccount) snapshot else null
 }
 ```
 
-`sameConfiguredInstance`(`ci/actions/CreatePipeline.kt:24`)は既に `normalizeInstanceUrl` を用いた共有関数であり、これを使うことで R-5 を満たす。既存の `sameInstance` 比較は捕捉時の述語に置き換わるため削除する(構造的に保証されるものを二重に書かない)。
+`sameConfiguredInstance`(`ci/actions/CreatePipeline.kt:24`)は既に `normalizeInstanceUrl` を用いた共有関数であり、述語と postcondition の両方でこれを使うことで R-5 を満たす。
 
 ### 9.3 なぜ拒否側にも世代検証が必要か
 
 素朴に「述語が偽なら即 `null`」とすると、**更新途中の URL を読んで拒否**しうる。世代が奇数でないことを確認した直後に更新が始まると、`preferenceStore` から読める URL は新しい値でありながら、その更新はまだ確定していない。現行実装ではこの読みは `g1 != g2` によって破棄され、リトライ後の確定値で判定される。
 
-拒否側に世代検証を入れないと、**現行なら成立していたゲートが不成立になりうる**(R-3 違反)。§9.1 のとおり、不一致を確定する前に `readGeneration() == g1` を確認し、一致しなければリトライすることで、**拒否の判定も確定値に対してのみ行われる**。
+拒否側に世代検証を入れないと、**どの安定世代にも存在しなかった中間状態に基づいて拒否**することになり、R-3(線形化可能性)に違反する。§9.1 のとおり、不一致を確定する前に `readGeneration() == g1` を確認し、一致しなければリトライすることで、**拒否の判定も、ある安定世代に実在した値に対してのみ行われる**。
 
-### 9.4 決定関数の同一性
+これは §9.4 で受容する挙動差(**拒否確定の直後**に始まる更新)とは別の問題である。§9.3 が閉じるのは「読んだ値がそもそも確定していなかった」ケース、§9.4 が受容するのは「読んだ値は確定していたが、その直後に変わった」ケースであり、前者は不正、後者は線形化可能で正当である。
 
-上記により、ゲートの判定結果は次のとおり現行と完全に一致する(R-3)。
+### 9.4 判定の線形化可能性と、競合時に残る挙動差
 
-| 状況 | 現行 | 本設計 |
-|---|---|---|
-| 確定 URL がノードと一致・fingerprint 一致 | スナップショット | スナップショット(同一値) |
-| 確定 URL がノードと不一致 | `null`(**トークン読取後**) | `null`(**トークン未読取**) |
-| 確定 URL 一致・fingerprint 不一致 | `null`(トークン読取後) | `null`(トークン読取後・§3 のとおり対象外) |
-| `MAX_CAPTURE_ATTEMPTS` 回とも不安定 | `UnstableConnectionException` → `null` | 同左 |
+**「現行と完全に一致」は達成できない。これは実装の不備ではなく、目的そのものから導かれる帰結である。**
 
-**変わるのは 2 行目における副作用の有無のみであり、判定結果は変わらない。** round 1 で受容した「フラップ時の挙動差」は、この設計では**発生しない**(§25)。
+現行実装の判定点は `tokenManager.getToken()` の**後**にある(`api/GitLabApiClient.kt:183-185`)。本設計の目的は不一致時に資格情報を読まないことなので、判定点は必然的にその**前**へ移る。判定点を前へ動かせば、両者の間に更新が着地しうる時間帯の扱いが変わる。すなわち **(a) 不一致時に資格情報を読まない と (b) 資格情報読み取り後に決定する実装のタイミング依存挙動を保存する は両立しない。**
+
+具体的な差(Codex round 2 P1-B):
+
+1. `g1` を読む(偶数)
+2. URL を読む → `B`(期待は `A`)
+3. 本設計: `readGeneration() == g1` を確認 → 一致 → **即 `null`(拒否)**
+4. **その直後**に `B → A` の保存が始まる
+5. 現行: 手順 3 の位置ではまだ `getToken()` を実行中であり、その所要時間(OAuth リフレッシュなら HTTP を含む)に手順 4 が着地すると `g1 != g2` でリトライし、確定した `A` で**成立しうる**
+
+現行がここで成立するのは、**高価な資格情報読み取りに時間がかかり、その間に更新が着地するから**にすぎない。これは仕様ではなくタイミングの副産物であり、判定を速くする実装はいずれもこの挙動を再現できない。
+
+したがって本設計は要件を次のとおり定める(R-3)。
+
+> ゲートの判定は、**呼び出し中のある瞬間に実際に設定されていた URL に対して線形化可能**でなければならない。存在しなかった設定値や更新途中の中間状態に基づいて判定してはならない。
+
+この定義のもとで:
+
+| 状況 | 現行 | 本設計 | R-3 |
+|---|---|---|---|
+| 安定した一致・fingerprint 一致 | スナップショット | スナップショット(同一値) | 満たす |
+| 安定した不一致 | `null`(**トークン読取後**) | `null`(**トークン未読取**) | 満たす |
+| 一致・fingerprint 不一致 | `null`(トークン読取後) | `null`(トークン読取後・§3 のとおり対象外) | 満たす |
+| 全試行が不安定 | `UnstableConnectionException` → 不成立 | 同左 | 満たす |
+| **更新が拒否確定の直後に始まる**(上記 3→4) | 成立しうる | **不成立** | 満たす(拒否は手順 2 で実在した `B` に対する判定であり、`B` は確かにその瞬間の設定値だった) |
+
+**受容する競合時の帰結**: 設定を「不一致 → 一致」に戻す操作と、バックグラウンドのゲート判定が重なった場合、その操作は**一時的に拒否されうる**。ユーザーから見た挙動は既存の「接続が変わったため中止した」通知であり、新しい失敗モードではない。再実行すれば成立する。
+
+**方向の非対称性(R-3a)**: この差は常に**拒否側**に倒れる。「不一致なのに成立する」判定は一切増えない。別インスタンスへ送信する方向の緩みが無いことが、本設計で守るべき本質的な不変条件である。
 
 ## 10. API / インターフェース
 
@@ -313,7 +347,8 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 
 - 述語が拒否 → 戻り値 `null` かつ **`verify(exactly = 0) { tokenManager.getToken() }`**(R-1 / R-2)
 - 述語が受理 → スナップショットを返し、`getToken()` は 1 回(既存の回帰)
-- **§9.3 の性質**: 述語が拒否したときの読みが更新とレースしていた場合(1 回目の `readGeneration` の後で世代が進む)、`null` を返さずリトライすること。リトライ後に述語が受理すればスナップショットを返すこと。**これが R-3(判定結果の同一性)を守っている箇所であり、最も落としやすい**
+- **§9.3 の性質**: 述語が拒否したときの読みが更新とレースしていた場合(1 回目の `readGeneration` の後で世代が進む)、`null` を返さずリトライすること。リトライ後に述語が受理すればスナップショットを返すこと。**これが R-3(更新途中の中間状態で判定しないこと)を守っている箇所であり、最も落としやすい**
+- **§9.4 で選んだ意味論の固定**: 拒否を確定した**直後**に世代が進む場合でも `null` を返すこと(リトライしないこと)。これは「現行なら成立しえた」ケースであり、**受容した挙動差を明示的にテストで固定する**。このテストが無いと、後から「バグではないか」と再修正されうる
 - 全試行が不安定 → `UnstableConnectionException`(既存の回帰)
 - `captureConnection()` が `captureConnectionIf { true }` と同一の結果になること
 
@@ -329,6 +364,7 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 **(c) `runCiLint` / `runCreatePipeline`**
 
 - `capture` が `null` → `InstanceMismatch`(経路 5・6 の R-6)
+- **`capture` が「コンテキストと異なる URL を持つ非 null スナップショット」を返した場合でも `InstanceMismatch` になり、`lint` / `create` が呼ばれないこと**(§8.3 の postcondition・R-3a)。呼び出し元の述語の束縛漏れを模したケースであり、**このテストが安全境界そのものを守る**
 - 既存の `InstanceMismatch` テストを新しい形に移行し、**判定が捕捉側へ移ったあとも同じ結果になる**ことを固定する
 
 ### 20.3 変異テスト
@@ -337,6 +373,7 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 
 - 述語判定を `tokenManager.getToken()` の後ろへ移動(= 現行の欠陥の再現)
 - §9.3 の世代再確認(`if (readGeneration() == g1)`)を削除
+- `runCiLint` / `runCreatePipeline` の postcondition `sameConfiguredInstance` を削除(= §8.3 の安全境界の除去)
 - `sameConfiguredInstance` を素の `==` に置換(正規化の除去)
 
 ### 20.4 検証できないこと
@@ -349,7 +386,9 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 |---|---|---|
 | AC-1 | URL 述語が拒否したとき `tokenManager.getToken()` が呼ばれない | 単体テスト(20.2 a) |
 | AC-2 | 述語の拒否が確定値に対してのみ行われ、更新とレースした読みではリトライする | 単体テスト(20.2 a) |
-| AC-3 | 6 経路すべてでゲートの判定結果が現行と一致する | 既存テストの回帰 + 20.2 b/c |
+| AC-2a | 拒否確定の直後に世代が進む場合は `null` のまま(§9.4 で受容した挙動差の固定) | 単体テスト(20.2 a) |
+| AC-3 | 6 経路すべてで、ゲートの判定が §9.4 の意味で線形化可能であり、**成立側に緩まない**(R-3 / R-3a) | 既存テストの回帰 + 20.2 b/c |
+| AC-3a | `runCiLint` / `runCreatePipeline` が、URL の異なる非 null スナップショットに対して `lint` / `create` を呼ばない | 単体テスト(20.2 c) |
 | AC-4 | `captureConnection()` の意味・シグネチャが不変で、URL ゲートを持たない 3 箇所が無変更 | ビルド + 既存テスト |
 | AC-5 | `./gradlew build` がベースライン(headless SWT 由来の 36 失敗のみ)を維持 | `verify.sh` で `FAILSET_IDENTICAL` |
 | AC-6 | detekt の新規指摘 0 | pristine worktree との指摘集合の差分 |
@@ -385,6 +424,8 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 | RISK-4 | 経路 5・6(`runCiLint` / `runCreatePipeline`)が見落とされ、同型の欠陥が残る | 中 | §2.1 に 6 経路すべてを明記。R-6 と AC-3 で固定。**issue #49 本文の「CI の全書き込み経路」という記述は過小である** |
 | RISK-5 | `captureConnection()` のラッパ化で既存 3 箇所の意味が変わる | 中 | AC-4 として固定。`captureConnectionIf { true }` は `null` 枝に入らないことを §9.1 で論証 |
 | RISK-6 | `api` から `ci` の正規化関数を直接呼ぶ実装にされ、レイヤが逆転する | 低 | §6 と §8.1 に制約として明記。述語方式がこの制約から導かれることを説明済み |
+| RISK-7 | 実装時に「述語で保証済みだから」と `runCiLint` / `runCreatePipeline` の postcondition を削除され、呼び出し元の述語誤りが別インスタンスへの送信に直結する | **高** | §8.3 に安全境界として理由つきで明記。AC-3a で固定し、20.3 で当該行の変異を必須にする |
+| RISK-8 | §9.4 で受容した挙動差(拒否確定直後の更新)が後から「バグ」として再修正され、資格情報読み取りが復活する | 中 | 受容した意味論を AC-2a としてテストで固定し、§9.4 に「engineering で消せる差ではない」理由を残す |
 
 ## 24. 確認できた範囲 / 確認できていない範囲
 
@@ -417,4 +458,15 @@ fun runCreatePipeline(contextInstanceUrl: String, capture: () -> ConnectionSnaps
 
 **round 1 の設計に対する自己指摘(掃引で発見、Codex の指摘外)**: `runCiLint` / `runCreatePipeline` が `pinnedConnectionFor` と同型であることを見落としており、影響範囲を 4 経路と記述していた。実際は 6 経路(§2.1)。R-6・RISK-4・AC-3 を追加。
 
-**round 2 で新たに導入し、まだレビューを受けていない論点**: §9.3(拒否側の世代検証)。これは round 1 の P1 対応で新たに生じた要件であり、実装時に最も落としやすい箇所として RISK-1 に格上げしている。
+### round 2(Codex、2026-08-11)— 反映済み
+
+| 指摘 | 判定 | 反映 |
+|---|---|---|
+| **P1-A**(§8.3): ヘルパ内の `sameConfiguredInstance` を削除すると、`capture` seam の束縛が外部にあるため、呼び出し元の述語誤りで別インスタンスへ lint/create を送りうる。`ConnectionSnapshot?` には「どの述語で検証済みか」が符号化されていない | **正しい**。`pinnedConnectionFor` は述語を関数内で束縛するので構造的に安全だが、2 つのヘルパは seam を外部から受け取るという非対称を見落としていた | postcondition を**残す**方針に変更(§8.3)。役割が「資格情報に触れない早期判定」と「別インスタンスへ送らない最終判定」で異なることを明記。R-3a・AC-3a・RISK-7 を追加 |
+| **P1-B**(§9.3): 拒否側の世代読みは「その読みより前に始まった更新」しか検出できない。拒否確定の直後に更新が始まる場合、現行はまだ `getToken()` 実行中で `g1 != g2` を検出しリトライし成立しうる。「完全に一致」は成立しない | **正しい**。round 2 で追加した拒否側の世代読みが、現行のトークン読みより早い線形化点を作っている | R-3 を「**ある安定世代へ線形化可能**」に改めた(§5)。§9.4 を全面的に書き直し、**これは engineering で消せる差ではなく目的そのものからの帰結**(不一致時に資格情報を読まないことと、資格情報読み取り後に決定する実装のタイミング依存挙動の保存は両立しない)であることを論証。競合時の帰結を受容として明記し、AC-2a でテスト固定。方向の非対称性(拒否側にしか倒れない)を R-3a として明示 |
+
+**round 3 で新たに導入し、まだレビューを受けていない論点**:
+
+- R-3 の線形化可能性による再定義そのもの(§5・§9.4)。この仕様が実装者にとって検証可能か。
+- R-3a(成立側に緩まないこと)を独立要件として切り出したこと。
+- postcondition を `pinnedConnectionFor` 側にも残した判断(そちらでは構造的に真であり、局所的な可読性を優先した)。冗長と見るべきか。
