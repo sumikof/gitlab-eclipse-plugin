@@ -13,8 +13,14 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.core.resources.IFile
 import org.eclipse.core.resources.IProject
 import org.eclipse.core.resources.IResource
@@ -27,6 +33,7 @@ import org.eclipse.core.resources.ResourcesPlugin
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.lsp4j.WorkspaceFolder
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ProjectOpenLanguageServerListenerTest : DescribeSpec({
   val languageServer = mockk<GitLabLanguageServer>(relaxUnitFun = true)
   val wrapper = mockk<GitLabLanguageServerWrapper>()
@@ -137,6 +144,21 @@ class ProjectOpenLanguageServerListenerTest : DescribeSpec({
     it("does not send for a delta whose resource is not a project") {
       fireAndSettle(eventFor(delta(mockk<IFile>(), kind = IResourceDelta.ADDED)))
 
+      verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("does not cancel the shared scope when reading the workspace folders throws") {
+      // Project deletion near shutdown: `workspaceFolders` calls ResourcesPlugin.getWorkspace(),
+      // which throws IllegalStateException once the resources bundle winds down. The scope is the
+      // SHARED plain-Job scope from WorkspaceModule — an escape cancels every coroutine on it.
+      every { workspaceFolders } throws IllegalStateException("Workspace is closed.")
+      val swallowUncaught = CoroutineExceptionHandler { _, _ -> }
+      val sharedScope = CoroutineScope(Job() + UnconfinedTestDispatcher() + swallowUncaught)
+      val listener = ProjectOpenLanguageServerListener(wrapper, sharedScope)
+
+      listener.resourceChanged(eventFor(delta(mockk<IProject>(), kind = IResourceDelta.REMOVED)))
+
+      sharedScope.isActive shouldBe true
       verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
     }
   }

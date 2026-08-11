@@ -4,6 +4,7 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.utils.logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.core.resources.IProject
@@ -44,21 +45,33 @@ class ProjectOpenLanguageServerListener(
     // once) must not queue several near-simultaneous didChangeConfiguration calls (issue #16).
     if (projectSetChanged) {
       coroutineScope.launch {
-        logger.info("Sending workspace folders change notification to Language Server.")
+        try {
+          logger.info("Sending workspace folders change notification to Language Server.")
 
-        languageServerWrapper.languageServer?.didChangeConfiguration(
-          DidChangeConfigurationParams(
-            GitLabLanguageServerConfigurationParams(workspaceFolders = workspaceFolders)
+          languageServerWrapper.languageServer?.didChangeConfiguration(
+            DidChangeConfigurationParams(
+              GitLabLanguageServerConfigurationParams(workspaceFolders = workspaceFolders)
+            )
           )
-        )
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          // `workspaceFolders` reads ResourcesPlugin.getWorkspace() (IllegalStateException once
+          // the resources bundle winds down, e.g. project deletion near shutdown) and a nullable
+          // locationURI. This runs on the SHARED plain-Job scope — an escape would cancel it and
+          // every other coroutine on it (same shape as `launchCiWrite`). Type only: no URIs/paths.
+          logger.error("Workspace folders change notification failed: ${e.javaClass.name}")
+        }
       }
     }
   }
 
   /**
-   * True when this project-level delta changes the set of projects the language server should
-   * see: project added, removed, or opened/closed. Open/close surfaces as CHANGED with the OPEN
-   * flag; bare CHANGED (file-save churn inside the project) must not trigger a resend.
+   * True for project added/removed, and for open/close (CHANGED with the OPEN flag); bare
+   * CHANGED (file-save churn inside the project) must not trigger a resend. Note that
+   * [workspaceFolders] maps `root.projects` with no isOpen filter and closed projects keep
+   * their locationURI, so today an open/close resends a byte-identical folder list; matching
+   * OPEN becomes load-bearing if [workspaceFolders] ever filters closed projects.
    */
   private fun IResourceDelta.isProjectSetChange(): Boolean = when (kind) {
     IResourceDelta.ADDED, IResourceDelta.REMOVED -> true
