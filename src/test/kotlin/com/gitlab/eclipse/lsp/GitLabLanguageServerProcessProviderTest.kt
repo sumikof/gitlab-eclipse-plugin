@@ -7,7 +7,9 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
+import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.google.gson.JsonParser
 import io.kotest.assertions.nondeterministic.continually
 import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
@@ -17,10 +19,12 @@ import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.verify
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IPath
 import org.eclipse.core.runtime.Platform
+import org.eclipse.lsp4j.WorkspaceFolder
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -32,6 +36,7 @@ import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
@@ -70,11 +75,19 @@ private class FakeLanguageServerProcess(
   var destroyed = false
     private set
 
+  /**
+   * Every framed message the provider sent, in arrival order, so a test can assert on what
+   * actually went over the wire rather than on the params object the provider built.
+   */
+  val receivedMessages: List<String> get() = messages
+  private val messages = CopyOnWriteArrayList<String>()
+
   @Suppress("unused")
   private val responder = Thread {
     try {
       while (true) {
         val body = readFramedMessage() ?: break
+        messages += body
         // Notifications (initialized, didChangeConfiguration, ...) have no id: skip them.
         val id = REQUEST_ID.find(body)?.groupValues?.get(1)
         if (id != null) {
@@ -200,6 +213,13 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   val spawnedProcesses = mutableListOf<FakeLanguageServerProcess>()
   var nextInitializeReply = InitializeReply.SUCCESS
 
+  // Stands in for the projects open in the Eclipse workspace. Two of them, because a single
+  // folder cannot tell "the whole workspace" apart from "whichever project happened to be first".
+  val eclipseProjects = listOf(
+    WorkspaceFolder("file:///w/alpha", "alpha"),
+    WorkspaceFolder("file:///w/beta", "beta"),
+  )
+
   fun newProvider(
     factory: (ProcessBuilder) -> Process = {
       FakeLanguageServerProcess(nextInitializeReply).also { fake -> spawnedProcesses += fake }
@@ -216,6 +236,9 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   )
 
   beforeSpec {
+    // `workspaceFolders` is a top-level val that calls ResourcesPlugin.getWorkspace();
+    // it must be mocked or every test that starts the provider throws in a plain-JVM run.
+    mockkStatic("com.gitlab.eclipse.lsp.utils.ProjectsWorkspaceFolderKt")
     startKoin {
       modules(
         module {
@@ -234,6 +257,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     GitLabLanguageServerWrapper().unregisterLanguageServer()
     nextInitializeReply = InitializeReply.SUCCESS
     every { installer.install() } returns "/fake/language-server"
+    every { workspaceFolders } returns eclipseProjects
     // Not covered by relaxUnitFun: the identity-aware revocation returns whether it cleared.
     every { languageServerWrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
     every { proxyManager.getHttpProxyUrl() } returns null
@@ -505,6 +529,31 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   }
 
   describe("start") {
+    it("sends every project in the Eclipse workspace as a workspace folder on initialize") {
+      val provider = newProvider()
+
+      provider.start(bundle)
+
+      // Read off the wire rather than off the params object: what this covers is a self-assignment
+      // (`workspaceFolders = workspaceFolders`) that left the field null while the call site still
+      // named the right thing, so only the serialized request can tell the two apart.
+      eventually(2.seconds) {
+        val initialize = spawnedProcesses[0].receivedMessages
+          .firstOrNull { message -> "\"method\":\"initialize\"" in message }
+          .shouldNotBeNull()
+        val folders = JsonParser.parseString(initialize).asJsonObject
+          .getAsJsonObject("params")
+          .getAsJsonArray("workspaceFolders")
+          .shouldNotBeNull()
+        folders.map { folder -> folder.asJsonObject["uri"].asString } shouldBe
+          eclipseProjects.map { it.uri }
+        folders.map { folder -> folder.asJsonObject["name"].asString } shouldBe
+          eclipseProjects.map { it.name }
+      }
+
+      provider.stop()
+    }
+
     it("fails fast and stays stopped when the process cannot be created") {
       val provider = newProvider(factory = { throw IOException("spawn refused") })
 

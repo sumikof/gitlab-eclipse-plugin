@@ -30,20 +30,29 @@ A successful build will include these artifacts among other intermediate artifac
 ```plaintext
 target/
 ├── repository
-│   ├── artifacts.jar
-│   ├── artifacts.xml.xz
-│   ├── content.jar
-│   ├── content.xml.xz
-│   ├── p2.index
-│   └── plugins
-│       └── gitlab-eclipse-plugin_0.1.0.qualifier.jar
-│   └── features
-│       └── gitlab-eclipse-plugin.feature_0.1.0.qualifier.jar
-└── update-site-0.1.0-SNAPSHOT.zip
+│   ├── artifacts.jar
+│   ├── artifacts.xml.xz
+│   ├── content.jar
+│   ├── content.xml.xz
+│   ├── p2.index
+│   ├── features
+│   │   └── com.gitlab.eclipse.feature_<version>.jar
+│   └── plugins
+│       └── com.gitlab.eclipse.gitlab-eclipse-plugin_<version>.<qualifier>.jar
+└── com.gitlab.eclipse.update-site-<version>.zip
 ```
 
+`<version>` is the project version declared in the root `pom.xml` (kept in step with `allprojects.version`
+in `build.gradle.kts`), so these names follow the current version instead of a fixed one.
+
+The feature carries no qualifier: `feature/feature.xml` declares a plain release version, which is also
+the name `update-site/category.xml` refers to. Only the plugin bundles carry a fourth `<qualifier>`
+segment, and it comes from `ext["bundleVersion"]` in `build.gradle.kts` (the build timestamp written
+straight into `Bundle-Version`), not from Tycho expanding a `.qualifier` suffix.
+
 - Generate a local update site/p2 repository under `target/repository` which can be added as a local Update Site.
-- Assemble a ZIP archive `target/update-site-0.1.0-SNAPSHOT.zip` Maven artifact which can be deployed for usage.
+- Assemble a ZIP archive `target/com.gitlab.eclipse.update-site-<version>.zip` Maven artifact which can be
+  deployed for usage. The name follows the Tycho `finalName` default, `<artifactId>-<version>`.
 
 ### Add the GitLab Releases software site
 
@@ -60,7 +69,7 @@ target/
         1. For **Location:**, select **Local..." and choose your local update site located at:
 
            ```plaintext
-           <your-gitlab-for-eclipse-project-path>/update-site/target/respository
+           <your-gitlab-for-eclipse-project-path>/update-site/target/repository
            ```
 
     - For a **release**:
