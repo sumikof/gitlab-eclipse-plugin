@@ -149,4 +149,86 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       shouldThrow<UnstableConnectionException> { client.captureConnection() }
     }
   }
+
+  describe("captureConnectionIf") {
+    it("returns null without reading the token when the predicate rejects the settled url") {
+      genFn = { 2L }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://other.example.com"
+
+      val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
+
+      snapshot shouldBe null
+      verify(exactly = 0) { tokens.getToken() }
+    }
+
+    it("returns the snapshot and reads the token exactly once when the predicate accepts") {
+      genFn = { 4L }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://expected.example.com"
+      every { tokens.getToken() } returns "tok-123"
+
+      val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
+
+      snapshot shouldNotBe null
+      snapshot?.instanceUrl shouldBe "https://expected.example.com"
+      snapshot?.token shouldBe "tok-123"
+      snapshot?.authFingerprint shouldBe sha256HexPrefix16("tok-123")
+      snapshot?.configGeneration shouldBe 4L
+      verify(exactly = 1) { tokens.getToken() }
+    }
+
+    it("retries instead of rejecting when the url read raced an update, then accepts the settled url") {
+      // Attempt 1: g1=2 (even), but the url read races an update — the rejection-side generation
+      // recheck sees 3 != 2, so the mid-update value must NOT be judged -> retry.
+      // Attempt 2: g1=g2=4, the settled url is accepted -> snapshot.
+      val generations = ArrayDeque(listOf(2L, 3L, 4L, 4L))
+      genFn = { generations.removeFirst() }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
+        listOf("https://mid-update.example.com", "https://expected.example.com")
+      every { tokens.getToken() } returns "tok-123"
+
+      val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
+
+      snapshot shouldNotBe null
+      snapshot?.instanceUrl shouldBe "https://expected.example.com"
+      snapshot?.token shouldBe "tok-123"
+      snapshot?.configGeneration shouldBe 4L
+      verify(exactly = 1) { tokens.getToken() }
+    }
+
+    it("keeps returning null when the generation advances right after a settled rejection (no retry)") {
+      // Accepted behavioral difference (issue #49 design): a rejection committed at a stable
+      // generation is final. Even though the settings change right afterwards to a url the
+      // predicate would accept, captureConnectionIf must NOT retry and must not read the token.
+      var generationReads = 0
+      genFn = {
+        generationReads++
+        if (generationReads <= 2) 2L else 4L // settled at 2 for the rejection, then advances
+      }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
+        listOf("https://other.example.com", "https://expected.example.com")
+      every { tokens.getToken() } returns "tok-123"
+
+      val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
+
+      snapshot shouldBe null
+      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 1) { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) }
+    }
+
+    it("throws UnstableConnectionException when the generation stays odd (update never completes)") {
+      genFn = { 7L }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
+      every { tokens.getToken() } returns "tok"
+
+      shouldThrow<UnstableConnectionException> { client.captureConnectionIf { true } }
+    }
+
+    it("captureConnection() returns the same result as captureConnectionIf { true }") {
+      genFn = { 4L }
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
+      every { tokens.getToken() } returns "tok-123"
+
+      client.captureConnection() shouldBe client.captureConnectionIf { true }
+    }
+  }
 })
