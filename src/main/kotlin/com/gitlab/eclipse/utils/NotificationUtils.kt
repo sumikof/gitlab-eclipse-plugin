@@ -18,7 +18,9 @@ object NotificationUtils {
    * asyncExec can throw [SWTException] on a disposed display — both swallowed: in that window a
    * lost notification is the correct outcome. The catches are precise, not `catch (Exception)`,
    * so a genuine programming error still surfaces instead of being silently eaten. The runnable
-   * re-checks disposal because the display can be disposed between scheduling and execution.
+   * re-checks disposal because the display can be disposed between scheduling and execution, and
+   * (same shape as `reflectLatest`'s runnable) swallows [SWTException] from the popup itself: a
+   * display disposed mid-turn would otherwise surface as an "Unhandled event loop exception".
    *
    * [onUiThread] and [isDisplayDisposed] are seams with production defaults (same pattern as
    * `EditorSelectionContextProvider`): a Display cannot exist in a headless test JVM, so the
@@ -32,8 +34,12 @@ object NotificationUtils {
     try {
       onUiThread(
         Runnable {
-          if (isDisplayDisposed()) return@Runnable
-          showOnUiThread(message)
+          try {
+            if (isDisplayDisposed()) return@Runnable
+            showOnUiThread(message)
+          } catch (ignored: SWTException) {
+            /* display disposed mid-turn: no-op */
+          }
         },
       )
     } catch (ignored: SWTException) {

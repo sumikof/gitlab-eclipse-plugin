@@ -68,6 +68,18 @@ class NotificationUtilsTest : DescribeSpec({
       verify(exactly = 1) { NotificationUtils.showOnUiThread("hello") }
     }
 
+    it("swallows an SWTException thrown by the popup inside the runnable (reflectLatest's shape)") {
+      // showOnUiThread builds a shell and opens the popup; on a display disposed mid-turn that
+      // throws SWTException INSIDE the scheduled runnable, where the outer catch cannot see it —
+      // uncaught it would surface as an "Unhandled event loop exception" per notification.
+      every { NotificationUtils.showOnUiThread(any()) } throws SWTException(SWT.ERROR_WIDGET_DISPOSED)
+      val scheduled = mutableListOf<Runnable>()
+
+      NotificationUtils.show("hello", onUiThread = { scheduled += it }, isDisplayDisposed = { false })
+
+      shouldNotThrowAny { scheduled.single().run() }
+    }
+
     it("skips the popup when the display is disposed by the time the runnable runs") {
       every { NotificationUtils.showOnUiThread(any()) } just Runs
       val scheduled = mutableListOf<Runnable>()
