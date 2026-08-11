@@ -6,9 +6,14 @@
 
 ### Changed
 
+- Documented the update site artifact names by their current version instead of a fixed `0.1.0-SNAPSHOT`, and corrected the `target/respository` typo in the README ([#57](https://github.com/sumikof/gitlab-eclipse-plugin/issues/57))
+
 ### Removed
 
 ### Fixed
+
+- Resolve the Windows SWT and Language Server artifacts on every Windows release rather than only on Windows 11, which left Windows 10 resolving the Linux artifacts ([#57](https://github.com/sumikof/gitlab-eclipse-plugin/issues/57))
+- Send the projects open in the Eclipse workspace as `workspaceFolders` in the Language Server `initialize` request; a self-assignment left the field unset until the first configuration sync ([#57](https://github.com/sumikof/gitlab-eclipse-plugin/issues/57))
 
 ## 0.8.2 (2026-03-31)
 
