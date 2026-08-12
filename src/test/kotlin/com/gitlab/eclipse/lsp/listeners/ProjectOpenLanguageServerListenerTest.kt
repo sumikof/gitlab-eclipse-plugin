@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -92,7 +93,7 @@ class ProjectOpenLanguageServerListenerTest : DescribeSpec({
 
   fun fireAndSettle(event: IResourceChangeEvent): TestScope {
     val scope = TestScope(StandardTestDispatcher())
-    val listener = ProjectOpenLanguageServerListener(wrapper, scope)
+    val listener = ProjectOpenLanguageServerListener(wrapper, scope, Mutex())
     listener.resourceChanged(event)
     scope.testScheduler.advanceUntilIdle()
     return scope
@@ -154,12 +155,31 @@ class ProjectOpenLanguageServerListenerTest : DescribeSpec({
       every { workspaceFolders } throws IllegalStateException("Workspace is closed.")
       val swallowUncaught = CoroutineExceptionHandler { _, _ -> }
       val sharedScope = CoroutineScope(Job() + UnconfinedTestDispatcher() + swallowUncaught)
-      val listener = ProjectOpenLanguageServerListener(wrapper, sharedScope)
+      val listener = ProjectOpenLanguageServerListener(wrapper, sharedScope, Mutex())
 
       listener.resourceChanged(eventFor(delta(mockk<IProject>(), kind = IResourceDelta.REMOVED)))
 
       sharedScope.isActive shouldBe true
       verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("waits for the outbound lock instead of racing whatever else is being sent") {
+      // This notification carries `workspaceFolders`, and so does the full configuration. Sent
+      // outside the outbound Mutex it interleaves with a full send, and whichever lands last
+      // decides the server's folder list — a newly imported project can be dropped again by a
+      // full send that was built before it appeared (issue #16).
+      val outboundLock = Mutex()
+      val scope = TestScope(StandardTestDispatcher())
+      val listener = ProjectOpenLanguageServerListener(wrapper, scope, outboundLock)
+      outboundLock.tryLock() shouldBe true
+
+      listener.resourceChanged(eventFor(delta(mockk<IProject>(), kind = IResourceDelta.ADDED)))
+      scope.testScheduler.advanceUntilIdle()
+      verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
+
+      outboundLock.unlock()
+      scope.testScheduler.advanceUntilIdle()
+      verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
     }
   }
 })

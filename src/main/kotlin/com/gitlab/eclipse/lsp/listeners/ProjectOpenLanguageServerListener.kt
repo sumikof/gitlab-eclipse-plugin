@@ -7,6 +7,8 @@ import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.eclipse.core.resources.IProject
 import org.eclipse.core.resources.IResourceChangeEvent
 import org.eclipse.core.resources.IResourceChangeListener
@@ -16,7 +18,8 @@ import org.eclipse.lsp4j.DidChangeConfigurationParams
 
 class ProjectOpenLanguageServerListener(
   private val languageServerWrapper: GitLabLanguageServerWrapper,
-  private val coroutineScope: CoroutineScope
+  private val coroutineScope: CoroutineScope,
+  private val outboundLock: Mutex,
 ) : IResourceChangeListener {
   private val logger by lazy { logger<ProjectOpenLanguageServerListener>() }
 
@@ -48,11 +51,18 @@ class ProjectOpenLanguageServerListener(
         try {
           logger.info("Sending workspace folders change notification to Language Server.")
 
-          languageServerWrapper.languageServer?.didChangeConfiguration(
-            DidChangeConfigurationParams(
-              GitLabLanguageServerConfigurationParams(workspaceFolders = workspaceFolders)
+          // Under the same lock as every other outbound notification, and reading
+          // `workspaceFolders` inside it. This is a partial configuration, but `workspaceFolders`
+          // is a key the FULL configuration also carries, so an unsynchronised send here can be
+          // overtaken by a full send that was built before this project appeared — and the server
+          // keeps the older list until something sends again (issue #16).
+          outboundLock.withLock {
+            languageServerWrapper.languageServer?.didChangeConfiguration(
+              DidChangeConfigurationParams(
+                GitLabLanguageServerConfigurationParams(workspaceFolders = workspaceFolders)
+              )
             )
-          )
+          }
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {

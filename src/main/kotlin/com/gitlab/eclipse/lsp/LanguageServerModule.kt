@@ -34,7 +34,9 @@ val languageServerModule = module {
     GitLabLanguageServerOpenFilesService(get(), get(), get())
   }
 
-  single<ProjectOpenLanguageServerListener>(createdAtStart = true) { ProjectOpenLanguageServerListener(get(), get()) }
+  single<ProjectOpenLanguageServerListener>(createdAtStart = true) {
+    ProjectOpenLanguageServerListener(get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
   single<GitLabLanguageServerConfigurationService> {
     GitLabLanguageServerConfigurationService(get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
   }

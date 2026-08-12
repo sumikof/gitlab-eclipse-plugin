@@ -15,6 +15,7 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LE
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
 import com.gitlab.eclipse.utils.logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -36,30 +37,55 @@ class GitLabLanguageServerConfigurationService(
   fun sendConfiguration() = sendConfiguration(languageServerWrapper.languageServer)
 
   fun sendConfiguration(server: GitLabLanguageServer?) {
-    val params = buildParams()
-
     logger.info("Sending configuration change notification to Language Server.")
     // Send to the server captured at CALL time, never the wrapper's current proxy at
     // coroutine-execution time: a rapid restart may register a new pre-initialize server
     // before this coroutine runs, and the queued work must strand with the old server
     // instead of being redirected at the new one.
     coroutineScope.launch {
-      outboundLock.withLock {
-        server?.didChangeConfiguration(
-          DidChangeConfigurationParams(params)
-        )
+      try {
+        outboundLock.withLock {
+          // Read the configuration HERE, under the lock, rather than at call time. The `Mutex`
+          // grants exclusion but never arrival order, and the dispatcher decides which queued
+          // send reaches `lock()` first, so a snapshot taken at call time can be transmitted
+          // after a newer one. The configuration is sent in full, so that older snapshot then
+          // stands as the server's whole state until something sends again — a toggle silently
+          // reverts. Reading under the lock makes the snapshot and the send one indivisible
+          // step, which is all the ordering this needs: every caller writes the preference
+          // store BEFORE calling, so whoever wins the lock reads the newest values and the
+          // last send to run is the newest one (issue #16). SecurityScanLauncher already
+          // builds its params inside its own lock region for the same reason.
+          server?.didChangeConfiguration(
+            DidChangeConfigurationParams(buildParams())
+          )
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        // `buildParams()` runs on the coroutine now, so failures that used to surface
+        // synchronously at the caller land here instead: it reads
+        // `ResourcesPlugin.getWorkspace()` (IllegalStateException once the resources bundle
+        // winds down) and refreshes the OAuth token over the network. This is the SHARED
+        // plain-Job scope — an escape would cancel it and every other coroutine on it (same
+        // shape as ProjectOpenLanguageServerListener). Type only: the params carry a token
+        // and certificate paths.
+        logger.error("Configuration change notification failed: ${e.javaClass.name}")
       }
     }
   }
 
   /**
-   * Snapshot of the whole configuration, read from the preference store at CALL time.
+   * Snapshot of the whole configuration, read from the preference store when it is called.
+   *
+   * Call it inside the outbound `Mutex` region that sends the result. Building it earlier and
+   * carrying the value into the lock reintroduces issue #16: a `Mutex` grants exclusion, never
+   * arrival order, so the older of two snapshots can be the one transmitted last.
    *
    * Exposed separately from [sendConfiguration] for callers that must send the configuration and
-   * something that depends on it back to back, inside one region of the outbound `Mutex`.
+   * something that depends on it back to back, inside one region of that `Mutex`.
    * [sendConfiguration] cannot serve them: it queues its own coroutine, so a caller already holding
    * the `Mutex` would deadlock, and one that is not would have no way to keep the two notifications
-   * in order — a `Mutex` grants exclusion, never arrival order.
+   * in order.
    */
   internal fun buildParams(): GitLabLanguageServerConfigurationParams {
     val securityScanEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
