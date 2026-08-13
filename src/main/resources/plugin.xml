@@ -189,6 +189,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.InsertSnippet"
+                name="Insert GitLab Snippet"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 name="Show Merged GitLab CI Config"
                 categoryId="gitlab-eclipse-plugin">
@@ -707,6 +713,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.InsertSnippet"
+                class="com.gitlab.eclipse.snippets.handlers.InsertSnippetHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 class="com.gitlab.eclipse.ci.actions.ShowMergedCiConfigHandler"
         />
@@ -1094,6 +1105,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.CreateSnippet"
                         label="Create Snippet"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.InsertSnippet"
+                        label="Insert Snippet"
                 />
             </menu>
         </menuContribution>
