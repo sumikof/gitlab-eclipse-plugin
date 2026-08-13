@@ -37,6 +37,11 @@ class CycleCodeSuggestionsHandlerTest : DescribeSpec({
   beforeEach {
     every { platformUtils.getActiveTextEditor() } returns textEditor
     every { codeSuggestionsManager.getOrCreateSession(textEditor) } returns session
+    // isEnabled now asks the manager, which never creates a session (issue #74). Delegating the
+    // stub to the session keeps the per-test overrides below meaningful.
+    every { codeSuggestionsManager.isSuggestionDisplayed(textEditor) } answers {
+      session.isCodeSuggestionDisplayed()
+    }
     every { session.isCodeSuggestionDisplayed() } returns true
     every { session.cycleCodeSuggestion(any()) } returns Unit
     every { event.parameters } returns null

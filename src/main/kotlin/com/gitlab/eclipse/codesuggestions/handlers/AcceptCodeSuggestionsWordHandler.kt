@@ -28,6 +28,6 @@ class AcceptCodeSuggestionsWordHandler : AbstractHandler() {
     val textEditor = platformUtils.getActiveTextEditor()
       ?: return false
 
-    return codeSuggestionsManager.getOrCreateSession(textEditor).isCodeSuggestionDisplayed()
+    return codeSuggestionsManager.isSuggestionDisplayed(textEditor)
   }
 }

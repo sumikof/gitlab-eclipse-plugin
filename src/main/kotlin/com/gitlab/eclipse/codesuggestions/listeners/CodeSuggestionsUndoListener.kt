@@ -19,7 +19,20 @@ class CodeSuggestionsUndoListener(
   private val logger by lazy { logger<CodeSuggestionsUndoListener>() }
 
   init {
-    DocumentUndoManagerRegistry.getDocumentUndoManager(document).addDocumentUndoListener(this)
+    // The registry only has a manager for documents that were connect()ed. An editor opened on a
+    // non-workspace file (IDE.openEditorOnFileStore — the MCP config, MR files fetched outside the
+    // workspace) has none, and getDocumentUndoManager returns null. Constructing used to throw an
+    // NPE here, which propagated out of handler enablement checks and aborted the platform's
+    // binding computation, leaving commands stuck disabled (issue #74).
+    //
+    // Degrading is correct rather than merely safe: a document with no undo manager emits no undo
+    // events, so there is nothing this listener could observe on it.
+    val undoManager = DocumentUndoManagerRegistry.getDocumentUndoManager(document)
+    if (undoManager == null) {
+      logger.info("No document undo manager for this editor; undo detection is off for it.")
+    } else {
+      undoManager.addDocumentUndoListener(this)
+    }
   }
 
   override fun documentUndoNotification(event: DocumentUndoEvent) {
