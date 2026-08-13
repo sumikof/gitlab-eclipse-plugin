@@ -16,17 +16,23 @@ import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
   val preferenceStore = mockk<ScopedPreferenceStore>(relaxed = true)
   val languageServer = mockk<GitLabLanguageServer>(relaxUnitFun = true)
@@ -96,6 +102,47 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
 
       verify { serverA.didChangeConfiguration(any()) }
       verify(exactly = 0) { serverB.didChangeConfiguration(any()) }
+    }
+  }
+
+  describe("send ordering") {
+    it("sends the configuration as it stands when the send runs, not as it stood when queued") {
+      // The Mutex serialises the sends but does not hand the lock out in the order it was asked
+      // for, so a snapshot taken at call time can be transmitted after a newer one and leave the
+      // server holding the older full configuration. Reading at send time removes the ordering
+      // question: whichever coroutine wins the lock reads the store, which the toggle handlers
+      // write BEFORE calling this (issue #16).
+      val server = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      // StandardTestDispatcher queues the launch, opening the window between the caller returning
+      // and the notification actually going out.
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
+      every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns false
+
+      queuedService.sendConfiguration(server)
+      // The user toggles again before the queued coroutine gets to run.
+      every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns true
+      testScope.testScheduler.advanceUntilIdle()
+
+      val captured = slot<DidChangeConfigurationParams>()
+      verify { server.didChangeConfiguration(capture(captured)) }
+      val params = captured.captured.settings as GitLabLanguageServerConfigurationParams
+      params.codeCompletion?.enabled shouldBe true
+    }
+
+    it("does not cancel the shared scope when reading the configuration throws") {
+      // Reading at send time moves `buildParams()` onto the coroutine, so what used to surface
+      // synchronously at the caller now runs on the SHARED plain-Job scope from WorkspaceModule —
+      // an escape there cancels every other coroutine on it.
+      every { workspaceFolders } throws IllegalStateException("Workspace is closed.")
+      val swallowUncaught = CoroutineExceptionHandler { _, _ -> }
+      val sharedScope = CoroutineScope(Job() + UnconfinedTestDispatcher() + swallowUncaught)
+      val scopedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, sharedScope, Mutex())
+
+      scopedService.sendConfiguration(languageServer)
+
+      sharedScope.isActive shouldBe true
+      verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
     }
   }
 
