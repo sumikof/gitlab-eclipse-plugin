@@ -88,4 +88,23 @@ class CodeSuggestionsUndoListenerTest : DescribeSpec({
 
     assertDoesNotThrow { listener.dispose() }
   }
+
+  describe("documents without an undo manager (issue #74)") {
+    // DocumentUndoManagerRegistry only has a manager for documents that were connect()ed.
+    // Editors opened on a non-workspace file (IDE.openEditorOnFileStore, e.g. the MCP config)
+    // have none, and the registry returns null. Constructing threw an NPE that propagated out of
+    // handler enablement checks and aborted the platform's binding computation.
+    it("does not throw when the registry has no undo manager for the document") {
+      every { DocumentUndoManagerRegistry.getDocumentUndoManager(document) } returns null
+
+      assertDoesNotThrow { CodeSuggestionsUndoListener(document, session) }
+    }
+
+    it("does not throw on dispose either when there is no undo manager") {
+      every { DocumentUndoManagerRegistry.getDocumentUndoManager(document) } returns null
+      val orphan = CodeSuggestionsUndoListener(document, session)
+
+      assertDoesNotThrow { orphan.dispose() }
+    }
+  }
 })

@@ -25,6 +25,35 @@ internal class CodeSuggestionsManager(
     return editorSessions[editor] ?: startSession(editor)
   }
 
+  /**
+   * The session already established for [editor], or null if there is none — **never creates one**.
+   *
+   * For enablement checks. Those run while the platform recomputes key bindings, so constructing a
+   * session there turns any construction failure into an exception thrown out of
+   * `BindingManager.computeBindings`, which aborts the computation and leaves commands stuck
+   * disabled (issue #74). No session also means no suggestion is displayed, so the answer such a
+   * check needs is already known without building anything.
+   */
+  fun getSession(editor: ITextEditor): CodeSuggestionsSession? = editorSessions[editor]
+
+  /**
+   * Whether a suggestion is currently shown in [editor] — the question every command's `isEnabled`
+   * actually asks. **Never creates a session and never throws.**
+   *
+   * Both properties matter. The platform calls `isEnabled` from
+   * `BindingManager.computeBindings`, so anything thrown here aborts the binding computation and
+   * leaves commands stuck disabled, with no way back short of restarting into a clean workspace
+   * (issue #74). No session means nothing is displayed, which is the honest answer anyway.
+   */
+  fun isSuggestionDisplayed(editor: ITextEditor): Boolean =
+    try {
+      getSession(editor)?.isCodeSuggestionDisplayed() == true
+    } catch (e: Exception) {
+      // Type only: this runs on every binding recomputation, so it must stay quiet and cheap.
+      logger.error("Could not determine the code suggestion state: ${e.javaClass.name}")
+      false
+    }
+
   fun endAllSessions() {
     editorSessions.keys.toList().forEach(::endSession)
 
