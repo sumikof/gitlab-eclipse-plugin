@@ -15,6 +15,8 @@ data class SnippetPayload(
   val fileName: String,
   val visibility: String,
   val content: String,
+  /** Only patch snippets carry one; omitted from the request body when null (design F3). */
+  val description: String? = null,
 )
 
 /**

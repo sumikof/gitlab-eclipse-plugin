@@ -36,6 +36,9 @@ class SnippetService(private val apiClient: GitLabApiClient = service()) {
       addProperty("file_name", payload.fileName)
       addProperty("visibility", payload.visibility)
       addProperty("content", payload.content)
+      // Absent rather than null when there is none: only patch snippets carry a description, and
+      // sending an explicit null would set an empty one on plain snippets.
+      payload.description?.let { addProperty("description", it) }
     }
     val response = apiClient.postJson("/projects/$projectId/snippets", body.toString(), connection)
     return JsonParser.parseString(response).asJsonObject.get("web_url")?.asString
