@@ -183,6 +183,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.CreateSnippet"
+                name="Create GitLab Snippet"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 name="Show Merged GitLab CI Config"
                 categoryId="gitlab-eclipse-plugin">
@@ -696,6 +702,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.CreateSnippet"
+                class="com.gitlab.eclipse.snippets.handlers.CreateSnippetHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 class="com.gitlab.eclipse.ci.actions.ShowMergedCiConfigHandler"
         />
@@ -1076,6 +1087,13 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
                         label="Open Flow Builder"
+                />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep5" visible="true"/>
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.CreateSnippet"
+                        label="Create Snippet"
                 />
             </menu>
         </menuContribution>
