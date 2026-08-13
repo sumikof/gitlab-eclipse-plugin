@@ -49,6 +49,19 @@ class SnippetServiceTest : DescribeSpec({
       verify(exactly = 0) { apiClient.postJson(any(), any(), any()) }
     }
 
+    it("adds description only when the payload carries one") {
+      val apiClient = mockk<GitLabApiClient>()
+      every { apiClient.captureConnectionIf(any()) } returns connection
+      val body = slot<String>()
+      every { apiClient.postJson(any(), capture(body), connection) } returns """{"web_url":"u"}"""
+
+      SnippetService(apiClient).create(1L, payload.copy(description = "how to apply")) { true }
+
+      body.captured shouldBe
+        """{"title":"Foo.kt","file_name":"Foo.kt","visibility":"private","content":"hello\n",""" +
+        """"description":"how to apply"}"""
+    }
+
     it("returns null when the response carries no web_url") {
       val apiClient = mockk<GitLabApiClient>()
       every { apiClient.captureConnectionIf(any()) } returns connection
