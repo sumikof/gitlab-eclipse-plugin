@@ -15,7 +15,6 @@ import io.mockk.verify
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import java.io.File
-import java.time.Instant
 import kotlin.io.path.createTempDirectory
 
 /** Real repositories for the git half; the REST and push collaborators are stubbed. */

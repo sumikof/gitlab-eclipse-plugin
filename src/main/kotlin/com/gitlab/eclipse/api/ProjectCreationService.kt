@@ -25,6 +25,7 @@ data class ExistingProject(
   val creatorId: Long?,
   val createdAt: Instant?,
   val webUrl: String,
+  val httpUrl: String,
 )
 
 /**
@@ -112,6 +113,7 @@ class ProjectCreationService(private val apiClient: GitLabApiClient = service())
       creatorId = json.get("creator_id")?.takeIf { !it.isJsonNull }?.asLong,
       createdAt = json.stringOrEmpty("created_at").toInstantOrNull(),
       webUrl = json.stringOrEmpty("web_url"),
+      httpUrl = json.stringOrEmpty("http_url_to_repo"),
     )
   }
 

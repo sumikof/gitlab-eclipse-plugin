@@ -46,10 +46,11 @@ class ProjectCreationServiceTest : DescribeSpec({
     it("posts path, namespace_id and visibility and reads both clone urls") {
       val api = client()
       val body = slot<String>()
-      every { api.postJson("/projects", capture(body), any()) } returns """
+      val response = """
         {"id": 9, "ssh_url_to_repo": "git@h:g/p.git",
          "http_url_to_repo": "https://h/g/p.git", "web_url": "https://h/g/p"}
       """.trimIndent()
+      every { api.postJson("/projects", capture(body), any()) } returns response
 
       val created = ProjectCreationService(api).createProject("p", 7, "private") { true }!!
 
@@ -85,10 +86,11 @@ class ProjectCreationServiceTest : DescribeSpec({
   describe("findProject") {
     it("reads the creator and the creation time the recovery path needs") {
       val api = client()
-      every { api.fetchText(any(), any()) } returns """
+      val response = """
         {"id": 3, "creator_id": 11, "created_at": "2026-08-14T09:30:00.000Z",
-         "web_url": "https://h/g/p"}
+         "web_url": "https://h/g/p", "http_url_to_repo": "https://h/g/p.git"}
       """.trimIndent()
+      every { api.fetchText(any(), any()) } returns response
 
       val found = ProjectCreationService(api).findProject("g/p") { true }!!
 
@@ -96,6 +98,7 @@ class ProjectCreationServiceTest : DescribeSpec({
       found.creatorId shouldBe 11L
       found.createdAt shouldBe Instant.parse("2026-08-14T09:30:00Z")
       found.webUrl shouldBe "https://h/g/p"
+      found.httpUrl shouldBe "https://h/g/p.git"
     }
 
     it("reports a missing project as null rather than throwing") {
