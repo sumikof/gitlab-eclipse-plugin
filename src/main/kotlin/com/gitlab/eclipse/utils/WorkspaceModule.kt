@@ -2,6 +2,7 @@ package com.gitlab.eclipse.utils
 
 import com.gitlab.eclipse.mergerequests.GitOperationGuard
 import com.gitlab.eclipse.preferences.PreferenceInitializer
+import com.gitlab.eclipse.snippets.SnippetPatchApplyService
 import com.gitlab.eclipse.views.sidebar.SidebarViewState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,11 @@ fun workspaceModule(bundleContext: BundleContext) = module {
   // observe/mutate the SAME view state, so it lives here as a singleton.
   single { SidebarViewState() }
 
-  // Shared between MrBranchCheckoutService (checkout) and BranchPushService (push): the guard
-  // only serializes git operations per repository if BOTH services see the SAME instance.
+  // Shared between MrBranchCheckoutService (checkout), BranchPushService (push) and
+  // SnippetPatchApplyService (patch apply): the guard only serializes git operations per
+  // repository if ALL of them see the SAME instance.
   single { GitOperationGuard() }
+
+  // Takes the shared guard, and a quarantine rooted under the bundle state location.
+  single { SnippetPatchApplyService(get()) }
 }
