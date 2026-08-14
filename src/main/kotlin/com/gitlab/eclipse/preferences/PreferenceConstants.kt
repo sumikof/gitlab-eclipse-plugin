@@ -20,6 +20,10 @@ object PreferenceConstants {
   const val DUO_CHAT_ENABLED: String = "gitlab.duoChat.enabled"
   const val DUO_ENABLED_WITHOUT_GITLAB_PROJECT: String = "gitlab.duo.enabledWithoutGitlabProject"
   const val DUO_CHAT_SELECTED_WEBVIEW: String = "gitlab.duoChat.selectedWebview"
+
+  /** One JSON array holding every repository's project assignment (design §11). */
+  const val SELECTED_PROJECTS: String = "gitlab.assignments.selectedProjects"
+
   const val SECURITY_SCAN_ENABLED: String = "gitlab.securityScan.enabled"
   const val SECURITY_SCAN_ON_SAVE: String = "gitlab.securityScan.scanFileOnSave"
 }
