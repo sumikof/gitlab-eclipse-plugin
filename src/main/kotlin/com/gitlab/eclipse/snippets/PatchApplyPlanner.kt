@@ -4,6 +4,7 @@ import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
 import org.eclipse.jgit.lib.FileMode
 import org.eclipse.jgit.lib.ObjectId
+import org.eclipse.jgit.lib.ObjectInserter
 import org.eclipse.jgit.lib.ObjectReader
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.patch.FileHeader
@@ -109,17 +110,22 @@ class PatchApplyPlanner {
     val headTreeId = repo.resolve(HEAD_TREE) ?: return PatchPlan.NoHead
     return RevWalk(repo).use { walk ->
       repo.newObjectInserter().use { inserter ->
-        val applied = PatchApplier(repo, walk.parseTree(headTreeId), inserter).applyPatch(patch)
-        if (applied.errors.isNotEmpty()) {
-          // Error.toString() carries oldFileName; only the count ever leaves this class (A9).
-          PatchPlan.ApplyFailed(applied.errors.size)
-        } else {
-          inserter.newReader().use { reader ->
-            changeSet(repo, reader, headTreeId, applied.treeId)
-          }
-        }
+        applyInCore(repo, inserter, walk, headTreeId, patch)
       }
     }
+  }
+
+  private fun applyInCore(
+    repo: Repository,
+    inserter: ObjectInserter,
+    walk: RevWalk,
+    headTreeId: ObjectId,
+    patch: Patch,
+  ): PatchPlan {
+    val applied = PatchApplier(repo, walk.parseTree(headTreeId), inserter).applyPatch(patch)
+    // Error.toString() carries oldFileName; only the count ever leaves this class (A9).
+    if (applied.errors.isNotEmpty()) return PatchPlan.ApplyFailed(applied.errors.size)
+    return inserter.newReader().use { reader -> changeSet(repo, reader, headTreeId, applied.treeId) }
   }
 
   /**

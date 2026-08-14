@@ -5,6 +5,7 @@ import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.navigation.GitLabProjectInfo
 import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
+import com.gitlab.eclipse.snippets.PatchApplyMessages
 import com.gitlab.eclipse.snippets.PatchApplyOutcome
 import com.gitlab.eclipse.snippets.PatchSnippetCandidate
 import com.gitlab.eclipse.snippets.PatchSnippetFilter
@@ -122,7 +123,7 @@ class ApplySnippetPatchHandler : AbstractHandler() {
           uiNotify("GitLab: Could not read that patch file.")
           return@launch
         }
-        uiNotify(message(applyUnderRule(project, patchText)))
+        uiNotify(PatchApplyMessages.of(applyUnderRule(project, patchText)))
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -181,42 +182,6 @@ class ApplySnippetPatchHandler : AbstractHandler() {
     dialog.setMessage("Select a patch to apply")
     dialog.setElements(labels.keys.toTypedArray())
     return if (dialog.open() == Window.OK) labels[dialog.firstResult as? String] else null
-  }
-
-  /** Design §16: counts only, never paths — and never a JGit message (§13 / A9). */
-  private fun message(outcome: PatchApplyOutcome): String = when (outcome) {
-    is PatchApplyOutcome.Applied -> buildString {
-      append("GitLab: Applied the patch to ${outcome.pathCount} file(s).")
-      if (outcome.prunedBackups > 0) {
-        append(" Removed ${outcome.prunedBackups} expired patch backup(s).")
-      }
-    }
-    PatchApplyOutcome.Busy ->
-      "GitLab: Another git operation is running on this repository. Try again when it finishes."
-    PatchApplyOutcome.NoHead -> "GitLab: The repository has no commit to apply a patch to."
-    PatchApplyOutcome.Empty -> "GitLab: That snippet is not a patch, or it changes nothing."
-    PatchApplyOutcome.BinaryNotSupported ->
-      "GitLab: The patch contains a binary change, which cannot be applied."
-    PatchApplyOutcome.GitlinkNotSupported ->
-      "GitLab: The patch changes a submodule, which is not supported."
-    is PatchApplyOutcome.StagedChanges ->
-      "GitLab: ${outcome.count} file(s) have staged changes. Commit or unstage them first."
-    is PatchApplyOutcome.PatchRejected ->
-      "GitLab: The patch does not apply to this working tree (${outcome.errorCount} conflict(s))."
-    PatchApplyOutcome.TooLarge -> "GitLab: The patch is too large to back up safely, so it was not applied."
-    PatchApplyOutcome.BackupUnavailable ->
-      "GitLab: The files this patch would overwrite could not be backed up. Nothing was changed."
-    is PatchApplyOutcome.RolledBack -> buildString {
-      append("GitLab: The patch failed and was rolled back (${outcome.restored} file(s) restored).")
-      if (outcome.notRestored > 0) {
-        append(" ${outcome.notRestored} file(s) were changed outside Eclipse and were left as they are.")
-        append(" Their original contents are in the patch backup area.")
-      }
-    }
-    PatchApplyOutcome.IndexConflicted ->
-      "GitLab: The files were written but the index could not be updated, because it changed " +
-        "underneath. Review with git status; the originals are in the patch backup area."
-    is PatchApplyOutcome.Failed -> "GitLab: Could not apply the patch. See the Error Log."
   }
 
   private fun notify(message: String) {
