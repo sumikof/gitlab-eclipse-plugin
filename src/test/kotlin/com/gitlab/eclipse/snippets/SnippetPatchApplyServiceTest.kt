@@ -105,6 +105,17 @@ class SnippetPatchApplyServiceTest : DescribeSpec({
       File(dir, "A.txt").readText() shouldBe "staged\n"
     }
 
+    it("refuses to overwrite an uncommitted working-tree change") {
+      val (dir, git) = newRepo()
+      git.use { commit(it, dir, "A.txt", "a\n") }
+      File(dir, "A.txt").writeText("a\nmine\n")
+
+      val outcome = newService().apply(File(dir, ".git"), dir, modifyA)
+
+      outcome shouldBe PatchApplyOutcome.DirtyWorkTree(1)
+      File(dir, "A.txt").readText() shouldBe "a\nmine\n"
+    }
+
     it("refuses to start when the backup area cannot make room") {
       val (dir, git) = newRepo()
       git.use { commit(it, dir, "A.txt", "a\n") }

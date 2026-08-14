@@ -26,6 +26,9 @@ sealed interface PatchApplyOutcome {
   /** A19: [count] target paths carry staged changes, so nothing was written. */
   data class StagedChanges(val count: Int) : PatchApplyOutcome
 
+  /** [count] target paths carry unstaged working-tree changes; nothing was written. */
+  data class DirtyWorkTree(val count: Int) : PatchApplyOutcome
+
   /** The patch does not apply to HEAD. [errorCount] is a count only — the messages quote paths. */
   data class PatchRejected(val errorCount: Int) : PatchApplyOutcome
 
@@ -112,6 +115,7 @@ class SnippetPatchApplyService(
     is PatchPlan.Malformed -> PatchApplyOutcome.Empty
     is PatchPlan.ApplyFailed -> PatchApplyOutcome.PatchRejected(plan.errorCount)
     is PatchPlan.StagedChanges -> PatchApplyOutcome.StagedChanges(plan.count)
+    is PatchPlan.DirtyWorkTree -> PatchApplyOutcome.DirtyWorkTree(plan.count)
     is PatchPlan.TooLarge -> PatchApplyOutcome.TooLarge
   }
 }

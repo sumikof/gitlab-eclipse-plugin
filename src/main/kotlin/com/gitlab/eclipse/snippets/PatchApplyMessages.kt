@@ -29,6 +29,9 @@ object PatchApplyMessages {
     }
     is PatchApplyOutcome.StagedChanges ->
       "GitLab: ${outcome.count} file(s) have staged changes. Commit or unstage them first."
+    is PatchApplyOutcome.DirtyWorkTree ->
+      "GitLab: ${outcome.count} file(s) have uncommitted changes. The patch applies to the last " +
+        "commit, so applying it would replace them. Commit or stash them first."
     is PatchApplyOutcome.PatchRejected ->
       "GitLab: The patch does not apply to this working tree (${outcome.errorCount} conflict(s))."
     else -> null

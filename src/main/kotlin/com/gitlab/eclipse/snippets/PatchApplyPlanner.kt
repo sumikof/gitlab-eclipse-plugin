@@ -2,7 +2,9 @@ package com.gitlab.eclipse.snippets
 
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
+import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.FileMode
+import org.eclipse.jgit.lib.IndexDiff
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.ObjectInserter
 import org.eclipse.jgit.lib.ObjectReader
@@ -11,6 +13,8 @@ import org.eclipse.jgit.patch.FileHeader
 import org.eclipse.jgit.patch.Patch
 import org.eclipse.jgit.patch.PatchApplier
 import org.eclipse.jgit.revwalk.RevWalk
+import org.eclipse.jgit.treewalk.FileTreeIterator
+import org.eclipse.jgit.treewalk.filter.PathFilterGroup
 import org.eclipse.jgit.util.io.DisabledOutputStream
 import java.nio.charset.StandardCharsets
 
@@ -75,6 +79,12 @@ sealed interface PatchPlan {
 
   /** A19: [count] target paths differ between the index and HEAD, so applying would lose them. */
   data class StagedChanges(val count: Int) : PatchPlan
+
+  /**
+   * [count] target paths hold unstaged working-tree changes. The post-image is HEAD plus the
+   * patch, so writing it would replace that uncommitted work — see [PatchApplyPlanner].
+   */
+  data class DirtyWorkTree(val count: Int) : PatchPlan
 
   /** The post-images would not fit in the backup area, so the apply must not begin. */
   data class TooLarge(val bytes: Long) : PatchPlan
@@ -167,16 +177,38 @@ class PatchApplyPlanner {
       }
     }
 
-    // A19, and it has to be the last gate: applying over a staged change would make the index
-    // update below discard it. Nothing has been written at this point.
-    val staged = PatchIndexUpdater.countIndexEntriesDifferingFromHead(
-      repo,
-      changes.map { it.path },
-      headTreeId,
-    )
+    // A19: applying over a staged change would make the index update discard it.
+    val paths = changes.map { it.path }
+    val staged = PatchIndexUpdater.countIndexEntriesDifferingFromHead(repo, paths, headTreeId)
     if (staged > 0) return PatchPlan.StagedChanges(staged)
 
+    // Nothing in the design covers this, and it is the same class of loss A19 guards against.
+    // The post-image is HEAD plus the patch, so writing it over a path that carries uncommitted
+    // working-tree edits replaces them — recoverable only from the backup area, and reported as a
+    // success. Refusing is the safe half of "rather leave the tree alone than overwrite a change
+    // we did not make" (design §9.4-5-5). Nothing has been written at this point.
+    val dirty = countWorkTreeEntriesDifferingFromIndex(repo, paths)
+    if (dirty > 0) return PatchPlan.DirtyWorkTree(dirty)
+
     return PatchPlan.Ok(changes, headTreeId)
+  }
+
+  /**
+   * How many of [paths] differ between the index and the working tree. Uses [IndexDiff] rather
+   * than comparing raw bytes so the working-tree filters — `core.autocrlf` above all, which is on
+   * by default on Windows — are applied; a byte comparison would call every file dirty there.
+   *
+   * The caller has already established that the index matches HEAD for these paths, so "differs
+   * from the index" and "differs from HEAD" are the same statement here.
+   */
+  private fun countWorkTreeEntriesDifferingFromIndex(repo: Repository, paths: List<String>): Int {
+    if (repo.isBare || paths.isEmpty()) return 0
+    val diff = IndexDiff(repo, Constants.HEAD, FileTreeIterator(repo))
+    diff.setFilter(PathFilterGroup.createFromStrings(paths))
+    diff.diff()
+    // Only `modified`: a locally deleted path holds no content to lose, and the patch's own
+    // outcome for it is what the user asked for.
+    return diff.modified.count { it in paths }
   }
 
   private companion object {

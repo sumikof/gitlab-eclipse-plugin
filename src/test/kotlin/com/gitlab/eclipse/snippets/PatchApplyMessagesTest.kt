@@ -28,6 +28,7 @@ class PatchApplyMessagesTest : DescribeSpec({
     it("counts staged paths and conflicts") {
       PatchApplyMessages.of(PatchApplyOutcome.StagedChanges(2)) shouldContain "2 file(s) have staged changes"
       PatchApplyMessages.of(PatchApplyOutcome.PatchRejected(4)) shouldContain "4 conflict(s)"
+      PatchApplyMessages.of(PatchApplyOutcome.DirtyWorkTree(3)) shouldContain "3 file(s) have uncommitted"
     }
 
     it("never repeats the exception type back to the user") {

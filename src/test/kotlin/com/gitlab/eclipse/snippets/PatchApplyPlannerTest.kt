@@ -180,6 +180,26 @@ class PatchApplyPlannerTest : DescribeSpec({
       plan(dir, modifyA) shouldBe PatchPlan.StagedChanges(1)
     }
 
+    it("aborts when the target path carries an unstaged working-tree change") {
+      val (dir, git) = newRepo()
+      git.use { commit(it, dir, "A.txt", "a\n") }
+      // The patch context still matches HEAD, so it would apply — over the user's edit.
+      File(dir, "A.txt").writeText("a\nmine\n")
+
+      plan(dir, modifyA) shouldBe PatchPlan.DirtyWorkTree(1)
+    }
+
+    it("allows a patch when the dirty file is not one it touches") {
+      val (dir, git) = newRepo()
+      git.use {
+        commit(it, dir, "A.txt", "a\n")
+        commit(it, dir, "B.txt", "b\n")
+      }
+      File(dir, "B.txt").writeText("mine\n")
+
+      plan(dir, modifyA).shouldBeInstanceOf<PatchPlan.Ok>()
+    }
+
     it("reports a conflicting patch as a failure and writes nothing") {
       val (dir, git) = newRepo()
       git.use { commit(it, dir, "A.txt", "totally different\n") }
