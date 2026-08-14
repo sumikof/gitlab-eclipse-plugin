@@ -201,6 +201,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.SelectProject"
+                name="Select GitLab Project"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 name="Show Merged GitLab CI Config"
                 categoryId="gitlab-eclipse-plugin">
@@ -729,6 +735,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.SelectProject"
+                class="com.gitlab.eclipse.assignments.handlers.SelectProjectHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 class="com.gitlab.eclipse.ci.actions.ShowMergedCiConfigHandler"
         />
@@ -1126,6 +1137,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.CreateSnippetPatch"
                         label="Create Snippet Patch"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.SelectProject"
+                        label="Select GitLab Project"
                 />
             </menu>
         </menuContribution>

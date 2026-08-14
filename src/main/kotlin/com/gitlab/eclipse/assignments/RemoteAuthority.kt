@@ -38,7 +38,7 @@ object RemoteAuthorityParser {
   private fun parseWithScheme(url: String, schemeEnd: Int): RemoteAuthority? {
     val scheme = url.substring(0, schemeEnd).lowercase()
     val authorityStart = schemeEnd + SCHEME_SEPARATOR.length
-    val pathStart = url.indexOf('/', authorityStart).takeIf { it >= 0} ?: url.length
+    val pathStart = url.indexOf('/', authorityStart).takeIf { it >= 0 } ?: url.length
     val authority = url.substring(authorityStart, pathStart).substringAfter('@')
     if (authority.isEmpty()) return null
     val colon = authority.lastIndexOf(':')

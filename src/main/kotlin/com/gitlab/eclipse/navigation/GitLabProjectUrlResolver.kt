@@ -35,27 +35,27 @@ class GitLabProjectUrlResolver(
   private val logger by lazy { logger<GitLabProjectUrlResolver>() }
 
   /**
-   * Null when the lookup cannot be built at all — outside a running container, for instance.
-   * Assignments are an override, so one that is unavailable degrades to the ordinary resolution
-   * rather than breaking project resolution everywhere (A8 / §22's regression risk).
+   * Consults the user's assignments, never throwing: any failure here — including not being able
+   * to build the lookup at all, as outside a running container — means "no assignment", never
+   * "resolution failed". Assignments are an override, so one that is unavailable has to degrade to
+   * the ordinary resolution instead of breaking project resolution everywhere (A8 / §22's risk).
    */
-  private val assignments: AssignedProjectLookup? by lazy {
-    try {
+  private val assignedProject: (Repository) -> AssignedProjectLookup.Result by lazy {
+    val lookup = try {
       assignmentLookupFactory()
     } catch (e: Exception) {
       logger.warn("Project assignments unavailable: ${e.javaClass.name}")
       null
     }
-  }
-
-  /** Never throws: any failure here means "no assignment", never "resolution failed". */
-  private fun assignedProject(repo: Repository): AssignedProjectLookup.Result =
-    try {
-      assignments?.forRepository(repo) ?: AssignedProjectLookup.Result.None
-    } catch (e: Exception) {
-      logger.warn("Project assignment lookup failed: ${e.javaClass.name}")
-      AssignedProjectLookup.Result.None
+    { repo: Repository ->
+      try {
+        lookup?.forRepository(repo) ?: AssignedProjectLookup.Result.None
+      } catch (e: Exception) {
+        logger.warn("Project assignment lookup failed: ${e.javaClass.name}")
+        AssignedProjectLookup.Result.None
+      }
     }
+  }
 
   sealed interface Resolution {
     data class Ok(val url: String) : Resolution
