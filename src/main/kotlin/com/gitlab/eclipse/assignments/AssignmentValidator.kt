@@ -52,6 +52,14 @@ class AssignmentValidator(private val auth: GitAuthConfigurer = GitAuthConfigure
   }
 
   /**
+   * Which of [remotes] (name to url) the assignment was made for, or null when none is. Split from
+   * [check] so the same comparison decides acceptance and names the remote, without either
+   * restating it.
+   */
+  fun matchingRemoteName(assignment: ProjectAssignment, remotes: Map<String, String>): String? =
+    remotes.entries.firstOrNull { sameRemote(it.value, assignment.remoteUrl) }?.key
+
+  /**
    * Two remote URLs address the same repository: same authority, same path once a trailing `.git`
    * and slashes are gone. The path's case is kept — GitLab paths are case sensitive.
    */
