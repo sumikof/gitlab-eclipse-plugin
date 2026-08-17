@@ -6,4 +6,6 @@ import com.google.gson.annotations.SerializedName
 data class GitLabProject(
   @SerializedName("id") val id: Long,
   @SerializedName("default_branch") val defaultBranch: String? = null,
+  /** HTTPS clone url. Nullable: absent from responses that predate the clone commands. */
+  @SerializedName("http_url_to_repo") val httpUrlToRepo: String? = null,
 )
