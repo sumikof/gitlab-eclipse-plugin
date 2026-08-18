@@ -76,6 +76,9 @@ class RepositoryClonerTest : StringSpec({
     // The plugin has no delete path of its own. (JGit's own cleanup may or may not have run —
     // this asserts only that the cloner did not add one.)
     parent.exists() shouldBe true
+    // JGit's cleanup empties a pre-existing destination (deleteChildren) but never removes the
+    // directory itself, so this holds today — and fails if a delete path is ever added here.
+    target.exists() shouldBe true
   }
 
   "refuses a second clone into the same location while one is running" {
