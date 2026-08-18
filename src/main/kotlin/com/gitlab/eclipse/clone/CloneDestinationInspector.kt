@@ -43,6 +43,10 @@ class CloneDestinationInspector {
    * that are not there and send the user looking for a partial clone that was already removed.
    */
   fun hasLeftovers(destination: File): Boolean {
+    // A non-directory is checked before emptiness: `list()` returns null for one, so a plain file
+    // sitting at the destination would otherwise read as "nothing there" and be reported to the
+    // user as an empty location while their file is still on disk.
+    if (destination.exists() && !destination.isDirectory) return true
     val entries = destination.list() ?: return false
     return entries.isNotEmpty()
   }

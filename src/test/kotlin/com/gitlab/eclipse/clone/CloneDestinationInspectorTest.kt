@@ -75,4 +75,21 @@ class CloneDestinationInspectorTest : StringSpec({
     inspector.hasLeftovers(empty) shouldBe false
     inspector.hasLeftovers(filled) shouldBe true
   }
+
+  // File.list() returns null for a non-directory, so the emptiness check above would read a plain
+  // file at the destination as "nothing there" unless non-directories are handled explicitly.
+  "an existing plain file at the destination is occupied" {
+    val root = Files.createTempDirectory("insp-file").toFile()
+    val destination = File(root, "repo")
+    destination.writeText("this is a file, not a directory")
+    inspector.inspect(destination, "https://h/g/p.git") shouldBe
+      CloneDestinationInspector.Verdict.Occupied
+  }
+
+  "a plain file counts as leftovers" {
+    val root = Files.createTempDirectory("insp-file-lo").toFile()
+    val destination = File(root, "repo")
+    destination.writeText("x")
+    inspector.hasLeftovers(destination) shouldBe true
+  }
 })
