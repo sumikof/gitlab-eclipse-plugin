@@ -94,6 +94,29 @@ class RepositoryClonerTest : StringSpec({
     }
   }
 
+  // CROSS-UNIT round-trip test, not a cloner unit test: it composes RepositoryCloner with
+  // CloneDestinationInspector to pin the invariant PR-2's adoption flow stands on — that a clone
+  // this plugin makes is later recognized as the SAME repository from the very same url string.
+  // JGit stores the url round-tripped through `URIish(uri).toPrivateString()`, not the literal
+  // input, and the inspector compares by exact string equality, so nothing but a test proves the
+  // two ends agree. The url is built as `file://` + absolute path rather than with
+  // `File.toURI()`: that method emits the authority-less `file:/path` form, which URIish
+  // normalizes to `file:///path` and therefore does NOT survive the round-trip. That gap is a
+  // `file:` artifact — an https url always carries an authority, so it round-trips unchanged.
+  "a clone this plugin makes is recognized as the same repository by the inspector" {
+    val source = sourceRepo()
+    val target = File(Files.createTempDirectory("cloner-roundtrip").toFile(), "repo")
+    val cloneUrl = "file://" + source.absolutePath
+
+    RepositoryCloner(GitOperationGuard(), noAuth)
+      .clone(cloneUrl, target, "https://gitlab.example.com", monitor()) shouldBe
+      RepositoryCloner.Outcome.Succeeded
+
+    // The identical string that was cloned — that is the whole point.
+    CloneDestinationInspector().inspect(target, cloneUrl) shouldBe
+      CloneDestinationInspector.Verdict.SameRepository
+  }
+
   "a second clone through a symlinked path is also refused" {
     val guard = GitOperationGuard()
     val real = Files.createTempDirectory("cloner-sym-real").toRealPath()
