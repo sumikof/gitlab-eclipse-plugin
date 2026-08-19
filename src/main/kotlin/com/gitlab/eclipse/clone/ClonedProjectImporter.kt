@@ -53,14 +53,14 @@ class ClonedProjectImporter(
    */
   fun import(destination: File, source: RepositorySource): CloneOutcome {
     val workspace = workspaceOrNull()
-      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source)
+      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source, destination.name)
     val workspaceRoot = workspace.root.location?.toFile()
-      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source)
+      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source, destination.name)
     val description = readDescription(workspace, destination)
-      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source)
+      ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source, destination.name)
     when (val decision = ProjectLocationDecider.decide(destination, description.name, workspaceRoot)) {
       ProjectLocationDecider.Decision.Rejected ->
-        return CloneOutcome.ImportSkipped(destination, ImportSkipReason.LOCATION_REJECTED, source)
+        return CloneOutcome.ImportSkipped(destination, ImportSkipReason.LOCATION_REJECTED, source, description.name)
       is ProjectLocationDecider.Decision.SetLocation ->
         description.locationURI = decision.destination.toURI()
       ProjectLocationDecider.Decision.UseDefaultLocation -> Unit
@@ -70,12 +70,13 @@ class ClonedProjectImporter(
       when (releaseOrphanRegistration(existing, destination)) {
         OrphanRelease.RELEASED -> Unit
         OrphanRelease.NOT_OURS ->
-          return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NAME_TAKEN, source)
+          return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NAME_TAKEN, source, description.name)
         OrphanRelease.STILL_REGISTERED ->
           return CloneOutcome.ImportSkipped(
             destination,
             ImportSkipReason.NAME_TAKEN,
             source,
+            projectName = description.name,
             leftoverProjectName = existing.name,
           )
       }
@@ -179,7 +180,7 @@ class ClonedProjectImporter(
       throw e
     } catch (e: Exception) {
       logger.error("Project creation failed: ${e.javaClass.name}")
-      return CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source)
+      return CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source, description.name)
     }
     try {
       project.open(null)
@@ -192,6 +193,7 @@ class ClonedProjectImporter(
         destination,
         ImportSkipReason.IMPORT_FAILED,
         source,
+        projectName = description.name,
         leftoverProjectName = leftover,
       )
     }

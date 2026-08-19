@@ -25,6 +25,14 @@ sealed interface CloneOutcome {
     val reason: ImportSkipReason,
     val source: RepositorySource,
     /**
+     * The name to render in wording that needs one. [ImportSkipReason.NAME_TAKEN] names the
+     * project holding the name, and [ImportSkipReason.LOCATION_REJECTED] tells the user to
+     * rename the folder to the `.project` name — the folder name would be exactly the wrong
+     * value there, because rejection happens only when the two differ. Falls back to the
+     * folder name on the paths where no project description could be read.
+     */
+    val projectName: String,
+    /**
      * Non-null = a closed, orphaned project registration by this name remains in the workspace
      * (consent to release it was declined, or a delete of the registration failed). The caller
      * must show [CloneMessages.orphanCleanupInstructions] for this name; on the declined-consent
