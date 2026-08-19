@@ -3,6 +3,7 @@ package com.gitlab.eclipse.clone.handlers
 import com.gitlab.eclipse.clone.CloneDestinationInspector
 import com.gitlab.eclipse.clone.CloneDestinationPrompt
 import com.gitlab.eclipse.clone.CloneMessages
+import com.gitlab.eclipse.clone.CloneNotifications
 import com.gitlab.eclipse.clone.CloneOutcome
 import com.gitlab.eclipse.clone.CloneTargetLookup
 import com.gitlab.eclipse.clone.ClonedProjectImporter
@@ -189,7 +190,7 @@ class CloneWikiHandler : AbstractHandler() {
       logger.error("Importing the clone failed: ${e.javaClass.name}")
       CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source, destination.name)
     }
-    uiNotify(importNotification(outcome, source, destination))
+    uiNotify(CloneNotifications.importNotification(outcome, source, destination))
   }
 
   /**
@@ -223,7 +224,7 @@ class CloneWikiHandler : AbstractHandler() {
     return answer
   }
 
-  /** [UI thread] Notification shown from [execute] itself, before any job exists. */
+  /** [UI thread] Shows the dialog: called directly from [execute]'s entry gate and as the body of [uiNotify]. */
   private fun notifyHere(message: String) {
     val shell = PlatformUI.getWorkbench().activeWorkbenchWindow?.shell
     MessageDialog.openInformation(shell, "GitLab", message)
@@ -251,34 +252,6 @@ private fun incompleteMessage(destination: File): String =
   } else {
     CloneMessages.cloneIncompleteNothingLeft
   }
-
-/** Maps the import's outcome to its notification; every string comes from [CloneMessages]. */
-private fun importNotification(outcome: CloneOutcome, source: RepositorySource, destination: File): String =
-  when (outcome) {
-    is CloneOutcome.Imported -> CloneMessages.imported(outcome.source, outcome.projectName)
-    is CloneOutcome.ImportSkipped -> importSkippedNotification(outcome)
-    // The importer's contract returns Imported or ImportSkipped; anything else is a broken
-    // contract, reported as a failed import rather than silently dropped.
-    is CloneOutcome.Cloned, CloneOutcome.Cancelled, is CloneOutcome.Failed ->
-      CloneMessages.importSkipped(ImportSkipReason.IMPORT_FAILED, source, destination.name)
-  }
-
-/**
- * One dialog, never two in sequence. A non-null [CloneOutcome.ImportSkipped.leftoverProjectName]
- * means a closed orphan registration remains: on the declined-consent path (NAME_TAKEN) the
- * cleanup instructions stand ALONE — the reason's own wording is not also shown — while after
- * a failed compensation (IMPORT_FAILED) the user needs both facts, composed into one message.
- */
-private fun importSkippedNotification(outcome: CloneOutcome.ImportSkipped): String {
-  val leftover = outcome.leftoverProjectName
-    ?: return CloneMessages.importSkipped(outcome.reason, outcome.source, outcome.projectName)
-  return when (outcome.reason) {
-    ImportSkipReason.NAME_TAKEN -> CloneMessages.orphanCleanupInstructions(leftover)
-    else ->
-      CloneMessages.importSkipped(outcome.reason, outcome.source, outcome.projectName) +
-        "\n\n" + CloneMessages.orphanCleanupInstructions(leftover)
-  }
-}
 
 /** JGit's "humanish" default: the wiki URL's last segment without `.git`, e.g. `project.wiki`. */
 private fun suggestedFolderName(wikiUrl: String): String =
