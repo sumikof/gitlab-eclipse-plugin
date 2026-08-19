@@ -46,15 +46,21 @@ class CloneDestinationPrompt {
     )
     return if (dialog.open() == Window.OK) dialog.value.trim() else null
   }
+}
 
-  /**
-   * Keeps the "parent + new folder name" contract honest: a blank name would silently target the
-   * parent itself, and a separator would nest the clone somewhere the user did not pick.
-   */
-  private fun validateFolderName(name: String): String? =
-    when {
-      name.isBlank() -> "Enter a folder name."
-      name.contains('/') || name.contains('\\') -> "The folder name cannot contain path separators."
-      else -> null
-    }
+/**
+ * Keeps the "parent + new folder name" contract honest, validating the TRIMMED value because
+ * that is what [CloneDestinationPrompt] actually consumes: a blank name would silently target
+ * the parent itself, `.` and `..` would resolve to the parent or above it, and a separator
+ * would nest the clone somewhere the user did not pick. Top-level and SWT-free on purpose, so
+ * the headless spec (`CloneDestinationPromptTest`) can reach it without constructing a widget.
+ */
+internal fun validateFolderName(name: String): String? {
+  val folder = name.trim()
+  return when {
+    folder.isEmpty() -> "Enter a folder name."
+    folder == "." || folder == ".." -> "The folder name cannot be '.' or '..'."
+    folder.contains('/') || folder.contains('\\') -> "The folder name cannot contain path separators."
+    else -> null
+  }
 }
