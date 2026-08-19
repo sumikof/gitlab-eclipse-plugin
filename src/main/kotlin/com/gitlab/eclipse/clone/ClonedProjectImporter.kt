@@ -13,13 +13,13 @@ import kotlin.coroutines.cancellation.CancellationException
  * Registers a repository on disk as an open Eclipse project ([CloneOutcome.Imported]) or explains
  * why it did not ([CloneOutcome.ImportSkipped]).
  *
- * Runs off the UI thread and never touches SWT. Both callbacks are implemented by the handler,
- * which hops to the UI thread:
- * - [confirm] asks a yes/no question and blocks for the answer (used only for the
- *   orphan-registration consent, [CloneMessages.orphanConsent]).
- * - [notify] shows a message without asking anything (used only for
- *   [CloneMessages.orphanCleanupInstructions], on the two paths — declined consent, failed
- *   compensating delete — whose returned skip reason alone cannot carry those instructions).
+ * Runs off the UI thread and never touches SWT. The only user interaction is [confirm] — a
+ * yes/no question, implemented by the handler with a hop to the UI thread — used solely for the
+ * orphan-registration consent ([CloneMessages.orphanConsent]), because the flow blocks on the
+ * answer. Everything else is carried by the returned [CloneOutcome]: in particular, when
+ * [CloneOutcome.ImportSkipped.leftoverProjectName] is non-null, a closed orphan registration
+ * remains and the caller must show [CloneMessages.orphanCleanupInstructions] for that name (on
+ * the declined-consent path that message stands alone, not alongside the reason's wording).
  *
  * When this runs, the repository at [import]'s destination already exists — cloned by this run
  * ([RepositorySource.CLONED_NOW]) or found there and adopted ([RepositorySource.ADOPTED_EXISTING])
@@ -29,7 +29,6 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 class ClonedProjectImporter(
   private val confirm: (String) -> Boolean,
-  private val notify: (String) -> Unit,
 ) {
   private val logger by lazy { logger<ClonedProjectImporter>() }
 
@@ -67,10 +66,33 @@ class ClonedProjectImporter(
       ProjectLocationDecider.Decision.UseDefaultLocation -> Unit
     }
     val existing = workspace.root.getProject(description.name)
-    if (existing.exists() && !releaseOrphanRegistration(existing, destination)) {
-      return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NAME_TAKEN, source)
+    if (existing.exists()) {
+      when (releaseOrphanRegistration(existing, destination)) {
+        OrphanRelease.RELEASED -> Unit
+        OrphanRelease.NOT_OURS ->
+          return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NAME_TAKEN, source)
+        OrphanRelease.STILL_REGISTERED ->
+          return CloneOutcome.ImportSkipped(
+            destination,
+            ImportSkipReason.NAME_TAKEN,
+            source,
+            leftoverProjectName = existing.name,
+          )
+      }
     }
     return createAndOpen(workspace, description, destination, source)
+  }
+
+  /** What became of a same-name project found before `create`. */
+  private enum class OrphanRelease {
+    /** It was our abandoned registration; the user consented and it was released — the name is free. */
+    RELEASED,
+
+    /** Open, or registered elsewhere: somebody else's project, never touched (C5). */
+    NOT_OURS,
+
+    /** Our closed orphan, but it remains registered (consent declined, or the delete failed). */
+    STILL_REGISTERED,
   }
 
   /**
@@ -101,7 +123,7 @@ class ClonedProjectImporter(
 
   /**
    * Decides whether a same-name project is OUR abandoned registration and, with the user's
-   * consent, releases it. Returns `true` iff the name is free afterwards.
+   * consent, releases it.
    *
    * This is the crash-recovery path for "Eclipse died between `create()` and `open()`". No
    * persistent record is kept, so the candidate is recognized purely from what is observable:
@@ -111,28 +133,26 @@ class ClonedProjectImporter(
    *
    * The release is `delete(deleteContent = false, force = true)`: registration only, the files
    * at the destination stay. Declined consent and a failed delete both leave the registration
-   * alone and instead show the manual `Delete` instructions (content checkbox left unchecked),
-   * because a bare NAME_TAKEN notification would leave the user with no way out.
+   * alone ([OrphanRelease.STILL_REGISTERED]); the caller then sets
+   * [CloneOutcome.ImportSkipped.leftoverProjectName] so the notification site shows the manual
+   * `Delete` instructions (content checkbox left unchecked) — a bare NAME_TAKEN notification
+   * would leave the user with no way out.
    */
   @Suppress("TooGenericExceptionCaught")
-  private fun releaseOrphanRegistration(existing: IProject, destination: File): Boolean {
+  private fun releaseOrphanRegistration(existing: IProject, destination: File): OrphanRelease {
     val registeredLocation = existing.location?.toFile()?.absoluteFile
     val abandonedHere = !existing.isOpen && registeredLocation == destination.absoluteFile
-    if (!abandonedHere) return false
-    if (!confirm(CloneMessages.orphanConsent(existing.name))) {
-      notify(CloneMessages.orphanCleanupInstructions(existing.name))
-      return false
-    }
+    if (!abandonedHere) return OrphanRelease.NOT_OURS
+    if (!confirm(CloneMessages.orphanConsent(existing.name))) return OrphanRelease.STILL_REGISTERED
     return try {
       // delete(deleteContent = false, force = true, monitor): registration only, files stay.
       existing.delete(false, true, null)
-      true
+      OrphanRelease.RELEASED
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       logger.error("Releasing the abandoned registration failed: ${e.javaClass.name}")
-      notify(CloneMessages.orphanCleanupInstructions(existing.name))
-      false
+      OrphanRelease.STILL_REGISTERED
     }
   }
 
@@ -167,29 +187,36 @@ class ClonedProjectImporter(
       throw e
     } catch (e: Exception) {
       logger.error("Opening the created project failed: ${e.javaClass.name}")
-      deregisterAfterFailedOpen(project)
-      return CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source)
+      val leftover = if (deregisterAfterFailedOpen(project)) null else project.name
+      return CloneOutcome.ImportSkipped(
+        destination,
+        ImportSkipReason.IMPORT_FAILED,
+        source,
+        leftoverProjectName = leftover,
+      )
     }
     return CloneOutcome.Imported(destination, description.name, source)
   }
 
   /**
    * Compensation: remove the registration `create()` just made — never the files
-   * (`deleteContent = false`). If even this fails, a closed project lingers in the workspace, so
-   * the user is told how to remove it manually without deleting the clone's contents.
+   * (`deleteContent = false`). Returns `false` when even this fails: a closed project then
+   * lingers in the workspace, and the caller sets
+   * [CloneOutcome.ImportSkipped.leftoverProjectName] so the user is told how to remove it
+   * manually without deleting the clone's contents.
    */
   @Suppress("TooGenericExceptionCaught")
-  private fun deregisterAfterFailedOpen(project: IProject) {
+  private fun deregisterAfterFailedOpen(project: IProject): Boolean =
     try {
       // delete(deleteContent = false, force = true, monitor): registration only, files stay.
       project.delete(false, true, null)
+      true
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       logger.error("Compensating delete failed: ${e.javaClass.name}")
-      notify(CloneMessages.orphanCleanupInstructions(project.name))
+      false
     }
-  }
 
   /** The workspace, or null when the resources bundle is unavailable (headless / not started). */
   @Suppress("TooGenericExceptionCaught")

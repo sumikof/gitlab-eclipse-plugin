@@ -24,6 +24,13 @@ sealed interface CloneOutcome {
     val directory: File,
     val reason: ImportSkipReason,
     val source: RepositorySource,
+    /**
+     * Non-null = a closed, orphaned project registration by this name remains in the workspace
+     * (consent to release it was declined, or a delete of the registration failed). The caller
+     * must show [CloneMessages.orphanCleanupInstructions] for this name; on the declined-consent
+     * path that message stands alone — the [reason]'s own wording is not also shown.
+     */
+    val leftoverProjectName: String? = null,
   ) : CloneOutcome
   data object Cancelled : CloneOutcome
 
