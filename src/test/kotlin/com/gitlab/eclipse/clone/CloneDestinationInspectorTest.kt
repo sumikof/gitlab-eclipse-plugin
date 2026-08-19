@@ -1,8 +1,10 @@
 package com.gitlab.eclipse.clone
 
+import io.kotest.assertions.withClue
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.transport.URIish
 import java.io.File
 import java.nio.file.Files
 
@@ -91,5 +93,28 @@ class CloneDestinationInspectorTest : StringSpec({
     val destination = File(root, "repo")
     destination.writeText("x")
     inspector.hasLeftovers(destination) shouldBe true
+  }
+
+  // `inspect` above compares JGit's stored `remote.origin.url` against the clone url by exact
+  // string equality. JGit never stores that url verbatim: it stores
+  // `URIish(uri).toPrivateString()`, the url round-tripped through JGit's own parser (see
+  // `RepositoryClonerTest`'s cross-unit proof for a real clone + inspect run). That round-trip
+  // was found identity-preserving for every canonical shape except the authority-less
+  // `file:/path` form, which cannot occur here: https urls always carry an authority. This pins
+  // that assumption for the actual https shapes this feature clones and compares. If any of
+  // these stopped round-tripping, `inspect` would silently degrade a same-repository destination
+  // to `Occupied` — fail-safe (nothing is corrupted or deleted), but the user would be wrongly
+  // told the destination is not empty instead of being offered adoption.
+  "https clone url shapes round-trip unchanged through JGit's URIish" {
+    listOf(
+      "https://gitlab.example.com/group/project.git",
+      "https://gitlab.example.com/group/subgroup/project.git",
+      "https://gitlab.example.com:8443/group/project.git",
+      "https://gitlab.example.com/group/project.wiki.git",
+    ).forEach { url ->
+      withClue(url) {
+        URIish(url).toPrivateString() shouldBe url
+      }
+    }
   }
 })

@@ -361,6 +361,12 @@
                 name="Delete Comment"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CloneWiki"
+                name="Clone GitLab Wiki"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -862,6 +868,11 @@
                 commandId="com.gitlab.eclipse.commands.DeleteNote"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.DeleteNoteHandler"
         />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CloneWiki"
+                class="com.gitlab.eclipse.clone.handlers.CloneWikiHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -1126,6 +1137,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.CreateSnippetPatch"
                         label="Create Snippet Patch"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.CloneWiki"
+                        label="Clone Wiki"
                 />
             </menu>
         </menuContribution>
