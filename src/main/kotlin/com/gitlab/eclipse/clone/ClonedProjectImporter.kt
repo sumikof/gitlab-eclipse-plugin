@@ -29,6 +29,12 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 class ClonedProjectImporter(
   private val confirm: (String) -> Boolean,
+  /**
+   * The seam the headless spec needs: the platform lookup is a static call on a bundle that is
+   * not started under `./gradlew test`, and it is the only thing in this class that is not a
+   * plain Java interface. The default is [platformWorkspaceOrNull].
+   */
+  private val workspace: () -> IWorkspace? = ::platformWorkspaceOrNull,
 ) {
   private val logger by lazy { logger<ClonedProjectImporter>() }
 
@@ -52,7 +58,7 @@ class ClonedProjectImporter(
    *    Eclipse died mid-import.
    */
   fun import(destination: File, source: RepositorySource): CloneOutcome {
-    val workspace = workspaceOrNull()
+    val workspace = this.workspace()
       ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source, destination.name)
     val workspaceRoot = workspace.root.location?.toFile()
       ?: return CloneOutcome.ImportSkipped(destination, ImportSkipReason.NO_WORKSPACE, source, destination.name)
@@ -219,16 +225,19 @@ class ClonedProjectImporter(
       logger.error("Compensating delete failed: ${e.javaClass.name}")
       false
     }
-
-  /** The workspace, or null when the resources bundle is unavailable (headless / not started). */
-  @Suppress("TooGenericExceptionCaught")
-  private fun workspaceOrNull(): IWorkspace? =
-    try {
-      ResourcesPlugin.getWorkspace()
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      logger.error("Workspace unavailable: ${e.javaClass.name}")
-      null
-    }
 }
+
+/** Top level because a constructor's default value cannot reference an instance member. */
+private val platformLogger by lazy { logger<ClonedProjectImporter>() }
+
+/** The workspace, or null when the resources bundle is unavailable (headless / not started). */
+@Suppress("TooGenericExceptionCaught")
+private fun platformWorkspaceOrNull(): IWorkspace? =
+  try {
+    ResourcesPlugin.getWorkspace()
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    platformLogger.error("Workspace unavailable: ${e.javaClass.name}")
+    null
+  }
