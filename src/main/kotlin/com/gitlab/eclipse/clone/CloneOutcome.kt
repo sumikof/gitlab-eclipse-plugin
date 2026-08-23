@@ -12,7 +12,10 @@ enum class RepositorySource { CLONED_NOW, ADOPTED_EXISTING }
 /** Why an on-disk repository was not imported as an Eclipse project. */
 enum class ImportSkipReason { NAME_TAKEN, NO_WORKSPACE, IMPORT_FAILED, LOCATION_REJECTED }
 
-/** The outcome of a `cloneWiki` run, for the handler to notify the user about. */
+/**
+ * The outcome of one run of the shared clone-and-import flow — F5 (`cloneWiki`) and F7
+ * (`openRepository`) alike — for the handler to notify the user about.
+ */
 sealed interface CloneOutcome {
   data class Cloned(val directory: File) : CloneOutcome
   data class Imported(

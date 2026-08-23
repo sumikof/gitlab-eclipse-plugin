@@ -79,7 +79,7 @@ class OpenRepositoryHandler : AbstractHandler() {
       logger.warn("Open repository: no workbench shell to prompt on; nothing to do.")
       return
     }
-    val projectPath = ProjectPathPrompt().prompt(shell) ?: return
+    val projectPath = ProjectPathPrompt().prompt(shell, DIALOG_TITLE) ?: return
     cloneJob(projectPath).schedule()
   }
 

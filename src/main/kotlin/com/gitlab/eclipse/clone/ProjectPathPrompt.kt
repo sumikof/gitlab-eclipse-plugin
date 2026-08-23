@@ -18,11 +18,14 @@ import org.eclipse.swt.widgets.Shell
  */
 class ProjectPathPrompt {
 
-  /** Returns the TRIMMED project path, or null when the dialog is cancelled. */
-  fun prompt(shell: Shell): String? {
+  /**
+   * Shows the dialog under [title], which the caller owns so the whole command reads as one.
+   * Returns the TRIMMED project path, or null when the dialog is cancelled.
+   */
+  fun prompt(shell: Shell, title: String): String? {
     val dialog = InputDialog(
       shell,
-      "Open GitLab Repository",
+      title,
       "Project path (for example group/subgroup/project):",
       "",
       IInputValidator(::validateProjectPath),

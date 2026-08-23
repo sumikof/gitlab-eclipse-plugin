@@ -3,7 +3,8 @@ package com.gitlab.eclipse.clone
 import java.io.File
 
 /**
- * Every user-facing notification string for the `cloneWiki` flow.
+ * Every user-facing notification string for the shared clone-and-import flow — F5 (`cloneWiki`)
+ * and F7 (`openRepository`) alike.
  *
  * All members are pure functions/values with no Eclipse or SWT dependency, so the universal rule
  * the design places on this wording can be pinned by a headless test: for every
