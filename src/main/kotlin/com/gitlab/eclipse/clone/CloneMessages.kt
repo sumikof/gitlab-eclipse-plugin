@@ -3,7 +3,8 @@ package com.gitlab.eclipse.clone
 import java.io.File
 
 /**
- * Every user-facing notification string for the `cloneWiki` flow.
+ * Every user-facing notification string for the shared clone-and-import flow — F5 (`cloneWiki`)
+ * and F7 (`openRepository`) alike.
  *
  * All members are pure functions/values with no Eclipse or SWT dependency, so the universal rule
  * the design places on this wording can be pinned by a headless test: for every
@@ -58,6 +59,13 @@ object CloneMessages {
 
   /** guard が取れなかった場合。 */
   const val busy: String = "同じ場所への clone が実行中です。完了を待ってからやり直してください。"
+
+  /** clone Job の表示名。警告文は Job 名にしか置けない(subTask は JGit に上書きされる)。 */
+  fun cloneJobName(label: String): String = "$label(clone 中は指定した場所に書き込まないでください)"
+
+  /** F7: 入力されたパスのプロジェクトが GitLab に無い場合。clone は開始していない。 */
+  const val projectNotFound: String =
+    "そのプロジェクトが見つかりません。パスを確認してやり直してください。clone は開始していません。"
 
   /** 孤立登録(閉じている + location 一致)の解除同意。 */
   fun orphanConsent(projectName: String): String =

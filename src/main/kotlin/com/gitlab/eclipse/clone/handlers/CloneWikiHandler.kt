@@ -1,15 +1,9 @@
 package com.gitlab.eclipse.clone.handlers
 
-import com.gitlab.eclipse.clone.CloneDestinationInspector
 import com.gitlab.eclipse.clone.CloneDestinationPrompt
+import com.gitlab.eclipse.clone.CloneFlow
 import com.gitlab.eclipse.clone.CloneMessages
-import com.gitlab.eclipse.clone.CloneNotifications
-import com.gitlab.eclipse.clone.CloneOutcome
 import com.gitlab.eclipse.clone.CloneTargetLookup
-import com.gitlab.eclipse.clone.ClonedProjectImporter
-import com.gitlab.eclipse.clone.ImportSkipReason
-import com.gitlab.eclipse.clone.RepositoryCloner
-import com.gitlab.eclipse.clone.RepositorySource
 import com.gitlab.eclipse.clone.WikiUrlDeriver
 import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
 import com.gitlab.eclipse.utils.PlatformUtils
@@ -29,14 +23,18 @@ import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * The clone job's name, and the only place the "do not write into the destination" warning can
- * survive. It must NOT go through the monitor: `EclipseProgressMonitorAdapter.start` performs
- * the single `beginTask` the Eclipse monitor contract allows (so this handler may never call
- * `beginTask` itself), and JGit rewrites `subTask` continuously with its own phase names, so a
- * warning placed there is erased within moments. The job name is rendered by the Progress view
- * for the job's entire lifetime and nothing JGit does can overwrite it.
+ * The clone job's label; [CloneMessages.cloneJobName] appends the "do not write into the
+ * destination" warning, and the job name is the only place that warning can survive. It must
+ * NOT go through the monitor: `EclipseProgressMonitorAdapter.start` performs the single
+ * `beginTask` the Eclipse monitor contract allows (so this handler may never call `beginTask`
+ * itself), and JGit rewrites `subTask` continuously with its own phase names, so a warning
+ * placed there is erased within moments. The job name is rendered by the Progress view for the
+ * job's entire lifetime and nothing JGit does can overwrite it.
  */
-private const val JOB_NAME = "GitLab Wiki clone(clone 中は指定した場所に書き込まないでください)"
+private const val JOB_LABEL = "GitLab Wiki clone"
+
+/** Title of the two destination dialogs; F7 passes its own, so [CloneDestinationPrompt] takes it. */
+private const val DIALOG_TITLE = "Clone GitLab Wiki"
 
 /** Entry gate, before the clone flow exists; same shape as the snippets handlers' gate text. */
 private const val NO_EDITOR_MESSAGE =
@@ -48,10 +46,9 @@ private const val NO_EDITOR_MESSAGE =
  *
  * The wiki URL is always derived from the API's `http_url_to_repo` ([WikiUrlDeriver]), never
  * from the repository's git remote — the clone is HTTPS-fixed, so a repository with only an SSH
- * remote must not abort the flow (C15). The exact same URL string is handed to both
- * [CloneDestinationInspector.inspect] and [RepositoryCloner.clone]: the (a0) check compares
- * `origin` by string equality, and only an identically-spelled URL round-trips through JGit
- * byte-identically.
+ * remote must not abort the flow (C15). The prompt → inspect → clone → import steps are
+ * [CloneFlow], shared with F7; it keeps the exact same URL string across the inspection and the
+ * clone, and receives the `instanceUrl` the lookup returned, never a re-read of configuration.
  *
  * Threading:
  * - [execute] runs on the UI thread. It checks the active editor, schedules [cloneJob] and
@@ -87,7 +84,7 @@ class CloneWikiHandler : AbstractHandler() {
   }
 
   private fun cloneJob(file: File): Job {
-    val job = object : Job(JOB_NAME) {
+    val job = object : Job(CloneMessages.cloneJobName(JOB_LABEL)) {
       override fun run(monitor: IProgressMonitor): IStatus = runFlow(file, monitor)
     }
     job.isUser = true
@@ -113,7 +110,7 @@ class CloneWikiHandler : AbstractHandler() {
       Status.OK_STATUS
     }
 
-  /** [background] Steps 2-5 of the design's F5 flow; hands off to [cloneInto] for steps 6-8. */
+  /** [background] Steps 2-3 of the design's F5 flow; hands steps 4-8 to [CloneFlow]. */
   private fun cloneWiki(file: File, monitor: IProgressMonitor): IStatus {
     // Step 2: resolve which GitLab project owns the file. The resolver's Warn carries its own
     // display text (e.g. "not in the project repository", "no GitLab remote").
@@ -135,76 +132,30 @@ class CloneWikiHandler : AbstractHandler() {
       return Status.OK_STATUS
     }
     val wikiUrl = WikiUrlDeriver.derive(lookup.httpUrlToRepo)
-    // Step 4 [UI hop]: where to clone. Cancel = zero side effects: no clone, nothing created.
-    val destination = promptDestination(suggestedFolderName(wikiUrl)) ?: return Status.CANCEL_STATUS
-    if (monitor.isCanceled) return Status.CANCEL_STATUS
-    // Step 5: entry inspection, with the SAME url string the clone will use.
-    return when (CloneDestinationInspector().inspect(destination, wikiUrl)) {
-      CloneDestinationInspector.Verdict.Occupied -> {
-        uiNotify(CloneMessages.occupied)
-        Status.OK_STATUS
-      }
-      CloneDestinationInspector.Verdict.SameRepository -> {
-        // (a0) adoption consent — deliberately distinct from the importer's orphan consent.
-        if (askUser(CloneMessages.adoptConsent)) {
-          importAndNotify(destination, RepositorySource.ADOPTED_EXISTING)
-        } else {
-          uiNotify(CloneMessages.occupied)
-        }
-        Status.OK_STATUS
-      }
-      CloneDestinationInspector.Verdict.Empty -> cloneInto(wikiUrl, lookup.instanceUrl, destination, monitor)
+    // Steps 4-8: the shared flow, with this handler's SWT hops injected.
+    val flow = CloneFlow(
+      prompt = { promptDestination(DIALOG_TITLE, it) },
+      confirm = ::askUser,
+      notify = ::uiNotify,
+    )
+    return when (flow.run(wikiUrl, lookup.instanceUrl, monitor)) {
+      CloneFlow.Result.CANCELLED -> Status.CANCEL_STATUS
+      CloneFlow.Result.COMPLETED -> Status.OK_STATUS
     }
-  }
-
-  /**
-   * [background] Steps 6-8: the clone itself, on this job's monitor (which
-   * `EclipseProgressMonitorAdapter` opens with the one permitted `beginTask`), then the import.
-   * After a cancel or failure the two (b) texts are chosen by [CloneDestinationInspector
-   * .hasLeftovers] — "is it non-empty?", not "does it exist?": a directory the user created
-   * beforehand survives JGit's cleanup, so `exists()` would claim leftovers that are gone.
-   */
-  private fun cloneInto(wikiUrl: String, instanceUrl: String, destination: File, monitor: IProgressMonitor): IStatus {
-    val outcome = RepositoryCloner().clone(wikiUrl, destination, instanceUrl, monitor)
-    when (outcome) {
-      RepositoryCloner.Outcome.Busy -> uiNotify(CloneMessages.busy)
-      RepositoryCloner.Outcome.Cancelled, is RepositoryCloner.Outcome.Failed ->
-        uiNotify(incompleteMessage(destination))
-      RepositoryCloner.Outcome.Succeeded -> importAndNotify(destination, RepositorySource.CLONED_NOW)
-    }
-    return if (outcome == RepositoryCloner.Outcome.Cancelled) Status.CANCEL_STATUS else Status.OK_STATUS
-  }
-
-  /**
-   * [background] Step 8: the import runs on this job thread (the importer never touches SWT);
-   * its orphan-registration consent hops to the UI thread through [askUser]. The extra catch is
-   * the containment the importer defers to its caller — e.g. `getProject` throwing on a
-   * pathological `.project` name — mapped to the import's own failure wording, type name only.
-   */
-  private fun importAndNotify(destination: File, source: RepositorySource) {
-    val outcome = try {
-      ClonedProjectImporter(confirm = ::askUser).import(destination, source)
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      logger.error("Importing the clone failed: ${e.javaClass.name}")
-      CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source, destination.name)
-    }
-    uiNotify(CloneNotifications.importNotification(outcome, source, destination))
   }
 
   /**
    * [UI hop, blocking] Runs the two-step destination prompt on the UI thread and waits for the
    * answer. A missing workbench shell is treated as cancel: zero side effects.
    */
-  private fun promptDestination(suggestedFolderName: String): File? {
+  private fun promptDestination(title: String, suggestedFolderName: String): File? {
     var destination: File? = null
     currentDisplay.syncExec {
       val shell = PlatformUI.getWorkbench().activeWorkbenchWindow?.shell
       if (shell == null) {
         logger.warn("Wiki clone: no workbench shell to prompt on; treating as cancel.")
       } else {
-        destination = CloneDestinationPrompt().prompt(shell, suggestedFolderName)
+        destination = CloneDestinationPrompt().prompt(shell, title, suggestedFolderName)
       }
     }
     return destination
@@ -213,7 +164,8 @@ class CloneWikiHandler : AbstractHandler() {
   /**
    * [UI hop, blocking] Yes/no question from the job thread: `syncExec`, not `asyncExec`,
    * because the flow blocks on the answer — safe from deadlock since [execute] has returned
-   * and the UI thread is free. Also passed to [ClonedProjectImporter] as its consent callback.
+   * and the UI thread is free. Also passed to [CloneFlow] (and through it to the importer) as
+   * the consent callback.
    */
   private fun askUser(question: String): Boolean {
     var answer = false
@@ -240,19 +192,3 @@ class CloneWikiHandler : AbstractHandler() {
     }.onFailure { logger.error("Could not show a wiki clone notification: ${it.javaClass.name}") }
   }
 }
-
-/**
- * (b) after a cancelled or failed clone: the two texts are chosen by "is the destination
- * non-empty?", never by "does it exist?" — a directory the user created beforehand survives
- * JGit's cleanup, so `exists()` would claim leftovers that were already removed (C24/C32).
- */
-private fun incompleteMessage(destination: File): String =
-  if (CloneDestinationInspector().hasLeftovers(destination)) {
-    CloneMessages.cloneIncompleteLeftovers(destination)
-  } else {
-    CloneMessages.cloneIncompleteNothingLeft
-  }
-
-/** JGit's "humanish" default: the wiki URL's last segment without `.git`, e.g. `project.wiki`. */
-private fun suggestedFolderName(wikiUrl: String): String =
-  wikiUrl.trimEnd('/').substringAfterLast('/').removeSuffix(".git")

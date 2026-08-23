@@ -367,6 +367,12 @@
                 name="Clone GitLab Wiki"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.OpenRepository"
+                name="Open GitLab Repository"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -873,6 +879,11 @@
                 commandId="com.gitlab.eclipse.commands.CloneWiki"
                 class="com.gitlab.eclipse.clone.handlers.CloneWikiHandler"
         />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenRepository"
+                class="com.gitlab.eclipse.clone.handlers.OpenRepositoryHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -1142,6 +1153,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.CloneWiki"
                         label="Clone Wiki"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.OpenRepository"
+                        label="Open Repository"
                 />
             </menu>
         </menuContribution>
