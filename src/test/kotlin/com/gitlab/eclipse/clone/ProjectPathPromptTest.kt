@@ -2,7 +2,6 @@ package com.gitlab.eclipse.clone
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.shouldNotBe
 
 /**
  * Pins the project-path validator only — a top-level SWT-free function, reachable headless.
@@ -25,26 +24,30 @@ class ProjectPathPromptTest : StringSpec({
     validateProjectPath("  group/project  ") shouldBe null
   }
 
+  // The four rejections are compared verbatim, not merely against null: the message is the whole
+  // of what the user is told, and a swap between the four would otherwise pass unnoticed.
   "a blank path is rejected" {
-    validateProjectPath("") shouldNotBe null
-    validateProjectPath("   ") shouldNotBe null
+    val expected = "Enter a project path, for example group/subgroup/project."
+    validateProjectPath("") shouldBe expected
+    validateProjectPath("   ") shouldBe expected
   }
 
   "a pasted URL is rejected with its own wording" {
-    validateProjectPath("https://gitlab.com/group/project") shouldNotBe null
-    validateProjectPath("git://gitlab.com/group/project") shouldNotBe null
+    validateProjectPath("https://gitlab.com/group/project") shouldBe "Enter the project path, not a URL."
+    validateProjectPath("git://gitlab.com/group/project") shouldBe "Enter the project path, not a URL."
   }
 
   "an inner space is rejected" {
-    validateProjectPath("group/my project") shouldNotBe null
-    validateProjectPath("group /project") shouldNotBe null
+    validateProjectPath("group/my project") shouldBe "A project path cannot contain spaces."
+    validateProjectPath("group /project") shouldBe "A project path cannot contain spaces."
   }
 
   "a leading or trailing slash is rejected" {
-    validateProjectPath("/group/project") shouldNotBe null
-    validateProjectPath("group/project/") shouldNotBe null
+    val expected = "A project path cannot start or end with '/'."
+    validateProjectPath("/group/project") shouldBe expected
+    validateProjectPath("group/project/") shouldBe expected
     // The trimmed value is what is validated, so whitespace cannot smuggle an edge slash through.
-    validateProjectPath(" /group/project ") shouldNotBe null
+    validateProjectPath(" /group/project ") shouldBe expected
   }
 
   "each rejection carries its own explanation" {

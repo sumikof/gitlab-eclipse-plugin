@@ -54,15 +54,18 @@ private class WorkspaceFixture(private val projectName: String) {
     every { project.location } returns null
   }
 
-  /** No `.project` on disk: Eclipse hands back a fresh description named after the folder. */
-  fun withoutDotProject(folderName: String) {
-    every { workspace.newProjectDescription(folderName) } returns descriptionNamed(projectName)
-  }
+  /**
+   * No `.project` on disk: Eclipse hands back a fresh description named after the folder.
+   *
+   * Returns that description so a spec can pin what the importer does to it; the mock is
+   * `relaxed = true` and would otherwise swallow the location setter without a trace.
+   */
+  fun withoutDotProject(folderName: String): IProjectDescription =
+    descriptionNamed(projectName).also { every { workspace.newProjectDescription(folderName) } returns it }
 
   /** A `.project` on disk, naming a project that may differ from the folder it sits in. */
-  fun withDotProject() {
-    every { workspace.loadProjectDescription(any<IPath>()) } returns descriptionNamed(projectName)
-  }
+  fun withDotProject(): IProjectDescription =
+    descriptionNamed(projectName).also { every { workspace.loadProjectDescription(any<IPath>()) } returns it }
 
   /** A project already registered under the same name: open or closed, registered at [location]. */
   fun alreadyRegistered(open: Boolean, location: File?) {
@@ -273,5 +276,52 @@ class ClonedProjectImporterTest : StringSpec({
       ws.project.delete(false, true, null)
       ws.project.create(any(), any())
     }
+  }
+
+  // The trap the design names: `loadProjectDescription` does NOT set a location from the file it
+  // read, so leaving the setter out registers a DIFFERENT project at ${workspace}/${projectName}
+  // and the clone silently stays unimported while the outcome still reads Imported. Nothing but
+  // this verify observes it — the description mock is relaxed and swallows the setter.
+  "an import outside the workspace root sets the description's location to the destination" {
+    val ws = WorkspaceFixture("repo")
+    val destination = directoryUnder(tempParent(), "repo")
+    val description = ws.withoutDotProject("repo")
+
+    ws.importer().import(destination, RepositorySource.CLONED_NOW) shouldBe
+      CloneOutcome.Imported(destination, "repo", RepositorySource.CLONED_NOW)
+
+    // The same expression production uses: File.toURI() is trailing-slash sensitive.
+    verify { description.locationURI = destination.toURI() }
+  }
+
+  // Directly under the workspace root under its own name, the destination already IS the default
+  // location, and Eclipse's LocationValidator refuses an explicit one there — so setting it would
+  // turn a working import into a failing one.
+  "a destination that is already the default location leaves the location unset" {
+    val ws = WorkspaceFixture("repo")
+    val destination = directoryUnder(ws.rootDir, "repo")
+    val description = ws.withoutDotProject("repo")
+
+    ws.importer().import(destination, RepositorySource.CLONED_NOW) shouldBe
+      CloneOutcome.Imported(destination, "repo", RepositorySource.CLONED_NOW)
+
+    verify(exactly = 0) { description.locationURI = any() }
+  }
+
+  "a rejected location is refused before anything is written to the description" {
+    val ws = WorkspaceFixture("actual-name")
+    val destination = directoryUnder(ws.rootDir, "folder-name")
+    writeDotProject(destination)
+    val description = ws.withDotProject()
+
+    ws.importer().import(destination, RepositorySource.ADOPTED_EXISTING) shouldBe
+      CloneOutcome.ImportSkipped(
+        destination,
+        ImportSkipReason.LOCATION_REJECTED,
+        RepositorySource.ADOPTED_EXISTING,
+        projectName = "actual-name",
+      )
+
+    verify(exactly = 0) { description.locationURI = any() }
   }
 })
