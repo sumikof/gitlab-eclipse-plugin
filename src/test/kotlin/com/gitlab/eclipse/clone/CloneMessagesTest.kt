@@ -74,6 +74,10 @@ class CloneMessagesTest : StringSpec({
       name shouldContain label
       name shouldContain "clone 中は指定した場所に書き込まないでください"
     }
+    // F5 の Job 名は抽出前のハードコード定数とバイト一致でなければならない。shouldContain
+    // では区切り文字の変化を捕まえられないため、この 1 行だけは逐語で固定する。
+    CloneMessages.cloneJobName("GitLab Wiki clone") shouldBe
+      "GitLab Wiki clone(clone 中は指定した場所に書き込まないでください)"
   }
 
   "the not-found wording says the clone never started and carries no path" {

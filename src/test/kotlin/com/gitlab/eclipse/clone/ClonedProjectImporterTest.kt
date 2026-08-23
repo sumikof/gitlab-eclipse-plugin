@@ -234,6 +234,28 @@ class ClonedProjectImporterTest : StringSpec({
     verify(exactly = 0) { ws.project.delete(true, any(), any()) }
   }
 
+  // A .project that is present but unreadable: readDescription swallows the failure and returns
+  // null, so the outcome is named after the FOLDER — no project name could ever be read. The
+  // flow stops there: nothing is created, and no registration is deleted.
+  "an unreadable .project is IMPORT_FAILED named after the folder, and touches nothing" {
+    val ws = WorkspaceFixture("repo")
+    val destination = directoryUnder(tempParent(), "folder-name")
+    writeDotProject(destination)
+    every { ws.workspace.loadProjectDescription(any<IPath>()) } throws IllegalStateException("corrupt")
+
+    ws.importer().import(destination, RepositorySource.ADOPTED_EXISTING) shouldBe
+      CloneOutcome.ImportSkipped(
+        destination,
+        ImportSkipReason.IMPORT_FAILED,
+        RepositorySource.ADOPTED_EXISTING,
+        projectName = "folder-name",
+        leftoverProjectName = null,
+      )
+
+    verify(exactly = 0) { ws.project.create(any(), any()) }
+    verify(exactly = 0) { ws.project.delete(any(), any(), any()) }
+  }
+
   "no workspace: NO_WORKSPACE named after the folder, because no description was read" {
     val destination = directoryUnder(tempParent(), "repo")
     val importer = ClonedProjectImporter(confirm = { true }, workspace = { null })
