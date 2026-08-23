@@ -66,4 +66,19 @@ class CloneMessagesTest : StringSpec({
     CloneMessages.orphanCleanupInstructions("proj") shouldContain "Delete project contents on disk"
     CloneMessages.orphanCleanupInstructions("proj") shouldContain "チェックを入れると"
   }
+
+  "the clone job name always carries the do-not-write warning (C26)" {
+    // 警告文を置けるのは Job 名だけ。subTask は JGit が上書きし、beginTask は adapter が消費する。
+    listOf("GitLab Wiki clone", "GitLab repository clone").forEach { label ->
+      val name = CloneMessages.cloneJobName(label)
+      name shouldContain label
+      name shouldContain "clone 中は指定した場所に書き込まないでください"
+    }
+  }
+
+  "the not-found wording says the clone never started and carries no path" {
+    CloneMessages.projectNotFound shouldContain "見つかりません"
+    CloneMessages.projectNotFound shouldContain "clone は開始していません"
+    CloneMessages.projectNotFound shouldNotContain "/"
+  }
 })
