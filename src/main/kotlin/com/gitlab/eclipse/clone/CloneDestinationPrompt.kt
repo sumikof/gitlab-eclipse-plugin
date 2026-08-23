@@ -22,24 +22,24 @@ import java.io.File
 class CloneDestinationPrompt {
 
   /** Returns `parent/folderName` without creating it, or null when either dialog is cancelled. */
-  fun prompt(shell: Shell, suggestedFolderName: String): File? {
-    val parent = promptParentDirectory(shell) ?: return null
-    val folderName = promptFolderName(shell, suggestedFolderName) ?: return null
+  fun prompt(shell: Shell, title: String, suggestedFolderName: String): File? {
+    val parent = promptParentDirectory(shell, title) ?: return null
+    val folderName = promptFolderName(shell, title, suggestedFolderName) ?: return null
     return File(parent, folderName)
   }
 
-  private fun promptParentDirectory(shell: Shell): File? {
+  private fun promptParentDirectory(shell: Shell, title: String): File? {
     val dialog = DirectoryDialog(shell)
-    dialog.text = "Clone GitLab Wiki"
+    dialog.text = title
     dialog.message = "Select the parent directory. The clone goes into a new folder under it."
     val path = dialog.open() ?: return null
     return File(path)
   }
 
-  private fun promptFolderName(shell: Shell, suggestedFolderName: String): String? {
+  private fun promptFolderName(shell: Shell, title: String, suggestedFolderName: String): String? {
     val dialog = InputDialog(
       shell,
-      "Clone GitLab Wiki",
+      title,
       "New folder name (created under the selected directory when the clone starts):",
       suggestedFolderName,
       IInputValidator(::validateFolderName),
