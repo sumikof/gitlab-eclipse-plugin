@@ -201,6 +201,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.ApplySnippetPatch"
+                name="Apply GitLab Snippet Patch"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.PublishToGitLab"
                 name="Publish to GitLab"
                 categoryId="gitlab-eclipse-plugin">
@@ -365,6 +371,18 @@
         <command
                 id="com.gitlab.eclipse.commands.DeleteNote"
                 name="Delete Comment"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CloneWiki"
+                name="Clone GitLab Wiki"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.OpenRepository"
+                name="Open GitLab Repository"
                 categoryId="gitlab-eclipse-plugin">
         </command>
     </extension>
@@ -735,6 +753,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.ApplySnippetPatch"
+                class="com.gitlab.eclipse.snippets.handlers.ApplySnippetPatchHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.PublishToGitLab"
                 class="com.gitlab.eclipse.publish.handlers.PublishToGitLabHandler"
         />
@@ -872,6 +895,16 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.DeleteNote"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.DeleteNoteHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CloneWiki"
+                class="com.gitlab.eclipse.clone.handlers.CloneWikiHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenRepository"
+                class="com.gitlab.eclipse.clone.handlers.OpenRepositoryHandler"
         />
     </extension>
 
@@ -1137,6 +1170,21 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.CreateSnippetPatch"
                         label="Create Snippet Patch"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.ApplySnippetPatch"
+                        label="Apply Snippet Patch"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.CloneWiki"
+                        label="Clone Wiki"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.OpenRepository"
+                        label="Open Repository"
                 />
 
                 <command
