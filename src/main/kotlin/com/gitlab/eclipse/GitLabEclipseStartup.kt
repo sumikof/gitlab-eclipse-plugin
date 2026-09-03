@@ -20,6 +20,7 @@ import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.security.SecurityScanLifecycle
 import com.gitlab.eclipse.security.SecurityScanSaveListener
+import com.gitlab.eclipse.snippets.PatchQuarantine
 import com.gitlab.eclipse.telemetry.telemetryModule
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.workspaceModule
@@ -49,6 +50,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // each registry's `active` flag that the stop hook cleared.
     // Runs after the state-dir property is set so a degraded-path log4j2 touch here
     // (this warn) cannot pin a misconfigured log location for the whole session.
+    // Also after the state-dir property: the backup area lives under it. A crashed apply's residue
+    // is deliberately kept until it expires, so this only removes what is past the retention window.
+    sweepPatchBackups()
+
     activateGenerationRegistries()
     // Deliberately NOT inside activateGenerationRegistries()' display.syncExec: publishing and
     // removing diagnostics markers never touches the UI thread, and putting this there would both
@@ -218,6 +223,21 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // having attached nothing — deliberately — and the window listener it registered does the
       // attaching as windows open.
       logger<GitLabEclipseStartup>().warn("Security scan save trigger not installed: workbench unavailable.", e)
+    }
+  }
+
+  /**
+   * A21: prunes patch backups past their retention window at startup. Only the count is logged —
+   * the area holds working-tree paths (A9). Never let start throw.
+   */
+  private fun sweepPatchBackups() {
+    try {
+      val removed = PatchQuarantine().sweep()
+      if (removed > 0) {
+        logger<GitLabEclipseStartup>().info("Removed $removed expired patch backup(s).")
+      }
+    } catch (e: Exception) {
+      logger<GitLabEclipseStartup>().warn("Patch backup sweep skipped: ${e::class.simpleName}")
     }
   }
 
