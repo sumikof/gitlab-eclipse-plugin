@@ -207,6 +207,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.PublishToGitLab"
+                name="Publish to GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 name="Show Merged GitLab CI Config"
                 categoryId="gitlab-eclipse-plugin">
@@ -752,6 +758,11 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.PublishToGitLab"
+                class="com.gitlab.eclipse.publish.handlers.PublishToGitLabHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ShowMergedCiConfig"
                 class="com.gitlab.eclipse.ci.actions.ShowMergedCiConfigHandler"
         />
@@ -1174,6 +1185,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.OpenRepository"
                         label="Open Repository"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.PublishToGitLab"
+                        label="Publish to GitLab"
                 />
             </menu>
         </menuContribution>

@@ -73,6 +73,11 @@ class BranchPushService(
       val push = Git(repo).push()
         .setRemote(context.remoteName)
         .setRefSpecs(RefSpec("$refName:$refName"))
+        // A finite bound is the last line of defence (design §14-2): a transport that never
+        // reaches a progress callback — no route, a black-holed connection — cannot be cancelled
+        // from the Eclipse side, and would otherwise hold GitOperationGuard for this repository
+        // indefinitely. JGit counts this in seconds.
+        .setTimeout(TRANSPORT_TIMEOUT_SECONDS)
       val results = auth.applyAuth(push, context.instanceUrl).call()
       // A push can span several transport URIs (one PushResult each). Success requires the ref
       // update to be OK/UP_TO_DATE at EVERY destination: one accepting URI must not mask a
@@ -107,5 +112,8 @@ class BranchPushService(
 
   private companion object {
     const val REFS_HEADS = "refs/heads/"
+
+    /** U6: fixed at 30 seconds, not exposed as a setting. */
+    const val TRANSPORT_TIMEOUT_SECONDS = 30
   }
 }

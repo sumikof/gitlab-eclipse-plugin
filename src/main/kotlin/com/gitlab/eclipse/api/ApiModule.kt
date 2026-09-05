@@ -14,6 +14,7 @@ val apiModule = module {
   single<CurrentUserService> { CurrentUserService(get()) }
   single<MergeRequestService> { MergeRequestService(get()) }
   single<ProjectDetailService> { ProjectDetailService(get()) }
+  single<ProjectCreationService> { ProjectCreationService(get()) }
   single<SnippetService> { SnippetService(get()) }
   single<SnippetQueryService> { SnippetQueryService(get(), get()) }
   single<GitLabGraphQlClient> { GitLabGraphQlClient(get()) }
