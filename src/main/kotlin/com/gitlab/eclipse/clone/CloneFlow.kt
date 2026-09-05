@@ -101,7 +101,7 @@ class CloneFlow(
       logger.error("Importing the clone failed: ${e.javaClass.name}")
       CloneOutcome.ImportSkipped(destination, ImportSkipReason.IMPORT_FAILED, source, destination.name)
     }
-    notify(CloneNotifications.importNotification(outcome, source, destination))
+    notify(CloneNotifications.importNotification(outcome))
   }
 
   /**

@@ -13,11 +13,13 @@ enum class RepositorySource { CLONED_NOW, ADOPTED_EXISTING }
 enum class ImportSkipReason { NAME_TAKEN, NO_WORKSPACE, IMPORT_FAILED, LOCATION_REJECTED }
 
 /**
- * The outcome of one run of the shared clone-and-import flow — F5 (`cloneWiki`) and F7
- * (`openRepository`) alike — for the handler to notify the user about.
+ * The outcome of the import that ends one run of the shared clone-and-import flow — F5
+ * (`cloneWiki`) and F7 (`openRepository`) alike — for the handler to notify the user about.
+ *
+ * These two are exactly what [ClonedProjectImporter] can return: the contract is carried by the
+ * type, so the notification site has no unreachable case to defend against.
  */
 sealed interface CloneOutcome {
-  data class Cloned(val directory: File) : CloneOutcome
   data class Imported(
     val directory: File,
     val projectName: String,
@@ -43,8 +45,4 @@ sealed interface CloneOutcome {
      */
     val leftoverProjectName: String? = null,
   ) : CloneOutcome
-  data object Cancelled : CloneOutcome
-
-  /** [type] is the exception's type name only; messages can carry urls (A9). */
-  data class Failed(val type: String, val directory: File) : CloneOutcome
 }

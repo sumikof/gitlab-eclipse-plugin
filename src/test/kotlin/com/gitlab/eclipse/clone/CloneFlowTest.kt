@@ -185,7 +185,7 @@ class CloneFlowTest : StringSpec({
     fixture.run() shouldBe CloneFlow.Result.COMPLETED
 
     fixture.importArgs shouldContainExactly listOf(destinationDir to RepositorySource.CLONED_NOW)
-    val expected = CloneNotifications.importNotification(imported, RepositorySource.CLONED_NOW, destinationDir)
+    val expected = CloneNotifications.importNotification(imported)
     fixture.notifications shouldContainExactly listOf(expected)
   }
 
