@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.navigation
 
+import com.gitlab.eclipse.assignments.AssignedProjectLookup
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.logger
@@ -29,8 +30,32 @@ data class GitLabProjectInfo(
  */
 class GitLabProjectUrlResolver(
   private val preferenceStore: ScopedPreferenceStore = service(),
+  assignmentLookupFactory: () -> AssignedProjectLookup = { AssignedProjectLookup() },
 ) {
   private val logger by lazy { logger<GitLabProjectUrlResolver>() }
+
+  /**
+   * Consults the user's assignments, never throwing: any failure here — including not being able
+   * to build the lookup at all, as outside a running container — means "no assignment", never
+   * "resolution failed". Assignments are an override, so one that is unavailable has to degrade to
+   * the ordinary resolution instead of breaking project resolution everywhere (A8 / §22's risk).
+   */
+  private val assignedProject: (Repository) -> AssignedProjectLookup.Result by lazy {
+    val lookup = try {
+      assignmentLookupFactory()
+    } catch (e: Exception) {
+      logger.warn("Project assignments unavailable: ${e.javaClass.name}")
+      null
+    }
+    { repo: Repository ->
+      try {
+        lookup?.forRepository(repo) ?: AssignedProjectLookup.Result.None
+      } catch (e: Exception) {
+        logger.warn("Project assignment lookup failed: ${e.javaClass.name}")
+        AssignedProjectLookup.Result.None
+      }
+    }
+  }
 
   sealed interface Resolution {
     data class Ok(val url: String) : Resolution
@@ -93,12 +118,29 @@ class GitLabProjectUrlResolver(
       }
     } ?: Resolution.Warn(NOT_IN_REPO)
 
-  private fun webUrlFor(repo: Repository): Resolution = when (val match = matchRemote(repo)) {
-    is RemoteMatch.Hit -> Resolution.Ok(match.webUrl)
-    is RemoteMatch.Miss -> Resolution.Warn(match.message)
+  /**
+   * The user's explicit assignment wins over what the remote says (design §9.7). With nothing
+   * assigned this costs one empty-store check and the original behaviour is reached unchanged (A8).
+   */
+  private fun webUrlFor(repo: Repository): Resolution {
+    when (val assigned = assignedProject(repo)) {
+      is AssignedProjectLookup.Result.Use -> return Resolution.Ok(assigned.project.webUrl)
+      is AssignedProjectLookup.Result.Warn -> return Resolution.Warn(assigned.message)
+      AssignedProjectLookup.Result.None -> Unit
+    }
+    return when (val match = matchRemote(repo)) {
+      is RemoteMatch.Hit -> Resolution.Ok(match.webUrl)
+      is RemoteMatch.Miss -> Resolution.Warn(match.message)
+    }
   }
 
   private fun contextFor(repo: Repository): ContextResolution {
+    // Same override as webUrlFor, for the callers that need the whole project identity.
+    when (val assigned = assignedProject(repo)) {
+      is AssignedProjectLookup.Result.Use -> return ContextResolution.Ok(assigned.project)
+      is AssignedProjectLookup.Result.Warn -> return ContextResolution.Warn(assigned.message)
+      AssignedProjectLookup.Result.None -> Unit
+    }
     val match = when (val m = matchRemote(repo)) {
       is RemoteMatch.Hit -> m
       is RemoteMatch.Miss -> return ContextResolution.Warn(m.message)

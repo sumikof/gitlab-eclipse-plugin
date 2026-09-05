@@ -23,6 +23,10 @@ object PreferenceConstants {
 
   /** One JSON array holding every repository's publish record (design §11). */
   const val PUBLISH_RECORDS: String = "gitlab.publish.records"
+
+  /** One JSON array holding every repository's project assignment (design §11). */
+  const val SELECTED_PROJECTS: String = "gitlab.assignments.selectedProjects"
+
   const val SECURITY_SCAN_ENABLED: String = "gitlab.securityScan.enabled"
   const val SECURITY_SCAN_ON_SAVE: String = "gitlab.securityScan.scanFileOnSave"
 }
