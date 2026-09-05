@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.clone
 
+import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.mergerequests.GitOperationGuard
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.IProgressMonitor
 import java.io.File
@@ -24,6 +26,12 @@ import kotlin.coroutines.cancellation.CancellationException
  *
  * Cancelling the destination prompt ends the flow with zero side effects: no clone, no directory,
  * and the destination is never pre-created — JGit creates it when the clone starts.
+ *
+ * The clone and the (a0) adoption take the same [GitOperationGuard] key — the clone inside
+ * [RepositoryCloner], the adoption here — and they are exclusive branches, so the non-reentrant
+ * guard is never acquired twice in one run. The spans differ: the cloner releases the key before
+ * the clone's import runs, while the adoption holds it across its own import, which is what keeps
+ * a still-running clone from having its half-written tree adopted.
  */
 class CloneFlow(
   /** [UI hop, blocking] Argument is the suggested folder name. Cancel is null. */
@@ -37,6 +45,11 @@ class CloneFlow(
   private val importProject: (File, RepositorySource) -> CloneOutcome = { destination, source ->
     ClonedProjectImporter(confirm).import(destination, source)
   },
+  /**
+   * The SAME instance [RepositoryCloner] takes (a Koin `single`), which is the whole point: the
+   * adoption path has to be excluded against a clone that is running into the same directory.
+   */
+  private val guard: GitOperationGuard = service(),
 ) {
   private val logger by lazy { logger<CloneFlow>() }
 
@@ -45,6 +58,9 @@ class CloneFlow(
 
   /** [background] Steps 4-5; hands off to [cloneInto] for steps 6-8. */
   fun run(cloneUrl: String, instanceUrl: String, monitor: IProgressMonitor): Result {
+    // The caller's lookup ran before this and can take a while; a cancel there must not still open
+    // the destination dialog and then discard the answer.
+    if (monitor.isCanceled) return Result.CANCELLED
     // Step 4 [UI hop]: where to clone. Cancel = zero side effects: no clone, nothing created.
     val destination = prompt(suggestedFolderName(cloneUrl)) ?: return Result.CANCELLED
     if (monitor.isCanceled) return Result.CANCELLED
@@ -55,16 +71,33 @@ class CloneFlow(
         Result.COMPLETED
       }
       CloneDestinationInspector.Verdict.SameRepository -> {
-        // (a0) adoption consent — deliberately distinct from the importer's orphan consent.
-        if (confirm(CloneMessages.adoptConsent)) {
-          importAndNotify(destination, RepositorySource.ADOPTED_EXISTING)
-        } else {
-          notify(CloneMessages.occupied)
-        }
+        adopt(destination)
         Result.COMPLETED
       }
       CloneDestinationInspector.Verdict.Empty -> cloneInto(cloneUrl, instanceUrl, destination, monitor)
     }
+  }
+
+  /**
+   * [background] (a0) adoption of a repository that is already there, under the clone's own guard
+   * key.
+   *
+   * A clone still running into this directory has already written `origin` — which is exactly what
+   * made the verdict SameRepository — and its failure path lets JGit's cleanup empty the directory
+   * again. Importing it in the meantime would register a project over a tree that is about to be
+   * emptied, so a held guard means "refuse", and the consent question is never asked: its answer
+   * could only have been discarded.
+   */
+  private fun adopt(destination: File) {
+    val done = guard.withRepo(CloneGuardKey.of(destination)) {
+      // (a0) adoption consent — deliberately distinct from the importer's orphan consent.
+      if (confirm(CloneMessages.adoptConsent)) {
+        importAndNotify(destination, RepositorySource.ADOPTED_EXISTING)
+      } else {
+        notify(CloneMessages.occupied)
+      }
+    }
+    if (done == null) notify(CloneMessages.busy)
   }
 
   /**

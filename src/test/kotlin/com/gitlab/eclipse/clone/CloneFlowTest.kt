@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.clone
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.mergerequests.GitOperationGuard
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -39,6 +40,12 @@ private class FlowFixture {
   val cloner = mockk<RepositoryCloner>()
   val monitor = mockk<IProgressMonitor>(relaxed = true)
 
+  /**
+   * The real primitive, not a mock: what the adoption path must respect is the SAME guard the
+   * cloner takes, so a test that could pass against a private instance would prove nothing.
+   */
+  val guard = GitOperationGuard()
+
   /** What the destination prompt answers. Null is the user cancelling it. */
   var destination: File? = destinationDir
 
@@ -58,6 +65,11 @@ private class FlowFixture {
   val importArgs = mutableListOf<Pair<File, RepositorySource>>()
 
   private var cancelled = false
+
+  /** The state a cancel during the caller's lookup leaves behind, before step 4 is reached. */
+  fun cancelBeforeRun() {
+    cancelled = true
+  }
 
   init {
     every { monitor.isCanceled } answers { cancelled }
@@ -88,6 +100,7 @@ private class FlowFixture {
     notify = { message -> notifications += message },
     inspector = inspector,
     cloner = cloner,
+    guard = guard,
     importProject = { directory, source ->
       importArgs += directory to source
       importOutcome(directory, source)
@@ -138,6 +151,49 @@ class CloneFlowTest : StringSpec({
     verify(exactly = 0) { fixture.cloner.clone(any(), any(), any(), any()) }
     fixture.importArgs.shouldBeEmpty()
     fixture.notifications.shouldBeEmpty()
+  }
+
+  "a monitor cancelled before the flow starts never opens the destination prompt" {
+    val fixture = FlowFixture()
+    fixture.cancelBeforeRun()
+
+    fixture.run() shouldBe CloneFlow.Result.CANCELLED
+
+    // The lookup that precedes step 4 can take a while. Without this check the dialog still
+    // opens after a cancel and the answer is read, then silently dropped (PR #82 follow-up 2).
+    fixture.promptArgs.shouldBeEmpty()
+    verify(exactly = 0) { fixture.inspector.inspect(any(), any()) }
+    verify(exactly = 0) { fixture.cloner.clone(any(), any(), any(), any()) }
+    fixture.importArgs.shouldBeEmpty()
+    fixture.notifications.shouldBeEmpty()
+  }
+
+  "an adoption is refused while the clone guard for that destination is held" {
+    val fixture = FlowFixture()
+    fixture.verdict(CloneDestinationInspector.Verdict.SameRepository)
+
+    // Exactly what a clone still running into this directory holds: `origin` is written early, so
+    // the second run sees SameRepository and would adopt a half-cloned tree that JGit's cleanup
+    // can still empty (PR #82 follow-up 3).
+    val result = fixture.guard.withRepo(CloneGuardKey.of(destinationDir)) { fixture.run() }
+
+    result shouldBe CloneFlow.Result.COMPLETED
+    fixture.notifications shouldContainExactly listOf(CloneMessages.busy)
+    // Not asked at all: the answer could only have been discarded.
+    fixture.confirmArgs.shouldBeEmpty()
+    fixture.importArgs.shouldBeEmpty()
+  }
+
+  "a throwing adoption import still releases the clone guard" {
+    val fixture = FlowFixture()
+    fixture.verdict(CloneDestinationInspector.Verdict.SameRepository)
+    fixture.importOutcome = { _, _ -> throw CancellationException("cancelled") }
+
+    shouldThrow<CancellationException> { fixture.run() }
+
+    // withRepo's finally is all that stands between a cancelled adoption and a key no later run
+    // could ever acquire again — the flow holds this one across the import, unlike the clone.
+    fixture.guard.withRepo(CloneGuardKey.of(destinationDir)) { "reacquired" } shouldBe "reacquired"
   }
 
   "an occupied destination is reported, with nothing cloned and nothing imported" {
