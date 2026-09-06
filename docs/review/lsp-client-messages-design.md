@@ -316,8 +316,15 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
         }
       } finally { undoManager?.endCompoundChange() }
 
-      buffer.commit(monitor, overwrite = false)   ← ★ 外部変更を黙って上書きしない
-      committed = true
+      // ★★ commit は「正常復帰」だけで永続化を判定しない(下記「commit の永続化判定」)
+      try {
+        buffer.commit(monitor, overwrite = false)   ← ★ 外部変更を黙って上書きしない
+        committed = true
+      } catch (Throwable t) {
+        log(種別のみ)
+        committed = persistedDespiteFailure(buffer, document)   ← ★ 書けていたかを観測する
+        if (!committed) throw t                                  ← 未永続なら従来どおり失敗として扱う
+      }
     } finally {
       access.disconnect(monitor)   ← 参照数 0 なら dirty バッファは破棄される
     }
@@ -435,6 +442,25 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
   `isSynchronized()` は `fSynchronizationStamp == file.getModificationStamp() && file.isSynchronized(DEPTH_ZERO)`
   であり(`ResourceFileBuffer`)、**バッファが dirty なだけでは false にならない**。したがって R2 / AC4
   (ユーザーの未保存変更もろとも保存する)は `false` でもそのまま成立する。
+- **★★ `commit` の永続化判定を「正常復帰」に頼らない。** `commitFileBufferContent` は**内容を書いたあとにも
+  例外を投げうる**: `ResourceTextFileBuffer` では `IFile.setContents`(offset 444)のあとに
+  `IFile.revertModificationStamp`(488)と **`IPersistableAnnotationModel.commit(IDocument)`(535)** を呼ぶ
+  (javap で確認。§付録)。`FileStoreTextFileBuffer` にも同じ `IPersistableAnnotationModel.commit` がある。
+  どちらも `CoreException` を投げうるため、**ディスクには新しい内容が載っているのに `committed = true` に
+  到達しない**という状態が起こりうる。ここで `applied:false` を返すと、**LS が FS フォールバックで
+  「元の座標の TextEdit」を既に編集済みのディスク内容へ再適用する** = 二重適用によるファイル破損(R1)。
+  したがって commit の例外時は **`persistedDespiteFailure` で永続化されたかを観測する**:
+  - **判定方法**: バッファの encoding(`ITextFileBuffer.getEncoding()`)でディスクの内容を読み、
+    `document.get()` と比較する。一致すれば永続化済み(`committed = true`)。
+  - **判定自体が失敗した場合(I/O エラー・エンコーディング不明など)は「永続化済み」とみなす。**
+    未永続なのに `applied:true` を返すと編集は失われる(通知はする)が、永続済みなのに `applied:false` を
+    返すと**二重適用でファイルが壊れる**。本設計は一貫して**破損 > 消失**の順で重く見ている(R1 = 高、
+    R16 = 低)ため、不明なときは破損を避ける側に倒す。
+  - **`isDirty()` / `isSynchronized()` では判定できない。** `fCanBeSaved` が false になるのは
+    `commitFileBufferContent` が正常復帰したあとであり、同期スタンプは書き込みの前後どちらでも
+    「同期している」を返しうるため、いずれも書き込みの有無と対応しない。
+  - なお **dirty-state リスナの例外はこの窓を作らない**。`TextFileBufferManager.fireDirtyStateChanged` は
+    `SafeRunner.run` でリスナを呼ぶため(javap。§付録)、リスナの例外は外へ出ない。
 - **★ 適用前チェック(`isSynchronized()` を見て事前に諦める)は入れない。** 参照者が居る場合に諦めると、
   LS が FS 直書きへ落ちて「開いている dirty なエディタとディスクが無言で乖離する」= §4.1 の症状を
   こちらから作ってしまう。競合の検出は commit に任せ、判断は §12.1 に一本化する。
@@ -472,7 +498,9 @@ VSCode は単一の `rootPath` に `path.join` するが、当プラグインが
 2. 相対パスなら、`workspaceFolders` と同じ順序(= `ResourcesPlugin.getWorkspace().root.projects` の順序)で各ルートに解決し、**実在する最初のもの**を採用する。
 3. どれにも実在しなければ何もしない(通知なので応答不要)。ログは種別のみ。
 
-開く処理は `OpenMrFileHandler.openEditorFor`(`:109-126`)の idiom を共通化して再利用する: `workspace.root.getFileForLocation(...)` が当たれば `IDE.openEditor(page, iFile)`、外れれば `IDE.openEditorOnFileStore(page, EFS.getLocalFileSystem().getStore(file.toURI()))`。
+開く処理は `OpenMrFileHandler.openEditorFor`(`:109-126`)の idiom を共通化して再利用するが、**ワークスペース内 / 外の判定は §11 と同じ `findFilesForLocationURI` で行う**: 一致すれば `IDE.openEditor(page, iFile)`、0 件なら `IDE.openEditorOnFileStore(page, EFS.getStore(uri))`。**`getFileForLocation` は使わない** — リンクリソースを見つけられず(§11)、`applyEdit` が `IFILE` 系で接続するファイルを `openFile` が file store 系で開いてしまい、**同じファイルに 2 つのバッファができる**ため。
+
+**既存の呼び出し元(`OpenMrFileHandler`)の判定は変えない**(§20)。共通化するのは「開く」部分で、ルックアップは呼び出し側から渡す。
 
 **範囲の reveal は実装しない**(LS が `selection` を送らないため。§5.2)。
 
@@ -601,7 +629,40 @@ sealed interface EditTarget {
 **★ `External` が `IPath` ではなく `IFileStore` を持つ理由**: `ITextFileBufferManager` は 2 つの独立した
 管理マップを持ち、**エディタは外部ファイルを file store 系 API で接続する**ため、`IPath` 系で接続すると
 別バッファになり A6 が崩れる(§9.1 の「ワークスペース内と外で API 系列を混ぜない」)。`IFileStore` は
-`EFS.getLocalFileSystem().getStore(uri)` で得る(§9.3 の `openFile` と同じ生成経路にそろえる)。
+`EFS.getStore(uri)` で得る(`TextFileDocumentProvider.createFileInfo` と同じ生成経路にそろえる)。
+
+**★★ 分類は `getFileForLocation` ではなく `findFilesForLocationURI` で行う。** `IWorkspaceRoot.getFileForLocation`
+の実体は `FileSystemResourceManager.resourceForLocation` で、**開いている各プロジェクトの `getLocation()` が
+プレフィックスかどうかしか見ない**(javap で確認。§付録)。したがって**ワークスペース外の物理ファイルを指す
+リンクリソースを見つけられない**。一方 `TextFileDocumentProvider.createFileInfo` は、
+`IFileEditorInput` を `IFile` にアダプトできれば **`connect(file.getFullPath(), LocationKind.IFILE, …)`**
+を使い、URI 入力についても先に **`IWorkspaceRoot.findFilesForLocationURI(uri)`** を検査してから
+`EFS.getStore(uri)` + `connectFileStore` へ落ちる(javap で確認。§付録)。
+`getFileForLocation` の二分で分類すると、**リンクリソースはエディタが `IFILE` 系で接続しているのに
+こちらは file store 系で接続する**ことになり、別バッファを編集してしまう。`applied:false` で FS
+フォールバックに委ねても、dirty なリンクエディタは古いままで、後の保存でエージェントの編集を上書きしうる
+= **#66 が残る**。
+
+**分類規則(エディタと同じ判定を使う)**:
+
+```
+files = ResourcesPlugin.getWorkspace().root.findFilesForLocationURI(uri)   ← createFileInfo と同じ API
+files が 1 件以上 → InWorkspace(選んだ IFile の getFullPath())          ← ★ ワークスペース絶対パス
+files が 0 件     → External(EFS.getStore(uri))
+
+複数一致(同じ物理ファイルが複数プロジェクトへリンクされている)の選択規則:
+  1. エディタが開いている IFile があればそれ(isEditorOpenFor と同じ判定で選ぶ。§10)
+  2. 無ければ配列の先頭
+```
+
+**`InWorkspace.path` は `IFile.getFullPath()`(= `/project/dir/file` 形式のワークスペース絶対パス)であって、
+ファイルシステム上のパスではない。** `LocationKind.IFILE` はワークスペース絶対パスを要求する。
+リンクリソースではこの 2 つが一致しないため、取り違えるとやはり別バッファになる。
+
+**残余(R18)**: 同じ物理ファイルが複数の `IFile` にリンクされ、**そのうち複数でエディタが開いている**場合、
+到達できるバッファは 1 つだけで、他方のエディタは古いままになる。これは Eclipse のリンクリソースの
+性質そのもの(同一ファイルに対して複数のバッファが存在しうる)であり、LSP の `WorkspaceEdit` も
+「どの `IFile` か」を表現できないため、クライアント側では解決できない。**受容する。**
 
 `EditTarget` は `ITextFileBufferManager` への 3 操作を提供する。これにより §9.1 の処理フローは
 系列で分岐しない:
@@ -722,6 +783,8 @@ LS の書き込みを上書きしうる」という限定的な不整合に留�
 | E9 | `MalformedTreeException`(編集の重なり。`checkIntegrity` が変更前に検出) | 適用前 | `applied:false` | WARN(種別のみ) |
 | E10 | `apply` の内部から `MalformedTreeException` 以外の例外 | **適用済み扱い(悲観)** | E12〜E14 と同じ規則で分岐 | ERROR(種別のみ) |
 | E11 | **commit 成功** | 適用後 | **`applied:true`** | なし |
+| **E20** | **`commit` が例外を投げたが、内容はディスクに書けていた**(`IPersistableAnnotationModel.commit` / `revertModificationStamp` の失敗) | 適用後 | `persistedDespiteFailure` が真 → **`committed = true` として扱う** → **`applied:true`** | WARN(種別のみ)。**通知は出さない**(ディスクは正しい) |
+| **E21** | **永続化判定そのものが失敗した**(ディスク読み取り / エンコーディング不明) | 適用後 | **「永続化済み」とみなす**(= `applied:true`)。破損(R1 = 高)を消失(R16 = 低)より重く見る | WARN(種別のみ)+ **ユーザー通知 1 回**(保存結果が確認できなかったこと) |
 | E12 | **commit 失敗・`editorAttached` かつ `bufferSurvived`**(out-of-sync = `overwrite=false` による拒否を含む) | 適用後 | **`applied:true`** | WARN(種別のみ)+ **ユーザー通知 1 回**(保存を促す) |
 | E13 | **commit 失敗・バッファが破棄された** | 適用後 | **`applied:false`**(LS が FS 経由で書き直す) | WARN(種別のみ)。**通知しない**(ユーザーが取るべき行動が無い) |
 | E14 | **commit 失敗・`bufferSurvived` だが `editorAttached` ではない** | 適用後 | **`applied:false`** | WARN(種別のみ)+ **ユーザー通知 1 回**(未保存の編集を含むバッファが残っている可能性) |
@@ -885,6 +948,8 @@ LS 側は info ログを出すだけ。§5.5)。
 | **通知失敗の封じ込め(E16・AC23)** | 注入した `notifyUser` が例外を投げても、**future は既に `retained` で完了しており、例外が UI ランナブル外へ漏れない**こと。**応答が通知より先に確定していること**(通知を投げさせたうえで future の完了を確認する) |
 | **観測失敗の封じ込め(E19・AC19)** | 注入した `access.current()` / `isEditorOpenFor` が例外を投げても **future が必ず 1 回完了する**こと。**commit 成功時は `applied:true`**(観測が呼ばれないこと自体も検証 = AC25)、**未 commit なら `applied:false` + 残存不明の通知**になること |
 | **API 系列の選択(§9.1・§11)** | 注入した `bufferManager` で、**ワークスペース外の対象は `connectFileStore` / `getFileStoreTextFileBuffer` / `disconnectFileStore` だけ**が呼ばれ、`connect(IPath, LocationKind, …)` 系が**一度も呼ばれない**こと。ワークスペース内は逆であること(AC24) |
+| **分類規則(§11・AC26)** | 注入した `findFilesForLocationURI` で 0 件 / 1 件 / 複数件を作り、**選ばれた `EditTarget` と、渡されたパスがワークスペース絶対パスであること**を固定する。複数件では**エディタが開いている `IFile`** が選ばれること |
+| **`commit` の永続化判定(§9.1・AC27)** | 注入した `commit` が例外を投げる状況で、**ディスク内容が一致するなら `applied:true`・通知なし**(E20)、**判定自体が例外なら `applied:true`・通知 1 回**(E21)、**不一致なら §12.1 の分岐**(E12〜E14)になること |
 | **`commit` の引数(§9.1)** | `commit` が **`overwrite = false`** で呼ばれること。out-of-sync を模した `CoreException` が commit から出たとき、§12.1 の分岐に載ること(AC21) |
 | `ClipboardWriter.writeChecked` | `setContents` が `SWTError` / `SWTException` / `RuntimeException` を投げたとき **`false` で完了し、例外が呼び出し元へ伝播しない**こと。`dispose()` が必ず呼ばれること。**`false` のときに通知が出ないこと**(AC15) |
 | `showDocument` の失敗ログ | 起動失敗時のログキャプチャに **URI と例外メッセージが含まれない**こと(AC14) |
@@ -953,6 +1018,8 @@ LS 側は info ログを出すだけ。§5.5)。
 | **R15** | **`editorAttached` かつ `bufferSurvived` と観測して `applied:true` を返した直後に、バッファが破棄される。** 成立条件は「エディタが開いているのにそのエディタがファイルバッファを保持していない(`TextFileDocumentProvider` 系でないエディタ、または未復元のエディタ参照)」かつ「バックグラウンドの別参照者が退出直後に最後の参照を解放する」の同時成立 | 中(編集の消失) | **2 つの観測の積で成立条件をここまで狭めている**(片方だけなら成立範囲は広い)。テキストエディタで開いている通常のケースでは、エディタが生存中ずっと connect を保持する(javap。§付録)ため起こらない。**残余として受容し、実機の手動検証で「エディタが開いていれば必ず dirty のまま残る」ことを確認する** |
 | **R16** | **E14(バッファ残存・エディタなし)で `applied:false` を返したあと、残存バッファが後から保存されて LS の FS 書き込みを上書きする** | 低 | どちらの内容にもエージェントの編集は含まれる(差は LS がその後に書いた分のみ)。**編集の消失より軽い**と判断して `applied:false` を選んでいる(§12.1)。**通知でユーザーに残存を知らせ**、ファイルを開けば内容を確認・保存・破棄できる |
 | **R17** | **外部ファイルのエディタが file store 系以外の経路でバッファを接続している場合**(独自のエディタ実装や、リンクリソース経由でワークスペース内資源として開かれている場合) | 中(バッファ不一致) | 本設計は外部ファイルを **`IFileStore` 系一本**で扱う(§9.1・§11)。§9.3 の `openFile` も `IDE.openEditorOnFileStore` を使うため、**当プラグインが開いたファイルでは一致する**。一致しない場合は `bufferSurvived` が false になるため、**`applied:false` へ縮退して FS フォールバックに委ねる**(誤って `applied:true` を返すことはない)。実機の手動検証項目に入れる |
+| **R18** | **同じ物理ファイルが複数の `IFile` にリンクされ、そのうち複数でエディタが開いている場合。** 到達できるバッファは 1 つだけで、他方のエディタは古いまま残る | 低 | **クライアント側では解決できない。受容する。** Eclipse のリンクリソースの性質そのもの(同一ファイルに複数のバッファが存在しうる)であり、LSP の `WorkspaceEdit` も「どの `IFile` か」を表現できない。選択規則は「エディタが開いている `IFile` を優先、無ければ先頭」(§11) |
+| **R19** | **`commit` の例外時に永続化されたかを判定できず、実際は未永続なのに `applied:true` を返す** | 中(編集の消失) | ディスク内容と `document.get()` の比較で通常は判定できる(§9.1)。判定不能時に「永続化済み」へ倒すのは、**逆向きの誤り(永続済みなのに `applied:false` → FS フォールバックが同じ TextEdit を再適用してファイル破損)の方が重い**ため(R1 = 高)。**判定不能のときは必ず通知する**(E21) |
 
 ## 26. 受け入れ条件
 
@@ -983,6 +1050,8 @@ LS 側は info ログを出すだけ。§5.5)。
 | **AC23** | **`notifyUser` が例外を投げても future は `retained` で完了済みであり、例外が UI ランナブル外へ漏れない**。応答が通知より先に確定していること(§13 の E16・I4) | 自動テスト |
 | **AC24** | **ワークスペース外のファイルでは file store 系 API が使われる。** 注入した `bufferManager` に対し `connectFileStore` / `getFileStoreTextFileBuffer` / `disconnectFileStore` が呼ばれ、**`connect(IPath, LocationKind, …)` 系が一度も呼ばれない**こと。ワークスペース内では逆に `IPath` 系だけが呼ばれること(§9.1・§11・A6) | 自動テスト |
 | **AC25** | **`commit` に成功していれば退出時の観測を行わない。** `isEditorOpenFor` を例外を投げるものに差し替えても、commit 成功時は `applied:true` が返り、その `isEditorOpenFor` が**呼ばれない**こと(§9.1 の退出処理) | 自動テスト |
+| **AC26** | **ワークスペース内 / 外の分類が `findFilesForLocationURI` で行われる。** (a) 一致が 1 件 → `InWorkspace(file.getFullPath())` で **`IPath` 系**が使われること(**ファイルシステム上のパスではなくワークスペース絶対パスが渡ること**)/ (b) 一致 0 件 → `External(EFS.getStore(uri))` で **file store 系**が使われること / (c) 複数一致 → **エディタが開いている `IFile` が選ばれる**こと、無ければ先頭(§11・R18) | 自動テスト |
+| **AC27** | **`commit` が「書き込み後に」例外を投げたとき、`applied:true` が返る。** 注入した `commit` が例外を投げ、かつディスク内容が `document.get()` と一致する状況で **`applied:true`**・通知なし(E20)。**判定自体が例外を投げる場合も `applied:true`** + 通知 1 回(E21)。逆に書き込みが行われていない(内容が不一致)場合は従来どおり §12.1 の分岐に載ること | 自動テスト |
 
 ## 付録: 根拠一覧
 
@@ -1011,6 +1080,9 @@ LS 側は info ログを出すだけ。§5.5)。
 | **エディタは生存中ずっとファイルバッファを connect し続ける** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider` が `ITextFileBufferManager.connect(IPath, LocationKind, IProgressMonitor)` / `connectFileStore` を呼び、`disconnect` / `disconnectFileStore` で解放する。**したがってテキストエディタが開いている限り、こちらの `disconnect` ではバッファは破棄されない** |
 | **`ITextFileBufferManager` は互いに参照しない 2 つの管理マップを持つ** | 同 jar: フィールド `fFilesBuffers: Map<IPath, AbstractFileBuffer>` と `fFileStoreFileBuffers: Map<IFileStore, FileStoreFileBuffer>`。`connect(IPath, LocationKind, …)` は前者(offset 21 / 103 / 147 が `fFilesBuffers`)、`connectFileStore(IFileStore, …)` は後者(offset 16 / 91 / 132 が `fFileStoreFileBuffers`)だけを使い、**相互参照は無い** |
 | **エディタは外部ファイルを file store 系 API で接続する** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider.createFileInfo(Object)` が入力に応じて `ITextFileBufferManager.connect(IPath, LocationKind, …)`(offset 73 / 229)と `connectFileStore(IFileStore, …)`(offset 161)を使い分け、`disposeFileInfo` は `disconnectFileStore` を呼ぶ。**したがって外部ファイルに `IPath` 系で接続すると別バッファになる** |
+| **`getFileForLocation` はリンクリソースを見つけない** | `javap -c` on `org.eclipse.core.resources-3.23.100.jar`: `WorkspaceRoot.getFileForLocation(IPath)` → `FileSystemResourceManager.fileForLocation` → `resourceForLocation(IPath, boolean)`。本体が呼ぶのは `IWorkspaceRoot.getProjects` / `IProject.getLocation` / `IPath.isPrefixOf` / `Resource.isFiltered` だけで、**リンク解決(`findLinkedResourcesPaths`)を通らない**。リンクを含む解決は `findFilesForLocationURI` → `allResourcesFor(URI, …)` 側にある |
+| **`createFileInfo` の分類順序** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider.createFileInfo(Object)` は ① `IAdaptable.getAdapter(IFile.class)` が当たれば `connect(file.getFullPath(), LocationKind.IFILE, …)` ② `ILocationProviderExtension.getURI` → **`IWorkspaceRoot.findFilesForLocationURI(uri)`** を検査 → 外れて初めて `EFS.getStore(uri)` + `connectFileStore` ③ `ILocationProvider.getPath` → `FileBuffers.getWorkspaceFileAtLocation(path)`、の順で系列を決める |
+| **`commit` は内容を書いたあとにも例外を投げうる** | `javap -c` on `org.eclipse.core.filebuffers-3.8.500.jar`: `ResourceTextFileBuffer.commitFileBufferContent` は `IFile.setContents`(offset 444)→ `IFile.revertModificationStamp`(488)→ **`IPersistableAnnotationModel.commit(IDocument)`(535)** の順で、後 2 者は `CoreException` を投げうる。`FileStoreTextFileBuffer.commitFileBufferContent` にも `IPersistableAnnotationModel.commit`(412)がある。一方 **`TextFileBufferManager.fireDirtyStateChanged` は `SafeRunner.run`(offset 31)でリスナを呼ぶ**ので、リスナの例外はこの窓を作らない |
 
 ---
 
@@ -1023,3 +1095,4 @@ LS 側は info ログを出すだけ。§5.5)。
 | 3 | 2026-09-06 | **Codex 再レビュー(PR #84、P1×4)の反映。設計の骨格 4 箇所を改訂。** ① §9.1・§13・§15・§26: **セットアップ失敗(`scheduleTimeout` の例外等)を状態機械に取り込む** — 例外を返さず `settleIfPending(false)` で `SETTLED` へ落とし、登録済みランナブルを CAS で無効化(P1-F・AC18)/ ② §9.1・§13・§16: **応答点を `finally` の 1 箇所に統一**し、`documentMutated` / `committed` / `hasOtherReferent` から応答を決める。適用後の例外で `applied:false` に落とさず、future が未完了のまま残ることもない(P1-G・AC19・I4・I5)/ ③ §12.1・§13・§23: **commit 失敗時の応答を「参照者の有無」で分岐** — 参照者ありなら `applied:true` + 通知、**参照者が自分だけなら `applied:false`**(`disconnect` でバッファが破棄され編集が消えるため)(P1-E・AC20)/ ④ §9.1・§13・R13・R14: **`commit(overwrite = true)` → `false`** に変更し、外部変更の無言上書きをやめる(P1-H・AC21)/ ⑤ §12・§9.1: `MultiTextEdit.apply` の原子性の記述を実測に合わせて訂正(`checkIntegrity` は変更前・`performEdits` に巻き戻し無し・ドキュメント長は未検査)。範囲外はオフセット変換時に検出し、`apply` 内の想定外例外は**悲観的に「変更済み」**として扱う / ⑥ 付録: Eclipse `filebuffers` / `text` の javap 根拠 5 件を追加 |
 | 4 | 2026-09-06 | **Codex 3 巡目レビュー(PR #84、P1×3)の反映。** ① §9.1・§12.1・§16: **参照者の存続を「予測」せず「観測」する**(P1-I)。第 3 版の `hasOtherReferent`(`connect` 前の非 null 判定)は成立しない — バッファはバックグラウンドスレッドからも connect / disconnect され、`dispose` は管理マップのロック外で、既存参照者がエディタとも限らないため。**第 3 版 §16 の「UI スレッドを手放さないから参照者集合は変化しない」を撤回**し、退出時に **`bufferSurvived`(identity 比較)** と **`editorAttached`(エディタの開閉は UI スレッド限定)** の積で `retained` を決める形へ / ② §12.1・§13・§19: **`disconnect` 失敗を「破棄済み」と仮定しない**(P1-J)。`bufferSurvived` が破棄の直接観測を兼ね、残存かつエディタ無しは新設の **E14**(`applied:false` + 残存を知らせる通知)へ / ③ §9.1・§13: **`finally` 内で応答を通知より先に確定させる**(P1-K)。`finally` 内の例外はその `finally` の残りを飛ばして伝播するため、通知が先だと通知失敗で future が未完了のまま残り I4 が崩れる。応答・通知をそれぞれ独立に try/catch で封じ込め / ④ §10: seam に `isEditorOpenFor` を追加(計 5 つ)/ ⑤ §23・§26: AC22・AC23 と観測 4 組み合わせのテストを追加 / ⑥ §25: R15(観測の残余リスク)・R16(残存バッファの後追い保存)を追加 / ⑦ §24: U9(未復元エディタ参照の扱い)を追加 / ⑧ 付録: `dispose` がロック外である根拠と `TextFileDocumentProvider` の根拠を追加 |
 | 5 | 2026-09-06 | **Codex 4 巡目レビュー(PR #84、P1×2)の反映。** ① §7 A6・§9.1・§11・§23・§26: **ワークスペース外のファイルは `IFileStore` 系 API で接続する**(P1-L)。`ITextFileBufferManager` は `fFilesBuffers`(`IPath` キー)と `fFileStoreFileBuffers`(`IFileStore` キー)の**互いに参照しない 2 マップ**を持ち、`TextFileDocumentProvider.createFileInfo` は外部ファイルに `connectFileStore` を使う(javap)。第 4 版の `External(IPath)` + `LocationKind.LOCATION` では**エディタと別バッファになり A6 が崩れ、#66 の欠陥が外部ファイルで残る**。`EditTarget.External` を `IFileStore` 保持へ変え、`BufferAccess`(connect / current / disconnect)でフローを 1 本に保つ(AC24)/ ② §9.1・§12.1・§13・§26: **退出時の観測の失敗からも応答を守る**(P1-M)。第 4 版は観測を `settleFromRunning` より前かつ try/catch の外で評価しており、`isEditorOpenFor` の例外で commit 成功時ですら future が未完了になりえた。**`retained` の初期値を `committed` にして commit 成功時は観測自体を不要にし**、観測を try/catch で封じ込め(失敗時は `retained = committed` に倒す)、**その外側の `finally` から必ず settle する**(E19・AC19 拡張・AC25)/ ③ §25: R17(外部ファイルのエディタが別経路で接続している場合)を追加 |
+| 6 | 2026-09-06 | **Codex 5 巡目レビュー(PR #84、P1×2)の反映。** ① §11・§23・§25・§26: **ワークスペース内 / 外の分類を `getFileForLocation` から `findFilesForLocationURI` へ**(P1-N)。`getFileForLocation` の実体はプロジェクトの location プレフィックス照合だけで**リンクリソースを見つけない**一方、`TextFileDocumentProvider.createFileInfo` は `IFile` にアダプトできれば `IFILE` 系、URI 入力でも先に `findFilesForLocationURI` を検査する(javap)。第 5 版の分類ではワークスペース外を指すリンクリソースが `External` に落ち、**エディタと別バッファになって #66 が残る**。あわせて **`InWorkspace.path` が `IFile.getFullPath()`(ワークスペース絶対パス)であること**を明記し、複数一致の選択規則(エディタが開いている `IFile` 優先)と残余 R18 を追加(AC26)/ ② §9.1・§13・§25・§26: **`commit` の永続化を「正常復帰」で判定しない**(P1-O)。`commitFileBufferContent` は `IFile.setContents` の**あとに** `revertModificationStamp` と `IPersistableAnnotationModel.commit` を呼び、どちらも `CoreException` を投げうるため、**ディスクには書けているのに `committed=true` に到達しない**窓がある。ここで `applied:false` を返すと LS が同じ TextEdit を編集済みディスクへ再適用して**破損**する。commit 例外時は `persistedDespiteFailure`(ディスク内容と `document.get()` の比較)で観測し、**判定不能なら「永続化済み」に倒す**(破損 > 消失)。E20 / E21 / R19 / AC27 を追加。なお dirty-state リスナは `SafeRunner` 配下なのでこの窓を作らない |
