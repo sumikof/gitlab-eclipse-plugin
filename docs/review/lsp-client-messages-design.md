@@ -255,9 +255,9 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
       (適用中の LS を FS フォールバックさせない)
   I3. future を完了させるのは SETTLED へ遷移させた 1 本だけ
   I4. RUNNING に入った本人は、どの例外経路を通っても必ず 1 回 settleFromRunning に到達する
-      (= future が未完了のまま残らない)
-  I5. 応答 applied は「編集がこのランナブルの終了後も残るか」と一致する
-      (残らないなら false = LS の FS フォールバックに委ねる。§12.1)
+      (= future が未完了のまま残らない)。★ 応答は finally の中で「最初に」確定させる
+  I5. 応答 applied は「編集がこのランナブルの退出後も残るか」と一致する。
+      ★ これは予測ではなく退出時の観測で決める(§12.1)
 ```
 
 ```
@@ -289,12 +289,11 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
 [UI スレッド]  runEdit()
   if (!state.compareAndSet(PENDING, RUNNING)) return         ★ I1(既に SETTLED = 諦め済み)
 
-  var documentMutated  = false   // ドキュメントを変更した(可能性がある)
-  var committed        = false   // commit() が正常終了した
-  var hasOtherReferent = false   // 自分の connect より前から誰かが接続していた(= 退出後もバッファが残る)
+  var documentMutated = false          // ドキュメントを変更した(可能性がある)
+  var committed       = false          // commit() が正常終了した
+  var editedBuffer: ITextFileBuffer? = null   // 実際に編集したバッファのインスタンス
 
   try {
-    hasOtherReferent = bufferManager.getTextFileBuffer(path, kind) != null   ★ connect の「前」に測る
     bufferManager.connect(path, kind, monitor)
     try {
       buffer   = bufferManager.getTextFileBuffer(path, kind)
@@ -305,10 +304,12 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
         try {
           MultiTextEdit(edits).apply(document)
           documentMutated = true
+          editedBuffer    = buffer          ← ★ 後で identity 比較するために保持
         } catch (MalformedTreeException e) {
           throw e                     ← checkIntegrity は変更前に投げる → documentMutated は false のまま
         } catch (Throwable t) {
           documentMutated = true      ← ★ 悲観的に真とする(下の「部分適用」を参照)
+          editedBuffer    = buffer
           throw t
         }
       } finally { undoManager?.endCompoundChange() }
@@ -322,9 +323,21 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
     log(種別のみ)   ← CoreException / BadLocationException / MalformedTreeException /
                       SWTException / IllegalStateException / その他をすべてここで受ける
   } finally {
-    retained = committed || (documentMutated && hasOtherReferent)          ★ §12.1
-    if (documentMutated && !committed && retained) notifyUser(未保存であること・手動保存で復旧できること)
-    settleFromRunning(applied = retained)                                  ★ I4。唯一の応答点
+    // ★ 退出時の「観測」。予測しない(§12.1)
+    val bufferSurvived = editedBuffer != null &&
+                         bufferManager.getTextFileBuffer(path, kind) === editedBuffer   // identity
+    val editorAttached = documentMutated && isEditorOpenFor(target)   // UI スレッド上でのみ変化しうる
+    val retained       = committed || (documentMutated && editorAttached && bufferSurvived)
+
+    try { settleFromRunning(applied = retained) } catch (Throwable t) { log(種別のみ) }   ★ I4。最初に応答
+    try {
+      when {
+        committed || !documentMutated -> {}                       // 通知不要
+        retained        -> notifyUser(保存できなかったこと・エディタで保存すれば復旧できること)
+        bufferSurvived  -> notifyUser(未保存の編集を含むバッファが残っている可能性・ファイルを開けば見えること)
+        else            -> {}                                     // 破棄済み。LS が書き直すので通知しない
+      }
+    } catch (Throwable t) { log(種別のみ) }                        ★ 通知の失敗は応答に影響しない
   }
 ```
 
@@ -343,17 +356,36 @@ issue #20 §3-8 および #67 は「lsp4j 0.23.1」を根拠にしているが�
   ランナブルは CAS に負けて no-op になる。**登録順は「ランナブル → タイムアウト」**にする。逆順だと
   ランナブルの登録失敗を救うのがタイムアウト(10 秒後)になり、応答が無用に遅れる。
   CAS に負けた場合(= 既に `RUNNING`)は何もしない — 応答は走っている本人が返す(I2)。
-- **★ 応答点を 1 つにする。** 外側の例外ハンドラを no-op にすると、状態が `RUNNING` のためタイムアウトも
-  遷移できず **future が永久に未完了**になる。逆に無条件に `applied:false` を返すと、`MultiTextEdit.apply`
-  成功後(例: `endCompoundChange` や `disconnect` の失敗)に**適用済みのバッファへ FS フォールバックが
-  重なる**。したがって外側は「握って `finally` に流す」だけにし、**`finally` の `settleFromRunning` が
-  唯一の応答点**になるようにする。応答値は状態変数から決まる(§12.1)。
-- **★ `hasOtherReferent` は `connect` の前に測る。** `ITextFileBufferManager.getTextFileBuffer(path, kind)` は
-  **接続中のバッファがあるときだけ非 null** を返す(`TextFileBufferManager.internalGetFileBuffer` = 管理
-  マップの参照)。自分が接続する前に非 null なら、エディタなど別の参照者が居るので、自分が
-  `disconnect` してもバッファは残る。**この測定は UI スレッド上で行い、`connect` → `commit` →
-  `disconnect` を同じランナブル内で完結させる**(イベントループを回さない)ため、測定から退出までの間に
-  参照者集合は変化しない。自分自身の別リクエストとも重ならない(UI スレッドは単一で直列。§16)。
+- **★ 応答点を 1 つにし、`finally` の「先頭」に置く。** 外側の例外ハンドラを no-op にすると、状態が
+  `RUNNING` のためタイムアウトも遷移できず **future が永久に未完了**になる。逆に無条件に `applied:false`
+  を返すと、`MultiTextEdit.apply` 成功後の失敗で**適用済みのバッファへ FS フォールバックが重なる**。
+  したがって外側は「握って `finally` に流す」だけにする。**さらに `finally` の中でも、通知より先に
+  `settleFromRunning` を呼ぶ。** `finally` ブロック内で例外が出るとその `finally` の残りは実行されずに
+  伝播するため、**通知を先に置くと通知の失敗が応答を丸ごと飛ばし、I4 が成立しない**。応答と通知は
+  それぞれ独立に try/catch で封じ込める。
+- **★★ 参照者の存続を「予測」しない — 退出時に「観測」する。**
+  第 3 版は `connect` の前に `getTextFileBuffer(...) != null` を測って「別の参照者が居るから退出後も残る」
+  と予測していたが、**この予測は成立しない**:
+  - **ファイルバッファはバックグラウンドスレッドからも connect / disconnect される。**
+    `ITextFileBufferManager` は管理マップの `synchronized` だけで UI スレッドを要求しない。
+    `commit` 中に同期実行されるリソース変更リスナも同様に接続を変えうる。したがって
+    「UI スレッドを手放さないから参照者集合は変わらない」は**誤り**である(第 3 版 §16 の記述を撤回する)。
+  - **`TextFileBufferManager.disconnect` は map からの remove だけがロック内**で、`fireBufferDisposed` /
+    `dispose()` は**ロック外**で行われる(javap で確認。§付録)。したがって「非 null であること」は
+    「同じインスタンスが生き続けること」を意味しない。
+  - **既存の参照者がエディタとは限らない。** 短命な処理(検索・リファクタリング等)が最後の参照を
+    直後に解放すれば、dirty バッファは破棄される。
+
+  そこで第 4 版は、**退出時に 2 つを観測して `retained` を決める**:
+
+  | 観測 | 定義 | なぜ信頼できるか |
+  |---|---|---|
+  | `bufferSurvived` | `disconnect` の**後**に `getTextFileBuffer(path, kind)` が**編集したのと同一インスタンス**を返すか(`===`。非 null ではない) | 破棄されていれば map から消えており、破棄後に別の誰かが再接続していればインスタンスが異なる。**`disconnect` が例外で破棄しきれなかった場合も、そのまま「残っている」と観測される**(F6 の直接検出) |
+  | `editorAttached` | 対象ファイルにエディタが開いているか | **エディタの開閉は UI スレッドでしか起こらない。** 本ランナブルは UI スレッド上でイベントループを回さずに完結するため、この判定は退出後も有効である。テキストエディタは `TextFileDocumentProvider` が生存中ずっとバッファを connect し続ける(javap で確認。§付録)ので、**エディタが開いている限りバッファは破棄されない**。さらに dirty なエディタを閉じると Eclipse が保存を促す |
+
+  **2 つの積を取る理由**: `editorAttached` は「今後も残り続ける」ことの保証(バックグラウンド解放に強い)、
+  `bufferSurvived` は「いま実際に残っている」ことの確認(ファイルバッファを使わないエディタ実装や
+  `disconnect` 失敗に強い)。互いの穴を埋めるので**両方を要求する**。
 - **★ `commit(monitor, overwrite = false)`。** `overwrite = true` は Eclipse の out-of-sync 検査を迂回する。
   `ResourceTextFileBuffer.commitFileBufferContent` / `FileStoreTextFileBuffer.commitFileBufferContent` は
   どちらも先頭で `if (!isSynchronized() && !overwrite) throw CoreException(WARNING, code 274)` を行う
@@ -495,12 +527,16 @@ class WorkspaceEditApplier(
   private val undoManagerFor: (IDocument) -> IDocumentUndoManager? = { DocumentUndoManagerRegistry.getDocumentUndoManager(it) },
   // ★ 開始タイムアウト。実時間を待たずに発火させられることがテストの必須要件(§23・U8)
   private val scheduleTimeout: (Duration, Runnable) -> Unit = { d, r -> /* U8 で確定 */ },
-  // ★ commit 失敗時のユーザー通知。回数を数えるためテストから差し替える(AC16 / AC20)
+  // ★ 退出時の観測(§12.1)。対象ファイルにエディタが開いているか。UI スレッド上でのみ呼ぶ
+  private val isEditorOpenFor: (EditTarget) -> Boolean = { defaultEditorLookup(it) },
+  // ★ commit 失敗時のユーザー通知。回数と文言を検証するためテストから差し替える(AC16 / AC20 / AC22)
   private val notifyUser: (String) -> Unit = { NotificationUtils.showWarning(it) },
 )
 ```
 
-**この 4 つの seam がテスト可能性の前提である**(§23)。`scheduleTimeout` と `notifyUser` を注入できない実装は、AC13 / AC16 / AC18 / AC20 が「10 秒待つテスト」または「検証できない副作用」になるため受け入れない。
+**この 5 つの seam がテスト可能性の前提である**(§23)。`scheduleTimeout` / `isEditorOpenFor` / `notifyUser` を注入できない実装は、AC13 / AC16 / AC18 / AC20 / AC22 が「10 秒待つテスト」または「検証できない副作用」になるため受け入れない。
+
+`isEditorOpenFor` の既定実装は、開いている全ウィンドウ → 全ページ → `getEditorReferences()` を走査し、`IEditorInput` が対象ファイルを指すものがあるかを判定する(`LocationKind.IFILE` は `ResourceUtil.getFile(input)`、外部ファイルは `FileStoreEditorInput` の URI を比較)。**参照を解決するために `getEditor(true)` でエディタを復元してはならない**(未復元エディタの強制復元は重い副作用になる)。未復元エディタの扱いは §24 U9。
 
 ## 11. データモデル
 
@@ -533,17 +569,32 @@ URI → パス変換は **`file:///path` と `file:/path` の両形式を受け�
 **判断基準は「その編集がこのランナブルの退出後も残るか」の一点である。** 残るなら `applied: true` を返して
 LS の FS フォールバックを抑止し、残らないなら `applied: false` を返してフォールバックに委ねる(I5)。
 
+**★ これを予測で決めてはならない(第 3 版からの変更)。** 退出時に観測する:
+
 ```
-retained = committed || (documentMutated && hasOtherReferent)
+bufferSurvived = disconnect 後の getTextFileBuffer(path, kind) === 編集したバッファのインスタンス
+editorAttached = 対象ファイルにエディタが開いている(UI スレッド上でのみ変化する)
+
+retained = committed || (documentMutated && editorAttached && bufferSurvived)
 応答      = applied: retained
 ```
+
+観測が信頼できる理由と、`connect` 前の非 null 判定による予測が成立しない理由は §9.1 の
+「参照者の存続を『予測』しない」に記した(要点: バッファはバックグラウンドスレッドからも
+connect / disconnect され、`dispose` は管理マップのロック外で行われ、既存の参照者がエディタとは限らない)。
 
 | 状況 | バッファの行方 | 応答 | ユーザー通知 |
 |---|---|---|---|
 | commit 成功 | ディスクに載る | `applied: true` | なし |
-| **適用済み・commit 失敗・別の参照者が居る**(エディタで開いている) | dirty のまま**残る**。エディタに `*` が出て内容が見え、undo が効き、手動保存で確定できる | **`applied: true`** | **出す**(保存できなかったこと・手動保存で復旧できること) |
-| **適用済み・commit 失敗・参照者が自分だけ**(エディタで開いていない) | `disconnect` で**破棄される**(下記) | **`applied: false`** | 出さない(編集は LS が書き直す) |
+| **適用済み・commit 失敗・エディタが開いていて同一バッファが残存** | dirty のまま**残る**。エディタに `*` が出て内容が見え、undo が効き、手動保存で確定できる。閉じようとすれば Eclipse が保存を促す | **`applied: true`** | **出す**(保存できなかったこと・エディタで保存すれば復旧できること) |
+| **適用済み・commit 失敗・バッファが破棄された**(参照者が自分だけだった) | `disconnect` で**破棄される**(下記) | **`applied: false`** | 出さない(編集は LS が FS 経由で書き直す) |
+| **適用済み・commit 失敗・バッファは残存するがエディタは開いていない**(`disconnect` 失敗を含む) | 登録済みのまま dirty で残る。**誰も保存しないが、ファイルを開けばそのバッファに接続されて内容が見える** | **`applied: false`**(= 編集をディスクへ確実に届けることを優先) | **出す**(未保存の編集を含むバッファが残っている可能性・ファイルを開けば見えること) |
 | 適用前の失敗(URI 解決 / 変換 / `checkIntegrity` / connect) | 変更していない | `applied: false` | 出さない |
+
+**3 行目と 4 行目の違い**: どちらもバッファの存続を保証できないが、**4 行目は「いま残っている」ことが観測
+できている**。ここで `applied: true` にして LS を止めると、その後バッファが破棄されたときに編集が完全に
+失われる。`applied: false` にすれば **編集は必ずディスクに届き**、残存バッファは「あとで保存されると
+LS の書き込みを上書きしうる」という限定的な不整合に留まる(R16)。**編集の消失の方が重い**ので後者を採る。
 
 **「参照者が自分だけなら破棄される」の根拠**(javap で確認。§付録):
 
@@ -551,11 +602,11 @@ retained = committed || (documentMutated && hasOtherReferent)
 - `TextFileBufferManager.disconnect(...)` は `AbstractFileBuffer.disconnect()` のあと `isDisconnected()` が真なら
   管理マップから **remove → `fireBufferDisposed` → `dispose()`** する。**保存は行わない。**
 
-したがって、エディタで開いていないファイルでは、こちらの `connect` が唯一の参照になる。ここで commit に失敗したまま
-`applied: true` を返すと、**編集はディスクにもエディタにも残らないのに FS フォールバックまで抑止され、編集が
-完全に消える**(手動保存する先も無い)。これが「参照者の有無で分岐する」理由である。
+したがって、エディタで開いていないファイルでは、こちらの `connect` が唯一の参照になりうる。ここで commit に
+失敗したまま `applied: true` を返すと、**編集はディスクにもエディタにも残らないのに FS フォールバックまで
+抑止され、編集が完全に消える**。これが「退出時に観測して分岐する」理由である。
 
-**参照者が居る場合に巻き戻さない理由**(旧版から維持):
+**巻き戻さない理由**(旧版から維持):
 
 - commit の失敗原因が**読み取り専用・ディスク満杯・権限変更**であれば、**FS 直書きも同じ理由で失敗する**。
   巻き戻した分だけ編集が失われ、得るものが無い。
@@ -566,61 +617,78 @@ retained = committed || (documentMutated && hasOtherReferent)
   `await document.save()` の失敗を `log.error` で記録するだけで **`result.applied` を変更しない**。
 - `applied: true` は「**クライアントが編集を適用した**」の意味であり、嘘ではない。LSP の
   `ApplyWorkspaceEditResponse` は永続化の成否を表す欄を持たない。
+- バッファが破棄される経路では**巻き戻す必要が無い**。`disconnect` がバッファごと破棄するため、
+  明示的な undo を実行しなくてもディスクとバッファのどちらにも編集は残らない。
 
-**参照者が居ない場合に巻き戻さない理由**: 巻き戻す必要が無い。`disconnect` がバッファごと破棄するため、
-**明示的な undo を実行しなくてもディスクとバッファのどちらにも編集は残らない**。`applied: false` を返した
-時点で LS が同じ編集を FS 経由で書き直すので、二重書き込みにもならない。
+**採らなかった案 — 自前で所有権を持つ**(`documentMutated && !committed` のとき `disconnect` せず接続を
+保持し、バッファが clean になるかシャットダウンで解放する): 存続は構成上保証されるが、**得があるのは
+エディタが開いているケースだけ**で、そこは `editorAttached` で既に保証が得られている。エディタが
+開いていないケースでは、観測方式なら `applied: false` で **LS がディスクへ書いて操作なしに完了する**のに対し、
+所有権方式は**誰にも見えない dirty バッファを抱えてユーザーの操作を要求する**。§19 の
+「編集がこちらに残らない経路は現行挙動へ縮退する」原則にも観測方式が合う。加えて所有権方式は
+解放条件・シャットダウン時の扱い・保持数の上限という新しい設計面を持ち込む。
 
 **代償(受容する)**:
 
-- 参照者が居る場合、ディスクが一時的に古いままになるため、エージェントが直後にビルドやテストを走らせると
-  古い内容を読む。ただし LS 自身の `getText` は LSP 優先(= こちらのバッファ)なので、
+- `applied: true` を返したケースではディスクが一時的に古いままになるため、エージェントが直後にビルドや
+  テストを走らせると古い内容を読む。ただし LS 自身の `getText` は LSP 優先(= こちらのバッファ)なので、
   **LS から見た内容は一貫している**。
-- 参照者が居ない場合、`applied: false` によって LS が FS 直書きへ落ちる。**out-of-sync が原因で commit に
-  失敗したときは、その外部変更が FS 直書きで上書きされうる**。これはクライアント側では止められない
+- `applied: false` を返したケースでは LS が FS 直書きへ落ちる。**out-of-sync が原因で commit に失敗した
+  ときは、その外部変更が FS 直書きで上書きされうる**。これはクライアント側では止められない
   (§9.2 と同じ理由で、拒否は「どちらの経路で書かれるか」しか変えない)。**受容する制限として R13 に記載。**
-- **テキストエディタ以外で開いているファイルは「参照者なし」と判定される**(ファイルバッファに接続するのは
-  テキストエディタだから)。この場合はもともとバッファ共有が成立しないので、`applied: false` → FS 直書きは
-  現状の挙動と同じであり、悪化しない。
+- **テキストエディタ以外で開いているファイル**は `bufferSurvived` が false になりやすく、`applied: false` →
+  FS 直書きとなる。この場合はもともとバッファ共有が成立しないので、現状の挙動と同じであり悪化しない。
 
-**この方針は失敗を握り潰さない。** 参照者が居る場合は通知で、居ない場合は WARN ログで必ず可視化する(§13・§18)。
+**この方針は失敗を握り潰さない。** 通知が出ない唯一のケースは「バッファが破棄され、LS が書き直す」経路で、
+そこでは**ユーザーが取るべき行動が無い**。それ以外は通知とログで必ず可視化する(§13・§18)。
+
 ## 13. エラー処理
 
-**応答は状態変数から決まる。** `applied = committed || (documentMutated && hasOtherReferent)`(§12.1 の I5)。
-下表はその規則を事象ごとに展開したものであり、**表と規則が食い違ったら規則が正**である。
+**応答は退出時の観測から決まる。** `applied = committed || (documentMutated && editorAttached && bufferSurvived)`
+(§12.1 の I5)。下表はその規則を事象ごとに展開したものであり、**表と規則が食い違ったら規則が正**である。
 
-| # | 事象 | 段階 | `documentMutated` | `committed` | 応答 | ログ / 通知 |
-|---|---|---|---|---|---|---|
-| E1 | `documentChanges` が null / 空(`changes` のみを含む場合) | 事前検証 | — | — | `applied:false` | INFO(件数のみ) |
-| E2 | `ResourceOperation` が含まれる | 事前検証 | — | — | `applied:false` | WARN(種別のみ) |
-| E3 | `SnippetTextEdit` が含まれる | 事前検証 | — | — | `applied:false` | WARN(種別のみ) |
-| E4 | URI が `file:` 以外 / 解析不能 | 事前検証 | — | — | `applied:false` | WARN(スキーマ名のみ。**URI 本体は出さない**) |
-| E5 | **セットアップ失敗**(`onUiThread` 登録失敗 / `scheduleTimeout` の `RejectedExecutionException` / display 破棄) | セットアップ | — | — | `applied:false`(`settleIfPending`。既に `RUNNING` なら**応答しない** = 本人が返す) | WARN(種別のみ) |
-| E6 | 開始タイムアウト(UI スレッドに到達しなかった) | セットアップ後 | — | — | `applied:false`(`settleIfPending`) | INFO(件数のみ) |
-| E7 | `CoreException`(**connect 失敗**) | 適用前 | false | false | `applied:false` | WARN(種別のみ) |
-| E8 | `BadLocationException`(範囲がドキュメント外。**オフセット変換時**に検出) | 適用前 | false | false | `applied:false` | WARN(種別のみ) |
-| E9 | `MalformedTreeException`(編集の重なり。`checkIntegrity` が変更前に検出) | 適用前 | false | false | `applied:false` | WARN(種別のみ) |
-| E10 | `apply` の内部から `MalformedTreeException` 以外の例外 | **不明(悲観)** | **true** | false | E12 / E13 と同じ規則で分岐 | ERROR(種別のみ) |
-| E11 | **commit 成功** | 適用後 | true | true | **`applied:true`** | なし |
-| E12 | **commit 失敗・別の参照者が居る**(out-of-sync = `overwrite=false` による拒否を含む) | 適用後 | true | false | **`applied:true`** | WARN(種別のみ)+ **ユーザー通知 1 回** |
-| E13 | **commit 失敗・参照者が自分だけ** | 適用後 | true | false | **`applied:false`**(バッファは `disconnect` で破棄される) | WARN(種別のみ)。通知は出さない |
-| E14 | `disconnect` の失敗 | 退出時 | 直前の値 | 直前の値 | 直前の値のまま(応答を変えない) | WARN(種別のみ) |
-| E15 | UI ランナブル内の想定外の `Exception` / `SWTException` / `IllegalStateException` | どこでも | 直前の値 | 直前の値 | **`finally` の `settleFromRunning` が必ず 1 回応答する**(I4) | ERROR(種別のみ) |
+| # | 事象 | 段階 | 応答 | ログ / 通知 |
+|---|---|---|---|---|
+| E1 | `documentChanges` が null / 空(`changes` のみを含む場合) | 事前検証 | `applied:false` | INFO(件数のみ) |
+| E2 | `ResourceOperation` が含まれる | 事前検証 | `applied:false` | WARN(種別のみ) |
+| E3 | `SnippetTextEdit` が含まれる | 事前検証 | `applied:false` | WARN(種別のみ) |
+| E4 | URI が `file:` 以外 / 解析不能 | 事前検証 | `applied:false` | WARN(スキーマ名のみ。**URI 本体は出さない**) |
+| E5 | **セットアップ失敗**(`onUiThread` 登録失敗 / `scheduleTimeout` の `RejectedExecutionException` / display 破棄) | セットアップ | `applied:false`(`settleIfPending`。既に `RUNNING` なら**応答しない** = 本人が返す) | WARN(種別のみ) |
+| E6 | 開始タイムアウト(UI スレッドに到達しなかった) | セットアップ後 | `applied:false`(`settleIfPending`) | INFO(件数のみ) |
+| E7 | `CoreException`(**connect 失敗**) | 適用前 | `applied:false`(`documentMutated=false`) | WARN(種別のみ) |
+| E8 | `BadLocationException`(範囲がドキュメント外。**オフセット変換時**に検出) | 適用前 | `applied:false` | WARN(種別のみ) |
+| E9 | `MalformedTreeException`(編集の重なり。`checkIntegrity` が変更前に検出) | 適用前 | `applied:false` | WARN(種別のみ) |
+| E10 | `apply` の内部から `MalformedTreeException` 以外の例外 | **適用済み扱い(悲観)** | E12〜E14 と同じ規則で分岐 | ERROR(種別のみ) |
+| E11 | **commit 成功** | 適用後 | **`applied:true`** | なし |
+| E12 | **commit 失敗・`editorAttached` かつ `bufferSurvived`**(out-of-sync = `overwrite=false` による拒否を含む) | 適用後 | **`applied:true`** | WARN(種別のみ)+ **ユーザー通知 1 回**(保存を促す) |
+| E13 | **commit 失敗・バッファが破棄された** | 適用後 | **`applied:false`**(LS が FS 経由で書き直す) | WARN(種別のみ)。**通知しない**(ユーザーが取るべき行動が無い) |
+| E14 | **commit 失敗・`bufferSurvived` だが `editorAttached` ではない** | 適用後 | **`applied:false`** | WARN(種別のみ)+ **ユーザー通知 1 回**(未保存の編集を含むバッファが残っている可能性) |
+| E15 | **`disconnect` の失敗** | 退出時 | **応答を変えない。`bufferSurvived` の観測に自然に反映される**(破棄しきれていなければ「残存」と観測され E12 / E14 のどちらかになる) | WARN(種別のみ) |
+| E16 | **`notifyUser` の失敗** | 退出時 | **応答に影響しない**(応答は通知より先に確定させる) | WARN(種別のみ) |
+| E17 | `settleFromRunning`(= `future.complete`)から例外(依存ステージが同期実行で投げる) | 退出時 | **future は既に完了している**ので I4 は成立。以降の通知処理は継続する | ERROR(種別のみ) |
+| E18 | UI ランナブル内の想定外の `Exception` / `SWTException` / `IllegalStateException` | どこでも | **`finally` の `settleFromRunning` が必ず 1 回応答する**(I4) | ERROR(種別のみ) |
 
-**E15 に no-op は無い。** `RUNNING` に入ったあとは、タイムアウトもセットアップ失敗も応答を返せない(I2)。
+**E18 に no-op は無い。** `RUNNING` に入ったあとは、タイムアウトもセットアップ失敗も応答を返せない(I2)。
 外側の例外経路を no-op にすると **future が永久に未完了**になるため、外側は握って `finally` に流すだけにし、
-応答値は状態変数から決める。逆に外側で無条件に `applied:false` を返してもいけない(適用済みバッファへ
+応答値は観測から決める。逆に外側で無条件に `applied:false` を返してもいけない(適用済みバッファへ
 FS フォールバックが重なる)。
+
+**★ `finally` の中の順序が意味を持つ(E16)。** `finally` ブロック内で例外が出ると、その `finally` の
+残りは実行されずに例外が伝播する。**通知を応答より先に置くと、通知の失敗が応答を丸ごと飛ばして
+状態が `RUNNING` のまま future が未完了になる**(タイムアウトも `RUNNING` からは遷移できない)。
+したがって **`settleFromRunning` を `finally` の先頭に置き、応答と通知をそれぞれ独立に try/catch で
+封じ込める**。
 
 `$/gitlab/openFile` / `$/gitlab/copyText` は notification のため応答しない。失敗はログのみ。
 **`$/gitlab/copyText` の完了通知は、クリップボード書き込みの成功が確定してからのみ出す**(§9.4)。
 
-**N3 の徹底**: ログには URI・パス・ファイル本文・`newText` を出さない。例外は `e.javaClass.name`。`?: e.javaClass.name` フォールバックの有無がブランチ全体で不統一という既知の申し送り(issue #52 の 6)があるため、**本サイクルで新規に追加する箇所は統一した形で書く**。
+**N3 の徹底**: ログには URI・パス・ファイル本文・`newText` を出さない。例外は `e.javaClass.name`。`?: e.javaClass.name` フォールバックの有無がブランチ全体で不統一という既知の申し送り(issue #52 の 6)があるため、**本サイクルで新規に追加する箇所は統一した形で書く**。**ユーザー通知の文面にもファイルパスを入れない**(通知は UI に出るがログにも転記されうるため。対象の識別はエディタのタブと `*` で足りる)。
 
 **★ 既存ヘルパの再利用は N3 を満たすとは限らない。** `BrowserLauncher.open` / `openChecked` は
 失敗時に `logger.error("Failed to open URL: $url", e)` と **URL 全体と例外メッセージを記録する**
 (`BrowserLauncher.kt:17` / `:32` で確認)。`window/showDocument` の URI は**サーバ由来で、クエリや
 フラグメントに署名やトークンを含みうる**ため、この経路をそのまま使うと N3 に違反する。対応は §9.4。
+
 ## 14. タイムアウトとリトライ
 
 **`applyEdit` は `orTimeout` を使わない**(§9.1)。`orTimeout` は状態機械を経由せず future を直接完了させる
@@ -641,6 +709,7 @@ FS フォールバックが重なる)。
 
 **`showDocument`** は編集を伴わないので `orTimeout(10, SECONDS)` で構わない(タイムアウトしても
 LS 側は info ログを出すだけ。§5.5)。
+
 ## 15. 冪等性
 
 `applyEdit` は**冪等ではない**。同一の `TextEdit` を 2 回適用すれば内容は 2 回変わる。LS 側にリトライ機構は無く(フォールバックは別サービスへの 1 回の切り替え)、同一リクエストが再送されることはない。
@@ -654,15 +723,29 @@ LS 側は info ログを出すだけ。§5.5)。
 | タイムアウトが応答したあとに UI ランナブルが適用する | UI 側は `PENDING → RUNNING` の CAS に失敗するので適用しない(I1) | AC10 |
 | 適用中にタイムアウトが応答し、LS が FS 直書きを始める | タイムアウトは `PENDING` からしか遷移できないので `RUNNING` 中は応答しない(I2) | AC13 |
 | **セットアップ失敗のエラー応答で LS がフォールバックする一方、登録済みランナブルが適用する** | **セットアップ失敗も `settleIfPending` で `SETTLED` に落とす。CAS に負けた(= 既に `RUNNING`)なら応答しない**(I2) | **AC18** |
-| **適用後の例外で `applied:false` を返し、適用済みバッファに FS 直書きが重なる** | **応答は `retained` から決まる。適用済みかつ参照者が居るなら `applied:true`**(I5) | **AC19** |
+| **適用後の例外で `applied:false` を返し、適用済みバッファに FS 直書きが重なる** | **応答は退出時の観測から決まる `retained` による。適用済みかつ `editorAttached` かつ `bufferSurvived` なら `applied:true`**(I5・§12.1) | **AC19** |
+
+**あわせて「応答が 1 度も返らない」経路も閉じている**: `finally` の中では `settleFromRunning` を通知より**先に**呼び、応答と通知をそれぞれ独立に try/catch で封じ込める。`finally` 内の例外はその `finally` の残りを飛ばして伝播するため、順序を逆にすると通知の失敗が応答を飛ばし、`RUNNING` のまま future が未完了になる(I4・§13 の E16・AC23)。
+
 ## 16. 並行処理
 
 - **ハンドラは lsp4j のディスパッチスレッドで呼ばれる。** UI 操作は必ず `onUiThread` seam を経由する。
 - **複数の `applyEdit` が同時に来た場合**: 各リクエストは独立に UI スレッドへ post され、UI スレッドは単一なので**適用自体は直列化される**。同一ファイルに対する連続適用は、後続が先行の結果を含むドキュメントに対して適用されるが、LS は `getText`(LSP 優先)で最新のバッファ内容を読んでから編集を計算するため、**通常は整合する**。ただし LS が読んだ後・適用前に別の適用が挟まる窓は理論上存在する。この窓は VSCode 参照実装にも同じく存在し、`version: null` である以上クライアント側では検出できない。**受容する制限として §25 R3 に記載。**
-- **★ `connect` → `commit` → `disconnect` は 1 つの UI ランナブル内で完結させ、その間にイベントループを回さない。** これにより (a) `hasOtherReferent` の測定(§9.1)から退出までの間に参照者集合が変化しない、(b) **自分の別リクエスト同士で接続が重ならない**(重なると、相手の一時的な接続を「別の参照者」と誤判定し、`applied:true` を返したのにバッファが破棄される、という取り違えが起こりうる)、という 2 つが成り立つ。**この不変条件を壊す変更(進捗ダイアログの表示、`syncExec`、ネストしたイベントループ)を UI ランナブル内に入れてはならない。**
+- **★★ ファイルバッファの参照者は UI スレッド以外からも変化する(第 3 版の記述を撤回)。**
+  `ITextFileBufferManager` は管理マップの `synchronized` だけで UI スレッドを要求せず、バックグラウンドジョブ
+  (検索・リファクタリング・ビルド等)や `commit` 中に同期実行されるリソース変更リスナが connect / disconnect
+  しうる。さらに `TextFileBufferManager.disconnect` は **map からの remove だけがロック内**で、
+  `fireBufferDisposed` / `dispose()` は**ロック外**である(javap。§付録)。
+  したがって第 3 版の「UI スレッドを手放さないから参照者集合は変化しない」は**成立しない**。
+  **参照者の存続を予測せず、退出時に観測する**(§9.1・§12.1)。
+- **★ 一方、エディタの開閉は UI スレッドでしか起こらない。** `IWorkbenchPage` の editor 操作は
+  display スレッドを要求するため、UI ランナブル内でイベントループを回さない限り `editorAttached` の
+  判定は退出後も有効である。**この不変条件を壊す変更(進捗ダイアログの表示、`syncExec`、
+  ネストしたイベントループ)を UI ランナブル内に入れてはならない。**
 - **バッファの connect / disconnect は対で行う**(`finally`)。同一ファイルが並行して connect されても `ITextFileBufferManager` は参照カウントで管理するため安全。
-- **状態変数の可視性**: `documentMutated` / `committed` / `hasOtherReferent` は **UI ランナブル内のローカル変数**であり、UI スレッドだけが読み書きする。スレッド間で共有するのは `AtomicReference<State>` と future だけである。
+- **状態変数の可視性**: `documentMutated` / `committed` / `editedBuffer` は **UI ランナブル内のローカル変数**であり、UI スレッドだけが読み書きする。スレッド間で共有するのは `AtomicReference<State>` と future だけである。
 - **共有 `CoroutineScope` は使わない。** 本サイクルの処理はすべて future と UI ランナブルで完結する。
+
 ## 17. 認証と認可
 
 本サイクルは GitLab API を呼ばず、認証情報を扱わない。
@@ -683,12 +766,13 @@ LS 側は info ログを出すだけ。§5.5)。
 |---|---|---|
 | バッファ connect が常に失敗する | 全 `applyEdit` が `applied:false` → LS が FS 直書き | **現行と同じ挙動に縮退する**(退行ではない)。ユーザーはエディタを閉じてから使えば整合する |
 | UI スレッドが詰まる / セットアップに失敗する | 開始タイムアウトまたは `settleIfPending` が `applied:false` で確定 → FS 直書き | 同上 |
-| **commit が失敗し、対象ファイルがエディタで開かれている** | ディスクは古いまま、編集はエディタに dirty で残る。**FS フォールバックは抑止される**(§12.1) | **通知に従ってユーザーが手動保存する。** 失敗原因(読み取り専用・容量不足・外部変更)を解消してから保存するか、undo で破棄する。**このケースだけは現行の挙動へ縮退させない** — 縮退させるとエディタとディスクが無言で乖離するため(§4.1) |
-| **commit が失敗し、対象ファイルが開かれていない** | 編集は `disconnect` で破棄され、`applied:false` により LS が FS 直書きへ落ちる | **自動的に現行の挙動へ縮退する。** FS 直書きも失敗する場合はエージェント側にエラーが返る |
+| **commit が失敗し、対象ファイルがエディタで開かれている**(E12) | ディスクは古いまま、編集はエディタに dirty で残る。**FS フォールバックは抑止される** | **通知に従ってユーザーが手動保存する。** 失敗原因(読み取り専用・容量不足・外部変更)を解消してから保存するか、undo で破棄する。エディタを閉じようとすれば Eclipse が保存を促すので、無言で失われることはない。**このケースだけは現行の挙動へ縮退させない** — 縮退させるとエディタとディスクが無言で乖離するため(§4.1) |
+| **commit が失敗し、バッファが破棄された**(E13) | 編集は残らず、`applied:false` により LS が FS 直書きへ落ちる | **自動的に現行の挙動へ縮退する。** FS 直書きも失敗する場合はエージェント側にエラーが返る |
+| **commit が失敗し、バッファは残存するがエディタは開いていない**(E14。`disconnect` 失敗を含む) | `applied:false` により**編集はディスクへ届く**。一方、未保存の編集を含むバッファが登録されたまま残る | **通知に従って対象ファイルを開く**と、Eclipse は登録済みのそのバッファに接続するため、未保存の編集がそのまま見える。保存すれば確定、破棄したければエディタを閉じて保存しないを選ぶ。**放置した場合の最悪ケースは、後からそのバッファが保存されて LS の書き込みを上書きすること**(R16) |
 | 誤った編集が適用された | ファイル内容が壊れる | **エディタの undo で戻せる**(§9.1 の compound change)。保存済みならローカル履歴(Eclipse の Local History)からも復元可能 |
 | `openFile` / `copyText` が失敗 | 無言の no-op(現行と同じ) | ログで種別を確認 |
 
-**重要**: 失敗経路のうち **「編集がこちらに残らない」ものはすべて現行の挙動(FS 直書き)へ縮退する**。唯一の例外は「適用済みの編集がエディタのバッファに残っている」場合で、ここだけは意図的に縮退させず、**通知でユーザーへ引き渡す**(§12.1)。**無言の失敗モードを増やさない**ことが設計の基本方針である。
+**重要**: 失敗経路のうち **「編集がこちらに残らない」ものはすべて現行の挙動(FS 直書き)へ縮退する**。縮退させないのは「適用済みの編集がエディタのバッファに残っており、ユーザーが見て保存できる」場合(E12)だけで、ここは**通知でユーザーへ引き渡す**。**無言の失敗モードを増やさない**ことが設計の基本方針である。
 
 ## 20. 既存機能への影響
 
@@ -731,9 +815,11 @@ LS 側は info ログを出すだけ。§5.5)。
 | `EditTargetResolver` | `file:///path` と `file:/path` の両形式。`file:` 以外の拒否。ワークスペース内 / 外の判定 |
 | `ExternalUrlPolicy` | `http`/`https` の許可、`file:`/`javascript:`/相対/空文字の拒否 |
 | `WorkspaceEditApplier` | 注入した偽 `onUiThread` とインメモリ `Document` で: 正常適用 / `ResourceOperation` 拒否 / `SnippetTextEdit` 拒否 / `changes` のみ拒否 |
-| **`WorkspaceEditApplier` の状態機械(§9.1)** | **競合 1**: 開始タイムアウトが先に `SETTLED` へ遷移したあとに UI ランナブルが走っても**適用されない**(AC10)<br>**競合 2**: UI が `RUNNING` に入ったあとに開始タイムアウトが発火しても**応答を返さない**(= LS をフォールバックさせない)(AC13)<br>**競合 3**: `RUNNING` 中に commit が長引いても future が完了しないこと<br>**競合 4**: `onUiThread` 登録成功後に `scheduleTimeout` が例外を投げたとき、**future が `applied:false` で 1 回だけ完了し、後から走るランナブルがドキュメントを変更しない**(AC18)<br>**競合 5**: 同じく `scheduleTimeout` が例外を投げたが**ランナブルが既に `RUNNING`** の場合、セットアップ側は応答せず、**応答はランナブルの結果になる**(AC18) |
-| **適用後の例外(§9.1・§13 の E10 / E14 / E15)** | `endCompoundChange` / `disconnect` / その他が例外を投げても **future が必ず 1 回完了する**こと、かつ応答が `retained` に一致すること(**参照者ありなら `applied:true`**)(AC19) |
-| **commit 失敗時の応答(§12.1)** | **参照者あり**(注入した `getTextFileBuffer` が connect 前に非 null): `applied:true` を返し、巻き戻さず、ユーザー通知が 1 回だけ出ること(AC16)<br>**参照者なし**(connect 前に null): **`applied:false`** を返し、**通知を出さない**こと(AC20)<br>**適用前**の失敗(connect 失敗 / `BadLocationException` / `MalformedTreeException`)は `applied:false` になること(AC17) |
+| **`WorkspaceEditApplier` の状態機械(§9.1)** | **競合 1**: 開始タイムアウトが先に `SETTLED` へ遷移したあとに UI ランナブルが走っても**適用されない**(AC10)<br>**競合 2**: UI が `RUNNING` に入ったあとに開始タイムアウトが発火しても**応答を返さない**(AC13)<br>**競合 3**: `RUNNING` 中に commit が長引いても future が完了しないこと<br>**競合 4**: `onUiThread` 登録成功後に `scheduleTimeout` が例外を投げたとき、**future が `applied:false` で 1 回だけ完了し、後から走るランナブルがドキュメントを変更しない**(AC18)<br>**競合 5**: 同じく `scheduleTimeout` が例外を投げたが**ランナブルが既に `RUNNING`** の場合、セットアップ側は応答せず、**応答はランナブルの結果になる**(AC18) |
+| **退出時の観測(§12.1)** | 注入した `bufferManager` の `getTextFileBuffer` を **connect 前 / disconnect 後で別の値**にできるようにし、次の 4 組み合わせを固定する:<br>**(a) `editorAttached=true` かつ同一インスタンス残存** → `applied:true` + 保存を促す通知 1 回(AC16)<br>**(b) disconnect 後に null**(破棄された)→ **`applied:false`・通知なし**(AC20)<br>**(c) disconnect 後に残存するが `editorAttached=false`** → **`applied:false`** + 残存を知らせる通知 1 回(AC22)<br>**(d) disconnect 後に別インスタンス**(破棄後に再接続された)→ **`applied:false`**(identity 比較が効いていること)<br>**適用前**の失敗(connect 失敗 / `BadLocationException` / `MalformedTreeException`)は `applied:false`・通知なし(AC17) |
+| **`disconnect` 失敗(E15)** | `disconnect` が例外を投げても **応答が観測どおりに決まる**こと。残存していれば (a) / (c)、破棄されていれば (b) と同じ結果になること(AC22) |
+| **適用後の例外(§9.1・§13 の E10 / E18)** | `endCompoundChange` / `disconnect` / その他が例外を投げても **future が必ず 1 回完了する**こと、かつ応答が観測に一致すること(AC19) |
+| **通知失敗の封じ込め(E16・AC23)** | 注入した `notifyUser` が例外を投げても、**future は既に `retained` で完了しており、例外が UI ランナブル外へ漏れない**こと。**応答が通知より先に確定していること**(通知を投げさせたうえで future の完了を確認する) |
 | **`commit` の引数(§9.1)** | `commit` が **`overwrite = false`** で呼ばれること。out-of-sync を模した `CoreException` が commit から出たとき、§12.1 の分岐に載ること(AC21) |
 | `ClipboardWriter.writeChecked` | `setContents` が `SWTError` / `SWTException` / `RuntimeException` を投げたとき **`false` で完了し、例外が呼び出し元へ伝播しない**こと。`dispose()` が必ず呼ばれること。**`false` のときに通知が出ないこと**(AC15) |
 | `showDocument` の失敗ログ | 起動失敗時のログキャプチャに **URI と例外メッセージが含まれない**こと(AC14) |
@@ -744,13 +830,15 @@ LS 側は info ログを出すだけ。§5.5)。
 
 1. **`onUiThread`** — 既定は `currentDisplay.asyncExec`。テストでは「即実行」「保留してから手動で実行」「登録時に例外」を切り替える。
 2. **`scheduleTimeout`** — 開始タイムアウトを実時間を待たずに発火させる。**これが無いと競合 1〜5 が「10 秒待つテスト」になり、実質書かれなくなる**(§24 U8)。
-3. **`bufferManager`** — `getTextFileBuffer` / `connect` / `commit` / `disconnect` を差し替えて、**参照者の有無**と **commit 失敗**を作る。`IDocument` はインメモリの `org.eclipse.jface.text.Document` を使う(SWT 非依存)。
-4. **`notifyUser`** — 呼び出し回数を数える。
+3. **`bufferManager`** — `getTextFileBuffer` / `connect` / `commit` / `disconnect` を差し替えて、**commit 失敗**と **disconnect 後のバッファ存否・インスタンス同一性**を作る。`IDocument` はインメモリの `org.eclipse.jface.text.Document` を使う(SWT 非依存)。
+4. **`isEditorOpenFor`** — エディタの有無を切り替える。既定実装(ワークベンチ走査)は headless では動かないため、**必ず注入で置き換える**。
+5. **`notifyUser`** — 呼び出し回数・文言の別を数える。**例外を投げさせるケースも用意する**(AC23)。
 
 **headless で検証できない(= 手動検証手順を PR 説明文に書く)**
 
 - 実バッファの connect / commit / disconnect と、参照カウントによる破棄の実挙動
-- 開いているエディタへの反映と undo
+- 開いているエディタへの反映と undo、dirty エディタを閉じたときの保存プロンプト
+- **E14 の残存バッファを、ファイルを開き直して回収できること**(Eclipse が登録済みバッファに接続すること)
 - 外部プロセスによる書き換え(out-of-sync)で `overwrite=false` の commit が実際に失敗すること
 - クリップボード / 外部ブラウザ
 - LS からの実際のディスパッチ
@@ -761,18 +849,20 @@ LS 側は info ログを出すだけ。§5.5)。
 - ログを出すクラスの spec には `LoggingKotestExtension` が必要。
 - 合否は絶対数ではなく失敗集合で見る。`verify.sh` が `FAILSET_IDENTICAL (36 failures)` を出せば合格。
 - **detekt は `detektMain` / `detektTest` を明示実行する。** `./gradlew build` が回す `:detekt` は型解決なしで、`UnsafeCallOnNullableType` / `UnnecessaryFilter` を見逃した実績がある(#76 / #77 で実際にすり抜けた)。ベースラインは main 17 / test 45。
+
 ## 24. 未決事項
 
 | ID | 内容 | 決め方 |
 |---|---|---|
 | **U1** | **Windows での URI → パス変換。** LS が送る URI は `file:/C:/…`(単一スラッシュ)になりうる(§5.1 末尾)。`java.nio.file.Paths.get(URI)` がこの形を受けるか、`URI.getPath()` の先頭スラッシュを手で剥がす必要があるかを確定する。**issue #68(Windows で `rootFsPath` と `fsPath` のパス形式が不一致)と同根の可能性がある。** | 実装前に Windows 実機か、パス変換だけを切り出した単体テストで確定 |
-| ~~**U2**~~ | ~~`commit()` 失敗時にバッファの編集を巻き戻すか~~ → **確定済み(2026-09-06、Codex レビュー #84 で提起・ユーザー承認。第 3 版で分岐を追加)。巻き戻さず、応答は「編集が退出後も残るか」で決める** — 別の参照者が居れば `applied:true` + 通知、参照者が自分だけなら `applied:false`(バッファは `disconnect` で破棄されるため)。根拠と却下した代案は §12.1 | — |
+| ~~**U2**~~ | ~~`commit()` 失敗時にバッファの編集を巻き戻すか~~ → **確定済み(2026-09-06、Codex レビュー #84 で提起・ユーザー承認。第 4 版で判定方法を確定)。巻き戻さず、応答は「編集が退出後も残るか」を退出時に観測して決める** — `retained = committed || (documentMutated && editorAttached && bufferSurvived)`。根拠、却下した代案(巻き戻し / 自前で所有権を持つ)、および `connect` 前の予測が成立しない理由は §12.1・§9.1 | — |
 | **U3** | **`ChatWebViewMessageHandlers.copyToClipboard` を `syncExec` → `asyncExec` に変えてよいか。** webview 側のコピーボタンが同期完了を前提にしていないことの確認が必要 | 呼び出し元 4 箇所(`AgenticChatWebViewController.kt:89,92` / `GitLabDuoChatWebViewController.kt:47,50`)を読んで確定。前提していれば `ClipboardWriter` に同期版を足す |
 | **U4** | `applyEdit` / `showDocument` の override に `@JsonRequest` を明示するか。インタフェース側に既にあるため不要だが、house style は全ハンドラに明示している | 実装時に既存コードと揃える |
 | **U5** | `$/gitlab/openFile` で `filePath` が絶対パスかつワークスペース外を指した場合に開くか。VSCode は `path.join` の性質上、絶対パスならそのまま開く | 既定は「開く」。Codex レビューで再検討 |
 | **U6** | `openFile` の相対パス解決で、複数ルートに同名ファイルが実在する場合の優先順位。現案は `IProject` の列挙順の先頭 | 曖昧さを受容するか、開かずに警告するかを Codex レビューで確定 |
 | **U7** | **`showDocument` の URI 非ログ経路をどちらで実装するか**(§9.4): (a) `BrowserLauncher` に `logUrl` フラグつきオーバーロードを足す / (b) `showDocument` 専用の起動ヘルパを持つ。**どちらでも既存 4 箇所の挙動は変えない**という制約は共通 | 実装時に決める。(a) は重複が減るが既存クラスの API が増える。(b) は独立だが `externalBrowser` の呼び出しが 2 箇所になる |
 | **U8** | **開始タイムアウトのスケジュール手段**(§9.1・§14)。lsp4j のディスパッチスレッドを塞がず、テストから発火させられるものが要る。候補: 共有 `ScheduledExecutorService` / `Display.timerExec`(UI スレッド前提)/ 注入した `scheduleTimeout` ラムダ | 実装時に決める。**テスト seam であることが必須要件**(§23) |
+| **U9** | **`isEditorOpenFor` が未復元のエディタ参照(`IEditorReference` はあるがエディタ本体が復元されていない)をどう扱うか。** 未復元の参照は document provider を持たないためファイルバッファを connect していない | 既定は「開いているとみなす」(参照の存在だけで判定し、`getEditor(true)` による強制復元はしない)。**この取り違えは `bufferSurvived` が同時に false になることで打ち消される**(§12.1 の積)ため実害は無い想定だが、実機で確認する |
 
 **推測で確定しない。** 上記はいずれも実ソースまたは実機で確定させる。
 
@@ -780,20 +870,23 @@ LS 側は info ログを出すだけ。§5.5)。
 
 | ID | リスク | 影響 | 緩和 |
 |---|---|---|---|
-| **R1** | **二重適用**。(a) タイムアウト応答後に UI ランナブルが適用する / (b) 適用中にタイムアウトが応答して LS が FS 直書きを始める / (c) **セットアップ失敗のエラー応答で LS がフォールバックする一方、登録済みランナブルが適用する** / (d) **適用後の例外で `applied:false` を返し、適用済みバッファに FS 直書きが重なる** | 高(ファイル破損) | §9.1 の状態機械(I1 / I2 / I4 / I5)。**`orTimeout` を使わない**・**セットアップ失敗も `settleIfPending` に載せる**・**応答点を `finally` の 1 箇所にする**ことが要。**4 つを個別にテストで固定する**(AC10 / AC13 / AC18 / AC19) |
+| **R1** | **二重適用**。(a) タイムアウト応答後に UI ランナブルが適用する / (b) 適用中にタイムアウトが応答して LS が FS 直書きを始める / (c) **セットアップ失敗のエラー応答で LS がフォールバックする一方、登録済みランナブルが適用する** / (d) **適用後の例外で `applied:false` を返し、適用済みバッファに FS 直書きが重なる** | 高(ファイル破損) | §9.1 の状態機械(I1 / I2 / I4 / I5)。**`orTimeout` を使わない**・**セットアップ失敗も `settleIfPending` に載せる**・**応答点を `finally` の先頭 1 箇所にする**ことが要。**4 つを個別にテストで固定する**(AC10 / AC13 / AC18 / AC19) |
 | **R2** | UI スレッドと lsp4j ディスパッチスレッドのデッドロック | 高(LS 全体が固まる) | `syncExec` を使わない。未完了 future + `asyncExec` + 開始タイムアウト |
 | **R3** | LS が `getText` で読んだ後・適用前に別の適用が挟まる窓 | 中(編集が意図とずれる) | `version: null` のためクライアント側では検出不能。**受容する制限**として PR に明記。VSCode 参照実装も同じ |
 | **R4** | 意図しない保存(R2 要件により、ユーザーの未保存変更も一緒にディスクへ行く) | 中 | VSCode 参照実装と同一挙動。**PR とリリースノートに明記**。undo は効く |
 | **R5** | 危険なパス(`.git/` 等)への書き込み | 中 | LS 側で封じ込め済み。**クライアント側の拒否では止められない**(§9.2)。止める必要が生じたら別設計 |
 | **R6** | **`p2repo(".../lsp4e/releases/latest/")` がローリングであるため、同じコミットでも取得時期でビルド結果が変わりうる** | 中(再現性) | 本サイクルのスコープ外(ビルドシステム変更禁止)。**別 issue に記録する**(§21 とあわせて) |
-| **R7** | headless で検証できない範囲が広い(バッファ・エディタ・クリップボード・ブラウザ) | 中 | 純ロジックを 3 クラスに切り出して最大限テストする(§9 の「UI スレッド依存なし」列)。**バッファ経路は `bufferManager` を seam にしてインメモリ `Document` で covered**(§23)。残りは手動検証手順を PR に記載 |
+| **R7** | headless で検証できない範囲が広い(バッファ・エディタ・クリップボード・ブラウザ) | 中 | 純ロジックを 3 クラスに切り出して最大限テストする(§9 の「UI スレッド依存なし」列)。**バッファ経路と退出時の観測は `bufferManager` / `isEditorOpenFor` を seam にして covered**(§23)。残りは手動検証手順を PR に記載 |
 | **R8** | `getInitializationOptions` が並行 PR と衝突 | 低 | 現時点で open PR は 0 本。マージ順序に注意 |
 | **R9** | `TextDocumentEdit.edits` の `Either<TextEdit, SnippetTextEdit>` を取り違え、`SnippetTextEdit` を `TextEdit` として扱う | 中 | `Either.isLeft` を明示的に検査し、右辺は `applied:false`。テストで固定 |
-| **R10** | **`window/showDocument` の応答が LS の `z.void()` を必ず満たさず、正常に URL を開いても LS 側に info ログが 1 行残る** | 低(ログノイズのみ) | **回避不能。受容する**(根拠 = §5.5「応答契約について」。zod は `undefined` のみ受理、lsp4j は `"result": null` を必ず出力するため、満たせる応答が存在しない)。**機能影響は無い**(URL は既に開かれており、LS は try/catch で握る)。LS 側が `.withResponse` を付けた版になれば自然に解消する |
+| **R10** | **`window/showDocument` の応答が LS の `z.void()` を必ず満たさず、正常に URL を開いても LS 側に info ログが 1 行残る** | 低(ログノイズのみ) | **回避不能。受容する**(根拠 = §5.5「応答契約について」。zod は `undefined` のみ受理、lsp4j は `"result": null` を必ず出力するため、満たせる応答が存在しない)。**機能影響は無い**。LS 側が `.withResponse` を付けた版になれば自然に解消する |
 | **R11** | **サーバ由来 URI の署名・トークンがログへ永続化される** | 中(情報漏洩) | `BrowserLauncher` の既存ログが URL 全体を出すため、**そのまま再利用しない**(§9.4)。URI を受け取らないログ経路を用意し、ログキャプチャで検証(AC14) |
 | **R12** | **クリップボード書き込みの失敗時にも成功通知が出る** | 低(誤情報) | `ClipboardWriter.writeChecked` で完了結果を受け、**`true` のときだけ通知**(§9.4)。失敗時の自動テストを置く(AC15) |
-| **R13** | **エディタで開いていないファイルが、connect 後・commit 前に外部から書き換えられた場合。** `overwrite=false` によりこちらの commit は失敗し、`applied:false` を返すため、**LS の FS 直書きがその外部変更を上書きしうる** | 中(外部変更の消失) | **クライアント側では止められない。受容する。** 拒否しても「どちらの経路で書かれるか」しか変わらない(§9.2 と同じ論理)。ただし**こちらの手で無言に上書きすることはしない**(`overwrite=true` を使わない)ため、Eclipse のバッファ経路からのデータ消失は無くなる。**エディタで開いているファイルでは commit 失敗 → dirty のまま保持 → 通知**となり、ユーザーが解決できる(§12.1) |
-| **R14** | **`commit(overwrite=false)` によって、これまで通っていた保存が失敗するケースが増える**(外部変更・ワークスペース未リフレッシュ) | 低 | 失敗は握り潰さず §12.1 の分岐に載る(通知またはフォールバック)。`isSynchronized()` は**バッファが dirty なだけでは false にならない**ので、AC4(未保存変更を巻き込んで保存する)には影響しない。**手動検証項目に入れる**(§23) |
+| **R13** | **エディタで開いていないファイルが、connect 後・commit 前に外部から書き換えられた場合。** `overwrite=false` によりこちらの commit は失敗し、`applied:false` を返すため、**LS の FS 直書きがその外部変更を上書きしうる** | 中(外部変更の消失) | **クライアント側では止められない。受容する。** 拒否しても「どちらの経路で書かれるか」しか変わらない(§9.2 と同じ論理)。ただし**こちらの手で無言に上書きすることはしない**(`overwrite=true` を使わない)ため、Eclipse のバッファ経路からのデータ消失は無くなる |
+| **R14** | **`commit(overwrite=false)` によって、これまで通っていた保存が失敗するケースが増える**(外部変更・ワークスペース未リフレッシュ) | 低 | 失敗は握り潰さず §12.1 の分岐に載る(通知またはフォールバック)。`isSynchronized()` は**バッファが dirty なだけでは false にならない**ので AC4 には影響しない。**手動検証項目に入れる**(§23) |
+| **R15** | **`editorAttached` かつ `bufferSurvived` と観測して `applied:true` を返した直後に、バッファが破棄される。** 成立条件は「エディタが開いているのにそのエディタがファイルバッファを保持していない(`TextFileDocumentProvider` 系でないエディタ、または未復元のエディタ参照)」かつ「バックグラウンドの別参照者が退出直後に最後の参照を解放する」の同時成立 | 中(編集の消失) | **2 つの観測の積で成立条件をここまで狭めている**(片方だけなら成立範囲は広い)。テキストエディタで開いている通常のケースでは、エディタが生存中ずっと connect を保持する(javap。§付録)ため起こらない。**残余として受容し、実機の手動検証で「エディタが開いていれば必ず dirty のまま残る」ことを確認する** |
+| **R16** | **E14(バッファ残存・エディタなし)で `applied:false` を返したあと、残存バッファが後から保存されて LS の FS 書き込みを上書きする** | 低 | どちらの内容にもエージェントの編集は含まれる(差は LS がその後に書いた分のみ)。**編集の消失より軽い**と判断して `applied:false` を選んでいる(§12.1)。**通知でユーザーに残存を知らせ**、ファイルを開けば内容を確認・保存・破棄できる |
+
 ## 26. 受け入れ条件
 
 | ID | 条件 | 検証方法 |
@@ -808,17 +901,20 @@ LS 側は info ログを出すだけ。§5.5)。
 | AC8 | `http`/`https` 以外の URI が外部ブラウザへ渡らない | 自動テスト |
 | AC9 | 編集の重なり・範囲外・`SnippetTextEdit`・`ResourceOperation` がすべて `applied:false` になり、**1 つも適用されない**(範囲外は `apply` に到達する前に弾かれること) | 自動テスト |
 | AC10 | **開始タイムアウトが応答したあとに UI ランナブルが走っても適用されない**(競合 1・I1) | 自動テスト |
-| AC11 | ログに URI・パス・ファイル本文が出ない | コードレビュー + 自動テスト(ログキャプチャ) |
+| AC11 | ログに URI・パス・ファイル本文が出ない。**ユーザー通知の文面にもファイルパスを含めない** | コードレビュー + 自動テスト(ログキャプチャ) |
 | AC12 | 失敗集合が `FAILSET_IDENTICAL`、detekt が main 17 / test 45 のまま | `verify.sh` + `detektMain` / `detektTest` |
 | AC13 | **適用開始後(`RUNNING`)に開始タイムアウトが発火しても応答を返さない**(競合 2・I2)。commit が長引く間、future が完了しないこと | 自動テスト |
 | AC14 | **`showDocument` の起動失敗時のログに、URI も例外メッセージも含まれない**(§9.4・R11) | 自動テスト(ログキャプチャ) |
 | AC15 | **クリップボード書き込みが失敗したとき、成功通知が出ない**。例外が呼び出し元へ伝播しない(§9.4・R12) | 自動テスト |
-| AC16 | **適用は成功したが commit が失敗し、かつ別の参照者が居るとき、`applied:true` が返り、編集が巻き戻されず、ユーザー通知が 1 回だけ出る**(§12.1) | 自動テスト |
-| AC17 | **適用前の失敗**(connect 失敗 / `BadLocationException` / `MalformedTreeException`)では **`applied:false`** が返り、バッファが変更されないこと | 自動テスト |
-| **AC18** | **セットアップ失敗**(`onUiThread` 登録成功後に `scheduleTimeout` が例外)で、**future は `applied:false` で 1 回だけ完了し、後から走るランナブルはドキュメントを変更しない**。既にランナブルが `RUNNING` の場合は**セットアップ側が応答せず**、応答はランナブルの結果になる(競合 4・5・I2) | 自動テスト |
-| **AC19** | **適用後に例外**(`endCompoundChange` / `disconnect` / 想定外)が起きても **future は必ず 1 回完了**し、その応答が `retained` に一致する(参照者ありなら `applied:true`)。future が未完了のまま残らないこと(I4・I5) | 自動テスト |
-| **AC20** | **適用は成功したが commit が失敗し、参照者が自分だけのとき、`applied:false` が返り、ユーザー通知を出さない**(編集は `disconnect` で破棄され、LS の FS フォールバックが書き直す)(§12.1) | 自動テスト |
-| **AC21** | **`commit` が `overwrite = false` で呼ばれる。** 外部変更(out-of-sync)を模した `CoreException` が commit から出たとき、AC16 / AC20 の分岐どおりに応答する(§9.1・R13) | 自動テスト |
+| AC16 | **適用済み・commit 失敗・`editorAttached` かつ同一バッファ残存のとき、`applied:true` が返り、編集が巻き戻されず、保存を促す通知が 1 回だけ出る**(§12.1 の E12) | 自動テスト |
+| AC17 | **適用前の失敗**(connect 失敗 / `BadLocationException` / `MalformedTreeException`)では **`applied:false`** が返り、バッファが変更されず、通知も出ないこと | 自動テスト |
+| AC18 | **セットアップ失敗**(`onUiThread` 登録成功後に `scheduleTimeout` が例外)で、**future は `applied:false` で 1 回だけ完了し、後から走るランナブルはドキュメントを変更しない**。既にランナブルが `RUNNING` の場合は**セットアップ側が応答せず**、応答はランナブルの結果になる(競合 4・5・I2) | 自動テスト |
+| AC19 | **適用後に例外**(`endCompoundChange` / `disconnect` / 想定外)が起きても **future は必ず 1 回完了**し、その応答が退出時の観測に一致する。future が未完了のまま残らないこと(I4・I5) | 自動テスト |
+| AC20 | **適用済み・commit 失敗・バッファが破棄されたとき、`applied:false` が返り、通知を出さない**(編集は LS の FS フォールバックが書き直す)(§12.1 の E13) | 自動テスト |
+| AC21 | **`commit` が `overwrite = false` で呼ばれる。** 外部変更(out-of-sync)を模した `CoreException` が commit から出たとき、E12 / E13 / E14 の分岐どおりに応答する(§9.1・R13) | 自動テスト |
+| **AC22** | **`bufferSurvived` は `disconnect` の後に同一インスタンスかどうかで判定される。** (a) disconnect 後 null → `applied:false`・通知なし / (b) disconnect 後に別インスタンス → `applied:false` / (c) disconnect 後に同一インスタンス残存だが `editorAttached=false` → **`applied:false` + 残存を知らせる通知 1 回**。**`disconnect` 自体が例外を投げたケースでも同じ規則で決まる**(§12.1 の E14・E15・R16) | 自動テスト |
+| **AC23** | **`notifyUser` が例外を投げても future は `retained` で完了済みであり、例外が UI ランナブル外へ漏れない**。応答が通知より先に確定していること(§13 の E16・I4) | 自動テスト |
+
 ## 付録: 根拠一覧
 
 | 主張 | 出典 |
@@ -842,6 +938,8 @@ LS 側は info ログを出すだけ。§5.5)。
 | **`commit(monitor, overwrite=false)` は out-of-sync で `CoreException` を投げる** | 同 jar: `ResourceTextFileBuffer.commitFileBufferContent` / `FileStoreTextFileBuffer.commitFileBufferContent` の先頭 offset 0-49 = `if (!isSynchronized() && !overwrite) throw new CoreException(new Status(IStatus.WARNING, "org.eclipse.core.filebuffers", 274 /* IResourceStatus.OUT_OF_SYNC_LOCAL */, FileBuffer_error_outOfSync, null))` |
 | **`isSynchronized()` は dirty なだけでは false にならない** | 同 jar: `ResourceFileBuffer.isSynchronized()` = `fSynchronizationStamp == fFile.getModificationStamp() && fFile.isSynchronized(IResource.DEPTH_ZERO)`。`FileStoreFileBuffer.isSynchronized()` = `fSynchronizationStamp == getModificationStamp()`(= `IFileStore.fetchInfo().getLastModified()`) |
 | **`MultiTextEdit.apply` は checkIntegrity のあと巻き戻さずに適用する** | `javap -c` on `org.eclipse.text-3.14.500.jar`: `TextEditProcessor.performEdits()` = `fRoot.dispatchCheckIntegrity(this)`(重なりを**変更前**に `MalformedTreeException`)→ `fRoot.dispatchPerformEdits(this)`。**後者に巻き戻しは無く、`checkIntegrity` はドキュメント長を検査しない** |
+| **`disconnect` の破棄は管理マップのロック外で行われる** | 同 jar: `TextFileBufferManager.disconnect(IPath, LocationKind, IProgressMonitor)` の `monitorexit`(offset 71)より後、offset 79 で `fireBufferDisposed`、offset 87 で `dispose()`。**「非 null であること」は「同じインスタンスが生き続けること」を意味しない** → 退出時の判定は identity 比較で行う(§12.1) |
+| **エディタは生存中ずっとファイルバッファを connect し続ける** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider` が `ITextFileBufferManager.connect(IPath, LocationKind, IProgressMonitor)` / `connectFileStore` を呼び、`disconnect` / `disconnectFileStore` で解放する。**したがってテキストエディタが開いている限り、こちらの `disconnect` ではバッファは破棄されない** |
 
 ---
 
@@ -852,3 +950,4 @@ LS 側は info ログを出すだけ。§5.5)。
 | 1 | 2026-09-06 | 初版(`a4fb8a9`) |
 | 2 | 2026-09-06 | **Codex レビュー(PR #84、P1×3 / P2×2)の反映。** ① §9.1・§14・§15: `orTimeout` を廃し**単一の状態機械**(`PENDING`/`RUNNING`/`SETTLED`)へ。適用開始後はタイムアウトで応答しない(P1-A)/ ② §12.1 新設・§13・§24 U2: **commit 失敗時は巻き戻さず `applied:true` + 通知**で確定。却下した代案と根拠を明記(P1-B)/ ③ §9.4・§13・R11: **`BrowserLauncher` の URL ログが N3 に違反する**ため、URI を受け取らないログ経路へ(P1-C)/ ④ §5.5・R10: **`z.void()` を満たす応答は存在しない**ことを zod と lsp4j 双方の実測で示し、受容する制限として明記(P2-D)/ ⑤ §9.4・R12: **`ClipboardWriter.writeChecked`** を追加し成功時のみ通知(P2-E)/ ⑥ §23・§26: AC13〜AC17 とテスト seam を追加 |
 | 3 | 2026-09-06 | **Codex 再レビュー(PR #84、P1×4)の反映。設計の骨格 4 箇所を改訂。** ① §9.1・§13・§15・§26: **セットアップ失敗(`scheduleTimeout` の例外等)を状態機械に取り込む** — 例外を返さず `settleIfPending(false)` で `SETTLED` へ落とし、登録済みランナブルを CAS で無効化(P1-F・AC18)/ ② §9.1・§13・§16: **応答点を `finally` の 1 箇所に統一**し、`documentMutated` / `committed` / `hasOtherReferent` から応答を決める。適用後の例外で `applied:false` に落とさず、future が未完了のまま残ることもない(P1-G・AC19・I4・I5)/ ③ §12.1・§13・§23: **commit 失敗時の応答を「参照者の有無」で分岐** — 参照者ありなら `applied:true` + 通知、**参照者が自分だけなら `applied:false`**(`disconnect` でバッファが破棄され編集が消えるため)(P1-E・AC20)/ ④ §9.1・§13・R13・R14: **`commit(overwrite = true)` → `false`** に変更し、外部変更の無言上書きをやめる(P1-H・AC21)/ ⑤ §12・§9.1: `MultiTextEdit.apply` の原子性の記述を実測に合わせて訂正(`checkIntegrity` は変更前・`performEdits` に巻き戻し無し・ドキュメント長は未検査)。範囲外はオフセット変換時に検出し、`apply` 内の想定外例外は**悲観的に「変更済み」**として扱う / ⑥ 付録: Eclipse `filebuffers` / `text` の javap 根拠 5 件を追加 |
+| 4 | 2026-09-06 | **Codex 3 巡目レビュー(PR #84、P1×3)の反映。** ① §9.1・§12.1・§16: **参照者の存続を「予測」せず「観測」する**(P1-I)。第 3 版の `hasOtherReferent`(`connect` 前の非 null 判定)は成立しない — バッファはバックグラウンドスレッドからも connect / disconnect され、`dispose` は管理マップのロック外で、既存参照者がエディタとも限らないため。**第 3 版 §16 の「UI スレッドを手放さないから参照者集合は変化しない」を撤回**し、退出時に **`bufferSurvived`(identity 比較)** と **`editorAttached`(エディタの開閉は UI スレッド限定)** の積で `retained` を決める形へ / ② §12.1・§13・§19: **`disconnect` 失敗を「破棄済み」と仮定しない**(P1-J)。`bufferSurvived` が破棄の直接観測を兼ね、残存かつエディタ無しは新設の **E14**(`applied:false` + 残存を知らせる通知)へ / ③ §9.1・§13: **`finally` 内で応答を通知より先に確定させる**(P1-K)。`finally` 内の例外はその `finally` の残りを飛ばして伝播するため、通知が先だと通知失敗で future が未完了のまま残り I4 が崩れる。応答・通知をそれぞれ独立に try/catch で封じ込め / ④ §10: seam に `isEditorOpenFor` を追加(計 5 つ)/ ⑤ §23・§26: AC22・AC23 と観測 4 組み合わせのテストを追加 / ⑥ §25: R15(観測の残余リスク)・R16(残存バッファの後追い保存)を追加 / ⑦ §24: U9(未復元エディタ参照の扱い)を追加 / ⑧ 付録: `dispose` がロック外である根拠と `TextFileDocumentProvider` の根拠を追加 |
