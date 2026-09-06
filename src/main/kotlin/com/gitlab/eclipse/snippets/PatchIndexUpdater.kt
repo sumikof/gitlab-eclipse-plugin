@@ -20,6 +20,12 @@ sealed interface IndexUpdateResult {
 }
 
 /**
+ * A blob already written to the object database, with the length its index entry must record.
+ * Built only for changes that carry content, so its presence in the map IS the non-DELETE proof.
+ */
+private data class StagedBlob(val id: ObjectId, val length: Long)
+
+/**
  * Updates the index after a patch has already landed in the working tree (design §9.4-5-8 / §12.2).
  *
  * JGit is never allowed to write the index here. Its working-tree PatchApplier locks the dir-cache
@@ -46,12 +52,16 @@ class PatchIndexUpdater {
   ): IndexUpdateResult {
     // The blobs must exist in the object database before the index can point at them; flushing
     // only now means an apply that never got this far left the object database untouched.
-    val blobIds = repo.newObjectInserter().use { inserter ->
-      val ids = changes.associate { change ->
-        change.path to change.content?.let { inserter.insert(Constants.OBJ_BLOB, it) }
-      }
+    val blobs = repo.newObjectInserter().use { inserter ->
+      // Only a non-DELETE change carries content, and only those get an index entry below. Keeping
+      // the map free of null values is what lets the entry edit read its blob without asserting.
+      val staged = changes.mapNotNull { change ->
+        change.content?.let { content ->
+          change.path to StagedBlob(inserter.insert(Constants.OBJ_BLOB, content), content.size.toLong())
+        }
+      }.toMap()
       inserter.flush()
-      ids
+      staged
     }
 
     val index = DirCache.lock(repo, null)
@@ -66,7 +76,7 @@ class PatchIndexUpdater {
         if (change.kind == PatchChangeKind.DELETE) {
           editor.add(DirCacheEditor.DeletePath(change.path))
         } else {
-          editor.add(entryEdit(change, blobIds.getValue(change.path)!!, File(workTree, change.path)))
+          editor.add(entryEdit(change, blobs.getValue(change.path), File(workTree, change.path)))
         }
       }
       return if (editor.commit()) IndexUpdateResult.Ok else IndexUpdateResult.Conflicted
@@ -76,12 +86,12 @@ class PatchIndexUpdater {
     }
   }
 
-  private fun entryEdit(change: PatchChange, blobId: ObjectId, file: File) =
+  private fun entryEdit(change: PatchChange, blob: StagedBlob, file: File) =
     object : DirCacheEditor.PathEdit(change.path) {
       override fun apply(entry: DirCacheEntry) {
         entry.fileMode = change.mode
-        entry.setObjectId(blobId)
-        entry.setLength(change.content!!.size.toLong())
+        entry.setObjectId(blob.id)
+        entry.setLength(blob.length)
         // NOFOLLOW: for a symlink the stat that matters is the link's, not its target's.
         entry.setLastModified(Files.getLastModifiedTime(file.toPath(), LinkOption.NOFOLLOW_LINKS).toInstant())
       }

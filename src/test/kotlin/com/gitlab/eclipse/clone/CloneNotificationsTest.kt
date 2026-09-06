@@ -21,7 +21,7 @@ class CloneNotificationsTest : StringSpec({
         projectName = "proj",
         leftoverProjectName = "orphan",
       )
-      val message = CloneNotifications.importNotification(outcome, source, destination)
+      val message = CloneNotifications.importNotification(outcome)
       message shouldBe CloneMessages.orphanCleanupInstructions("orphan")
       // A future change that appends the reason's own wording must fail here.
       message shouldNotContain NAME_TAKEN_FRAGMENT
@@ -45,7 +45,7 @@ class CloneNotificationsTest : StringSpec({
           projectName = "proj",
           leftoverProjectName = "orphan",
         )
-        val message = CloneNotifications.importNotification(outcome, source, destination)
+        val message = CloneNotifications.importNotification(outcome)
         message shouldContain CloneMessages.importSkipped(reason, source, "proj")
         message shouldContain CloneMessages.orphanCleanupInstructions("orphan")
       }
@@ -56,7 +56,7 @@ class CloneNotificationsTest : StringSpec({
     ImportSkipReason.entries.forEach { reason ->
       RepositorySource.entries.forEach { source ->
         val outcome = CloneOutcome.ImportSkipped(destination, reason, source, projectName = "proj")
-        CloneNotifications.importNotification(outcome, source, destination) shouldBe
+        CloneNotifications.importNotification(outcome) shouldBe
           CloneMessages.importSkipped(reason, source, "proj")
       }
     }
@@ -65,22 +65,8 @@ class CloneNotificationsTest : StringSpec({
   "an import renders the imported wording for its source" {
     RepositorySource.entries.forEach { source ->
       val outcome = CloneOutcome.Imported(destination, "proj", source)
-      CloneNotifications.importNotification(outcome, source, destination) shouldBe
+      CloneNotifications.importNotification(outcome) shouldBe
         CloneMessages.imported(source, "proj")
-    }
-  }
-
-  "a contract-breaking outcome is reported as a failed import, never dropped" {
-    RepositorySource.entries.forEach { source ->
-      val variants = listOf(
-        CloneOutcome.Cloned(destination),
-        CloneOutcome.Cancelled,
-        CloneOutcome.Failed("SomeType", destination),
-      )
-      variants.forEach { outcome ->
-        CloneNotifications.importNotification(outcome, source, destination) shouldBe
-          CloneMessages.importSkipped(ImportSkipReason.IMPORT_FAILED, source, destination.name)
-      }
     }
   }
 })

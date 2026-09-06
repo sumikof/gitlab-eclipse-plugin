@@ -44,9 +44,10 @@ fun workspaceModule(bundleContext: BundleContext) = module {
   // observe/mutate the SAME view state, so it lives here as a singleton.
   single { SidebarViewState() }
 
-  // Shared between MrBranchCheckoutService (checkout), BranchPushService (push) and
-  // SnippetPatchApplyService (patch apply): the guard only serializes git operations per
-  // repository if ALL of them see the SAME instance.
+  // Shared between MrBranchCheckoutService (checkout), BranchPushService (push),
+  // SnippetPatchApplyService (patch apply), PublishToGitLabService (publish), RepositoryCloner
+  // (clone) and CloneFlow (the (a0) adoption, which must be excluded against a running clone):
+  // the guard only serializes git operations per repository if ALL of them see the SAME instance.
   single { GitOperationGuard() }
 
   // Takes the shared guard, and a quarantine rooted under the bundle state location.

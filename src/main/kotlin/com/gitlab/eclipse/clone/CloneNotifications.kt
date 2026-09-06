@@ -1,7 +1,5 @@
 package com.gitlab.eclipse.clone
 
-import java.io.File
-
 /**
  * Composes the one notification a clone-and-import run ends with.
  *
@@ -13,14 +11,10 @@ import java.io.File
 internal object CloneNotifications {
 
   /** Maps the import's outcome to its notification; every string comes from [CloneMessages]. */
-  fun importNotification(outcome: CloneOutcome, source: RepositorySource, destination: File): String =
+  fun importNotification(outcome: CloneOutcome): String =
     when (outcome) {
       is CloneOutcome.Imported -> CloneMessages.imported(outcome.source, outcome.projectName)
       is CloneOutcome.ImportSkipped -> importSkippedNotification(outcome)
-      // The importer's contract returns Imported or ImportSkipped; anything else is a broken
-      // contract, reported as a failed import rather than silently dropped.
-      is CloneOutcome.Cloned, CloneOutcome.Cancelled, is CloneOutcome.Failed ->
-        CloneMessages.importSkipped(ImportSkipReason.IMPORT_FAILED, source, destination.name)
     }
 
   /**

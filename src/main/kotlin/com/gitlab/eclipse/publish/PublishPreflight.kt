@@ -127,8 +127,7 @@ class PublishPreflight(private val records: PublishRecordStore = PublishRecordSt
   private fun trackableFileCount(folder: File): Int =
     folder.walkTopDown()
       .onEnter { it.name != Constants.DOT_GIT }
-      .filter { it.isFile }
-      .count()
+      .count { it.isFile }
 
   private fun sameInstance(recorded: String, current: String): Boolean =
     recorded.trimEnd('/').equals(current.trimEnd('/'), ignoreCase = true)
