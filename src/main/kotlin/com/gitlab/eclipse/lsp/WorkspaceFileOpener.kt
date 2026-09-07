@@ -110,7 +110,7 @@ class WorkspaceFileOpener(
  * roots the server believes it has. A project with no local location contributes nothing and does
  * not disturb the order of the rest.
  */
-fun projectLocations(): List<IPath> =
+internal fun projectLocations(): List<IPath> =
   ResourcesPlugin.getWorkspace().root.projects.mapNotNull { it.location }
 
 /**
@@ -130,7 +130,7 @@ fun projectLocations(): List<IPath> =
  * candidate unfiltered, and a filter here would put the two back out of step. A stale (not yet
  * refreshed) resource makes `IDE.openEditor` throw, which the caller contains.
  */
-fun openInActivePage(uri: URI) {
+internal fun openInActivePage(uri: URI) {
   openInActiveEditor(
     workspaceFile = { workspaceFilesForLocation(uri).firstOrNull() },
     fileStore = { fileStoreOf(uri) },

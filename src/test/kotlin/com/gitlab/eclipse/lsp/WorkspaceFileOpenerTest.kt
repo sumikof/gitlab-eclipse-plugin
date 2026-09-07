@@ -7,6 +7,7 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -209,6 +210,17 @@ class WorkspaceFileOpenerTest : DescribeSpec({
   }
 
   describe("open, log hygiene") {
+    // captureLog installs a recording log into the static Platform mock, and that stub must not
+    // outlive the test that asked for it — otherwise a later test's lines land in an earlier
+    // test's list. Removing and reinstalling the static mock leaves exactly the state
+    // LoggingKotestExtension.beforeSpec created: a bare static mock, which its beforeEach then
+    // stubs afresh. (A plain unmockkStatic would leave that beforeEach stubbing a class that is
+    // no longer mocked at all.)
+    afterTest {
+      unmockkStatic(Platform::class)
+      mockkStatic(Platform::class)
+    }
+
     it("names neither the path nor the URI when it opens a file") {
       val logged = captureLog()
       val target = "$ROOT_A/src/a.txt"
@@ -275,7 +287,14 @@ class WorkspaceFileOpenerTest : DescribeSpec({
       every { IDE.openEditorOnFileStore(any(), any()) } returns mockk()
     }
 
-    afterTest { unmockkStatic(PlatformUI::class, ResourcesPlugin::class, EFS::class, IDE::class) }
+    // These three are spec-scoped, so without this the recorded calls accumulate across tests and
+    // `verify(exactly = 1)` below would hold only while that test happens to run first — a
+    // failure that points nowhere near its cause once Kotest reorders. Stubs go with the calls;
+    // every test sets its own.
+    afterTest {
+      clearMocks(page, root, store)
+      unmockkStatic(PlatformUI::class, ResourcesPlugin::class, EFS::class, IDE::class)
+    }
 
     it("opens a workspace file as a workspace resource, hidden and team-private included") {
       val file = mockk<IFile>()
