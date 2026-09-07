@@ -292,7 +292,7 @@ class GitLabLanguageServerProcessProvider(
           documentChanges = true
           // We accept no create / rename / delete operations: the applier rejects them outright.
           resourceOperations = emptyList()
-          failureHandling = "abort"
+          failureHandling = FailureHandlingKind.Abort
         }
       },
       TextDocumentClientCapabilities().apply {
