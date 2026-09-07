@@ -181,15 +181,26 @@ fun findOpenEditorInWorkbench(uri: URI): Pair<IEditorInput, IDocumentProvider>? 
  * restore with `getEditor(true)` would instead materialise an editor, a document and a buffer as a
  * side effect of an edit nobody asked to be shown.
  *
- * An editor with no document provider (an image editor, say) is skipped rather than treated as the
- * answer: another editor further along the walk may still be a text editor on the same file.
+ * **The input returned is the adapted text editor's own, never the outer part's.** For a
+ * multi-page editor the two differ: the outer part's input names the multi-page file while the
+ * nested text editor was connected to the provider under its own input. Returning the outer input
+ * with the nested provider produces a pair whose `getDocument(input)` is `null`, the edit is
+ * refused, and the language server writes the file behind a dirty editor over the same file —
+ * exactly the divergence rule 1 exists to prevent. So the input is read from the text editor, and
+ * it is that input which is matched against [uri].
+ *
+ * An editor that yields no usable text editor, input or document provider (an image editor, say,
+ * or a multi-page editor whose active page is not text) is skipped rather than treated as the
+ * answer: another editor further along the walk may still be a text editor on the same file, and
+ * failing all of them falls through to the buffer route, which is correct if less shared.
  */
-private fun matchedEditor(reference: IEditorReference, uri: URI): Pair<IEditorInput, IDocumentProvider>? {
+internal fun matchedEditor(reference: IEditorReference, uri: URI): Pair<IEditorInput, IDocumentProvider>? {
   val editor = reference.getEditor(false) ?: return null
-  val input = editor.editorInput ?: return null
-  if (!inputMatches(input, uri)) return null
   val textEditor = editor.getAdapter(ITextEditor::class.java) ?: (editor as? ITextEditor) ?: return null
-  return textEditor.documentProvider?.let { input to it }
+  val input = textEditor.editorInput ?: return null
+  val provider = textEditor.documentProvider ?: return null
+  if (!inputMatches(input, uri)) return null
+  return input to provider
 }
 
 /**

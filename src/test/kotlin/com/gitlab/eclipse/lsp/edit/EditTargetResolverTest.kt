@@ -7,6 +7,7 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.eclipse.core.filebuffers.ITextFileBuffer
 import org.eclipse.core.filebuffers.ITextFileBufferManager
@@ -19,8 +20,12 @@ import org.eclipse.core.resources.IWorkspaceRoot
 import org.eclipse.core.runtime.IPath
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.core.runtime.Path
+import org.eclipse.jface.text.IDocument
 import org.eclipse.ui.IEditorInput
+import org.eclipse.ui.IEditorPart
+import org.eclipse.ui.IEditorReference
 import org.eclipse.ui.texteditor.IDocumentProvider
+import org.eclipse.ui.texteditor.ITextEditor
 import java.net.URI
 
 private val TARGET = URI("file:///tmp/project/a.txt")
@@ -56,6 +61,10 @@ class EditTargetResolverTest : DescribeSpec({
     mockkStatic(EFS::class)
     every { EFS.getStore(any()) } returns store
   }
+
+  // Symmetric with the beforeTest above: a static mock left in place outlives this spec's JVM
+  // slot, and a later spec that never mentions EFS would then fail for a reason it cannot see.
+  afterTest { unmockkStatic(EFS::class) }
 
   fun resolver(
     manager: ITextFileBufferManager,
@@ -96,6 +105,58 @@ class EditTargetResolverTest : DescribeSpec({
       // because its buffer key follows from its input type and not from the URI.
       verify(exactly = 0) { findFiles(any()) }
       verify(exactly = 0) { bufferManager() }
+    }
+  }
+
+  describe("matchedEditor, the walk's per-editor step") {
+    /** An input that adapts to an `IFile` at [locationUri], which is how rule 1 matches. */
+    fun fileInput(locationUri: URI): IEditorInput {
+      val file = mockk<IFile>()
+      every { file.locationURI } returns locationUri
+      return mockk<IEditorInput>().also { every { it.getAdapter(IFile::class.java) } returns file }
+    }
+
+    it("pairs the adapted text editor's own input with its provider, not the outer part's") {
+      // A multi-page editor: the outer part's input names the container, the nested text editor
+      // holds its own input, and the provider was connected under that one alone.
+      val outerInput = fileInput(TARGET)
+      val nestedInput = fileInput(TARGET)
+      val document = mockk<IDocument>()
+      val provider = mockk<IDocumentProvider>()
+      every { provider.getDocument(nestedInput) } returns document
+      every { provider.getDocument(outerInput) } returns null
+      val textEditor = mockk<ITextEditor>()
+      every { textEditor.editorInput } returns nestedInput
+      every { textEditor.documentProvider } returns provider
+      val editor = mockk<IEditorPart>()
+      every { editor.editorInput } returns outerInput
+      every { editor.getAdapter(ITextEditor::class.java) } returns textEditor
+      val reference = mockk<IEditorReference>()
+      every { reference.getEditor(false) } returns editor
+
+      val matched = matchedEditor(reference, TARGET)
+
+      matched shouldBe (nestedInput to provider)
+      // The pair has to work as a pair: this is the call the applier makes, and the outer input
+      // against this provider answers null, which refuses the edit and lets the server write the
+      // file behind a dirty editor over it.
+      provider.getDocument(matched?.first) shouldBe document
+    }
+
+    it("skips an editor that adapts to no text editor") {
+      val editor = mockk<IEditorPart>()
+      every { editor.getAdapter(ITextEditor::class.java) } returns null
+      val reference = mockk<IEditorReference>()
+      every { reference.getEditor(false) } returns editor
+
+      matchedEditor(reference, TARGET).shouldBeNull()
+    }
+
+    it("treats an unrestored reference as not open") {
+      val reference = mockk<IEditorReference>()
+      every { reference.getEditor(false) } returns null
+
+      matchedEditor(reference, TARGET).shouldBeNull()
     }
   }
 
