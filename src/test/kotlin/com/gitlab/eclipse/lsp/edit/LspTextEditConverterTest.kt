@@ -95,6 +95,34 @@ class LspTextEditConverterTest : DescribeSpec({
           LspTextEditConverter.toReplaceEdits(document, edits)
         }
       }
+
+      it("throws BadLocationException for a negative character") {
+        val document = Document("line0\nline1")
+        val edits = listOf(TextEdit(range(0, -1, 0, -1), "X"))
+        shouldThrow<BadLocationException> {
+          LspTextEditConverter.toReplaceEdits(document, edits)
+        }
+      }
+
+      it("throws BadLocationException when the range end precedes the range start") {
+        val document = Document("hello world")
+        val edits = listOf(TextEdit(range(0, 5, 0, 2), "X"))
+        shouldThrow<BadLocationException> {
+          LspTextEditConverter.toReplaceEdits(document, edits)
+        }
+      }
+    }
+
+    describe("multi-line ranges") {
+      it("converts a range spanning two lines") {
+        val document = Document("line0\nline1\nline2")
+        val edits = listOf(TextEdit(range(0, 3, 1, 2), "X"))
+        val result = LspTextEditConverter.toReplaceEdits(document, edits)
+        val edit = result[0]
+        edit.offset shouldBe 3
+        edit.length shouldBe 5
+        document.get(edit.offset, edit.length) shouldBe "e0\nli"
+      }
     }
 
     describe("edit kinds") {

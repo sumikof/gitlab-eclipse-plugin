@@ -24,10 +24,16 @@ object LspTextEditConverter {
     edits.map { edit ->
       val startOffset = toOffset(document, edit.range.start)
       val endOffset = toOffset(document, edit.range.end)
+      if (endOffset < startOffset) {
+        throw BadLocationException("range end precedes range start")
+      }
       ReplaceEdit(startOffset, endOffset - startOffset, edit.newText)
     }
 
   private fun toOffset(document: IDocument, position: Position): Int {
+    if (position.character < 0) {
+      throw BadLocationException("character ${position.character} is negative")
+    }
     val lineOffset = document.getLineOffset(position.line)
     val lineLengthWithDelimiter = document.getLineLength(position.line)
     val delimiterLength = document.getLineDelimiter(position.line)?.length ?: 0
