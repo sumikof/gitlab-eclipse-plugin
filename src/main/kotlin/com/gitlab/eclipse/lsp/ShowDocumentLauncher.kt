@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.swt.SWTError
 import org.eclipse.ui.PlatformUI
 import java.net.URI
 import java.util.concurrent.CompletableFuture
@@ -26,8 +27,9 @@ import java.util.concurrent.CompletableFuture
  *
  * Runs on the calling (lsp4j dispatch) thread and returns at once: the browser call hops to the UI
  * thread with `asyncExec`. **Never `syncExec`** — the dispatch thread would deadlock against a UI
- * thread waiting on it. The returned future never completes exceptionally; it can only stay pending
- * if a queued UI runnable is never dispatched at all, which the caller's own timeout covers.
+ * thread waiting on it. The returned future never completes exceptionally, and nothing — not even
+ * an `SWTError` — escapes into the event loop; the future can only stay pending if a queued UI
+ * runnable is never dispatched at all, which the caller's own timeout covers.
  *
  * @property onUiThread the UI-thread hop; defaults to `currentDisplay.asyncExec`
  * @property openInBrowser opens one URL and says whether it launched; defaults to the workbench
@@ -63,14 +65,29 @@ class ShowDocumentLauncher(
     return outcome
   }
 
-  /** One browser launch with every failure contained. UI thread only. Logs no URI, no message. */
+  /**
+   * One browser launch with every failure contained. UI thread only. Logs no URI, no message.
+   *
+   * **`SWTError` extends `Error`, not `Exception`** — the same reason `ClipboardWriter.tryWriteNow`
+   * catches it. This runs inside an `asyncExec` runnable, so an escaping error would land in the
+   * SWT event loop, where the workbench logs it *with its message and stack trace* and may raise
+   * the internal-error dialog: the very leak this class exists to prevent, in a place this class
+   * cannot reach. `OutOfMemoryError` and the rest are deliberately not caught. `SWTException` is a
+   * `RuntimeException` and is covered by the `Exception` arm, as is `PartInitException`.
+   */
   private fun openNow(url: String): Boolean =
     try {
       openInBrowser(url)
+    } catch (e: SWTError) {
+      launchFailed(e)
     } catch (e: Exception) {
-      log.warn("showDocument: the browser did not open the URI: ${e.javaClass.name}")
-      false
+      launchFailed(e)
     }
+
+  private fun launchFailed(e: Throwable): Boolean {
+    log.warn("showDocument: the browser did not open the URI: ${e.javaClass.name}")
+    return false
+  }
 
   private fun refused(uri: String?): CompletableFuture<Boolean> {
     log.warn("showDocument: refused a URI the language server sent; scheme=${schemeOf(uri)}")
