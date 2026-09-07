@@ -4,6 +4,7 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.filebuffers.FileBuffers
+import org.eclipse.core.filebuffers.IFileBufferStatusCodes
 import org.eclipse.core.filebuffers.ITextFileBuffer
 import org.eclipse.core.filesystem.EFS
 import org.eclipse.core.resources.IResourceStatus
@@ -204,8 +205,10 @@ class WorkspaceEditApplier(
       try {
         val buffer = bufferAccess.current() ?: throw UnresolvableTargetException()
         val document = buffer.document
-        applyEdits(document)
+        // Recorded before the edit, so a throw that has already mutated the document (a partial
+        // apply, endCompoundChange) still lets exit() detect the lingering buffer and say so.
         editedBuffer = buffer
+        applyEdits(document)
         saveVia(document, bufferFor = { buffer }) { buffer.commit(monitor, OVERWRITE) }
       } finally {
         bufferAccess.disconnect(monitor)
@@ -458,21 +461,28 @@ internal fun persistedDespiteFailure(
   }
 }
 
+private const val FILE_BUFFERS_PLUGIN = "org.eclipse.core.filebuffers"
+
 /**
- * Stage 1: the two failures `commitFileBufferContent` raises before it writes anything.
+ * Stage 1: the three failures `commitFileBufferContent` raises before it writes anything.
  *
- * Both verified against `org.eclipse.core.filebuffers` 3.8.500 bytecode: the out-of-sync
- * rejection is `Status(WARNING, "org.eclipse.core.filebuffers", 274, ..)` thrown at the top of the
- * method, and a `Charset.forName` failure is wrapped as a `CoreException` whose status exception —
- * which `CoreException.getCause()` returns — is the charset exception.
+ * All verified against `org.eclipse.core.filebuffers` 3.8.500 bytecode: the out-of-sync rejection
+ * is `Status(WARNING, "org.eclipse.core.filebuffers", 274, ..)` thrown at the top of the method; an
+ * unmappable character makes the encoder throw and is wrapped as
+ * `Status(ERROR, "org.eclipse.core.filebuffers", CHARSET_MAPPING_FAILED = 3, ..)` before the
+ * content stream is even built; and a `Charset.forName` failure is wrapped as a `CoreException`
+ * whose status exception — which `CoreException.getCause()` returns — is the charset exception.
  */
 private fun isKnownPreWriteFailure(thrown: Throwable): Boolean {
   if (thrown !is CoreException) return false
   val status = thrown.status
-  val outOfSync =
-    status.plugin == "org.eclipse.core.filebuffers" && status.code == IResourceStatus.OUT_OF_SYNC_LOCAL
+  val preWriteCode = status.plugin == FILE_BUFFERS_PLUGIN &&
+    (
+      status.code == IResourceStatus.OUT_OF_SYNC_LOCAL ||
+        status.code == IFileBufferStatusCodes.CHARSET_MAPPING_FAILED
+      )
   val cause = thrown.cause
-  return outOfSync || cause is UnsupportedCharsetException || cause is IllegalCharsetNameException
+  return preWriteCode || cause is UnsupportedCharsetException || cause is IllegalCharsetNameException
 }
 
 /**

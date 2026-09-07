@@ -11,6 +11,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import io.mockk.verifyOrder
+import org.eclipse.core.filebuffers.IFileBufferStatusCodes
 import org.eclipse.core.filebuffers.ITextFileBuffer
 import org.eclipse.core.filebuffers.LocationKind
 import org.eclipse.core.filesystem.EFS
@@ -299,17 +300,21 @@ class WorkspaceEditApplierTest : DescribeSpec({
       val fixture = OpenEditorFixture()
       fixture.saveFailsWith(outOfSync())
       val attempted = mutableListOf<Notice>()
+      lateinit var future: CompletableFuture<ApplyWorkspaceEditResponse>
+      var doneWhenNotified: Boolean? = null
       val harness = Harness(
         fixture.target,
         notifyUser = {
           attempted += it
+          doneWhenNotified = future.isDone // the response must be settled before the notification
           error("popup failed")
         },
       )
 
-      val future = harness.applier.applyEdit(paramsOf(edits = arrayOf(EDIT_FIRST_CHAR)))
+      future = harness.applier.applyEdit(paramsOf(edits = arrayOf(EDIT_FIRST_CHAR)))
       shouldNotThrowAny { harness.runUi() }
 
+      doneWhenNotified shouldBe true
       future.applied() shouldBe true
       attempted shouldContainExactly listOf(Notice.SAVE_MANUALLY)
     }
@@ -490,6 +495,22 @@ class WorkspaceEditApplierTest : DescribeSpec({
       harness.notices shouldContainExactly listOf(Notice.STALE_BUFFER)
     }
 
+    it("applyEdits throws after mutating, Buffered, same buffer still registered: false plus 'stale buffer'") {
+      val fixture = BufferedFixture()
+      val undoManager = mockk<IDocumentUndoManager>(relaxUnitFun = true)
+      every { undoManager.endCompoundChange() } throws IllegalStateException("undo history closed")
+      val harness = Harness(fixture.target, access = fixture.access, undoManager = undoManager)
+
+      val future = harness.applier.applyEdit(paramsOf(edits = arrayOf(EDIT_FIRST_CHAR)))
+      harness.runUi()
+
+      fixture.document.get() shouldBe "Jello"
+      future.applied() shouldBe false
+      harness.notices shouldContainExactly listOf(Notice.STALE_BUFFER)
+      verify(exactly = 0) { fixture.buffer.commit(any(), any()) }
+      verify(exactly = 1) { fixture.access.disconnect(any()) }
+    }
+
     it("apply throws something other than MalformedTreeException: treated as mutated, so the editor rule applies") {
       val partial = object : Document("hello world") {
         private var replacements = 0
@@ -570,6 +591,25 @@ class WorkspaceEditApplierTest : DescribeSpec({
     it("a CoreException with the same code from another plugin is not the out-of-sync rejection") {
       val other = CoreException(Status(IStatus.WARNING, "org.eclipse.core.resources", 274, "not filebuffers", null))
       persistedDespiteFailure({ probeBuffer("UTF-8", onDisk = expected) }, document, other) shouldBe Persistence.MATCHED
+    }
+
+    it("charset-mapping CoreException (filebuffers, CHARSET_MAPPING_FAILED): NOT_MATCHED without touching the disk") {
+      val mapping = CoreException(
+        Status(IStatus.ERROR, "org.eclipse.core.filebuffers", IFileBufferStatusCodes.CHARSET_MAPPING_FAILED, "x", null),
+      )
+      var probed = false
+      val bufferFor = {
+        probed = true
+        null
+      }
+      persistedDespiteFailure(bufferFor, document, mapping) shouldBe Persistence.NOT_MATCHED
+      probed shouldBe false
+
+      val otherPlugin = CoreException(
+        Status(IStatus.ERROR, "org.eclipse.core.resources", IFileBufferStatusCodes.CHARSET_MAPPING_FAILED, "x", null),
+      )
+      persistedDespiteFailure({ probeBuffer("UTF-8", onDisk = expected) }, document, otherPlugin)
+        .shouldBe(Persistence.MATCHED)
     }
 
     it("charset-construction CoreException: NOT_MATCHED") {
