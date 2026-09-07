@@ -12,7 +12,7 @@ import java.util.concurrent.CompletableFuture
  * The two calls this plugin makes on an SWT [Clipboard], behind a type a headless test can stand in
  * for: a real [Clipboard] needs a [org.eclipse.swt.widgets.Display], which a test JVM cannot make.
  */
-interface ClipboardTarget {
+internal interface ClipboardTarget {
   /**
    * Puts [text] on the clipboard as plain text. **UI thread only.** May throw [SWTError] — SWT's
    * own signal for a clipboard it cannot claim (`ERROR_CANNOT_SET_CLIPBOARD`) — as well as
@@ -46,7 +46,7 @@ private class SwtClipboardTarget(private val clipboard: Clipboard) : ClipboardTa
  * @property onUiThread the UI-thread hop; defaults to `currentDisplay.asyncExec`
  * @property openClipboard opens a clipboard handle for one write. **UI thread only.**
  */
-class ClipboardWriter(
+class ClipboardWriter internal constructor(
   private val onUiThread: (Runnable) -> Unit = { currentDisplay.asyncExec(it) },
   private val openClipboard: () -> ClipboardTarget = { SwtClipboardTarget(Clipboard(currentDisplay)) },
 ) {
@@ -88,9 +88,9 @@ class ClipboardWriter(
   /**
    * Writes [text] and shows [COPIED_TO_CLIPBOARD] through [notify] **only once the write has
    * landed**. This is the one place the rule lives: a copy that failed shows nothing, so the
-   * notice is never a lie. [notify] runs wherever the write completed (the UI thread, or the
-   * caller's thread if the hop itself failed) — pass something that marshals for itself, such
-   * as `NotificationUtils.show`.
+   * notice is never a lie. [notify] runs on the UI thread — it is only reached for a write that
+   * landed, and a write can only land inside the UI turn — but pass something that marshals for
+   * itself anyway, such as `NotificationUtils.show`.
    */
   fun writeAndNotify(text: String, notify: (String) -> Unit): CompletableFuture<Boolean> =
     writeChecked(text).thenApply { landed ->
