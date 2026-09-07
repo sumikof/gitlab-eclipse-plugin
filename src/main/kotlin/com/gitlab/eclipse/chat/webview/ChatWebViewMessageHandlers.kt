@@ -3,11 +3,11 @@ package com.gitlab.eclipse.chat.webview
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.navigation.ClipboardWriter
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
-import org.eclipse.swt.dnd.Clipboard
-import org.eclipse.swt.dnd.TextTransfer
 import java.net.URI
 
 /**
@@ -20,11 +20,16 @@ import java.net.URI
  * which does not include inherited methods, so the controllers cannot share annotated methods
  * through a base class. Instead each controller declares its own annotated methods and
  * delegates to an instance of this class.
+ *
+ * [clipboardWriter] and [notify] are seams with production defaults, so the copy path below is
+ * reachable headless: the real writer needs a display and the real notice needs a workbench.
  */
 class ChatWebViewMessageHandlers(
   private val platformUtils: PlatformUtils,
   private val currentFileContextProvider: CurrentFileContextProvider,
-  private val insertCodeSnippetService: InsertCodeSnippetService
+  private val insertCodeSnippetService: InsertCodeSnippetService,
+  private val clipboardWriter: ClipboardWriter = ClipboardWriter(),
+  private val notify: (String) -> Unit = { NotificationUtils.show(it) },
 ) {
   private val logger by lazy { logger<ChatWebViewMessageHandlers>() }
 
@@ -69,11 +74,13 @@ class ChatWebViewMessageHandlers(
     copyToClipboard(notification.message)
   }
 
+  /**
+   * Both copy notifications are fire-and-forget on the webview side (`copyContent` in
+   * gitlab-workflow's `src/common/chat/copy_content.ts` awaits nothing the webview can see), so
+   * the write is queued on the UI thread and this returns at once. The "Copied to clipboard"
+   * notice follows only a write that landed — the writer's rule, not repeated here.
+   */
   private fun copyToClipboard(content: String) {
-    currentDisplay.syncExec {
-      val clipboard = Clipboard(currentDisplay)
-      clipboard.setContents(arrayOf(content), arrayOf(TextTransfer.getInstance()))
-      clipboard.dispose()
-    }
+    clipboardWriter.writeAndNotify(content, notify)
   }
 }
