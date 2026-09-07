@@ -288,6 +288,12 @@ class GitLabLanguageServerProcessProvider(
       WorkspaceClientCapabilities().also { capabilities ->
         capabilities.configuration = true
         capabilities.workspaceFolders = true
+        capabilities.workspaceEdit = WorkspaceEditCapabilities().apply {
+          documentChanges = true
+          // We accept no create / rename / delete operations: the applier rejects them outright.
+          resourceOperations = emptyList()
+          failureHandling = "abort"
+        }
       },
       TextDocumentClientCapabilities().apply {
         completion = CompletionCapabilities().apply {
@@ -301,7 +307,14 @@ class GitLabLanguageServerProcessProvider(
         showMessage = WindowShowMessageRequestCapabilities().apply {
           messageActionItem = WindowShowMessageRequestActionItemCapabilities()
         }
+        showDocument = ShowDocumentCapabilities(true)
       },
+      // Explicit trailing null: lsp4j 1.0.0 has no 3-arg (Workspace, TextDocument, Window)
+      // constructor, only (Workspace, TextDocument, Object experimental) and this 4-arg one. Without
+      // this argument, Kotlin silently picks the 3-arg overload and boxes the whole
+      // WindowClientCapabilities into `experimental`, so `window` (and therefore both showMessage
+      // and showDocument) never reaches the wire.
+      null,
     )
     clientInfo = ClientInfo(
       "gitlab-eclipse-plugin",

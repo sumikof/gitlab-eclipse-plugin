@@ -554,6 +554,33 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       provider.stop()
     }
 
+    it("declares only the workspaceEdit and showDocument capabilities this cycle can honour") {
+      val provider = newProvider()
+
+      provider.start(bundle)
+
+      // Read off the wire, not off the params object, for the same reason as the workspace-folder
+      // test above: only the serialized request can catch a property that silently never landed.
+      eventually(2.seconds) {
+        val initialize = spawnedProcesses[0].receivedMessages
+          .firstOrNull { message -> "\"method\":\"initialize\"" in message }
+          .shouldNotBeNull()
+        val capabilities = JsonParser.parseString(initialize).asJsonObject
+          .getAsJsonObject("params")
+          .getAsJsonObject("capabilities")
+
+        val workspaceEdit = capabilities.getAsJsonObject("workspace").getAsJsonObject("workspaceEdit")
+        workspaceEdit["documentChanges"].asBoolean shouldBe true
+        workspaceEdit.getAsJsonArray("resourceOperations").size() shouldBe 0
+        workspaceEdit["failureHandling"].asString shouldBe "abort"
+
+        val showDocument = capabilities.getAsJsonObject("window").getAsJsonObject("showDocument")
+        showDocument["support"].asBoolean shouldBe true
+      }
+
+      provider.stop()
+    }
+
     it("fails fast and stays stopped when the process cannot be created") {
       val provider = newProvider(factory = { throw IOException("spawn refused") })
 
