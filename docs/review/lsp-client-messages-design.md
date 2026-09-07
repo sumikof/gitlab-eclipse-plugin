@@ -260,7 +260,7 @@ hidden・team-private の誤分類(R20)/ `NORMALIZE` 経路の不一致。**い�
 | `GitLabLanguageServerClient`(既存に追加) | `lsp/` | `@JsonRequest` / `@JsonNotification` の受け口。処理は下記へ委譲し、自身は future の生成と例外封じ込めのみ | なし(ディスパッチスレッド) |
 | `WorkspaceEditApplier` | `lsp/edit/` | `WorkspaceEdit` → 検証 → `MultiTextEdit` 組み立て → バッファ適用 → commit | あり |
 | `LspTextEditConverter` | `lsp/edit/` | LSP `Range`/`Position` → `org.eclipse.text.edits.ReplaceEdit`。オフセット変換と境界検査 | **なし(純ロジック)** |
-| `EditTargetResolver` | `lsp/edit/` | URI 文字列 → `EditTarget`(**エディタが開いていれば `OpenEditor`**、無ければ `Buffered.InWorkspace` / `Buffered.External`)と、`Buffered` から導く `BufferAccess`(§11)。エディタ照会と候補列挙は**引数で受け取る** | **クラス自体は純ロジック。ただし呼び出しは UI スレッド**(エディタ照会を含むため。§8・§11) |
+| `EditTargetResolver` | `lsp/edit/` | URI 文字列 → `EditTarget`(**エディタが開いていれば `OpenEditor`**、無ければ `Buffered.ByPath` / `Buffered.ByFileStore`)と、`Buffered` から導く `BufferAccess`(§11)。エディタ照会と候補列挙は**引数で受け取る** | **クラス自体は純ロジック。ただし呼び出しは UI スレッド**(エディタ照会を含むため。§8・§11) |
 | `WorkspaceFileOpener` | `lsp/` もしくは既存 `navigation/` | `filePath` → ワークスペースルート解決 → エディタで開く。`OpenMrFileHandler.openEditorFor` の idiom を共通化 | あり |
 | `ClipboardWriter`(既存を再利用) | `navigation/` | クリップボード書き込み | あり(内部で `asyncExec`) |
 | `BrowserLauncher`(既存を再利用) | `navigation/` | 外部ブラウザ | あり(内部で `asyncExec`) |
@@ -697,13 +697,13 @@ sealed interface EditTarget {
     val input: IEditorInput,
     val provider: IDocumentProvider,
   ) : EditTarget
-
-  // 経路 2: エディタが無い。共有相手が居ないので分類の誤りは無害
+  // 経路 2: エディタが無い。既存バッファがあれば join し、無ければ分類して作る
   sealed interface Buffered : EditTarget {
-    data class InWorkspace(val path: IPath) : Buffered      // IFile.getFullPath() + LocationKind.IFILE
-    data class External(val fileStore: IFileStore) : Buffered
+    // IPath キーの管理マップ(fFilesBuffers)。kind は IFILE / NORMALIZE / LOCATION の 3 値
+    data class ByPath(val path: IPath, val kind: LocationKind) : Buffered
+    // IFileStore キーの管理マップ(fFileStoreFileBuffers)
+    data class ByFileStore(val fileStore: IFileStore) : Buffered
   }
-}
 ```
 
 **解決順序(UI スレッド上で行う)**:
@@ -723,19 +723,19 @@ sealed interface EditTarget {
            そのエディタは「ファイルバッファを 1 つも保持していない」。したがって
            2 の経路で作るバッファが唯一のバッファになり、競合しない。
            getEditor(true) による強制復元はしない(エージェントの編集がユーザーの
-           見ていないエディタを開く、という重い副作用になるため)。
-
-2. 見つからなければバッファ経路。★ まず「既にバッファが存在するか」を全系列で調べる:
+2. 見つからなければバッファ経路。★ まず「既にバッファが存在するか」を**全系列**で調べる:
      candidates = findFilesForLocationURI(uri,
                     IContainer.INCLUDE_HIDDEN or IContainer.INCLUDE_TEAM_PRIVATE_MEMBERS)
-     probe = 次のうち非 null のもの(存在すれば join する)
-       (a) getTextFileBuffer(candidates[i].getFullPath(), LocationKind.IFILE)
-       (b) getTextFileBuffer(physicalPath(uri),           LocationKind.NORMALIZE)
-       (c) getFileStoreTextFileBuffer(EFS.getStore(uri))
-     probe が 1 つ以上見つかれば → その系列の Buffered を使う(= 既存バッファに join する)
+     phys       = physicalPath(uri)
+     probe(先に見つかったものを採用し、そこへ join する):
+       (a) ByPath(candidates[i].getFullPath(), IFILE)   → getTextFileBuffer(fullPath, IFILE)
+       (b) ByPath(phys,                        NORMALIZE) → getTextFileBuffer(phys, NORMALIZE)
+       (c) ByPath(phys,                        LOCATION)  → getTextFileBuffer(phys, LOCATION)
+       (d) ByFileStore(EFS.getStore(uri))                 → getFileStoreTextFileBuffer(store)
+     見つかれば → その Buffered をそのまま使う(= 既存バッファに join)
      見つからなければ分類して新規に作る:
-       candidates が 1 件以上 → Buffered.InWorkspace(candidates[0].getFullPath())
-       0 件                   → Buffered.External(EFS.getStore(uri))
+       candidates が 1 件以上 → ByPath(candidates[0].getFullPath(), IFILE)
+       0 件                   → ByFileStore(EFS.getStore(uri))
 
 3. どれも決まらなければ null(呼び出し側が E22 として applied:false にする)
 ```
@@ -758,24 +758,35 @@ sealed interface EditTarget {
 1 で決着させることで再現の必要がなくなる。
 
 **★ 2 の分類が多少ずれても害が無い理由**: probe で既存バッファが見つからなければ、共有すべき `IDocument` が
-存在しない。`InWorkspace` と `External` のどちらで接続しても、書き込み先の実ファイルは同じである。
+存在しない。`ByPath` と `ByFileStore` のどちらで接続しても、書き込み先の実ファイルは同じである。
 したがって **2 の分類は「正しい API 系列で 1 つのバッファを作る」ためだけのもの**で、
 第 5〜7 版で問題になった「エディタと別バッファになる」帰結は生じない。
 複数一致時は先頭でよい(エディタが無いので「開いているものを選ぶ」余地が無い)。
 
-**★ `Buffered.InWorkspace.path` は `IFile.getFullPath()`(= `/project/dir/file` 形式のワークスペース絶対パス)
+**★ `ByPath` に `LocationKind` を持たせる理由(第 10 版)**: probe で見つけたバッファへ**同じキーで接続する**
+ため。`kind` を `IFILE` に固定すると、`NORMALIZE` や `LOCATION` で登録されている既存バッファを見つけても
+そこへ接続できず、別のキーで**新しいバッファを作ってしまい join が成立しない**。
+
+**★ `IFILE` を選ぶときの `path` は `IFile.getFullPath()`(= `/project/dir/file` 形式のワークスペース絶対パス)
 であって、ファイルシステム上のパスではない。** `LocationKind.IFILE` はワークスペース絶対パスを要求する。
+`NORMALIZE` / `LOCATION` を選ぶときは**物理パス**を渡す。
+
+**★★ この probe は「全系列」を推測ではなく全列挙で満たす。** `ITextFileBufferManager` の管理マップは
+**2 つだけ**(`fFilesBuffers` / `fFileStoreFileBuffers`)、`LocationKind` は **`LOCATION` / `IFILE` /
+`NORMALIZE` の 3 値だけ**である(javap で確認。§付録)。したがって (a)〜(d) は**バッファが登録されうる
+キー空間そのもの**であり、見落とす系列は存在しない。
+なお `connect(IPath, IProgressMonitor)`(2 引数版)は **`NORMALIZE` を既定にする**ため、旧 API を使う
+コードのバッファは (b) に載る。
 
 **`Buffered` は `ITextFileBufferManager` への 3 操作を提供する**(2 つの管理マップを混ぜないため。§付録):
 
 ```kotlin
 interface BufferAccess {
-  fun connect(monitor: IProgressMonitor)     // connect(path, IFILE, m) / connectFileStore(store, m)
-  fun current(): ITextFileBuffer?            // getTextFileBuffer(path, IFILE) / getFileStoreTextFileBuffer(store)
-  fun disconnect(monitor: IProgressMonitor)  // disconnect(path, IFILE, m) / disconnectFileStore(store, m)
+  fun connect(monitor: IProgressMonitor)     // connect(path, kind, m)          / connectFileStore(store, m)
+  fun current(): ITextFileBuffer?            // getTextFileBuffer(path, kind)    / getFileStoreTextFileBuffer(store)
+  fun disconnect(monitor: IProgressMonitor)  // disconnect(path, kind, m)        / disconnectFileStore(store, m)
 }
 ```
-
 URI → パス / ファイルストア変換は **`file:///path` と `file:/path` の両形式を受け付ける**(§5.1 末尾)。`java.net.URI.getPath()` はどちらも `/path` を返すため、これを基礎にする。Windows の `file:/C:/…` に対する扱いは §24 U1 の未決事項。
 
 ## 12. トランザクション境界
@@ -1014,13 +1025,13 @@ LS 側は info ログを出すだけ。§5.5)。
 |---|---|
 | `LspTextEditConverter` | `Position(line, character)` → offset の変換。行頭 / 行末 / 最終行 / 空ドキュメント / 範囲外(`BadLocationException`)。LSP の `character` が UTF-16 コード単位であることを、サロゲートペアを含む行で確認 |
 | `LspTextEditConverter` | 複数 `TextEdit` を `MultiTextEdit` に積んだときの一括適用結果。**重なりで `MalformedTreeException` が出て 1 つも適用されないこと**。**範囲外は `apply` に到達する前(オフセット変換時)に弾かれること** |
-| `EditTargetResolver` | `file:///path` と `file:/path` の両形式。`file:` 以外の拒否。ワークスペース内 / 外の判定。**ワークスペース内は `InWorkspace(IPath)`、外は `External(IFileStore)` を返すこと**(§11) |
+| `EditTargetResolver` | `file:///path` と `file:/path` の両形式。`file:` 以外の拒否。ワークスペース内 / 外の判定。**エディタが無い場合は `Buffered.ByPath(fullPath, IFILE)` または `Buffered.ByFileStore(store)` を返すこと**(§11) |
 | `ExternalUrlPolicy` | `http`/`https` の許可、`file:`/`javascript:`/相対/空文字の拒否 |
 | `WorkspaceEditApplier` | 注入した偽 `onUiThread` とインメモリ `Document` で: 正常適用 / `ResourceOperation` 拒否 / `SnippetTextEdit` 拒否 / `changes` のみ拒否 |
 | **`WorkspaceEditApplier` の状態機械(§9.1)** | **競合 1**: 開始タイムアウトが先に `SETTLED` へ遷移したあとに UI ランナブルが走っても**適用されない**(AC10)<br>**競合 2**: UI が `RUNNING` に入ったあとに開始タイムアウトが発火しても**応答を返さない**(AC13)<br>**競合 3**: `RUNNING` 中に commit が長引いても future が完了しないこと<br>**競合 4**: `onUiThread` 登録成功後に `scheduleTimeout` が例外を投げたとき、**future が `applied:false` で 1 回だけ完了し、後から走るランナブルがドキュメントを変更しない**(AC18)<br>**競合 5**: 同じく `scheduleTimeout` が例外を投げたが**ランナブルが既に `RUNNING`** の場合、セットアップ側は応答せず、**応答はランナブルの結果になる**(AC18) |
-| **経路の選択(§8・§11・AC28)** | 注入した `findOpenEditorFor` で **OpenEditor 経路 / Buffered 経路**を切り替え、次を固定する:<br>**(a) エディタが開いている** → `provider.getDocument(input)` に適用され、保存は `provider.saveDocument(..., overwrite=false)`。**`findFilesForLocationURI` も `BufferAccess` も呼ばれない**<br>**(b) 開いていない** → `findFilesForLocationURI` の結果で `InWorkspace` / `External` を選び、対応する API 系列だけが呼ばれる |
+| **経路の選択(§8・§11・AC28)** | 注入した `findOpenEditorFor` で **OpenEditor 経路 / Buffered 経路**を切り替え、次を固定する:<br>**(a) エディタが開いている** → `provider.getDocument(input)` に適用され、保存は `provider.saveDocument(..., overwrite=false)`。**`findFilesForLocationURI` も `BufferAccess` も呼ばれない**<br>**(b) 開いていない** → `findFilesForLocationURI` の結果で `ByPath` / `ByFileStore` を選び、対応する API 系列だけが呼ばれる |
 | **エディタ同定(§11・AC29)** | 注入したエディタ一覧に対し、入力が `IFile` / `ILocationProviderExtension` / `ILocationProvider` の**どのアダプタで対象を指していても** `OpenEditor` になること。**未復元参照は `OpenEditor` にならず、`getEditor(true)` が呼ばれない**こと |
-| **既存バッファの join(§11・AC30)** | 注入した `bufferManager` の 3 系列のうち 1 つだけに既存バッファを置き、**その系列で `connect` されること**(新規に別系列を作らないこと)。どれも無いときだけ分類が使われること |
+| **既存バッファの join(§11・AC30)** | 注入した `bufferManager` の **4 つのキー**(`IFILE` / `NORMALIZE` / `LOCATION` / file store)のうち 1 つだけに既存バッファを置き、**その同じキーで `connect` されること**(新規に別キーで作らないこと)。どれも無いときだけ分類が使われること。**`NORMALIZE` / `LOCATION` のケースは変異注入で liveness を確認する**(`kind` を `IFILE` に固定した実装では落ちること) |
 | **退出時の判定(§12.1)** | **(a) OpenEditor + 保存失敗** → `applied:true` + 保存を促す通知 1 回(AC16)<br>**(b) Buffered + 保存失敗 + `disconnect` 後に破棄** → **`applied:false`・通知なし**(AC20)<br>**(c) Buffered + 保存失敗 + 同一インスタンスが残存** → **`applied:false`** + 残存を知らせる通知 1 回(AC22)<br>**適用前**の失敗は `applied:false`・通知なし(AC17) |
 | **`disconnect` 失敗(E15)** | `disconnect` が例外を投げても **応答が観測どおりに決まる**こと。残存していれば (a) / (c)、破棄されていれば (b) と同じ結果になること(AC22) |
 | **適用後の例外(§9.1・§13 の E10 / E18)** | `endCompoundChange` / `disconnect` / その他が例外を投げても **future が必ず 1 回完了する**こと、かつ応答が観測に一致すること(AC19) |
@@ -1136,10 +1147,11 @@ LS 側は info ログを出すだけ。§5.5)。
 | **AC23** | **`notifyUser` が例外を投げても future は `retained` で完了済みであり、例外が UI ランナブル外へ漏れない**。応答が通知より先に確定していること(§13 の E16・I4) | 自動テスト |
 | **AC24** | **ワークスペース外のファイルでは file store 系 API が使われる。** 注入した `bufferManager` に対し `connectFileStore` / `getFileStoreTextFileBuffer` / `disconnectFileStore` が呼ばれ、**`connect(IPath, LocationKind, …)` 系が一度も呼ばれない**こと。ワークスペース内では逆に `IPath` 系だけが呼ばれること(§9.1・§11・A6) | 自動テスト |
 | **AC25** | **保存に成功していれば退出時の観測を行わない。** 観測に使う関数を例外を投げるものに差し替えても、保存成功時は `applied:true` が返り、観測が**呼ばれない**こと(§9.1 の退出処理) | 自動テスト |
-| **AC26** | **分類は `findFilesForLocationURI(uri, INCLUDE_HIDDEN or INCLUDE_TEAM_PRIVATE_MEMBERS)` で行う。** (a) 一致 1 件 → `InWorkspace(file.getFullPath())` で **`IPath` 系**(**ワークスペース絶対パスが渡ること**)/ (b) 一致 0 件 → `External(EFS.getStore(uri))` で **file store 系** / (c) 複数一致 → **エディタが開いている `IFile`** が選ばれ、無ければ先頭(R18)/ (d) **hidden / team-private なファイルでも `InWorkspace` に分類されること**(1 引数版では 0 件になり誤分類する。R20)/ (e) **解決はディスパッチスレッドでは行われず、UI ランナブル内で行われること**(§11・E22) | 自動テスト |
+| **AC26** | **分類は `findFilesForLocationURI(uri, INCLUDE_HIDDEN or INCLUDE_TEAM_PRIVATE_MEMBERS)` で行う。** (a) 一致 1 件 → `ByPath(file.getFullPath(), IFILE)` で **`IPath` 系**(**ワークスペース絶対パスが渡ること**)/ (b) 一致 0 件 → `ByFileStore(EFS.getStore(uri))` で **file store 系** / (c) 複数一致 → **エディタが開いている `IFile`** が選ばれ、無ければ先頭(R18)/ (d) **hidden / team-private なファイルでも `ByPath(..., IFILE)` に分類されること**(1 引数版では 0 件になり誤分類する。R20)/ (e) **解決はディスパッチスレッドでは行われず、UI ランナブル内で行われること**(§11・E22) | 自動テスト |
 | **AC27** | **`commit` が「書き込み後に」例外を投げたとき、`applied:true` が返る。** (a) ディスク内容が `document.get()` と一致 → `applied:true`・通知なし(E20)/ (b) **ディスク先頭に UTF-8 BOM があっても一致と判定されること**(BOM 正規化)/ (c) 判定自体が例外 → `applied:true` + 通知 1 回(E21)/ (d) **書き込み前と判明する失敗**(out-of-sync code 274 / charset / 対象が存在しない)→ **`applied:true` へ倒さず** §12.1 の分岐(E21b)/ (e) 内容不一致 → §12.1 の分岐 | 自動テスト |
 | **AC28** | **エディタが開いていれば分類を行わず、そのエディタのドキュメントに適用する。** (a) `findOpenEditorFor` が入力とプロバイダを返す場合、`provider.getDocument(input)` に適用され `provider.saveDocument(..., overwrite = false)` で保存され、**`findFilesForLocationURI` も `BufferAccess` も呼ばれない**こと / (b) `getDocument` が null または例外なら **`applied:false`**(E23。誤った内容を書かない)/ (c) エディタが無い場合だけ分類が走ること(§8・§11・R21) | 自動テスト |
-| **AC29** | **エディタの同定と未復元参照の扱い。** (a) 入力が `IFile` アダプタ / `ILocationProviderExtension.getURI` / `ILocationProvider.getPath` の**いずれで対象を指していても** `OpenEditor` として同定されること(`createFileInfo` と同じ優先順位。§8 の ①②③)/ (b) **未復元の `IEditorReference` は `OpenEditor` にせず Buffered へ進む**こと、および `getEditor(true)` が**呼ばれない**こと(§24 U9) | 自動テスト |\n| **AC30** | **Buffered 経路は既存バッファを join する。** (a) `IFILE` / `NORMALIZE` / file store の**いずれかに既存バッファがある**とき、その系列で `connect` され**新しいバッファを作らない**こと / (b) どれも無いときだけ分類して新規に作ること(§11・R22) | 自動テスト |
+| **AC29** | **エディタの同定と未復元参照の扱い。** (a) 入力が `IFile` アダプタ / `ILocationProviderExtension.getURI` / `ILocationProvider.getPath` の**いずれで対象を指していても** `OpenEditor` として同定されること(`createFileInfo` と同じ優先順位。§8 の ①②③)/ (b) **未復元の `IEditorReference` は `OpenEditor` にせず Buffered へ進む**こと、および `getEditor(true)` が**呼ばれない**こと(§24 U9) | 自動テスト |
+| **AC30** | **Buffered 経路は既存バッファを join する。** (a) **`IFILE` / `NORMALIZE` / `LOCATION` / file store のいずれか**に既存バッファがあるとき、**その同じキーで `connect` され、新しいバッファを作らないこと**(とくに `NORMALIZE` / `LOCATION` で見つけたものへ `IFILE` で接続しないこと)/ (b) どれも無いときだけ分類して新規に作ること(§11・R22) | 自動テスト |
 
 ## 付録: 根拠一覧
 
@@ -1167,6 +1179,7 @@ LS 側は info ログを出すだけ。§5.5)。
 | **`disconnect` の破棄は管理マップのロック外で行われる** | 同 jar: `TextFileBufferManager.disconnect(IPath, LocationKind, IProgressMonitor)` の `monitorexit`(offset 71)より後、offset 79 で `fireBufferDisposed`、offset 87 で `dispose()`。**「非 null であること」は「同じインスタンスが生き続けること」を意味しない** → 退出時の判定は identity 比較で行う(§12.1) |
 | **エディタは生存中ずっとファイルバッファを connect し続ける** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider` が `ITextFileBufferManager.connect(IPath, LocationKind, IProgressMonitor)` / `connectFileStore` を呼び、`disconnect` / `disconnectFileStore` で解放する。**したがってテキストエディタが開いている限り、こちらの `disconnect` ではバッファは破棄されない** |
 | **`ITextFileBufferManager` は互いに参照しない 2 つの管理マップを持つ** | 同 jar: フィールド `fFilesBuffers: Map<IPath, AbstractFileBuffer>` と `fFileStoreFileBuffers: Map<IFileStore, FileStoreFileBuffer>`。`connect(IPath, LocationKind, …)` は前者(offset 21 / 103 / 147 が `fFilesBuffers`)、`connectFileStore(IFileStore, …)` は後者(offset 16 / 91 / 132 が `fFileStoreFileBuffers`)だけを使い、**相互参照は無い** |
+| **バッファのキー空間は閉じている** | `javap -p` on `org.eclipse.core.filebuffers-3.8.500.jar`: `LocationKind` の `public static final` は **`LOCATION` / `IFILE` / `NORMALIZE` の 3 つだけ**。管理マップは 2 つだけなので、**バッファが登録されうるキーは「`IPath` × 3 種」+「`IFileStore`」で全列挙できる**(§11 の probe)。また `TextFileBufferManager.connect(IPath, IProgressMonitor)`(2 引数版)は `LocationKind.NORMALIZE` を積んで 3 引数版を呼ぶ = **旧 API 経由のバッファは `NORMALIZE` に載る** |
 | **エディタは外部ファイルを file store 系 API で接続する** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider.createFileInfo(Object)` が入力に応じて `ITextFileBufferManager.connect(IPath, LocationKind, …)`(offset 73 / 229)と `connectFileStore(IFileStore, …)`(offset 161)を使い分け、`disposeFileInfo` は `disconnectFileStore` を呼ぶ。**したがって外部ファイルに `IPath` 系で接続すると別バッファになる** |
 | **`getFileForLocation` はリンクリソースを見つけない** | `javap -c` on `org.eclipse.core.resources-3.23.100.jar`: `WorkspaceRoot.getFileForLocation(IPath)` → `FileSystemResourceManager.fileForLocation` → `resourceForLocation(IPath, boolean)`。本体が呼ぶのは `IWorkspaceRoot.getProjects` / `IProject.getLocation` / `IPath.isPrefixOf` / `Resource.isFiltered` だけで、**リンク解決(`findLinkedResourcesPaths`)を通らない**。リンクを含む解決は `findFilesForLocationURI` → `allResourcesFor(URI, …)` 側にある |
 | **`createFileInfo` の分類順序(接続系列はエディタ入力の型の関数)** | `javap -c` on `org.eclipse.ui.editors-3.20.200.jar`: `TextFileDocumentProvider.createFileInfo(Object)` は ① `IAdaptable.getAdapter(IFile.class)`(offset 33)が当たれば `LocationKind.IFILE`(60)+ `connect`(73) ② `ILocationProviderExtension.getURI`(122)→ **1 引数の** `findFilesForLocationURI`(139)→ 外れれば `EFS.getStore`(150)+ `connectFileStore`(161) ③ `ILocationProvider.getPath`(190)→ **`LocationKind.NORMALIZE`(216)+ `connect`(229)**、`FileBuffers.getWorkspaceFileAtLocation`(249)を見るのは**接続のあと**。**`NORMALIZE` は `FileBuffers.normalizeLocation` → `getWorkspaceFileAtLocation` → `getFileForLocation` 経由なのでリンクを見つけない。** したがって同じ物理ファイルでも入力型によって ①②③ のどれになるかが変わり、**URI からは再構成できない**(§8) |
@@ -1189,3 +1202,4 @@ LS 側は info ログを出すだけ。§5.5)。
 | 7 | 2026-09-06 | **Codex 6 巡目レビュー(PR #84、P1×4)の反映。** ① §9.1・§23・§26: **永続化判定で BOM を正規化する**(P1-P)。commit は `SequenceInputStream(ByteArrayInputStream(fBOM), 本文)` で **BOM を再付与**し `IDocument` は BOM を含まない(javap)ため、素直にデコードすると UTF-8 BOM 付きファイルで必ず不一致になり、**永続済みなのに `applied:false` → 二重適用で破損**する。比較前に先頭 `U+FEFF` を 1 つ剥がす / ② §9.1・§13・§25・§26: **「書き込み前と判明する失敗」を永続化済みへ倒さない**(P1-Q)。判定を 4 段(既知の書き込み前失敗 → 対象の存在 → 内容比較 → 判定不能)にし、**`true` へ倒すのは最後の 1 段だけ**にした。out-of-sync(code 274)・charset 構築失敗・対象消失は E21b として §12.1 の分岐へ流す / ③ §9.1・§11・§13・§26: **対象の解決を UI スレッドへ移した**(P1-R)。複数一致時の選択がエディタ照会を含むため、ディスパッチスレッドの事前検証では **URI の構文しか見ない**ことにし、候補列挙と選択は `RUNNING` 取得後の UI ランナブル内で行う(E22)/ ④ §11・§25・§26: **`findFilesForLocationURI` は 2 引数版を使う**(P1-S)。1 引数版は `IResource.NONE` で呼ばれ **hidden / team-private を除外する**(javap)一方、エディタの `IFile` アダプト経路は属性に関係なく `IFILE` 系へ接続するため、誤分類で別バッファになる。R20 を追加 |
 | 8 | 2026-09-06 | **Codex 7 巡目レビュー(P1×2 / P2×1)の反映と、それを機とした §8 の方式変更(ユーザー承認済み)。** ① **§8: 「エディタ優先」へ変更(方式 A → C)。** `createFileInfo` の実測で、**エディタの接続系列は入力型の関数であって URI の関数ではない**ことが確定した(① `IFile` → `IFILE` / ② URI → **1 引数** `findFilesForLocationURI` → file store / ③ パス → **`NORMALIZE`**)。5〜7 巡目の P1(リンクリソース / hidden 資源 / `NORMALIZE`)は**すべてこの同じ根の別の症状**で、URI からの再構成では潰し切れない。**推測が要るのはエディタが開いているときだけで、そのときは本人に聞ける** — エディタが開いていればそのドキュメントプロバイダから `IDocument` を取り、`saveDocument(..., overwrite=false)` で保存する。開いていなければ従来のバッファ経路(共有相手が居ないので分類の誤りは無害)。§9.1・§11・§12.1・§13 を全面改訂し、**R15 / R17 を消滅、R18 / R20 を無害化**、R21(独自エディタのプロバイダ)と E23 を追加(AC28)/ ② **§9.1: 永続化判定をバイト列比較へ**(P1-T)。第 7 版の「両側から `U+FEFF` を 1 つ剥がす」は、**UTF-8 BOM の直後に本文としての `U+FEFF` があるファイル**で不一致になり、永続済みなのに `applied:false` → 二重適用を招く。`{ encode(doc), bom + encode(doc) }` の 2 候補とのバイト比較に変更し、`"UTF-16"` → `"UTF-16LE"` の差し替えも commit に合わせた / ③ **§9.1・§13: 判定を 3 値へ**(P2-U)。第 7 版は `Boolean` だったため **`UNKNOWN` の通知が構造上出せず E21 / AC27(c) が満たせなかった**。`MATCHED` / `NOT_MATCHED` / `UNKNOWN` を返し、`UNKNOWN` のときだけ通知する |
 | 9 | 2026-09-06 | **Codex 8 巡目レビュー(P1×2 / P2×1)の反映。第 8 版の方式変更に対する初回レビュー。** ① §11・§26: **エディタの同定を `createFileInfo` と同じアダプタ優先順位にした**(P1-V)。第 8 版は `IFileEditorInput` / `IURIEditorInput` しか見ておらず、**`ILocationProvider` だけをアダプトする入力(§8 の ③)を必ず見落とす**。その場合エディタは `NORMALIZE` 系バッファを持っているのに Buffered へ進み、別ドキュメントを保存して #66 が再発する。① `IFile` → ② `ILocationProviderExtension.getURI` → ③ `ILocationProvider.getPath` の順で照合する(AC29)/ ② §8・§11・§25: **Buffered 経路に入る前に全系列を probe し、既存バッファがあれば join する**(P1-W)。第 8 版の「エディタが無い = 共有相手が無い」は**言い過ぎ**で、バックグラウンドが別系列で dirty バッファを保持していれば別バッファ同士になり、あとで相手の保存に上書きされる。**probe して join すれば編集は相手のバッファに入り、`connect` の参照カウントで破棄もされない。** 残る窓(probe 後の新設)は R22 として受容(AC30)/ ③ §24 U9・§11・§26: **未復元のエディタ参照は「開いていない」として Buffered へ進む**と確定(P2-X)。未復元ならエディタ本体が無く `createFileInfo` も実行されていない = **ファイルバッファを 1 つも保持していない**ので、Buffered 経路のバッファが唯一になり競合しない。`getEditor(true)` による強制復元はしない(AC29) |
+| 10 | 2026-09-06 | **Codex 9 巡目レビュー(P1×2)の反映。設計レビューはこの版で終了する(ユーザー承認済み)。** ① §11・§26: **`Buffered` を `ByPath(path, kind)` + `ByFileStore(store)` に一般化した**(P1-Y)。第 9 版は probe に `NORMALIZE` を足しながら、そこへ接続する variant を定義しておらず**そのままでは実装できなかった**(見つけたバッファに繋げず別キーで新規作成 = join が無意味)。`kind` を持たせて**同じキーで接続する**/ ② §11: **probe に `LOCATION` を追加**(P1-Z)。`NORMALIZE` は物理パスをワークスペース絶対パスへ正規化するが `LOCATION` のキーは物理パスのままなので、(a)(b) のどちらにも一致しない。① の一般化により追加コストなしで覆える / ③ **これにより probe は推測ではなく全列挙になった**: 管理マップは 2 つ、`LocationKind` は 3 値(javap)= キー空間そのもの。**「見落とした系列がある」種類の指摘は原理的に打ち止め**。残る未確定(U1 / U3 / U4 / U7 / U8)は**実装時に実機とテストで確定する**と既に決めてある事項であり、設計書としては発注可能な状態と判断して Close する |
