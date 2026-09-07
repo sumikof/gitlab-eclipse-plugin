@@ -26,6 +26,12 @@ class ExternalUrlPolicyTest : DescribeSpec({
     it("returns false for a javascript scheme, which matters for security") {
       isBrowsableExternalUrl("javascript:alert(1)") shouldBe false
     }
+    it("returns false for a host-bearing javascript scheme, isolating the scheme check") {
+      isBrowsableExternalUrl("javascript://gitlab.com/%0Aalert(1)") shouldBe false
+    }
+    it("returns false for a host-bearing file scheme, isolating the scheme check") {
+      isBrowsableExternalUrl("file://localhost/etc/passwd") shouldBe false
+    }
     it("returns false for a data scheme") {
       isBrowsableExternalUrl("data:text/html,<script>alert(1)</script>") shouldBe false
     }
@@ -58,6 +64,12 @@ class ExternalUrlPolicyTest : DescribeSpec({
     }
     it("returns true for a plain absolute http url") {
       isBrowsableExternalUrl("http://gitlab.com/x") shouldBe true
+    }
+    it("returns false when the authority carries userinfo disguising the real host") {
+      isBrowsableExternalUrl("https://gitlab.com@evil.example/x") shouldBe false
+    }
+    it("returns true for a normal https url with no userinfo") {
+      isBrowsableExternalUrl("https://gitlab.com/x") shouldBe true
     }
   }
 })
