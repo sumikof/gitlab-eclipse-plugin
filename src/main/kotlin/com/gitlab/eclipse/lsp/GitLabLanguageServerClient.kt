@@ -11,9 +11,12 @@ import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
+import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
+import com.gitlab.eclipse.lsp.messages.OpenFileParams
 import com.gitlab.eclipse.lsp.messages.StreamingCompletionResponse
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
@@ -137,6 +140,37 @@ class GitLabLanguageServerClient(
     }
   }
 
+  /**
+   * The server asks for a file to be opened — `$/gitlab/openFile`.
+   *
+   * [WorkspaceFileOpener.open] is called with no display hop of any kind around it: the opener
+   * reaches the UI thread for itself with `asyncExec`, and a `syncExec` here would deadlock the
+   * dispatch thread against a UI thread that is waiting on a server response. What it does get is
+   * `runAsync`, like the other notification handlers in this file — resolution probes the
+   * filesystem, and a stalled mount must not stop lsp4j reading the next message. Nothing is
+   * logged here: the opener owns what may be said about a path, which is nothing.
+   */
+  @JsonNotification("$/gitlab/openFile")
+  fun gitlabOpenFile(
+    params: OpenFileParams
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    service<WorkspaceFileOpener>().open(params)
+  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
+  /**
+   * The server asks for text to be copied — `$/gitlab/copyText`.
+   *
+   * [CopyTextHandler.handle] returns as soon as the write is queued on the UI thread, and the
+   * future it queues is deliberately not awaited: a runnable dropped at workbench teardown would
+   * then hang this handler instead of simply never copying. Fire and return.
+   */
+  @JsonNotification("$/gitlab/copyText")
+  fun gitlabCopyText(
+    params: CopyTextParams
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    service<CopyTextHandler>().handle(params)
+  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
   @JsonNotification("$/gitlab/token/check")
   fun gitlabTokenCheck(params: Any?) {
     return
@@ -203,6 +237,44 @@ class GitLabLanguageServerClient(
       session = session
     )
   }
+
+  /**
+   * The server asks the client to apply an edit — `workspace/applyEdit`.
+   *
+   * The applier's own future is returned **unchanged**, and that is the whole contract of this
+   * handler. Exactly one party may answer the request: the UI runnable that applied (or did not
+   * apply) the edit, the applier's internal start timeout, or a setup failure. An `orTimeout` or a
+   * `thenApply` bolted on here would complete the future from outside that state machine, so the
+   * server could be told `applied:false` — and then write the file itself — while a queued UI
+   * runnable still goes on to apply the same edits. The file gets them twice.
+   *
+   * Deliberately **not** annotated, unlike the handlers this client declares itself:
+   * [LanguageClient.applyEdit] already carries `@JsonRequest("workspace/applyEdit")`, and lsp4j
+   * collects annotated methods from the class *and* every interface it implements, rejecting any
+   * method name it meets twice (`GenericEndpoint` throws `IllegalStateException: Multiple methods
+   * for name workspace/applyEdit`). Repeating the annotation would take every handler in this
+   * class down with it, because the endpoint is built for the whole client at once.
+   */
+  override fun applyEdit(
+    params: ApplyWorkspaceEditParams
+  ): CompletableFuture<ApplyWorkspaceEditResponse> = service<WorkspaceEditApplier>().applyEdit(params)
+
+  /**
+   * The server asks for a URI to be shown — `window/showDocument`. It is opened in the external
+   * browser; see [ShowDocumentLauncher] for why a file URI never gets that far.
+   *
+   * A timeout here is safe, unlike on [applyEdit]: nothing is edited, so the worst a late answer
+   * costs is one line in the server's log. The server's schema for this response is `z.void()`
+   * while lsp4j always serialises `"result": null`, so it logs an info line whatever we send; the
+   * URI is open by then and the server contains the mismatch. Not a defect to work around here.
+   *
+   * Not annotated, for the reason given on [applyEdit].
+   */
+  override fun showDocument(
+    params: ShowDocumentParams
+  ): CompletableFuture<ShowDocumentResult> = service<ShowDocumentLauncher>().show(params.uri)
+    .thenApply { launched -> ShowDocumentResult(launched) }
+    .orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   override fun telemetryEvent(event: Any) {
     logger.info("telemetryEvent: $event")

@@ -8,9 +8,12 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
+import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
+import com.gitlab.eclipse.lsp.messages.OpenFileParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
@@ -22,23 +25,31 @@ import com.google.gson.JsonObject
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.*
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
+import org.eclipse.lsp4j.ApplyWorkspaceEditParams
+import org.eclipse.lsp4j.ApplyWorkspaceEditResponse
 import org.eclipse.lsp4j.Diagnostic
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.Range
 import org.eclipse.lsp4j.Registration
 import org.eclipse.lsp4j.RegistrationParams
+import org.eclipse.lsp4j.ShowDocumentParams
+import org.eclipse.lsp4j.ShowDocumentResult
 import org.eclipse.lsp4j.Unregistration
 import org.eclipse.lsp4j.UnregistrationParams
+import org.eclipse.lsp4j.WorkspaceEdit
 import org.eclipse.lsp4j.jsonrpc.services.GenericEndpoint
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
 import org.osgi.framework.Bundle
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class GitLabLanguageServerClientTest : DescribeSpec({
   val didChangeWatchedFilesCapability = mockk<DidChangeWatchedFileCapability>(relaxUnitFun = true)
@@ -55,6 +66,11 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
   val markerService = mockk<DiagnosticMarkerService>(relaxUnitFun = true)
 
+  val editApplier = mockk<WorkspaceEditApplier>()
+  val fileOpener = mockk<WorkspaceFileOpener>(relaxUnitFun = true)
+  val copyTextHandler = mockk<CopyTextHandler>(relaxUnitFun = true)
+  val showDocumentLauncher = mockk<ShowDocumentLauncher>()
+
   val client = GitLabLanguageServerClient(pluginMessageService)
 
   extensions(LoggingKotestExtension)
@@ -70,6 +86,10 @@ class GitLabLanguageServerClientTest : DescribeSpec({
           single<GitDiffService> { gitDiffService }
           single<EditorSelectionContextProvider> { editorSelectionContextProvider }
           single<DiagnosticMarkerService> { markerService }
+          single<WorkspaceEditApplier> { editApplier }
+          single<WorkspaceFileOpener> { fileOpener }
+          single<CopyTextHandler> { copyTextHandler }
+          single<ShowDocumentLauncher> { showDocumentLauncher }
         }
       )
     }
@@ -488,4 +508,161 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       verify(exactly = 1) { service.dispatch(any(), any(), client.session) }
     }
   }
+  describe("workspace/applyEdit") {
+    val params = ApplyWorkspaceEditParams(WorkspaceEdit())
+
+    // The one thing this handler must do. Exactly one party may answer an applyEdit request — the
+    // UI runnable, the applier's internal start timeout, or a setup failure — so nothing may
+    // complete, wrap or observe the applier's future from out here. A wrapper answering `false`
+    // while a queued UI runnable still applies the edit makes the server write the file too, and
+    // the same edits land twice.
+    //
+    // Identity alone is not enough to prove that: `CompletableFuture.orTimeout` returns `this`, so
+    // a timeout added here would sail past a same-instance assertion. It does register a
+    // `whenComplete` canceller on the future, which `getNumberOfDependents` sees — hence the second
+    // assertion, which also catches `thenApply`, `handle` and any other dependent.
+    it("returns the applier's own future, with nothing layered on it") {
+      val answer = CompletableFuture<ApplyWorkspaceEditResponse>()
+      every { editApplier.applyEdit(params) } returns answer
+
+      val returned = client.applyEdit(params)
+
+      returned shouldBeSameInstanceAs answer
+      answer.numberOfDependents shouldBe 0
+    }
+
+    it("returns the applier's future unchanged for a request the applier declines") {
+      val answer = CompletableFuture<ApplyWorkspaceEditResponse>()
+      every { editApplier.applyEdit(params) } returns answer
+
+      val returned = client.applyEdit(params)
+      answer.complete(ApplyWorkspaceEditResponse(false))
+
+      returned shouldBeSameInstanceAs answer
+      returned.get().isApplied shouldBe false
+    }
+
+    // lsp4j has to be able to route the server's request here under its real method name. This is
+    // also the only headless check that the override is not annotated a second time: `LanguageClient`
+    // already carries `@JsonRequest("workspace/applyEdit")`, and a repeat makes `GenericEndpoint`
+    // throw `IllegalStateException: Multiple methods for name workspace/applyEdit` as it is built.
+    it("dispatches workspace/applyEdit to the applier through lsp4j") {
+      every { editApplier.applyEdit(any()) } returns
+        CompletableFuture.completedFuture(ApplyWorkspaceEditResponse(true))
+
+      GenericEndpoint(client).request("workspace/applyEdit", params).get() shouldBe
+        ApplyWorkspaceEditResponse(true)
+
+      verify { editApplier.applyEdit(params) }
+    }
+  }
+
+  describe("window/showDocument") {
+    val uri = "https://gitlab.com/g/p/-/merge_requests/1"
+
+    it("answers success for a URI the launcher opened") {
+      every { showDocumentLauncher.show(uri) } returns CompletableFuture.completedFuture(true)
+
+      client.showDocument(ShowDocumentParams(uri)).get().isSuccess shouldBe true
+    }
+
+    it("answers failure for a URI the launcher did not open") {
+      every { showDocumentLauncher.show(uri) } returns CompletableFuture.completedFuture(false)
+
+      client.showDocument(ShowDocumentParams(uri)).get().isSuccess shouldBe false
+    }
+
+    it("dispatches window/showDocument to the launcher through lsp4j") {
+      every { showDocumentLauncher.show(any()) } returns CompletableFuture.completedFuture(true)
+
+      GenericEndpoint(client).request("window/showDocument", ShowDocumentParams(uri)).get() shouldBe
+        ShowDocumentResult(true)
+
+      verify { showDocumentLauncher.show(uri) }
+    }
+  }
+
+  describe("$/gitlab/openFile") {
+    it("passes the params the server sent to the opener") {
+      val params = OpenFileParams("/p/a.kt")
+
+      client.gitlabOpenFile(params).join()
+
+      verify { fileOpener.open(params) }
+    }
+
+    // Resolution probes the filesystem, which can block on a stalled network mount. That must not
+    // stop lsp4j's dispatch thread from reading the next message, so the handler returns before the
+    // opener has finished.
+    it("returns before the opener has finished, keeping the dispatch thread free") {
+      val started = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      every { fileOpener.open(any()) } answers {
+        started.countDown()
+        release.await(WAIT_SECONDS, TimeUnit.SECONDS)
+      }
+
+      val returned = client.gitlabOpenFile(OpenFileParams("/p/a.kt"))
+      try {
+        started.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        returned.isDone shouldBe false
+      } finally {
+        release.countDown()
+      }
+      returned.join()
+    }
+
+    it("dispatches \$/gitlab/openFile to the opener through lsp4j") {
+      val arrived = CountDownLatch(1)
+      every { fileOpener.open(any()) } answers { arrived.countDown() }
+
+      GenericEndpoint(client).notify("\$/gitlab/openFile", OpenFileParams("/p/a.kt"))
+
+      arrived.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+      verify { fileOpener.open(OpenFileParams("/p/a.kt")) }
+    }
+  }
+
+  describe("$/gitlab/copyText") {
+    it("passes the params the server sent to the handler") {
+      val params = CopyTextParams("some snippet")
+
+      client.gitlabCopyText(params).join()
+
+      verify { copyTextHandler.handle(params) }
+    }
+
+    // The handler queues the write on the UI thread and returns; nothing here may wait on it. A
+    // waiter would turn a runnable dropped at workbench teardown into a hung dispatch thread.
+    it("returns before the copy has finished, waiting on nothing") {
+      val started = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      every { copyTextHandler.handle(any()) } answers {
+        started.countDown()
+        release.await(WAIT_SECONDS, TimeUnit.SECONDS)
+      }
+
+      val returned = client.gitlabCopyText(CopyTextParams("some snippet"))
+      try {
+        started.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        returned.isDone shouldBe false
+      } finally {
+        release.countDown()
+      }
+      returned.join()
+    }
+
+    it("dispatches \$/gitlab/copyText to the handler through lsp4j") {
+      val arrived = CountDownLatch(1)
+      every { copyTextHandler.handle(any()) } answers { arrived.countDown() }
+
+      GenericEndpoint(client).notify("\$/gitlab/copyText", CopyTextParams("some snippet"))
+
+      arrived.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+      verify { copyTextHandler.handle(CopyTextParams("some snippet")) }
+    }
+  }
 })
+
+/** How long a test waits for work that has been handed to another thread before calling it stuck. */
+private const val WAIT_SECONDS = 5L

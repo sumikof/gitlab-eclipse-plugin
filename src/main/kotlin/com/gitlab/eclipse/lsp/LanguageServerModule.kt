@@ -8,6 +8,7 @@ import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
@@ -49,6 +50,14 @@ val languageServerModule = module {
   single<LanguageServerWebviewService> { LanguageServerWebviewService(get(), get()) }
 
   single<DiagnosticMarkerService> { DiagnosticMarkerService() }
+
+  // The four server -> client handlers of GitLabLanguageServerClient. Every constructor argument of
+  // each one is a lambda with a production default, so building them touches neither SWT nor the
+  // workbench; Koin builds them on first use, which is the first message of that kind to arrive.
+  single<WorkspaceEditApplier> { WorkspaceEditApplier() }
+  single<WorkspaceFileOpener> { WorkspaceFileOpener() }
+  single<CopyTextHandler> { CopyTextHandler() }
+  single<ShowDocumentLauncher> { ShowDocumentLauncher() }
 
   single<SecurityScanLauncher> {
     SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))

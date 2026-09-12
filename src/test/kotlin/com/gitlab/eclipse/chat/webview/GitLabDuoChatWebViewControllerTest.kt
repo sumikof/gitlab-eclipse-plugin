@@ -4,6 +4,8 @@ import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.navigation.ClipboardWriter
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
@@ -38,6 +40,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
 
     mockkStatic(TextTransfer::getInstance)
     mockkConstructor(Clipboard::class)
+    mockkObject(NotificationUtils)
   }
 
   beforeEach {
@@ -47,8 +50,10 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
       firstArg<SwtCallable<FileContext, Exception>>().call()
     }
 
+    // The copy path hops with asyncExec (never syncExec: it would deadlock against the lsp4j
+    // dispatch thread); run the turn inline so the test can see the write.
     every {
-      currentDisplay.syncExec(any())
+      currentDisplay.asyncExec(any())
     } answers {
       firstArg<Runnable>().run()
     }
@@ -59,6 +64,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
 
     every { anyConstructed<Clipboard>().setContents(any(), any()) } returns Unit
     every { anyConstructed<Clipboard>().dispose() } returns Unit
+    every { NotificationUtils.show(any(), any(), any()) } just Runs
   }
 
   afterEach { clearAllMocks() }
@@ -134,6 +140,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
           any()
         )
       }
+      verify { NotificationUtils.show(ClipboardWriter.COPIED_TO_CLIPBOARD, any(), any()) }
     }
   }
 
@@ -150,6 +157,7 @@ class GitLabDuoChatWebViewControllerTest : DescribeSpec({
           any()
         )
       }
+      verify { NotificationUtils.show(ClipboardWriter.COPIED_TO_CLIPBOARD, any(), any()) }
     }
   }
 })

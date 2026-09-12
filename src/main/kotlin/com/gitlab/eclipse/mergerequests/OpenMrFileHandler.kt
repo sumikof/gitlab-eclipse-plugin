@@ -4,6 +4,7 @@ import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.utils.openInActiveEditor
 import com.gitlab.eclipse.views.sidebar.ChangedFileNode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -14,9 +15,7 @@ import org.eclipse.core.filesystem.EFS
 import org.eclipse.core.resources.ResourcesPlugin
 import org.eclipse.core.runtime.Path
 import org.eclipse.jface.viewers.IStructuredSelection
-import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.handlers.HandlerUtil
-import org.eclipse.ui.ide.IDE
 import java.io.File
 
 /**
@@ -105,20 +104,21 @@ class OpenMrFileHandler(
   }
 
   /** UI thread. Prefers the workspace [org.eclipse.core.resources.IFile] mapping (project-aware
-   *  editor); a work-tree file outside any Eclipse project falls back to the EFS file store. */
+   *  editor); a work-tree file outside any Eclipse project falls back to the EFS file store.
+   *
+   *  The opening itself is [openInActiveEditor], shared with `$/gitlab/openFile`. The **lookup**
+   *  stays here and stays `getFileForLocation`: it is what this command has always used, and the
+   *  lambdas keep the order unchanged (page first, then the lookup, then the store). */
   private fun openEditorFor(file: File) {
     try {
-      val page = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
-      if (page == null) {
-        NotificationUtils.show(OPEN_FAILED_MESSAGE)
-        return
-      }
-      val iFile = ResourcesPlugin.getWorkspace().root.getFileForLocation(Path(file.absolutePath))
-      if (iFile != null && iFile.exists()) {
-        IDE.openEditor(page, iFile)
-      } else {
-        IDE.openEditorOnFileStore(page, EFS.getLocalFileSystem().getStore(file.toURI()))
-      }
+      val opened = openInActiveEditor(
+        workspaceFile = {
+          ResourcesPlugin.getWorkspace().root.getFileForLocation(Path(file.absolutePath))
+            ?.takeIf { it.exists() }
+        },
+        fileStore = { EFS.getLocalFileSystem().getStore(file.toURI()) },
+      )
+      if (!opened) NotificationUtils.show(OPEN_FAILED_MESSAGE)
     } catch (e: Exception) {
       logger.error("Failed to open editor for ${file.path}.", e)
       NotificationUtils.show(OPEN_FAILED_MESSAGE)
