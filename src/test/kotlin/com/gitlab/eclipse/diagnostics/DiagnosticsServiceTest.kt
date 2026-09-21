@@ -23,9 +23,8 @@ class DiagnosticsServiceTest : DescribeSpec({
   val token = "glpat-REALSECRET123"
   val opaqueToken = "zz9PlurAlphaTau"
 
-  fun collector(tokenConfigured: Boolean = true) = DiagnosticsSnapshotCollector(
+  val collector = DiagnosticsSnapshotCollector(
     preferences = { error("no preference store in a headless test") },
-    tokenConfigured = { tokenConfigured },
     languageServerRunning = { true },
     languageServerVersion = { "9.3.0" },
     featureStates = {
@@ -46,12 +45,13 @@ class DiagnosticsServiceTest : DescribeSpec({
     secrets: () -> Collection<String> = { listOf(token) },
     tokenConfigured: Boolean = true,
   ) = DiagnosticsService(
-    collector = collector(tokenConfigured),
+    collector = collector,
     logBuffer = buffer,
     stateDirectory = { stateDir },
     knownSecrets = secrets,
-    // Headless: secure storage is unavailable, and the production publisher would only add noise.
-    publishStoredSecrets = {},
+    // Headless: secure storage is unavailable. Returning a value here is also what decides the
+    // report's "Token configured" line, which is the point of the single-read change.
+    publishStoredSecrets = { if (tokenConfigured) listOf(token) else emptyList() },
   )
 
   fun entriesOf(bytes: ByteArray): Map<String, String> {
@@ -171,9 +171,54 @@ class DiagnosticsServiceTest : DescribeSpec({
     }
   }
 
+  describe("secure storage は 1 コマンド 1 回だけ読む(レビュー Low-1)") {
+    it("レポート 1 回につき publish は 1 回") {
+      var reads = 0
+      DiagnosticsService(
+        collector = collector,
+        logBuffer = LogRingBuffer(),
+        stateDirectory = { stateDir },
+        knownSecrets = { emptyList() },
+        publishStoredSecrets = {
+          reads++
+          listOf(token)
+        },
+      ).report()
+      reads shouldBe 1
+    }
+
+    it("エクスポート 1 回につき publish は 1 回(3 エントリ分読まない)") {
+      var reads = 0
+      DiagnosticsService(
+        collector = collector,
+        logBuffer = LogRingBuffer(),
+        stateDirectory = { stateDir },
+        knownSecrets = { emptyList() },
+        publishStoredSecrets = {
+          reads++
+          listOf(token)
+        },
+      ).buildArchive()
+      reads shouldBe 1
+    }
+
+    it("その 1 回の結果が Token configured を決める") {
+      fun reportWith(stored: List<String>) = DiagnosticsService(
+        collector = collector,
+        logBuffer = LogRingBuffer(),
+        stateDirectory = { stateDir },
+        knownSecrets = { emptyList() },
+        publishStoredSecrets = { stored },
+      ).report()
+
+      reportWith(listOf(token)) shouldContain "- Token configured: yes"
+      reportWith(emptyList()) shouldContain "- Token configured: no"
+    }
+  }
+
   describe("materialize") {
     it("状態ディレクトリに書き、そのパスを返す") {
-      val path = service().materialize("out.txt", "content")
+      val path = materializeDiagnosticsFile("out.txt", "content", stateDir)
       path.parent shouldBe stateDir
       Files.readString(path) shouldBe "content"
     }

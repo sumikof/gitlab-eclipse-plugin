@@ -25,10 +25,6 @@ import java.nio.file.Path
  */
 class DiagnosticsSnapshotCollector(
   private val preferences: () -> ScopedPreferenceStore = { service() },
-  // NOT GitLabTokenProviderManager.getToken(): on the OAuth path that refreshes over the network
-  // and can flip AUTHENTICATION_TYPE on failure, from a command that runs on the UI thread. See
-  // StoredSecrets.
-  private val tokenConfigured: () -> Boolean = StoredSecrets::anyConfigured,
   private val languageServerRunning: () -> Boolean =
     { service<GitLabLanguageServerWrapper>().languageServer != null },
   private val languageServerVersion: () -> String? = LanguageServerVersionState::current,
@@ -38,7 +34,13 @@ class DiagnosticsSnapshotCollector(
   private val logDirectory: () -> Path? = { pluginStateDirectory() },
 ) {
 
-  fun collect(): DiagnosticsSnapshot {
+  /**
+   * @param tokenConfigured whether a credential is configured. Passed in rather than looked up:
+   *   the caller has just read secure storage to publish the redaction values, and reading it a
+   *   second time here would mean a second decryption (possibly a second master-password prompt)
+   *   and a second OAuth log line inside the export being produced.
+   */
+  fun collect(tokenConfigured: Boolean): DiagnosticsSnapshot {
     val store = runCatching(preferences).getOrNull()
     return DiagnosticsSnapshot(
       ideVersion = text(ideVersion),
@@ -48,7 +50,7 @@ class DiagnosticsSnapshotCollector(
       gitlabInstanceVersion = null,
       instanceUrl = store.string(PreferenceConstants.GITLAB_INSTANCE_URL),
       authenticationType = store.string(PreferenceConstants.AUTHENTICATION_TYPE),
-      tokenConfigured = runCatching(tokenConfigured).getOrDefault(false),
+      tokenConfigured = tokenConfigured,
       languageServerLogLevel = store.string(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL),
       debugLogging = store.flag(PreferenceConstants.DEBUG_LOGGING),
       telemetryEnabled = store.flag(PreferenceConstants.TELEMETRY_ENABLED),

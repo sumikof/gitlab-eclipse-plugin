@@ -25,18 +25,15 @@ class DiagnosticsService(
    * payload to publish one (the only other publisher). Called from the four public methods only,
    * each of which is a user-initiated command — never from the log-capture path.
    */
-  private val publishStoredSecrets: () -> Unit = StoredSecrets::publish,
+  private val publishStoredSecrets: () -> List<String> = StoredSecrets::publish,
 ) {
 
   /** The diagnostics report as Markdown, sanitized. */
-  fun report(): String {
-    runCatching(publishStoredSecrets)
-    return renderReport()
-  }
+  fun report(): String = renderReport(publishSecrets())
 
   /** This plugin's retained log, sanitized; a stand-in message when nothing has been logged. */
   fun extensionLogs(): String {
-    runCatching(publishStoredSecrets)
+    publishSecrets()
     return renderExtensionLogs()
   }
 
@@ -48,11 +45,18 @@ class DiagnosticsService(
    * (design §14).
    */
   fun languageServerLogs(): String {
-    runCatching(publishStoredSecrets)
+    publishSecrets()
     return renderLanguageServerLogs()
   }
 
-  private fun renderReport(): String = clean(DiagnosticsReport.render(collector.collect()))
+  private fun renderReport(stored: List<String>): String =
+    clean(DiagnosticsReport.render(collector.collect(tokenConfigured = stored.isNotEmpty())))
+
+  /**
+   * Reads secure storage **once** per command and publishes what it found for redaction, returning
+   * it so the report can answer "is a credential configured" from the same read (design §10.1).
+   */
+  private fun publishSecrets(): List<String> = runCatching(publishStoredSecrets).getOrDefault(emptyList())
 
   private fun renderExtensionLogs(): String = clean(logBuffer.getAll()).ifBlank { NO_EXTENSION_LOGS }
 
@@ -71,11 +75,12 @@ class DiagnosticsService(
 
   /** The three entries of the export, in the reference extension's order and under its names. */
   fun archiveEntries(): List<DiagnosticsEntry> {
-    // Published once for the whole export rather than once per entry: the OAuth read logs, and
-    // three reads would put three lines into the very buffer being exported.
-    runCatching(publishStoredSecrets)
+    // One storage read for the whole export. The OAuth read logs a line, and that line lands in
+    // the very buffer being exported, so reading per entry would stamp the archive with its own
+    // production.
+    val stored = publishSecrets()
     return listOf(
-      DiagnosticsEntry(REPORT_ENTRY, renderReport()),
+      DiagnosticsEntry(REPORT_ENTRY, renderReport(stored)),
       DiagnosticsEntry(EXTENSION_LOG_ENTRY, renderExtensionLogs()),
       DiagnosticsEntry(LANGUAGE_SERVER_LOG_ENTRY, renderLanguageServerLogs()),
     )
@@ -83,19 +88,6 @@ class DiagnosticsService(
 
   /** The export archive as bytes. */
   fun buildArchive(): ByteArray = DiagnosticsArchive.build(archiveEntries())
-
-  /**
-   * Writes [text] into the plugin's state directory under [fileName] and returns the path, so a
-   * command can open it in an editor.
-   *
-   * The state directory is where `language_server.log` already lives, which keeps everything this
-   * feature produces in one place the user can be pointed at.
-   */
-  fun materialize(fileName: String, text: String): Path {
-    val directory = requireNotNull(stateDirectory()) { "The plugin state directory is unavailable." }
-    Files.createDirectories(directory)
-    return Files.writeString(directory.resolve(fileName), text)
-  }
 
   private fun clean(text: String): String =
     sanitizer.sanitize(text, runCatching(knownSecrets).getOrDefault(emptyList()))
@@ -125,3 +117,23 @@ class DiagnosticsService(
  * behind a diagnostics command either.
  */
 internal fun configuredSecrets(): Collection<String> = DiagnosticsSecrets.current()
+
+/**
+ * Writes [text] into the plugin's state directory under [fileName] and returns the path, so a
+ * command can open it in an editor.
+ *
+ * The state directory is where `language_server.log` already lives, which keeps everything this
+ * feature produces in one place the user can be pointed at.
+ *
+ * A file utility rather than a [DiagnosticsService] method: it takes already-rendered text and has
+ * no part in producing or sanitizing it.
+ */
+internal fun materializeDiagnosticsFile(
+  fileName: String,
+  text: String,
+  directory: Path? = DiagnosticsSnapshotCollector.pluginStateDirectory(),
+): Path {
+  val target = requireNotNull(directory) { "The plugin state directory is unavailable." }
+  Files.createDirectories(target)
+  return Files.writeString(target.resolve(fileName), text)
+}

@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.diagnostics.handlers
 
 import com.gitlab.eclipse.diagnostics.DiagnosticsService
+import com.gitlab.eclipse.diagnostics.materializeDiagnosticsFile
 import com.gitlab.eclipse.diagnostics.openDiagnosticsFile
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
@@ -26,7 +27,7 @@ class ShowOutputHandler : AbstractHandler() {
 
   override fun execute(event: ExecutionEvent): Any? {
     try {
-      val path = diagnostics.materialize(
+      val path = materializeDiagnosticsFile(
         DiagnosticsService.EXTENSION_LOG_FILE,
         diagnostics.extensionLogs(),
       )

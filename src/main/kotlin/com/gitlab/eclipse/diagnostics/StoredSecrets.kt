@@ -40,10 +40,13 @@ internal object StoredSecrets {
    * Publishes what is in storage into [DiagnosticsSecrets], so the literal redaction rule has
    * something to match even when the language server never started and therefore never built a
    * configuration payload.
+   *
+   * Returns what it read, so a caller that also needs to know **whether** a credential is
+   * configured gets the answer from this one read. Secure storage is not free — each value is
+   * stored encrypted, so a second read can mean a second master-password prompt — and the OAuth
+   * read logs a line that would otherwise appear twice in the very export being produced.
    */
-  fun publish() {
-    DiagnosticsSecrets.publishAll(current())
-  }
+  fun publish(): List<String> = current().also(DiagnosticsSecrets::publishAll)
 
   private fun pat(): String? = runCatching { service<PatTokenProvider>().getToken() }.getOrNull()
 

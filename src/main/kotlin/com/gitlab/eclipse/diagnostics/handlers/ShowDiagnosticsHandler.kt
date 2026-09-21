@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.diagnostics.handlers
 
 import com.gitlab.eclipse.diagnostics.DiagnosticsService
+import com.gitlab.eclipse.diagnostics.materializeDiagnosticsFile
 import com.gitlab.eclipse.diagnostics.openDiagnosticsFile
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
@@ -25,7 +26,7 @@ class ShowDiagnosticsHandler : AbstractHandler() {
 
   override fun execute(event: ExecutionEvent): Any? {
     try {
-      val path = diagnostics.materialize(DiagnosticsService.REPORT_FILE, diagnostics.report())
+      val path = materializeDiagnosticsFile(DiagnosticsService.REPORT_FILE, diagnostics.report())
       openDiagnosticsFile(path)
     } catch (e: Exception) {
       logger.warn("Could not show diagnostics: ${e::class.simpleName}")
