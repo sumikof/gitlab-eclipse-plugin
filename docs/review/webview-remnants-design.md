@@ -313,3 +313,46 @@ data class FileVulnerabilities(
 | 外部データを webview が HTML 展開する | XSS | **境界を §14 に明記**。サニタイズは LS 配信バンドルの責務で、参照実装と同じ |
 | `plugin.xml` の並行衝突 | マージ時の手戻り | #20 §4 の型で解決 |
 | `directUris` シームが既存解決を乱す | 既存 webview が壊れる | 既定を「無し」にし、既存経路のテストを keep-behaviour で固定 |
+
+---
+
+## 22. レビュー反映履歴
+
+### 第 2 版(2026-09-21)— Codex レビュー round 1 反映
+
+PR #88 の Codex レビューで **P1×7 + P2×1**。**8 件すべて妥当と判断し、全件反映した。**
+うち 3 件は**実ソースで裏取りした結果、指摘のほうが正しいことを確認**している。
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| P1-a | 所見を**認証・設定世代**でも無効化せよ。接続世代だけでは、同じ接続に URL / トークン / スキャン無効化を送っても世代が変わらず、**前のアカウントで取得した所見が見え続ける** | **妥当。認可境界の問題。** §11 に **scan context fingerprint**(instance URL + 認証種別 + スキャン有効状態のハッシュ)を追加し、**fingerprint が変わったら store を消す**。飛行中の応答も、着信時に fingerprint が一致しなければ捨てる。受け入れ条件 A13 を追加 |
+| P1-b | Knowledge Graph の URL を**送信元セッションに束縛**せよ。LS 再起動中に旧接続の遅延 `ready` / `getUrl` が新接続の値を上書きすると、**停止済みの `gkg` を指す URL に現行セッションが付いて `Resolved` になり、既存の session 検査を素通りする** | **妥当。** この種の「遅延した旧接続の応答」は本プロジェクトが過去に踏んだ型(#20 の superseded process ガード)。`KnowledgeGraphState` を **`(url, session)` の組**にし、`record` は送信元 session を受け取って**現行でなければ拒否**、接続停止で `clear`。再起動競合テストを A14 に追加 |
+| P1-c | **`directUris` の本番配線が設計に無い。** `WebviewUriResolver` は 2 箇所で直接生成されており、シームは既定値のまま死ぬ | **妥当。実ソースで確認** — `WebviewEditorPart.kt:41` と `AgenticTabsView.kt:27` がいずれも `WebviewUriResolver(languageServerWrapper)` と生成している。**このまま実装すればコンパイルは通るが Knowledge Graph は常に `NotAdvertised`。** §16 に **両生成箇所へ `KnowledgeGraphState::directWebviewFor` を渡す**ことを明記し、「既存 webview が metadata 経路のままであること」を keep-behaviour テストで固定する(A15) |
+| P1-d | **送信失敗時に古い所見を表示し続けない。** 共有タブが所見 A を表示中に B の `updateDetails` が届かなければ、ユーザーには B に見える | **妥当。私の「LS が再生するので再送不要」は、遅れて接続した webview にしか効かない。** ただし**プロトコルに ack が無く**、lsp4j は `notify` の失敗を握り潰す(#20 の既知事項)ため、**クライアントから検知する手段が無い**。§12 に**限界として明記**し、緩和として「ペイロードに `filePath` と行番号が必ず含まれるので、**右クリックした箇所と表示が食い違えばユーザーが気づける**」ことを記す。**検知できない以上、検知できるふりをする機構は作らない** |
+| P1-e | `openUrl` に**制限付き・非記録**のランチャーを使え。`BrowserLauncher` は scheme/host を制限せず、失敗時に URL 全文を記録する | **妥当。しかも既に正解が存在する** — PR #85 で入れた **`ShowDocumentLauncher`** が `isBrowsableExternalUrl`(絶対 http/https・host あり・userinfo なし)で拒否し、**URI もメッセージも一切ログに出さない**。§8.2 の `BrowserLauncher` を **`ShowDocumentLauncher` に差し替える**。`file:` / `javascript:` / userinfo 付きの拒否と、ログ陰性を A16 に追加 |
+| P1-f | **markdown サニタイズを検証済みの契約にせよ。** 「LS バンドルの責務」と宣言するだけでは XSS の緩和にならない | **妥当。実バンドルを読んだ結果、指摘が正しいことが確定した** — `build/gitlab-lsp/bin/webviews/security-vuln-details/assets/index-Bhmygly-.js` の描画関数は **`Rh(t) = Dn.parse(t.toString())`**、すなわち **`marked` をオプション無しで呼んでおり `sanitize` は既定の `false`**。その結果が Vue の **`domProps: { innerHTML: markdownContent }`** に入る。**バンドルはサニタイズしていない。** → §14 を全面改稿し、**クライアント側で投影・検証・HTML エスケープする**方式に変更(`VulnerabilityProjection`)。**参照実装からの意図的な乖離**であることを明記 |
+| P1-g | store の更新と上限 eviction を**原子的**にせよ。`ConcurrentHashMap` は複合操作を守らない | **設計記述が不正確だった(実装は既に正しい)。** `Collections.synchronizedMap` + `LinkedHashMap(accessOrder=true)` の `removeEldestEntry` を使っており、put と eviction は**同一ロック下の 1 操作**。§11 の「`ConcurrentHashMap`」という記述を実装に合わせて訂正。順序は timestamp ではなく **LinkedHashMap のアクセス順**で決まるので、`timestamp` が null でも破綻しない |
+| P2-a | `start_line` しか検証しないため、**そこだけ数値で他フィールドが異型の所見**が選ばれて生のまま渡る | **妥当。** P1-f の対応と同じ `VulnerabilityProjection` で解決した。**描画対象 5 フィールドすべてを個別に検証・正規化**し、`location` が使えない 1 件だけを除外、表示テキストが欠けるだけの所見は安全な既定値で描画する |
+
+#### §14 の改稿(P1-f)
+
+**旧**: 外部データの markdown→HTML 展開は LS 配信バンドルの責務であり、本プラグインは内容に手を触れない。
+
+**新**: **同梱バンドルはサニタイズしない**(上記の実ソース根拠)。したがって**エスケープはクライアントの責務**である。
+`VulnerabilityProjection` が描画対象フィールドを投影する際に `& < > " '` をエスケープする。
+**strip ではなく escape** — markdown は見出し・箇条書き・コード・リンクのいずれにもこの 5 文字を必要としないため、正当な description は**見た目が変わらない**。HTML を含む description は**実行されずテキストとして見える**。
+
+#### §10 の改稿(P2-a / P1-f)
+
+**旧**: 所見を無改変で webview へ渡す。
+
+**新**: `VulnerabilityLookup` が**所見を選ぶ**(`location.start_line` のみを見る。型を仮定しない)。
+`VulnerabilityProjection` が**選ばれた 1 件を webview 用に投影する**(5 フィールドを検証・正規化・エスケープ)。
+無改変で渡すのをやめた理由は §14 の改稿と同じ。
+
+### 実装状況(第 2 版時点)
+
+**純ロジックは実装・検証済み**(`feat/webview-remnants` @ 1 コミット目、新規テスト 55 本、`FAILSET_IDENTICAL`、detekt ベースラインちょうど)。
+`VulnerabilityStore` / `VulnerabilityLookup` / `VulnerabilityProjection` / `VulnerabilityPayload` / `KnowledgeGraphState` / `DirectWebview` / `WebviewUriResolver` のシーム。
+
+**未実装(次に着手する順)**: P1-a の fingerprint / P1-b の session 束縛 / P1-c の本番配線 / P1-e のランチャー差し替え / 受信配線(`GitLabLanguageServerClient`)/ 送信クライアント / ハンドラ 2 件 / `plugin.xml` / Koin 登録。
