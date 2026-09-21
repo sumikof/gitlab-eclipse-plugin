@@ -20,6 +20,10 @@ internal object DiagnosticsReport {
   private const val TITLE = "# GitLab for Eclipse Diagnostics"
   private const val NOT_AVAILABLE = "Not available"
 
+  private const val STALE_NOTE =
+    "> The language server is not running. The feature states below are the last values it\n" +
+      "> reported and may be out of date."
+
   /** The whole document. Never blank — the fixed sections are always present. */
   fun render(snapshot: DiagnosticsSnapshot): String {
     val sections = buildList {
@@ -28,7 +32,12 @@ internal object DiagnosticsReport {
       add(languageServer(snapshot))
       // A feature the server has said nothing about yet contributes no section at all, rather than
       // an empty one that reads as "no checks passed".
-      snapshot.featureStates.filter { it.checks.isNotEmpty() }.forEach { add(featureState(it)) }
+      val features = snapshot.featureStates.filter { it.checks.isNotEmpty() }
+      // The store keeps whatever the server last said, for the lifetime of the workbench. With the
+      // server down those sections are the DEAD server's answers, and a reader would otherwise see
+      // "Code Suggestions (On)" sitting next to "Status: stopped" and believe both.
+      if (features.isNotEmpty() && !snapshot.languageServerRunning) add(STALE_NOTE)
+      features.forEach { add(featureState(it)) }
     }
     return (listOf(TITLE) + sections).joinToString("\n\n")
   }

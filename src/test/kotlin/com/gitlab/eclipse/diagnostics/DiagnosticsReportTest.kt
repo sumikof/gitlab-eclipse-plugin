@@ -75,10 +75,10 @@ class DiagnosticsReportTest : DescribeSpec({
     }
   }
 
-  describe("feature state の節") {
-    fun check(id: String, engaged: Boolean, details: String? = null) =
-      FeatureStateChangeCheck(checkId = id, engaged = engaged, details = details)
+  fun check(id: String, engaged: Boolean, details: String? = null) =
+    FeatureStateChangeCheck(checkId = id, engaged = engaged, details = details)
 
+  describe("feature state の節") {
     it("engaged が無ければ (On) で、各行は [x] ... (true)") {
       val report = DiagnosticsReport.render(
         snapshot(
@@ -170,6 +170,29 @@ class DiagnosticsReportTest : DescribeSpec({
         snapshot(featureStates = listOf(FeatureStateSnapshot("Empty Feature", emptyList())))
       )
       report shouldNotContain "Empty Feature"
+    }
+  }
+
+  describe("停止中の feature state(レビュー LOW-5)") {
+    fun withChat(running: Boolean) = DiagnosticsReport.render(
+      snapshot(
+        featureStates = listOf(
+          FeatureStateSnapshot("GitLab Duo Chat", listOf(check("chat-no-license", engaged = false)))
+        )
+      ).copy(languageServerRunning = running)
+    )
+
+    it("サーバ停止中は feature state が古い可能性を明示する") {
+      withChat(running = false) shouldContain "may be out of date"
+    }
+
+    it("稼働中は注記を出さない") {
+      withChat(running = true) shouldNotContain "may be out of date"
+    }
+
+    it("feature state が無ければ停止中でも注記を出さない") {
+      val report = DiagnosticsReport.render(snapshot().copy(languageServerRunning = false))
+      report shouldNotContain "may be out of date"
     }
   }
 

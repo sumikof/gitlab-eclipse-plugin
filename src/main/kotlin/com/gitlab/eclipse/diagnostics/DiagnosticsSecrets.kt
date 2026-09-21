@@ -34,7 +34,10 @@ object DiagnosticsSecrets {
    * PAT and/or one OAuth access token per rotation), so unbounded growth is not a practical concern
    * within a workbench session, and [clear] exists for tests.
    */
-  fun publish(vararg candidates: String?) {
+  fun publish(vararg candidates: String?) = publishAll(candidates.asList())
+
+  /** [publish] for values already in a collection, without the array copy a spread would cost. */
+  fun publishAll(candidates: Collection<String?>) {
     val fresh = candidates.filterNot { it.isNullOrBlank() }.filterNotNull()
     if (fresh.isEmpty()) return
     synchronized(this) { values = values + fresh }

@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.diagnostics
 
-import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -26,7 +25,10 @@ import java.nio.file.Path
  */
 class DiagnosticsSnapshotCollector(
   private val preferences: () -> ScopedPreferenceStore = { service() },
-  private val token: () -> String = { service<GitLabTokenProviderManager>().getToken() },
+  // NOT GitLabTokenProviderManager.getToken(): on the OAuth path that refreshes over the network
+  // and can flip AUTHENTICATION_TYPE on failure, from a command that runs on the UI thread. See
+  // StoredSecrets.
+  private val tokenConfigured: () -> Boolean = StoredSecrets::anyConfigured,
   private val languageServerRunning: () -> Boolean =
     { service<GitLabLanguageServerWrapper>().languageServer != null },
   private val languageServerVersion: () -> String? = LanguageServerVersionState::current,
@@ -46,7 +48,7 @@ class DiagnosticsSnapshotCollector(
       gitlabInstanceVersion = null,
       instanceUrl = store.string(PreferenceConstants.GITLAB_INSTANCE_URL),
       authenticationType = store.string(PreferenceConstants.AUTHENTICATION_TYPE),
-      tokenConfigured = runCatching { token().isNotBlank() }.getOrDefault(false),
+      tokenConfigured = runCatching(tokenConfigured).getOrDefault(false),
       languageServerLogLevel = store.string(PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL),
       debugLogging = store.flag(PreferenceConstants.DEBUG_LOGGING),
       telemetryEnabled = store.flag(PreferenceConstants.TELEMETRY_ENABLED),

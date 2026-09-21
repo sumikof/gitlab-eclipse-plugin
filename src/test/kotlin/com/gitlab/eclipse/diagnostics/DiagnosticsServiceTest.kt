@@ -4,6 +4,7 @@ import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import java.io.ByteArrayInputStream
@@ -24,7 +25,7 @@ class DiagnosticsServiceTest : DescribeSpec({
 
   fun collector(tokenConfigured: Boolean = true) = DiagnosticsSnapshotCollector(
     preferences = { error("no preference store in a headless test") },
-    token = { if (tokenConfigured) token else "" },
+    tokenConfigured = { tokenConfigured },
     languageServerRunning = { true },
     languageServerVersion = { "9.3.0" },
     featureStates = {
@@ -49,6 +50,8 @@ class DiagnosticsServiceTest : DescribeSpec({
     logBuffer = buffer,
     stateDirectory = { stateDir },
     knownSecrets = secrets,
+    // Headless: secure storage is unavailable, and the production publisher would only add noise.
+    publishStoredSecrets = {},
   )
 
   fun entriesOf(bytes: ByteArray): Map<String, String> {
@@ -103,6 +106,18 @@ class DiagnosticsServiceTest : DescribeSpec({
     it("空ファイルは不在と同じ扱いにする") {
       Files.writeString(stateDir.resolve(DiagnosticsSnapshotCollector.LANGUAGE_SERVER_LOG), "")
       service().languageServerLogs() shouldBe DiagnosticsService.NO_LANGUAGE_SERVER_LOGS
+    }
+
+    it("不正なバイト列を含んでも読み捨てない(レビュー MEDIUM-3)") {
+      // log4j は charset 無指定で書き、LS の stderr はプラットフォーム既定で復号される。
+      // readString なら MalformedInputException で「サーバが動いていない」に化けていた。
+      val bytes = "before ".toByteArray() + byteArrayOf(0xFF.toByte(), 0xFE.toByte()) +
+        " after".toByteArray()
+      Files.write(stateDir.resolve(DiagnosticsSnapshotCollector.LANGUAGE_SERVER_LOG), bytes)
+      val logs = service().languageServerLogs()
+      logs shouldContain "before"
+      logs shouldContain "after"
+      logs shouldNotBe DiagnosticsService.NO_LANGUAGE_SERVER_LOGS
     }
   }
 

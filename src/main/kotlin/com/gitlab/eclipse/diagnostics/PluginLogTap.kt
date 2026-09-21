@@ -47,9 +47,14 @@ class PluginLogTap(
     try {
       val secrets = currentSecrets()
       format(status).forEach { line -> buffer.append(scrub(line, secrets)) }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
       // Deliberately silent, and deliberately broad. See rule 2 in the class comment: there is no
       // way to report this that does not risk the recursion rule 1 exists to prevent.
+      //
+      // `Throwable`, not `Exception`: a custom `printStackTrace` can raise `StackOverflowError`,
+      // and formatting a huge trace can raise `OutOfMemoryError`. Equinox would contain either —
+      // under `org.eclipse.core.runtime`, not this bundle — but rule 2 says nothing escapes, and a
+      // promise with an exception in it is not a promise.
     } finally {
       reentrant.set(false)
     }

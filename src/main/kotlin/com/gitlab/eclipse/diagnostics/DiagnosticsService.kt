@@ -19,13 +19,26 @@ class DiagnosticsService(
   private val logBuffer: LogRingBuffer = DiagnosticsLog.buffer,
   private val stateDirectory: () -> Path? = DiagnosticsSnapshotCollector::pluginStateDirectory,
   private val knownSecrets: () -> Collection<String> = ::configuredSecrets,
+  /**
+   * Publishes what is in secure storage before sanitizing, so literal redaction still has the
+   * token to match when the language server never started and therefore never built a configuration
+   * payload to publish one (the only other publisher). Called from the four public methods only,
+   * each of which is a user-initiated command — never from the log-capture path.
+   */
+  private val publishStoredSecrets: () -> Unit = StoredSecrets::publish,
 ) {
 
   /** The diagnostics report as Markdown, sanitized. */
-  fun report(): String = clean(DiagnosticsReport.render(collector.collect()))
+  fun report(): String {
+    runCatching(publishStoredSecrets)
+    return renderReport()
+  }
 
   /** This plugin's retained log, sanitized; a stand-in message when nothing has been logged. */
-  fun extensionLogs(): String = clean(logBuffer.getAll()).ifBlank { NO_EXTENSION_LOGS }
+  fun extensionLogs(): String {
+    runCatching(publishStoredSecrets)
+    return renderExtensionLogs()
+  }
 
   /**
    * The language server's log, sanitized.
@@ -35,19 +48,38 @@ class DiagnosticsService(
    * (design §14).
    */
   fun languageServerLogs(): String {
+    runCatching(publishStoredSecrets)
+    return renderLanguageServerLogs()
+  }
+
+  private fun renderReport(): String = clean(DiagnosticsReport.render(collector.collect()))
+
+  private fun renderExtensionLogs(): String = clean(logBuffer.getAll()).ifBlank { NO_EXTENSION_LOGS }
+
+  private fun renderLanguageServerLogs(): String {
     val path = stateDirectory()?.resolve(DiagnosticsSnapshotCollector.LANGUAGE_SERVER_LOG)
-    val raw = path
       ?.takeIf { runCatching { Files.isReadable(it) }.getOrDefault(false) }
-      ?.let { runCatching { Files.readString(it) }.getOrNull() }
-    return raw?.let(::clean)?.ifBlank { null } ?: NO_LANGUAGE_SERVER_LOGS
+      ?: return NO_LANGUAGE_SERVER_LOGS
+    // String(bytes, UTF_8) REPLACES malformed bytes; Files.readString would throw on the first one.
+    // log4j writes this file with no charset set, from lines the server emitted in the platform
+    // native encoding, so one mismatched byte in up to 20 MB must not discard the whole log —
+    // still less discard it behind a message that reads as "the server never ran".
+    val raw = runCatching { String(Files.readAllBytes(path), Charsets.UTF_8) }.getOrNull()
+      ?: return UNREADABLE_LANGUAGE_SERVER_LOG
+    return clean(raw).ifBlank { NO_LANGUAGE_SERVER_LOGS }
   }
 
   /** The three entries of the export, in the reference extension's order and under its names. */
-  fun archiveEntries(): List<DiagnosticsEntry> = listOf(
-    DiagnosticsEntry(REPORT_ENTRY, report()),
-    DiagnosticsEntry(EXTENSION_LOG_ENTRY, extensionLogs()),
-    DiagnosticsEntry(LANGUAGE_SERVER_LOG_ENTRY, languageServerLogs()),
-  )
+  fun archiveEntries(): List<DiagnosticsEntry> {
+    // Published once for the whole export rather than once per entry: the OAuth read logs, and
+    // three reads would put three lines into the very buffer being exported.
+    runCatching(publishStoredSecrets)
+    return listOf(
+      DiagnosticsEntry(REPORT_ENTRY, renderReport()),
+      DiagnosticsEntry(EXTENSION_LOG_ENTRY, renderExtensionLogs()),
+      DiagnosticsEntry(LANGUAGE_SERVER_LOG_ENTRY, renderLanguageServerLogs()),
+    )
+  }
 
   /** The export archive as bytes. */
   fun buildArchive(): ByteArray = DiagnosticsArchive.build(archiveEntries())
@@ -78,6 +110,10 @@ class DiagnosticsService(
 
     const val NO_EXTENSION_LOGS = "No extension logs available."
     const val NO_LANGUAGE_SERVER_LOGS = "No language server logs available."
+
+    /** Distinct from [NO_LANGUAGE_SERVER_LOGS]: the file is there, but could not be read. */
+    const val UNREADABLE_LANGUAGE_SERVER_LOG =
+      "The language server log exists but could not be read."
   }
 }
 
