@@ -30,6 +30,14 @@ private val EXEMPTIONS = setOf(
     "#enableSecretRedaction",
   "com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams#ignoreCertificateErrors",
   "com.gitlab.eclipse.api.http.EgressConfigSnapshot#ignoreCertificateErrors",
+  // DiagnosticsSnapshot(D10 診断レポート)。4 件とも **Boolean** であり、秘匿値そのものではない。
+  // 設計 §12 が「トークン・証明書パス・パスワードはこのモデルに一切入らない」を第一防御としており、
+  // この型が値を持たないことは構造で保証されている(持たせた瞬間 Boolean でなくなり、この exemption は
+  // `names only fields that really exist` を通っても A5 側で検出集合に戻るため気づける)。
+  "com.gitlab.eclipse.diagnostics.DiagnosticsSnapshot#tokenConfigured",
+  "com.gitlab.eclipse.diagnostics.DiagnosticsSnapshot#caCertificateConfigured",
+  "com.gitlab.eclipse.diagnostics.DiagnosticsSnapshot#clientCertificateConfigured",
+  "com.gitlab.eclipse.diagnostics.DiagnosticsSnapshot#ignoreCertificateErrors",
 )
 
 /**

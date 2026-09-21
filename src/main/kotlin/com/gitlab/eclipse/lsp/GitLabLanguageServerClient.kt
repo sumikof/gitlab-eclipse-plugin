@@ -6,6 +6,7 @@ import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
 import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
+import com.gitlab.eclipse.diagnostics.FeatureStateStore
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
@@ -92,6 +93,9 @@ class GitLabLanguageServerClient(
     changes: Array<FeatureStateChange>
   ): CompletableFuture<Void> = CompletableFuture.runAsync {
     changes.forEach { change ->
+      // Recorded before the dispatch below narrows it: the diagnostics report wants every feature
+      // the server talks about, including the ones this `when` has no case for.
+      FeatureStateStore.record(change)
       when (change.featureId) {
         "authentication" -> service<AuthenticationStateService>().update(change)
         "chat" -> {

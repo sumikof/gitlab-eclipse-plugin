@@ -3,6 +3,7 @@ package com.gitlab.eclipse.lsp.configuration
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
+import com.gitlab.eclipse.diagnostics.DiagnosticsSecrets
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
@@ -89,6 +90,11 @@ class GitLabLanguageServerConfigurationService(
    */
   internal fun buildParams(): GitLabLanguageServerConfigurationParams {
     val securityScanEnabled = preferenceStore.getBoolean(PreferenceConstants.SECURITY_SCAN_ENABLED)
+    // Published for the diagnostics redactor while we have it. This call site already runs off
+    // the logging path, which is the whole point: asking for the token from inside a log listener
+    // would refresh it over the network (see DiagnosticsSecrets).
+    val currentToken = service<GitLabTokenProviderManager>().getToken()
+    DiagnosticsSecrets.publish(currentToken)
     return GitLabLanguageServerConfigurationParams(
       baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
       codeCompletion = CodeCompletion(
@@ -108,7 +114,7 @@ class GitLabLanguageServerConfigurationService(
         preferenceStore.getBoolean(TELEMETRY_ENABLED),
         BuildConfig.SNOWPLOW_COLLECTOR_URL
       ),
-      token = service<GitLabTokenProviderManager>().getToken(),
+      token = currentToken,
       httpAgentOptions = HttpAgentOptions(
         ca = preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE).takeIf { it.isNotBlank() },
         cert = preferenceStore.getString(PreferenceConstants.CLIENT_CERTIFICATE).takeIf { it.isNotBlank() },
