@@ -21,6 +21,15 @@ object PreferenceConstants {
   const val DUO_ENABLED_WITHOUT_GITLAB_PROJECT: String = "gitlab.duo.enabledWithoutGitlabProject"
   const val DUO_CHAT_SELECTED_WEBVIEW: String = "gitlab.duoChat.selectedWebview"
 
+  /**
+   * Whether the plugin emits its own debug logging (design §5.1.1).
+   *
+   * Distinct from [LANGUAGE_SERVER_LOG_LEVEL], which sets the *language server's* level and is
+   * sent to it in the configuration payload. This one governs this plugin and is never sent,
+   * matching the reference extension's `gitlab.debug`.
+   */
+  const val DEBUG_LOGGING: String = "gitlab.debug"
+
   /** One JSON array holding every repository's publish record (design §11). */
   const val PUBLISH_RECORDS: String = "gitlab.publish.records"
 

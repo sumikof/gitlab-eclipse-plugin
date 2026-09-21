@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
+import com.gitlab.eclipse.diagnostics.LanguageServerVersionState
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
@@ -178,6 +179,9 @@ class GitLabLanguageServerProcessProvider(
           logger.info("Ignoring initialization result from a superseded Language Server process.")
         } else {
           logger.info("Initialized Language Server: $result")
+          // The bundled version is pinned in package.json, which is a build input and not readable
+          // at runtime; the server's own answer is what the diagnostics report quotes.
+          LanguageServerVersionState.record(result?.serverInfo?.version)
           languageServerProxy.remoteProxy.initialized(null)
           // Pass the captured proxy explicitly: the sends launch coroutines, and a rapid
           // second restart can register the new server's proxy before they run. Binding
