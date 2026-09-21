@@ -134,6 +134,19 @@ class GitLabPreferencePage(
       )
     )
 
+    // Design §5.1.1: this governs THIS plugin, not the language server, which is why it sits
+    // under its own label rather than beside the log level above. It is never sent to the server.
+    addEmptyControls(EMPTY_CONTROLS_FULL_ROW)
+    addLabel("Troubleshooting")
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.DEBUG_LOGGING,
+        "Enable debug logging for this plugin",
+        fieldEditorParent
+      )
+    )
+
     // Certificate
     addField(
       FileFieldEditor(

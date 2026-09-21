@@ -314,6 +314,33 @@
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
+        <!-- D10 diagnostics (design §11). ShowDiagnostics and ShowDiagnosticsFromSidePanel are two
+             ids for ONE handler, mirroring the reference extension, which binds both to the same
+             function and differs only in where each is contributed. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowOutput"
+                name="Show GitLab Extension Logs"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowDiagnostics"
+                name="GitLab Diagnostics"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowDiagnosticsFromSidePanel"
+                name="GitLab Diagnostics"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ExportDiagnostics"
+                name="Export GitLab Diagnostics"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
         <command
                 id="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
                 name="Open GitLab Duo Agent Platform"
@@ -854,6 +881,27 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowOutput"
+                class="com.gitlab.eclipse.diagnostics.handlers.ShowOutputHandler"
+        />
+
+        <!-- One handler class, two command ids: see the command declarations above. -->
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowDiagnostics"
+                class="com.gitlab.eclipse.diagnostics.handlers.ShowDiagnosticsHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowDiagnosticsFromSidePanel"
+                class="com.gitlab.eclipse.diagnostics.handlers.ShowDiagnosticsHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ExportDiagnostics"
+                class="com.gitlab.eclipse.diagnostics.handlers.ExportDiagnosticsHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
                 class="com.gitlab.eclipse.views.webview.actions.ShowAgenticTabsHandler"
         />
@@ -1215,6 +1263,14 @@
              programmatically, e.g. a classic-only command forces classic, so a checked radio would
              go stale). Clicking the pulldown button itself just re-resolves the view. -->
         <menuContribution locationURI="toolbar:com.gitlab.eclipse.views.LanguageServerBrowserView">
+            <!-- D10 F3. The reference contributes the same command to the chat view title bar
+                 (package.json view/title, when: view =~ /(gl.chatView|gl.webview.duo-chat-v2)/). -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowDiagnosticsFromSidePanel"
+                    icon="icons/notification.png"
+                    tooltip="GitLab Diagnostics">
+            </command>
+
             <command
                     commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
                     id="gitlab-eclipse-plugin.menus.chatSelectorMenu"
@@ -1602,6 +1658,21 @@
                     commandId="gitlab-eclipse-plugin.commands.RestartLanguageServer"
                     label="Restart Language Server"
                     tooltip="Stop and restart the GitLab Language Server"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowOutput"
+                    label="Show Extension Logs"
+                    tooltip="Open the log this plugin has recorded"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowDiagnostics"
+                    label="Diagnostics"
+                    tooltip="Open a report of versions, configuration and feature state"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExportDiagnostics"
+                    label="Export Diagnostics"
+                    tooltip="Save a sanitized ZIP of diagnostics and logs"/>
         </menuContribution>
     </extension>
 

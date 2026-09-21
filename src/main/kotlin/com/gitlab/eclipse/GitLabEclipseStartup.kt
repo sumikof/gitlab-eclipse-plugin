@@ -12,16 +12,20 @@ import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
 import com.gitlab.eclipse.ci.lint.MergedYamlEditorOpener
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
+import com.gitlab.eclipse.diagnostics.DiagnosticsLog
+import com.gitlab.eclipse.diagnostics.configuredSecrets
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.security.SecurityScanLifecycle
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import com.gitlab.eclipse.snippets.PatchQuarantine
 import com.gitlab.eclipse.telemetry.telemetryModule
+import com.gitlab.eclipse.utils.DebugLogging
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.workspaceModule
 import org.eclipse.core.commands.ParameterizedCommand
@@ -34,6 +38,7 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.commands.ICommandService
 import org.eclipse.ui.keys.IBindingService
 import org.eclipse.ui.plugin.AbstractUIPlugin
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.osgi.framework.BundleContext
 
@@ -44,6 +49,12 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // This ensures logs are written to a consistent location regardless of working directory
     val stateLocation = Platform.getStateLocation(context.bundle).toFile()
     System.setProperty("gitlab.plugin.state.dir", stateLocation.absolutePath)
+
+    // Installed here, as early as the state directory itself, so the diagnostics export can show
+    // what happened during start — which is exactly when the interesting failures happen. The
+    // secrets lambda is evaluated per log line and contains its own failures, so installing it
+    // before Koin is up costs nothing (design §9.1).
+    installDiagnosticsLogTap(context)
 
     // Invalidate any CI lint / discussion / job-log generations left in `latest` by a previous
     // stop (stop lets in-flight work finish) so their stale results cannot reapply, and restore
@@ -109,6 +120,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   }
 
   override fun stop(context: BundleContext) {
+    uninstallDiagnosticsLogTap(context)
     shutdownJobLog()
     // Step 1 of the diagnostics shutdown: stopping the language server runs the connection teardown
     // (advance the epoch, cancel the waiting commands, remove the dead connection's markers) through
@@ -224,6 +236,30 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // attaching as windows open.
       logger<GitLabEclipseStartup>().warn("Security scan save trigger not installed: workbench unavailable.", e)
     }
+  }
+
+  /**
+   * Starts capturing this plugin's log for the diagnostics export, and points the debug-logging
+   * gate at the preference store (design §5.1.1, §9.1).
+   *
+   * Both are best-effort. A bundle that cannot capture its own log is still a working plugin, and
+   * taking start down over a diagnostics feature would be exactly backwards. Nothing here logs on
+   * the failure path — a failure to install a log listener is the one thing that must not be
+   * reported through the log listener.
+   */
+  private fun installDiagnosticsLogTap(context: BundleContext) {
+    runCatching {
+      DebugLogging.isEnabled = {
+        runCatching { service<ScopedPreferenceStore>().getBoolean(PreferenceConstants.DEBUG_LOGGING) }
+          .getOrDefault(false)
+      }
+      DiagnosticsLog.install(Platform.getLog(context.bundle), ::configuredSecrets)
+    }
+  }
+
+  /** Detaches the log listener. Contained, and silent, for the reasons above. Never lets stop throw. */
+  private fun uninstallDiagnosticsLogTap(context: BundleContext) {
+    runCatching { DiagnosticsLog.uninstall(Platform.getLog(context.bundle)) }
   }
 
   /**
