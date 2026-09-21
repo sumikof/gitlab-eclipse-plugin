@@ -44,11 +44,33 @@ sealed interface WebviewResolution {
 class WebviewUriResolver(
   private val wrapper: GitLabLanguageServerWrapper,
   private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+  /**
+   * An address the client already knows for [id], consulted before the metadata request.
+   *
+   * Defaults to "there is none", so every existing caller resolves exactly as it did before. The
+   * one webview that needs it — the Knowledge Graph — is never advertised in the metadata, so
+   * without this seam it could only ever resolve to `NotAdvertised` (see [DirectWebview]).
+   */
+  private val directUris: (String) -> DirectWebview? = { null },
 ) {
   fun resolve(id: String): CompletableFuture<WebviewResolution> {
     // §7.1a
     val snapshot = wrapper.currentSnapshot
       ?: return CompletableFuture.completedFuture(WebviewResolution.LanguageServerUnavailable)
+
+    // Before the round trip, not after: a direct address needs no metadata, and asking for it
+    // anyway would make the Knowledge Graph wait on a request whose answer cannot contain it.
+    // The session still comes from the live snapshot, so supersession is detected as usual.
+    val direct = try {
+      directUris(id)
+    } catch (e: Throwable) {
+      return CompletableFuture.completedFuture(WebviewResolution.Failed(e))
+    }
+    if (direct != null) {
+      return CompletableFuture.completedFuture(
+        WebviewResolution.Resolved(id, direct.title, direct.uri, snapshot.session)
+      )
+    }
 
     val metadataFuture = try {
       snapshot.proxy.webviewMetadata()
