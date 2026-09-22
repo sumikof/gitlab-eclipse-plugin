@@ -92,6 +92,14 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 - **`build.gradle.kts` は変更しない。** 本サイクルで新規バンドル依存は不要(#55 の器と既存のメッセージバスで足りる)。
 - devcontainer は headless。**SWT・Browser・実 LS 接続は検証できない。** UI 接触部はシームの背後へ。
 - `./gradlew` の合否は失敗集合(`verify.sh` の `FAILSET_IDENTICAL`)。detekt は `detektMain` / `detektTest` を明示実行し **main 17 / test 45** と比較。
+- **★ 前提 Q / R(§9.1)は同梱 LS 9.3.0 に対する全列挙で証明したものであり、`package.json` の
+  gitlab-lsp を上げるときは再検証する。** 具体的には
+  (a) `sendScanResponse` 相当の呼び出し元が `security_diagnostics_publisher.ts` の 2 箇所のままか、
+  (b) `handleScanNotification` の呼び出し元が `onNotification(RemoteSecurityScanNotificationType)` だけか、
+  (c) 応答を返さない早期 return の数と位置、
+  (d) 応答スキーマに要求識別子が増えていないか(増えていれば**この方式ごと単純化できる**)。
+  **手順は `main.js.map` の `sourcesContent` を全展開して grep するだけ**で、5 分で終わる。
+  **PR の「LS 更新時の確認項目」へ転記する。**
 
 ## 7. システム構成
 
@@ -141,9 +149,10 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 | コンポーネント | 責務 |
 |---|---|
-| `VulnerabilityStore` | パス → (所見リスト, timestamp, 世代, **scan context fingerprint**)。**記録・順序採番・上限 eviction は単一ロック下の 1 操作**(`Collections.synchronizedMap` + `LinkedHashMap(accessOrder = true)` の `removeEldestEntry`)。世代・fingerprint 不一致の読み書きを拒否 |
+| `VulnerabilityIntake` | **★ 第 6 版で新設。`ScanFlightTracker` と `VulnerabilityStore` を `DiagnosticGenerationRegistry.lock` の単一区間で束ねる唯一の入口。** 公開するのは `onRequestSent` / `onContextChanged` / `onResponse` / `read` の 4 つだけで、**判定と記録を別々に呼べる API を外へ出さない**(§9.1「判定と記録は一操作」) |
+| `VulnerabilityStore` | パス → (所見リスト, timestamp, 世代, **scan context fingerprint**)。**記録・順序採番・上限 eviction は単一ロック下の 1 操作**(`LinkedHashMap(accessOrder = true)` の `removeEldestEntry`)。**自前の錠は持たない** —— 守るのは `VulnerabilityIntake` が取る `DiagnosticGenerationRegistry.lock`(第 6 版)。記録は `RecordPermit` を受け取り、**現行の世代・fingerprint と突き合わせてから**書く |
 | `VulnerabilityLookup` | **所見を「選ぶ」だけ。** 所見の生 `Map` から `location.start_line` を取り出し、カーソル行に一致する先頭 1 件を返す。**型は仮定しない**(LS の形が変わっても落ちない) |
-| `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**整数 1 個と真偽値 1 個**。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない** |
+| `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**整数 1 個と真偽値 1 個**。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない。自前の錠も持たない**(`VulnerabilityIntake` の区間の中でのみ触られる) |
 | `VulnerabilityProjection` | **選ばれた 1 件を webview 用に投影する。** 描画対象 5 フィールド(`name` / `severity` / `description` / `location.start_line` / `.start_column`)を**個別に検証・正規化し、HTML エスケープ**する。`location` が使えない 1 件は `null`(= 除外)、表示テキストが欠けるだけの所見は安全な既定値で描画(§10.1 / §14) |
 | `VulnerabilityPayload` | `updateDetails` のペイロード 3 つ組を組み立てる。`timestamp` の文字列化を含む |
 | `KnowledgeGraphState` | `ready` / `getUrl` で受けた URL を**送信元 `LanguageServerSession` と組で**保持。未設定を表現でき、**現行でない session の書き込み・読み出しを拒否**する(§11) |
@@ -201,10 +210,15 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 1. `$/gitlab/security/remoteSecurityScan/response` 着信(既存 `GitLabLanguageServerClient.securityScanResponse`)。
 2. 既存の `SecurityScanStatusReporter.settle(...)` はそのまま(件数の報告)。
-3. **加えて** `VulnerabilityStore.record(path, results, timestamp, epoch, requestFingerprint)`。
-   **`requestFingerprint` は「着信時点の現行値」ではなく、その scan を要求したときの値**(下記)。
-   **現行 fingerprint と一致しなければ記録しない。**
+3. **加えて `VulnerabilityIntake.onResponse(...)`** —— **世代照合 → 未着件数の減算 → 汚染判定 →
+   記録可否の確定 → `VulnerabilityStore` への記録(または消去)を、`DiagnosticGenerationRegistry.lock`
+   の単一区間で 1 操作として行う**(下記「★★ 判定と記録は一操作でなければならない」)。
+   **「要求時 fingerprint」というパラメータは存在しない**(第 6 版で削除)。第 5 版で応答と要求の
+   対応づけを廃止した時点で、この値は**原理的に取得不能**になっていた。記録に使うのは
+   **判定とまったく同じ区間で読んだ現行 fingerprint** であり、判定と記録の間に fingerprint が
+   動く余地は無い —— 区間が 1 つだから。
 4. `results` が null / 空なら、そのパスの記録を**消す**(所見が無くなった状態を残さない)。
+   **この消去も手順 3 と同じ区間の中**で行う(記録と消去は同じ許可判定の下にある)。
 
 #### ★ 飛行中の応答の扱い(N5 の機構)
 
@@ -228,8 +242,74 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 |---|---|
 | **応答は要求を識別する値を持たない** | `SecurityScanClientResponse = { filePath, status, results, timestamp }`(`security_diagnostics_publisher.ts:184-189, 235-240`)。既存コードも同じ認識(`GitLabLanguageServerClient`「Nothing identifies the request」) |
 | **scan は重なる(順序保証が無い)** | `handleScanNotification` は **`async` な通知ハンドラ**で、LS のディスパッチャはその完了を待たずに次のメッセージを処理する(`:108-113`)。スキャン本体は GitLab API への往復を含む |
-| **1 要求に対し応答は 0 件または 1 件** | 成功時 `:191`、失敗時 `:242` で**ちょうど 1 件**。ただし **`:121` / `:141` / `:144` / `:147` の早期 return は応答を返さない**(文書なし・フラグ無効・スキャン無効) |
-| **2 件返ることは無い** | 上記の経路が排他だから。**これは後述の計数が過小にはなっても過大にはならないことを意味する**(= 安全側) |
+
+##### ★★ 前提 Q: 受信する応答はすべて「クライアントが送り tracker が数えた 1 要求」に由来する(第 6 版で証明)
+
+**静穏の証明は「各要求の応答が最大 1 件」だけでは足りない。**
+**計数されていない応答が 1 件でも先着すれば、それが未着件数を 0 にして汚染を解いてしまう**(round 4 / P1-2)。
+したがって成功・失敗経路の排他性ではなく、**「この通知を作れる経路がほかに無い」ことの全列挙**が要る。
+**同梱 LS 9.3.0 の sourcemap(`build/gitlab-lsp/bin/main.js.map`、2,839 sources)を全展開して列挙した結果、
+経路は一本道で閉じている。**
+
+| # | 主張 | 全列挙による根拠(同梱 LS 9.3.0) |
+|---|---|---|
+| **Q1** | `$/gitlab/security/remoteSecurityScan/response` を**生成できるのは 1 箇所だけ** | `DefaultSecurityScanNotifier.sendScanResponse`(`security_notifier.ts:18-23`)。その `#notify` は `registerInitializeNotifier(RemoteSecurityResponseScanNotificationType, …)`(`node_connection_service.ts:81-84`)から `createNotifyFn = (param) => c.sendNotification(method, param)`(`connection_service.ts:42-45` / `:198-199`)として注入される。**ほかに `RemoteSecurityResponseScanNotificationType` を送る箇所は無い** |
+| **Q2** | `sendScanResponse` の**呼び出し元は 2 つだけ** | `security_diagnostics_publisher.ts:191`(成功)と `:242`(`#handleError` 内)。**バンドル全体の grep で他に無し** |
+| **Q3** | `#handleError` の**呼び出し元は 1 つだけ** | `:193` ―― `#runSecurityScan` の `catch` |
+| **Q4** | `#runSecurityScan`(private)の**呼び出し元は 1 つだけ** | `:112` ―― `handleScanNotification` |
+| **Q5** | `handleScanNotification` の**呼び出し元は 1 つだけ**で、それは**クライアント通知のハンドラ** | `node_connection_service.ts:91`。その直上 `:90` が `this.#connection.onNotification(RemoteSecurityScanNotificationType, (params) => { … })`。**タイマも監視も document 変更フックも、この経路には入らない** |
+| **Q6** | **クライアント側の送信も 1 箇所だけ**で、それは**計数する場所そのもの** | `SecurityScanLauncher.kt:304` の `target.runSecurityScan(params)`。`$/gitlab/security/remoteSecurityScan` を送る箇所は本プラグインに他に無い(`GitLabLanguageServer.kt:87-88` が唯一の宣言) |
+
+**Q1〜Q6 の帰結** = **LS は自発的な応答を送らない。受信するすべての応答は、クライアントが送り、
+かつ `outstanding(P) += 1` を通った 1 要求の下流である。**
+
+##### ★★ 前提 R: 1 要求に対して**観測される**応答は 0 件か 1 件(第 6 版で穴を塞いだ)
+
+**第 5 版の「成功 `:191` / 失敗 `:242` が排他だから 2 件は無い」は不正確だった。**
+`:191` の送信は **`try` ブロックの中**にあり、**その送信が reject すると `catch` が `:242` で 2 通目を送る。**
+呼び出し回数としては **1 要求に対し最大 2 回**ありうる。
+**しかし「クライアントが観測する応答」は 0 件か 1 件にしかならない。** 同梱の `vscode-jsonrpc` で確定した
+(バンドルには `node_modules/vscode-jsonrpc/lib/common/` と
+`node_modules/vscode-languageserver-protocol/node_modules/vscode-jsonrpc/lib/common/` の**2 コピーが入っているが、
+下記の行番号は両方で一致する**):
+
+| 送信が reject する条件 | 実際に流れたバイト | 根拠 |
+|---|---|---|
+| 接続が closed / disposed | **0 バイト**(同期 throw で `messageWriter` に到達しない) | `connection.js:910` `throwIfClosedOrDisposed()` → `:950` の `messageWriter.write` に届かない |
+| シリアライズ失敗 | **0 バイト** | `messageWriter.js:76-95`。`Semaphore(1)` で直列化され、encode の失敗は `fireError` して throw。`doWrite` を呼ばない |
+| ヘッダ書き込み失敗 | **0 バイト** | `messageWriter.js:97-105` `doWrite` の 1 行目 |
+| 本文書き込み失敗 | **`Content-Length` ヘッダだけ**が流れる = **メッセージとして不完全** | 同 `:99-105`。受信側リーダは同期を失い、**その接続はもう使えない** |
+
+⇒ **reject した送信が「完全で解釈可能な 1 通」を届けることはない。**
+したがって 2 通目が送られる場合、1 通目は**観測されない**。
+唯一の例外である「本文の途中で切れたストリーム」は**接続の破断**そのものであり、
+**それは本方式のバリア(接続世代の前進)が効く条件と同一**である。
+
+##### ★★ 前提 S: 送信側の計数キーと受信側の減算キーは一致する
+
+**±1 が別のキーに落ちると、そのパスは永久に静穏を証明できない。**
+
+- 送信側は `DiagnosticUri.normalize(uri)`(`SecurityScanLauncher.kt` の `launch`)。
+- 受信側は `securityScanPathKey(filePath)`(`GitLabLanguageServerClient.kt:126`)= 同じ `DiagnosticUri.normalize`。
+- **LS の失敗経路は `filePath ?? documentSource.toString()` を返す**(`security_diagnostics_publisher.ts:193`)。
+  `filePath` が決まる前(`:150`)に失敗すると、**パスではなく URI 文字列**(`file:///w/a.kt`)が載る。
+  `securityScanPathKey` は **URI 形式と素のパスを同じキーへ正規化する**ので、これは問題にならない
+  (`SecurityScanStatusReporterTest.kt:478-489` / `:529` が `securityScanPathKey(osPath) == DiagnosticUri.normalize(sentUri)` を固定済み)。
+- **`filePath` が null の応答はクライアントが早期 return する**(`GitLabLanguageServerClient.kt:126` の `?: return`)。
+  **減算されない = そのパスは汚染されたまま**(fail-closed)。LS 9.3.0 は null を送らないが、DTO 上は可能なので
+  **「減らないほうへ倒れる」ことを明記しておく。**
+
+##### 応答を返さない経路(**5 つ**。第 5 版は 4 つと書いていた)
+
+| 行 | 条件 |
+|---|---|
+| `:121` | 文書が取れない |
+| `:141` | クライアント機能フラグ `RemoteSecurityScans` が無効 |
+| `:144` | `securityScannerOptions.enabled` が false |
+| `:147` | `securityScannerOptions` 自体が無い |
+| **`:173-175`** | **★ 第 6 版で追加。API 呼び出しは成功したが `vulnerabilities` が配列でない / null。** 前の 4 つと違い**設定とは無関係に起こりうる**ので、後述の fail-closed の頻度見積もりはこれを含めて考える |
+
+**この 5 つはいずれも「応答が 0 件」であって「2 件」ではない。** つまり**計数は過小にはなっても過大にはならない**(= 安全側)。
 
 ##### 検討した方式の比較
 
@@ -247,27 +327,31 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 **「その応答が旧文脈で作られた可能性が残っているか」だけを判定する。**
 
 **鍵は、対応づけはできなくても「未処理件数」は数えられること。**
-1 要求に対する応答は 0 件か 1 件で、**2 件返ることは無い**(上表)。したがって
+**前提 Q**(全応答は計数済みの 1 要求の下流)と **前提 R**(1 要求につき観測される応答は 0 件か 1 件)と
+**前提 S**(±1 のキーが一致する)がそろうと、
 **`送信数(P) == 受信数(P)` が成り立った時点で、それ以前に送った要求は「すべて応答済み」**であり、
 **順序に関係なく**、旧文脈の応答が飛行中に残っていないことが**証明できる。**
+**この 3 つは本方式が寄りかかっている前提のすべてであり、どれかが崩れれば方式ごと崩れる。**
 
 | 状態(パスごと・接続世代スコープ) | 内容 |
 |---|---|
 | `outstanding(P)` | 送信済みで未着の scan 要求の件数。送信で +1、応答で −1 |
 | `contaminated(P)` | **fingerprint 変更の瞬間に `outstanding(P) > 0` だったか** |
 
-**規則はこれだけ**:
+**規則はこれだけ**(いずれも **`DiagnosticGenerationRegistry.lock` の単一区間**で実行する。後述):
 
-1. **送信時**(`SecurityScanLauncher.kt:304` の直前、`outboundLock` 区間) → `outstanding(P) += 1`。
-2. **fingerprint 変更時**(全量送信の 2 箇所、同じ `outboundLock` 区間) → `VulnerabilityStore.clear()`。
-   加えて **`outstanding(P) > 0` のパスをすべて `contaminated` にする。**
+1. **送信時**(`SecurityScanLauncher.kt:304` の直前、`outboundLock` 区間の内側) → `outstanding(P) += 1`。
+2. **fingerprint 変更時**(全量送信の 2 箇所、同じ `outboundLock` 区間の内側) →
+   **1 つの区間で**「前回値との比較 → fingerprint の更新 → `outstanding(P) > 0` のパスを `contaminated` に →
+   `VulnerabilityStore.clear()`」を行う。
    (飛行中が無いパスは汚染しない。**以後そのパスに届く応答は、変更後に送った要求のものしかありえない。**)
-3. **応答着信時**:
+3. **応答着信時** —— **1 つの区間で**次をすべて行い、**途中で区間を出ない**:
    - 接続世代が不一致 → 拒否(既存規律)。
    - `outstanding(P) > 0` なら `outstanding(P) -= 1`。
    - **`contaminated(P)` なら拒否**(記録しない)。**そのうえで `outstanding(P) == 0` になったら汚染を解く**
      — この時点で**変更前の要求はすべて応答済みであることが証明された**から。
-   - 汚染されていなければ**記録する。**
+   - 汚染されていなければ、**同じ区間で読んだ現行 fingerprint と現行世代を `RecordPermit` として捕捉し、
+     そのまま `VulnerabilityStore` へ記録(`results` が null / 空なら消去)する。**
 
 **Codex round 3 の筋書きを当てる**: 要求 A(outstanding=1)→ 変更(outstanding>0 なので **汚染**)→
 要求 B(2)→ 応答 B(1・汚染中で**拒否**)→ 要求 C(2)→ 応答 C(1・**拒否**)→
@@ -285,9 +369,65 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
   かつストリームが死んでいる以上**接続更新(バリア)が続く**ので必ず解消する。
   **減算のために例外を握って「送れなかった」と見なす扱いはしない** — 送れたかどうかは
   クライアントには確定できず、確定できないものを証明に使わないのが本方式の原則である。
-- **未着件数が 0 なのに応答が届いた場合** — 本方式の前提(すべての要求を数えている・応答は 2 件来ない)が
-  崩れている証拠なので、**その応答を拒否し、そのパスを汚染する。** 件数は 0 未満にしない。
+- **未着件数が 0 なのに応答が届いた場合** — **前提 Q / R / S のどれかが崩れている証拠**なので、
+  **その応答を拒否し、そのパスを汚染する。** 件数は 0 未満にしない。
   **前提が崩れたときに記録を続けるほうが危険**であり、解除は他と同じくバリアに委ねる。
+  **これが前提違反の唯一の観測点**であり、LS を上げたときの安全網でもある(§6 の再検証手順)。
+
+##### ★★ 判定と記録は一操作でなければならない(第 6 版 / round 4 P1-1)
+
+**第 5 版は「どの応答を記録してよいか」は定めたが、「判定した結果がいつ store に着くか」を定めていなかった。**
+判定(tracker)と記録(store)と消去(clear)が**別々の区間**だと、判定と記録の隙間に変更側が丸ごと入り込む:
+
+> **破れる筋書き(round 4)**: FA の応答が着信し、`outstanding(P)` が 0 になって **「記録可」と判定される。**
+> 判定区間を出た直後、別スレッドが fingerprint を FB へ変更する。**このとき `outstanding(P)` は既に 0 なので
+> 変更側はこのパスを汚染しない**(規則 2 は正しく働いている)。変更側は `clear()` を済ませる。
+> そのあとで応答側が記録を実行し、**現行値である FB を貼って FA の所見を書き戻す。**
+> **clear を生き延びた FA の所見が、FB の所見として読み出せる。** N5 の認可境界が破れる。
+
+**根本原因は「現行 fingerprint を読む時点」が「記録してよいと決めた時点」より後にあること。**
+対策は 1 つしかない —— **同じ錠の同じ区間に全部入れる。**
+
+###### なぜ `outboundLock` では駄目か(共有できる錠は 1 つしかない)
+
+- `outboundLock` は **`kotlinx.coroutines.sync.Mutex`**(`SecurityScanLauncher.kt:192` /
+  `GitLabLanguageServerConfigurationService.kt:30`)。**`withLock` は `suspend` 関数**である。
+- 応答を捌くのは **lsp4j のディスパッチスレッド**で、**コルーチンではない**
+  (`GitLabLanguageServerClient.securityScanResponse` は `runAsync` すらしない。§11)。
+  **受信側は `outboundLock` を取れない。** `runBlocking` で取るのは、送信を待つスレッドで
+  受信を止めることになるので採らない。
+- 逆に `VulnerabilityStore` 自前の錠(第 5 版の `Collections.synchronizedMap`)は**変更側と受信側で
+  共有されるが、tracker の判定を含まない**。
+
+⇒ **両側が取れて、tracker と store の両方を覆える錠は `DiagnosticGenerationRegistry.lock` だけである。**
+これは**プレーンなモニタ**で、**UI スレッドから入ることを前提に設計されている**
+(`DiagnosticGenerationRegistry.kt` の KDoc: 「UI スレッドから入ることもあるため
+`kotlinx.coroutines.sync.Mutex` ではなく**プレーンなモニタ**である(runBlocking を避ける)」)。
+**ロック順序「送信 Mutex → このモニタ」も既に固定されている**ので、新しい順序を導入しない。
+
+###### 確定する規律
+
+| 項目 | 規律 |
+|---|---|
+| **錠** | **`DiagnosticGenerationRegistry.lock` ただ 1 つ。** `ScanFlightTracker` と `VulnerabilityStore` は**2 つのオブジェクトだが 1 つの錠の下にある** |
+| **`VulnerabilityStore` 自前の錠を廃止** | 第 5 版の `Collections.synchronizedMap` ラップを**外す**。二重施錠は無意味なうえ、「store は自分で自分を守る」という誤読を招く。**`LinkedHashMap(accessOrder = true)` と `removeEldestEntry` はそのまま**(P1-g / A19 は退行しない。`removeEldestEntry` は `put` の内側で走り、その `put` が上記の区間の中にある) |
+| **入口** | 外から呼べるのは `VulnerabilityIntake` の**4 つだけ**: 書き込み側の `onRequestSent(path)` / `onContextChanged(newFingerprint)` / `onResponse(...)` と、読み出しの `read(path, epoch)`。**tracker と store を個別に外から叩く API を公開しない**(公開すれば、いつか誰かが 2 回に分けて呼ぶ) |
+| **許可トークン** | `RecordPermit(path, epoch, fingerprint)`。**判定区間で生成され、同じ区間で消費される。** `VulnerabilityStore` 側は受け取った permit を**現行値と突き合わせてから**記録する。単一区間なのでこの再照合は**必ず成功する** —— 失敗したらそれは「permit が区間をまたいだ」というバグの検出器である(A13b-8) |
+| **区間の中でしてよいこと** | **メモリ上の読み書きだけ。** 区間の中で**サスペンドしない・送信しない・UI スレッドへホップしない・ファイルに触れない**。したがってこのモニタを持ったまま `outboundLock` や UI スレッドを待つことは無く、**順序は一方向のまま**である |
+| **読み出し(UI スレッド)** | 同じ区間に入り、**値のスナップショットだけ取って出る。** 投影(`VulnerabilityProjection`)も webview 送信も**区間の外**で行う |
+
+**変更側の区間のネスト**: `outboundLock.withLock { … synchronized(lock) { 比較・更新・汚染・clear } ; 送信 … }`。
+
+> **★ 区間の順序は load-bearing である。** `SecurityScanLauncher.kt:303-304` は**同じ `outboundLock` 区間で
+> `didChangeConfiguration` と `runSecurityScan` を続けて送る**ので、この区間には**モニタ区間が 2 回**入る:
+> **①「比較・更新・汚染・clear」→ ② `outstanding(P) += 1`** の順である。
+> **逆順にしてはならない** —— 先に `+= 1` すると、直後の変更判定が `outstanding(P) > 0` を見て
+> **いま送ろうとしている新文脈の要求を自分で汚染する**。新しい fingerprint の下で送る要求は
+> **変更を済ませてから数える**。
+**`didChangeConfiguration` の送信自体はモニタの外**(送信は I/O であり、上表の規律に従う)。
+**送信より先にモニタ区間を終えてよい** —— 記録側が見るのは「新しい fingerprint と汚染フラグ」であって、
+サーバが新しい設定を受け取ったかどうかではない。**むしろ先に更新しておくほうが安全側**である
+(まだ旧設定で走っている scan の応答が、既に新 fingerprint で拒否される)。
 
 ##### この方式が守っていること / 捨てたもの
 
@@ -300,10 +440,11 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 ##### 残る限界(明示する)
 
 **応答が 1 件も返らない要求があると、そのパスは静穏を証明できない。**
-LS は `:121` / `:141` / `:144` / `:147` の早期 return で**応答を返さずに終わる**ことがある
-(文書が無い / クライアント機能フラグ無効 / スキャン無効)。うち後者 2 つは、
-`SecurityScanLauncher` が自ら記録している既知のレース
+LS は **5 つ**の早期 return で**応答を返さずに終わる**ことがある(前掲の表: `:121` / `:141` / `:144` /
+`:147` / **`:173-175`**)。`:141` / `:144` は、`SecurityScanLauncher` が自ら記録している既知のレース
 (「gate と送信の間で設定が反転すると `remoteSecurityScans=false` を送ってから scan 要求を送る」)で起こりうる。
+**`:173-175` だけは設定と無関係**で、API が `vulnerabilities` を配列で返さなかったときに起こる。
+**頻度の見積もりに含めること** —— ここが平常時に踏まれると、汚染が「稀」でなくなる。
 
 そのパスは **`contaminated` のまま残る** = **詳細が出せない。**
 **これは仕様であって不具合ではない**(fail-closed)。解除できるのは**証明可能なバリアだけ**:
@@ -313,13 +454,21 @@ LS は `:121` / `:141` / `:144` / `:147` の早期 return で**応答を返さ�
 > したがって**接続世代が進んだ時点で `outstanding` と `contaminated` をすべて捨ててよい。**
 > **これは N1 で既に持っている仕組みそのもので、新しい概念を足していない。**
 
-**影響範囲は狭い**: 汚染されるのは**「fingerprint 変更の瞬間に scan が飛んでいたパス」だけ**である。
-設定変更は稀で、そのとき飛行中の scan は通常 0 件なので、**平常時は何も汚染されない。**
+**影響範囲は狭い、ただし条件付きである**: 汚染されるのは**「fingerprint 変更の瞬間に `outstanding(P) > 0`
+だったパス」だけ**である。設定変更は稀で、そのとき飛行中の scan は通常 0 件なので、**平常時は何も汚染されない。**
+
+> **★ ただし応答欠落は累積する。** 上の 5 経路で応答が返らなかった要求は、そのパスに **`+1` を恒久的に
+> 残す**(接続世代が進むまで)。これ自体は無害だが、**そのパスを「次の設定変更で汚染され、しかも二度と
+> 解けない」状態にしておく**という効果がある。つまり **`:173-175` のような設定非依存の欠落が平常時に
+> 起きるほど、「平常時は何も汚染されない」の前提が痩せていく。**
+> **実装時に、接続あたりの残留 `outstanding` を(パスを出さずに)件数だけ観測できるようにしておくこと**
+> —— これが痩せ具合を測る唯一の手段になる(§15 のログ規律に従い、**パスも所見も出さない**)。
 **診断(PR #51)には一切影響しない** — 本方式は「何を送るか」を変えず、「何を**記録**するか」だけを決める。
 
 **設定変更(N5)**: `didChangeConfiguration` を送る箇所のうち **fingerprint の成分を含む全量送信は 2 つ** —
 `GitLabLanguageServerConfigurationService.sendConfiguration`(`:58`)と `SecurityScanLauncher.kt:303`。
-いずれも `outboundLock` 内なので、**前回値と異なれば同じロック区間で `VulnerabilityStore.clear()`** を行う。
+いずれも `outboundLock` 内なので、**前回値と異なれば同じ `outboundLock` 区間の内側のモニタ区間で
+「更新 + 汚染 + `clear()`」を 1 操作として**行う(規則 2)。
 
 > **★ 3 つ目の送信箇所は対象外**: `ProjectOpenLanguageServerListener.kt:60` は
 > **`workspaceFolders` だけの部分送信**(`GitLabLanguageServerConfigurationParams(workspaceFolders = …)`)。
@@ -376,8 +525,20 @@ data class FileVulnerabilities(
 ```
 
 `VulnerabilityStore` は `Map<String, FileVulnerabilities>`(キー = 既存 `securityScanPathKey` が作る正規化済みパス)。
-**保持の実体は `Collections.synchronizedMap` で包んだ `LinkedHashMap(accessOrder = true)`** で、上限超過は
-`removeEldestEntry` が返す(§11)。
+**保持の実体は素の `LinkedHashMap(accessOrder = true)`** で、上限超過は `removeEldestEntry` が返す(§11)。
+**自前の錠は持たない** —— 読み書きはすべて `VulnerabilityIntake` が取る `DiagnosticGenerationRegistry.lock`
+の区間の中で行う(第 6 版 / §9.1「判定と記録は一操作」)。
+
+記録の入口は permit を取る:
+
+```kotlin
+/** 判定区間で生成され、同じ区間で消費される許可トークン。区間をまたぐと拒否される(A13b-8)。 */
+data class RecordPermit(
+  val path: String,
+  val epoch: Long,
+  val contextFingerprint: String,
+)
+```
 
 `KnowledgeGraphState` の状態は **`String?` ではなく `(url, session)` の組**(§11)。
 
@@ -409,16 +570,18 @@ data class FileVulnerabilities(
 
 | 論点 | 方針 |
 |---|---|
-| 応答着信(lsp4j ディスパッチ)と読み出し(UI スレッド) | **`Collections.synchronizedMap` + `LinkedHashMap(accessOrder = true)`。** 値は不変 |
-| **記録と上限 eviction の原子性** | **`ConcurrentHashMap` では駄目。** 個々の get/put/remove しか原子的でなく、「記録して上限超過なら最古を捨てる」という**複合操作を守らない** — 上限 N の状態へ複数応答が並行着信すると、両方が同じ最古要素を選んで消して最終サイズが N を超えたり、同一パスの新しい値を古い空応答が消したりできる。**`removeEldestEntry` は put と同じロック区間で走る**ので、記録・順序採番・eviction が**単一操作**になる |
+| 応答着信(lsp4j ディスパッチ)と読み出し(UI スレッド) | **`DiagnosticGenerationRegistry.lock` の下の `LinkedHashMap(accessOrder = true)`。** 値は不変。**`Collections.synchronizedMap` は第 6 版で外した**(下行) |
+| **★ 判定・fingerprint 更新・clear・record の原子性**(第 6 版 / round 4 P1-1) | **錠は `DiagnosticGenerationRegistry.lock` ただ 1 つ**にまとめる。`ScanFlightTracker` と `VulnerabilityStore` は 2 オブジェクト・1 ロックで、**入口は `VulnerabilityIntake` の複合操作だけ**。判定区間で作った `RecordPermit` を**同じ区間で**消費する。**受信側は `outboundLock`(kotlinx `Mutex`・`withLock` は `suspend`)を取れない**ため、両側が取れる錠はこのプレーンモニタしかない。区間の中では**サスペンド・送信・UI ホップ・I/O を一切しない**ので、ロック順序「送信 `Mutex` → このモニタ」は一方向のまま(§9.1) |
+| **記録と上限 eviction の原子性** | **`ConcurrentHashMap` では駄目。** 個々の get/put/remove しか原子的でなく、「記録して上限超過なら最古を捨てる」という**複合操作を守らない** — 上限 N の状態へ複数応答が並行着信すると、両方が同じ最古要素を選んで消して最終サイズが N を超えたり、同一パスの新しい値を古い空応答が消したりできる。**`removeEldestEntry` は `put` の内側で走り、その `put` は上記の単一区間の中にある**ので、記録・順序採番・eviction が**単一操作**になる(P1-g は第 6 版でも退行しない) |
 | **退去順序** | `timestamp` ではなく **`LinkedHashMap` のアクセス順**で決まる。`timestamp` が null の所見が混じっても順序が壊れない(応答に timestamp が無い場合の挿入順が別途要る、という問題が起きない) |
 | 接続世代 | 既存 `DiagnosticGenerationRegistry.currentEpoch` を使う(marker と同じ土俵)。**読み出し時に世代を照合**し、古ければ「所見なし」を返す |
-| **scan context fingerprint**(N5) | 接続世代は `didChangeConfiguration` では進まない。**インスタンス URL・認証・スキャン有効状態が変われば、同じ接続のままでも所見は無効。** `GitLabLanguageServerConfigurationParams` の **`baseUrl` / `token` / `featureFlags.remoteSecurityScans` / `securityScannerOptions.enabled`** から**不可逆ダイジェスト**を作る(§15: **fingerprint 自体もログに出さない。`token` を平文で保持しない**)。全量送信の 2 箇所の `outboundLock` 区間で前回値と比較し、異なれば `clear()`(**部分送信の `ProjectOpenLanguageServerListener.kt:60` は対象外** — §9.1) |
+| **scan context fingerprint**(N5) | 接続世代は `didChangeConfiguration` では進まない。**インスタンス URL・認証・スキャン有効状態が変われば、同じ接続のままでも所見は無効。** `GitLabLanguageServerConfigurationParams` の **`baseUrl` / `token` / `featureFlags.remoteSecurityScans` / `securityScannerOptions.enabled`** から**不可逆ダイジェスト**を作る(§15: **fingerprint 自体もログに出さない。`token` を平文で保持しない**)。全量送信の 2 箇所の `outboundLock` 区間で、**その内側のモニタ区間**で前回値と比較し、異なれば「更新 + 汚染 + `clear()`」を 1 操作で行う(**部分送信の `ProjectOpenLanguageServerListener.kt:60` は対象外** — §9.1) |
 | **飛行中の応答の扱い** | **「着信時点の現行値」では照合にならない**(常に一致する)。**応答は要求を識別せず、順序も保証されない**ため、**応答を要求に対応づける方式はすべて破れる**(§9.1 に第 3・第 4 版の反例)。採るのは **`ScanFlightTracker`** — **対応づけを試みず、「未着件数が 0 に戻った」ことで静穏を証明する** |
 | **同一パスの重複要求** | 重複排除もデバウンスも無く、**最大 60 秒**(`RESPONSE_DEADLINE_MS`)同一パスの要求が飛行しうる(`SecurityScanLauncher.kt:399` が明言)。**要求の送信は抑止しない**(診断の既存挙動を変えないため)。重複しても**件数で数えられる**ので方式は成り立つ |
-| **`ScanFlightTracker` のロック** | **`DiagnosticGenerationRegistry.lock`**(`CommandWaiters` と同一モニタ)。ロック順序は既存の固定順 **outbound `Mutex` → このモニタ**。**トラッカ側から outbound `Mutex` を取らない** |
+| **`ScanFlightTracker` のロック** | **`DiagnosticGenerationRegistry.lock`**(`CommandWaiters` と同一モニタ)。ロック順序は既存の固定順 **outbound `Mutex` → このモニタ**。**トラッカ側から outbound `Mutex` を取らない。** `VulnerabilityStore` も**同じ**モニタの下にある(第 6 版) |
 | 応答の順序 | **クライアント側**は lsp4j ディスパッチスレッド上で同期に処理される(`securityScanResponse` は `runAsync` しない)。**サーバ側は順序を保証しない** — `handleScanNotification` は `async` な通知ハンドラで、ディスパッチャは完了を待たない(`security_diagnostics_publisher.ts:108-113`)。**既存コードの「サーバは要求順に答える」という仮定は、本機能では使わない** |
-| **順序仮定への非依存** | **`ScanFlightTracker` は順序も期限も使わない。** 使うのは **1 要求に対する応答が 0 件か 1 件で、2 件にはならない**という事実だけ(§9.1 の表)。したがって**応答が入れ替わっても、期限を超えて遅延しても、旧文脈の所見は記録されない** |
+| **順序仮定への非依存** | **`ScanFlightTracker` は順序も期限も使わない。** 使うのは **前提 Q(全応答は計数済みの 1 要求に由来する)** と **前提 R(観測される応答は 1 要求につき 0 件か 1 件)** だけ(§9.1)。したがって**応答が入れ替わっても、期限を超えて遅延しても、旧文脈の所見は記録されない** |
+| **★ 前提が崩れたときの挙動** | 前提 Q / R は**同梱 LS 9.3.0 のバイナリに対する全列挙で証明した**ものであり、**LS を上げたら再検証が要る**(§6 / §21)。崩れた場合に観測されるのは「未着件数が 0 なのに応答が届く」で、**その応答は拒否され、そのパスは汚染される**(§9.1 の境界条件)。**前提違反は静かに記録を通さず、fail-closed 側へ倒れる** |
 | `KnowledgeGraphState` | **`(url, session)` の組。** `String?` 1 個では足りない |
 | `getUrl` と `ready` の競合 | **同一 session 内なら後勝ちで構わない**(同一の `gkg` プロセスを指す) |
 | **LS 再起動を跨ぐ競合** | **後勝ちは同一接続内でしか成立しない。** 再起動中に旧接続の遅延した `getUrl` 完了または `ready` が新接続の値を上書きすると、**停止済み `gkg` の localhost URL が現行 URL として返る**。しかも `WebviewUriResolver` は現行 snapshot の session を付けて `Resolved` を作るため、**既存の session 検査を素通りして別プロセス(あるいは同じポートを取った第三者)へ接続しうる**。→ **`record` は送信元 session を受け取り、現行でなければ拒否。読み出しも現行 session と一致するときだけ URL を返す。** 送信元 session は既存の仕組みで得られる: 通知ハンドラは末尾パラメータの型で注入され(`PluginRegistry.kt:32`)、`getUrl` の要求元は `GitLabLanguageServerClient.session`(同 `:54`)。**明示的な clear フックは要らない** — 読み出し時照合で同じ保証が得られ、取りこぼしが無い |
@@ -537,6 +700,10 @@ Rh(t) = Dn.parse(t.toString())
 - `$/gitlab/openUrl` の拒否は **scheme のみ**を記録する(`ShowDocumentLauncher` の既存規律)。
   ※ ログ文言の接頭辞は `showDocument:` 固定。openUrl 経由でも同じ文言になるが、**許容する**
   (文言のために URL を記録可能にするほうが悪い)。
+- **★ 残留 `outstanding` の観測(第 6 版)**: 応答が返らない要求の累積は「平常時は何も汚染されない」という
+  見積もりを痩せさせる唯一の要因なので、**接続世代ごとの残留件数(整数)だけ**を観測できるようにする。
+  **パスは出さない**(件数だけなら上の規律に収まる)。**恒常的なログにはしない** —— 出すのは
+  接続世代が閉じるときの 1 行、または既存の診断ログレベルの下だけ。
 - `gkg` 未検出はログに出さない(§12)。`gkg` の localhost URL もログに出さない。
   **★ `ready` の DTO パースが失敗すると `PluginMessageService` が payload をそのまま warn する**ため、
   そこで localhost URL が露出しうる。**`ready` の DTO は nullable・寛容にしてパース失敗を起こさせない。**
@@ -609,7 +776,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 
 | 層 | 方式 | 対象 |
 |---|---|---|
-| 純ロジック | **TDD** | **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜5。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
+| 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
 | 受信配線 | `GitLabLanguageServerClient` のハンドラを直接呼ぶ | store への記録、`openUrl` の委譲、**旧 session の `ready` 拒否** |
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
 | 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形 |
@@ -644,6 +811,10 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A13b-4** | **過剰拒否しない(liveness)**: fingerprint が変わらないまま同一パスへ重複要求した場合、**両方の応答が記録される**。汚染が常時 on になっていないこと | 自動 |
 | **A13b-5** | **汚染はパス単位**: 変更時に飛行中だったパスだけが汚染され、**飛行中でなかった別パスは直後から記録される** | 自動 |
 | **A13b-6** | **応答が返らない要求は fail-closed**: 応答が 1 件も返らない要求があるパスは、**接続世代が進むまで汚染されたまま**(詳細が出ない)。**`clear(deadEpoch)` で解除され、以後は記録される**。生きている接続の件数を巻き添えにしない | 自動 |
+| **A13b-7** | **★ round 4 の筋書き(原子性)**: 応答 FA が着信して `outstanding` が 0 になり「記録可」と判定される、その**判定と記録の間**に別スレッドが fingerprint を FB へ変更して `clear()` する。**FA の所見が FB の所見として復活しない。** 実装は「変更スレッドを `VulnerabilityIntake` の区間の入口で待たせ、応答スレッドの区間が閉じてから入れる」順と、その逆の順の**両方**を走らせ、どちらでも復活しないことを固定する | 自動 |
+| **A13b-8** | **`RecordPermit` が区間をまたげない。** 区間の外で作った(あるいは古い世代・古い fingerprint の)permit を `VulnerabilityStore` へ渡すと**拒否される**。単一区間で運用する限りこの拒否は起きないので、**これは「permit が区間をまたいだ」というバグの検出器**である | 自動 |
+| **A13b-9** | **`VulnerabilityStore` が自前の錠を持たない。** 読み書きはすべて `VulnerabilityIntake` 経由で、**tracker と store を別々に叩く public API が存在しない**(公開 API の本数で固定する) | 自動 |
+| **A13b-10** | **前提 Q / R / S の成文化**: 応答の `filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)、**URI 形式の `filePath` も素のパスと同じキーへ正規化される**(前提 S)、**未着件数 0 での着信は拒否 + 汚染**。3 つとも fail-closed 側であること | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
 | **A15b** | **`WebviewEditorPart.kt:41` / `AgenticTabsView.kt:27` がそのファクトリを呼んでいる** | **目視 + 実機**(SWT `Composite` を受けるため headless で呼べない) |
@@ -651,7 +822,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A17** | **`description` に `<script>` 等を含む所見が、実行されずテキストとして描画される**(エスケープ済みで webview へ渡る)(P1-f) | 自動(投影の出力を検査)+ **実機**(A11 に相乗り) |
 | **A17b** | **コードスパン内の `<` が `&lt;` として投影される**ことを**既知の表示劣化として固定**する(§14。挙動を隠さないためのテスト) | 自動 |
 | **A18** | **`wrapper.currentSnapshot` が `null` のとき、タブを開かずに通知だけ出す**(§9.2 手順 6 / §12) | 自動 |
-| **A19** | **上限 N の store へ複数スレッドが同時に `record` しても、最終サイズが N を超えず例外も出ない**(P1-g。`removeEldestEntry` が put と同一ロック区間で走ることの確認) | 自動 |
+| **A19** | **上限 N の store へ複数スレッドが同時に `record` しても、最終サイズが N を超えず例外も出ない**(P1-g)。第 6 版で store 自前の錠を外したので、**`removeEldestEntry` が走る `put` が `VulnerabilityIntake` の `DiagnosticGenerationRegistry.lock` 区間の中にあること**を確認する形に読み替える | 自動 |
 | **A20** | **`$/gitlab/plugin/request` の応答が DTO ではなく `Map` として扱われ、`ClassCastException` にならない**(§8.3 の名前衝突)。`{url}` の取り出しが型に依存しない | 自動 |
 
 ## 20. 未決事項
@@ -675,6 +846,8 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **`gkg` 不在で D6 が実機でも検証できない** | 受け入れ確認ができない | R8 のメッセージ頁までは検証可能。**PR にその旨を明記** |
 | **外部データを webview が HTML 展開する** | **XSS** | **同梱バンドルはサニタイズしない(§14 に実ソース根拠)。クライアント側でエスケープする**(`VulnerabilityProjection`)。A17 |
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
+| **★ 判定と記録の隙間に設定変更が割り込む** | **認可境界の違反**(clear を生き延びた旧所見が現行として読める) | **判定・fingerprint 更新・clear・record を `DiagnosticGenerationRegistry.lock` の単一区間に入れ、`RecordPermit` を同一区間で消費する**(§9.1 / §11)。A13b-7 / A13b-8 |
+| **★ LS を上げて前提 Q / R が崩れる** | 計数されない応答が静穏を偽証し、**認可境界が破れる** | **前提を §9.1 に全列挙付きで成文化し、LS 更新時の再検証手順を §6 と PR に置く。** 崩れた場合の観測(未着件数 0 での着信)は**拒否 + 汚染**で fail-closed(§11)。A13b-10 |
 | **遅延した旧文脈の応答が「現行のもの」として受理される** | **同上(認可境界の違反)。** **応答を要求に対応づける方式はすべてここで破れる**(単一スロット・FIFO・隔離境界のいずれも) | **対応づけを諦め、未着件数が 0 に戻ることで静穏を証明する**(`ScanFlightTracker`、§9.1)。A13b-1 |
 | **設定変更を跨いだパスで正しい応答まで捨てる** | scan 結果 1 回分の損失 | **意図した代償**(fail-closed)。次の保存・コマンドで撃ち直せる。A13b-4 が過剰拒否でないことを固定 |
 | **応答が返らない要求があると汚染が解けない** | そのパスの**詳細が出ない**(診断には影響しない) | **仕様**(fail-closed)。解除は**証明可能なバリア = 接続更新**のみ。**期限切れは証明にならないので使わない。** A13b-3 / A13b-6 |
@@ -846,3 +1019,79 @@ round 3 の指摘は **P1×1**。**妥当と判断し、方式そのものを置
 **受け入れ条件を入れ替えた**: A13b-1 は **round 3 の筋書きそのもの**(`応答 B → 要求 C → 応答 C → 遅延応答 A`)、
 A13b-3 は**期限超過の遅延応答**、A13b-6 は**応答欠落の fail-closed と接続更新での解除**。
 A13b-2 / A13b-4 / A13b-5 で**恒久化しないこと・過剰拒否でないこと・汚染がパス単位であること**を固定する。
+
+### 第 6 版(2026-09-22)— Codex レビュー round 4 反映
+
+round 4 の指摘は **P1×2**。**両方とも妥当と判断し、実コード・同梱 LS 9.3.0 のバイナリで裏を取ったうえで反映した。**
+**P1-2 が要求した証明は成立した** —— 前提を捨てるのではなく、**全列挙して設計に固定した。**
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **P1-1** | **応答判定(`outstanding==0` で記録可)と `VulnerabilityStore.record` が原子的でない。** 判定直後に別スレッドの fingerprint 変更 + `clear` が割り込むと、変更側は `outstanding==0` なので汚染せず、応答側が現行 FB を貼って FA の所見を clear の後に復活させる。また手順 3 の「要求時 fingerprint」は、対応づけを廃止した `ScanFlightTracker` からは取得不能で自己矛盾 | **両方とも妥当。** ①**自己矛盾は実在**した —— `requestFingerprint` は第 3・4 版の残骸で、第 5 版で対応づけを捨てた時点で取得不能になっていた。**削除した。** ②**非原子性も実在**した —— 判定は `DiagnosticGenerationRegistry.lock`、記録は `VulnerabilityStore` 自前の `Collections.synchronizedMap`、`clear` は変更側が `outboundLock` 配下から呼ぶ、で**3 つの別区間**だった。→ **錠を `DiagnosticGenerationRegistry.lock` 1 つへ統合**し、`ScanFlightTracker` と `VulnerabilityStore` を **`VulnerabilityIntake` の複合操作 4 つ**の背後へ入れ、**判定区間で作った `RecordPermit` を同じ区間で消費**する形にした(§9.1「★★ 判定と記録は一操作でなければならない」/ §10 / §11) |
+| **P1-2** | **静穏証明の健全性には「各要求の応答は最大 1 件」だけでなく「受信する全応答が一意な計数済み要求由来で、LS が自発応答を送らない」ことも必要。** 非対応応答が先着して `outstanding` を 0 にすると汚染が解除され境界が破れる。`sendScanResponse` 相当と通知メソッドの全呼び出し元を列挙して前提を固定せよ | **妥当。しかも第 5 版の根拠(「成功 `:191` / 失敗 `:242` が排他」)は不十分だった。** → `main.js.map` の **2,839 sources を全展開して全列挙**し、**前提 Q(Q1〜Q6)・前提 R・前提 S** として §9.1 に固定した |
+
+#### P1-2 の列挙結果(同梱 LS 9.3.0)
+
+**経路は一本道で閉じている**:
+
+```
+node_connection_service.ts:90  onNotification(RemoteSecurityScanNotificationType)   ← クライアントの通知だけ
+  └ :91  handleScanNotification
+      └ security_diagnostics_publisher.ts:112  #runSecurityScan   (private・呼び出し元はここだけ)
+          ├ :191  sendScanResponse (成功)
+          └ :193  #handleError → :242  sendScanResponse (失敗)
+                security_notifier.ts:18-23  #notify
+                  = createNotifyFn = connection.sendNotification
+                    (connection_service.ts:42-45 / :198-199、
+                     node_connection_service.ts:81-84 で登録)
+```
+
+- **`sendScanResponse` の呼び出し元はこの 2 つで全部**(バンドル全体の grep)。
+- **クライアント側の送信も 1 箇所**: `SecurityScanLauncher.kt:304`。**計数する場所そのもの**。
+- ⇒ **LS は自発応答を送らない。全応答は `outstanding(P) += 1` を通った 1 要求の下流。**
+
+#### 第 5 版の記述を 2 つ訂正した
+
+1. **「1 要求 → 応答は最大 1 件」は、呼び出し回数としては正しくない。**
+   `:191` の送信は **`try` の中**にあり、reject すると `catch` が `:242` で 2 通目を送る。
+   → **「観測される応答が 0 件か 1 件」へ言い換え、その証明を同梱 `vscode-jsonrpc` で与えた**
+   (`connection.js:910` の同期 throw / `messageWriter.js:76-105` の `Semaphore(1)` と `doWrite`)。
+   **reject した送信は完全な 1 通を届けない**ので、2 通目が出るときは 1 通目が観測されない。
+   唯一の例外「本文の途中で切れたストリーム」は**接続破断**であり、本方式のバリアが効く条件と同じ。
+2. **応答を返さない早期 return は 4 つではなく 5 つ。**
+   第 5 版が挙げた `:121` / `:141` / `:144` / `:147` に加えて **`:173-175`**
+   (`vulnerabilities` が配列でない / null)がある。**これだけは設定と無関係に起こる**ので、
+   fail-closed の頻度見積もりに含めるよう §9.1 に明記した。
+
+#### 併せて固定した前提(前提 S)
+
+**送信側の計数キーと受信側の減算キーが一致すること**を根拠付きで書いた。
+LS の失敗経路は `filePath ?? documentSource.toString()`(`:193`)で **URI 文字列**を返しうるが、
+`securityScanPathKey` が URI と素のパスを同じキーへ正規化する
+(`SecurityScanStatusReporterTest.kt:478-489` / `:529` が固定済み)。
+`filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)= fail-closed。
+
+#### 前提の寿命を設計に入れた
+
+前提 Q / R は**特定バージョンのバイナリに対する証明**なので、**gitlab-lsp を上げたら再検証が要る。**
+§6 に**再検証手順(4 項目・`main.js.map` を展開して grep するだけ)**を置き、§21 にリスク行を足し、
+**PR の「LS 更新時の確認項目」へ転記する**ことにした。
+
+#### 反映先
+
+§6(再検証手順)/ §8.1(`VulnerabilityIntake` 新設・`VulnerabilityStore` と `ScanFlightTracker` から自前の錠を外す)/
+**§9.1(手順 3・4 / 前提 Q・R・S / 規則の区間化 / 「判定と記録は一操作」新設 / 残る限界の 5 経路)** /
+§10(`RecordPermit` / 素の `LinkedHashMap`)/ §11(原子性の行を新設・5 行改訂)/
+§15(残留 `outstanding` の観測)/ §18(テスト対象)/
+§19(A13b-7 / A13b-8 / A13b-9 / A13b-10・A19 の読み替え)/ §21(リスク 2 行)。
+
+#### 自己レビューで併せて直した点(第 6 版の反映そのものに対して)
+
+- **区間の順序が load-bearing であることが書けていなかった。** `SecurityScanLauncher.kt:303-304` は
+  1 つの `outboundLock` 区間でモニタ区間に**2 回**入る。**「変更判定 → `+= 1`」の順でなければ、
+  新文脈の要求が自分自身を汚染する。** §9.1 に明記した。
+- **「平常時は何も汚染されない」が無条件に読めた。** 応答欠落は `+1` を恒久的に残すので、
+  **そのパスは「次の設定変更で汚染され、二度と解けない」側へ寄っていく。** 条件付きの主張へ直し、
+  痩せ具合を測るために**残留件数(整数のみ・パスを出さない)の観測**を §15 に足した。
+- **A19(P1-g)の文言が旧ロック前提のままだった。** store 自前の錠を外したので、
+  「`removeEldestEntry` が `VulnerabilityIntake` の区間の中で走ること」の確認へ読み替えた。
