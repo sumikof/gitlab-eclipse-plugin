@@ -143,6 +143,7 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 |---|---|
 | `VulnerabilityStore` | パス → (所見リスト, timestamp, 世代, **scan context fingerprint**)。**記録・順序採番・上限 eviction は単一ロック下の 1 操作**(`Collections.synchronizedMap` + `LinkedHashMap(accessOrder = true)` の `removeEldestEntry`)。世代・fingerprint 不一致の読み書きを拒否 |
 | `VulnerabilityLookup` | **所見を「選ぶ」だけ。** 所見の生 `Map` から `location.start_line` を取り出し、カーソル行に一致する先頭 1 件を返す。**型は仮定しない**(LS の形が変わっても落ちない) |
+| `ScanContextLedger` | **どの scan 要求がどの scan 文脈(fingerprint)で出たかを、パス別 FIFO + 隔離で覚える**(§9.1)。`CommandWaiters` と同じ構造・同じモニタ。送信側が `record`、着信側が `consumeOldest` して記録可否を返す。失効は `RESPONSE_DEADLINE_MS` |
 | `VulnerabilityProjection` | **選ばれた 1 件を webview 用に投影する。** 描画対象 5 フィールド(`name` / `severity` / `description` / `location.start_line` / `.start_column`)を**個別に検証・正規化し、HTML エスケープ**する。`location` が使えない 1 件は `null`(= 除外)、表示テキストが欠けるだけの所見は安全な既定値で描画(§10.1 / §14) |
 | `VulnerabilityPayload` | `updateDetails` のペイロード 3 つ組を組み立てる。`timestamp` の文字列化を含む |
 | `KnowledgeGraphState` | `ready` / `getUrl` で受けた URL を**送信元 `LanguageServerSession` と組で**保持。未設定を表現でき、**現行でない session の書き込み・読み出しを拒否**する(§11) |
@@ -217,9 +218,82 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 - **応答は正規化パスで突合される** — 既存 `SecurityScanStatusReporter` と同じ `securityScanPathKey`。
   (応答自体は要求を識別する値を持たないため、**突合はパスでしかできない**。)
 
-→ **`outboundLock` 区間で `pendingFingerprint[securityScanPathKey(documentUri)] = fingerprint` を控える。**
-着信時にそのパスのエントリを**取り出して消費**し、**現行 fingerprint と一致するときだけ記録**する。
-同一パスへの再要求は上書きでよい(応答は要求順に返る)。エントリは消費時に削除し、上限は store と同じ。
+→ **`outboundLock` 区間で `ScanContextLedger.record(securityScanPathKey(documentUri), fingerprint, epoch)`。**
+着信時に**そのパスの最古エントリを消費**し、下記の判定で記録の可否を決める。
+
+##### ★★ 単一スロットにしてはならない(第 4 版で訂正)
+
+第 3 版は「**同一パスへの再要求は上書きでよい**(応答は要求順に返る)」と書いていた。**これは認可境界を破る。**
+
+> fingerprint A で path P を要求 → 設定を B へ変更 → **同じ P を B で再要求** → 応答 A、応答 B の順で着信。
+> 単一スロットには **B しか残っていない**ため、**応答 A が B のエントリを消費して現行 B との照合に成功**し、
+> **前アカウント由来の所見が記録される。** 続く正しい応答 B は対応エントリを失って捨てられる。
+> 「要求順に返る」という前提は、この誤対応を防ぐどころか**確定させる**。
+
+**同一パスに複数の scan が同時に飛ぶのは実在の状態である**(推測ではない):
+
+- 在庫の重複排除・デバウンスは**無い**。保存のたびに scan が走り、その最中にコマンド scan も撃てる。
+- 既存コードが明言している — `SecurityScanLauncher.kt:399`:
+  「(応答期限が来るころには)**同じファイルに別の scan が queue されている可能性がある**」。
+- 応答期限は **`RESPONSE_DEADLINE_MS = 60_000`**(`SecurityScanLauncher.kt:41`)。
+  **最大 60 秒、同一パスの要求が飛行しうる。**
+
+##### 採る方式: パス別 FIFO + 隔離(`ScanContextLedger`)
+
+**この形は本プロジェクトが既に持っている。** `CommandWaiters` が**まったく同じ問題**
+(同一パスに複数要求・応答は要求を識別しない)を**パス別 FIFO の `consumeOldest`** で解いている
+(`CommandWaiters.kt` の `waiters: Map<String, MutableList<Waiter>>`)。**同じ構造を踏襲する。**
+
+| 要素 | 内容 |
+|---|---|
+| 状態 | `path → ArrayDeque<Entry(seq, fingerprint, epoch, sentAtMillis)>` + `path → quarantineUntilSeq: Long?` |
+| `seq` | **前進のみの単一カウンタ**(`CommandWaiters` の `ids` と同じ規律。`clear` でも世代交代でもリセットしない。**再利用した番号は、別の新しい scan に古い判定を適用させてしまう**) |
+| ロック | **`DiagnosticGenerationRegistry.lock`**(`CommandWaiters` と**同一モニタ**)。「接続が生きているか」と「何が飛行中か」を**不可分な 1 ステップ**で答えるため |
+| ロック順序 | **outbound `Mutex` → このモニタ**(既存の固定順。**ここから outbound `Mutex` を取らない**) |
+| 記録 | 送信側 `outboundLock` 区間で末尾に追加(= outbound → モニタの既定順) |
+
+**判定(応答着信時。`FC` = 現行 fingerprint)**:
+
+> **隔離の解け方(先に決めておく)**: 隔離は真偽値ではなく **`quarantineUntilSeq` という境界**で持つ。
+> **隔離を張った時点でキューにあった最新エントリの `seq`** を記録し、
+> **先頭の `seq` がそれを超えたら**(= 汚染された飛行分を消費・失効で出し切ったら)隔離は解ける。
+>
+> **真偽値 + 「キューが空なら解除」では不足する。** 応答欠落でエントリが滞留している間に**新しい要求**が
+> 入ると、失効の時点でもキューは空にならず、**その後の正しい応答が 1 件だけ余分に拒否される**
+> (A13b-3 の「以後は正常に記録される」が崩れる)。境界で持てばこの穴が無い。
+
+1. **接続世代が不一致** → 拒否(既存規律と同じ)。
+2. **失効エントリを先に掃除** — `sentAtMillis` が `RESPONSE_DEADLINE_MS` より古いものを捨てる。
+3. **隔離判定** — 先頭エントリの `seq` が `quarantineUntilSeq` **以下なら隔離中**。
+   そのエントリを 1 件消費して**拒否**する。**先頭が境界を超えた(または該当エントリが尽きた)時点で隔離を解く。**
+4. それ以外 → 最古を 1 件消費し、**記録するのは次を全て満たすときだけ**:
+   - 消費したエントリの fingerprint が **`FC` と一致**、**かつ**
+   - **残りのエントリにも `FC` と異なるものが 1 件も無い**。
+   - 満たさなければ**そのパスを隔離**して拒否 — **`quarantineUntilSeq` = そのとき残っているキューの最新 `seq`**
+     (残りが無ければ消費したエントリ自身の `seq`)。**エントリが無い場合も拒否**(出所を証明できない)。
+
+**なぜ「残りも見る」のか** = **応答の順序保証に依存しないため。** 既存コードは「サーバは要求順に答える」
+と仮定しているが(`SecurityScanStatusReporter.kt`)、**その仮定が崩れると FIFO 照合だけでは安全側に倒れない**:
+`[FA, FB]` で応答 B が先に着けば `FA` を消費して拒否(正)だが、続く応答 A が `FB` を消費して
+**一致してしまう**(誤)。**隔離は「そのパスの飛行分を全て捨てきるまで拒否し続ける」**ので、
+**順序が崩れても旧文脈の所見は決して記録されない。**
+
+**代償と、それを選ぶ理由**: 設定変更を跨いだパスでは、**正しい応答 B も捨てられる**。
+しかし失うのは「次の保存/コマンドで撃ち直せば得られる scan 結果 1 回分」であり、
+**得るのは「前のインスタンス・前のアカウントの所見を現行として表示しない」保証**である。
+**この非対称は明確に後者を選ぶ。**
+
+**応答欠落(恒久停止にしない)**: 応答が返らないとエントリが残り、隔離が解けなくなる。
+これを **2 で失効させる**(60 秒 = 既存の応答期限と同じ値。**新しい定数を作らない**)。
+失効で汚染分が出し切られれば、**3 の境界判定により隔離は自動的に解ける。**
+**失効の判定は応答着信時に行う**ため、別スレッドのタイマーは要らない
+(= 次の応答が来るまで滞留していても、そのとき掃除されるので観測される挙動は変わらない)。
+**したがって隔離は最大でも「汚染された最後の要求から 60 秒 + 次の応答 1 件」で必ず解ける。**
+さらに**パスごとのキュー長と総パス数に上限**を置き、超過分は最古から捨てる(store と同じ規律)。
+**上限で捨てたエントリも「出し切った」として扱う**ので、境界判定は同じように進む。
+
+**接続世代の切り替え**: `CommandWaiters.clear(epoch)` と同じく、**死んだ接続の epoch のエントリを捨てる。**
+生きている接続のエントリを巻き添えにしないため、**消すのは名指しした epoch のものだけ。**
 
 **設定変更(N5)**: `didChangeConfiguration` を送る箇所のうち **fingerprint の成分を含む全量送信は 2 つ** —
 `GitLabLanguageServerConfigurationService.sendConfiguration`(`:58`)と `SecurityScanLauncher.kt:303`。
@@ -318,8 +392,11 @@ data class FileVulnerabilities(
 | **退去順序** | `timestamp` ではなく **`LinkedHashMap` のアクセス順**で決まる。`timestamp` が null の所見が混じっても順序が壊れない(応答に timestamp が無い場合の挿入順が別途要る、という問題が起きない) |
 | 接続世代 | 既存 `DiagnosticGenerationRegistry.currentEpoch` を使う(marker と同じ土俵)。**読み出し時に世代を照合**し、古ければ「所見なし」を返す |
 | **scan context fingerprint**(N5) | 接続世代は `didChangeConfiguration` では進まない。**インスタンス URL・認証・スキャン有効状態が変われば、同じ接続のままでも所見は無効。** `GitLabLanguageServerConfigurationParams` の **`baseUrl` / `token` / `featureFlags.remoteSecurityScans` / `securityScannerOptions.enabled`** から**不可逆ダイジェスト**を作る(§15: **fingerprint 自体もログに出さない。`token` を平文で保持しない**)。全量送信の 2 箇所の `outboundLock` 区間で前回値と比較し、異なれば `clear()`(**部分送信の `ProjectOpenLanguageServerListener.kt:60` は対象外** — §9.1) |
-| **飛行中の応答の扱い** | **「着信時点の現行値」では照合にならない**(常に一致する)。**要求時 fingerprint をパスごとに控え**(`SecurityScanLauncher.kt:304` の直前、同じ `outboundLock` 区間)、着信時に消費して現行値と照合する(§9.1)。応答は要求を識別する値を持たないため**突合はパス(`securityScanPathKey`)でしかできない**が、それで足りる |
-| 応答の順序 | **lsp4j ディスパッチスレッド上で同期に処理される**(`GitLabLanguageServerClient.securityScanResponse` は `runAsync` しない)。LS も要求順に答える。**「同一パスの新しい値を古い空応答が消す」はロックではなく順序で担保されている** |
+| **飛行中の応答の扱い** | **「着信時点の現行値」では照合にならない**(常に一致する)。**要求時 fingerprint を `ScanContextLedger` にパス別 FIFO で控え**(`SecurityScanLauncher.kt:304` の直前、同じ `outboundLock` 区間)、着信時に最古を消費して判定する(§9.1)。応答は要求を識別する値を持たないため**突合はパス(`securityScanPathKey`)でしかできない** |
+| **同一パスの重複要求** | **単一スロットでは駄目**(§9.1)。重複排除もデバウンスも無く、**最大 60 秒**(`RESPONSE_DEADLINE_MS`)同一パスの要求が飛行しうる(`SecurityScanLauncher.kt:399` が明言)。**上書きすると旧 fingerprint の応答が新 fingerprint のエントリを消費して認可境界を破る** |
+| **`ScanContextLedger` のロック** | **`DiagnosticGenerationRegistry.lock`**(`CommandWaiters` と同一モニタ)。ロック順序は既存の固定順 **outbound `Mutex` → このモニタ**。**台帳側から outbound `Mutex` を取らない** |
+| 応答の順序 | **lsp4j ディスパッチスレッド上で同期に処理される**(`GitLabLanguageServerClient.securityScanResponse` は `runAsync` しない)。LS も要求順に答える、と既存コードは仮定している。**「同一パスの新しい値を古い空応答が消す」はロックではなく順序で担保されている** |
+| **順序仮定への非依存** | **fingerprint の照合はその仮定に頼らない。** §9.1 の「隔離」は**そのパスの飛行分を捨てきるまで拒否し続ける**ため、**応答が入れ替わっても旧文脈の所見は記録されない**(FIFO 照合だけでは安全側に倒れない。§9.1 の反例を参照) |
 | `KnowledgeGraphState` | **`(url, session)` の組。** `String?` 1 個では足りない |
 | `getUrl` と `ready` の競合 | **同一 session 内なら後勝ちで構わない**(同一の `gkg` プロセスを指す) |
 | **LS 再起動を跨ぐ競合** | **後勝ちは同一接続内でしか成立しない。** 再起動中に旧接続の遅延した `getUrl` 完了または `ready` が新接続の値を上書きすると、**停止済み `gkg` の localhost URL が現行 URL として返る**。しかも `WebviewUriResolver` は現行 snapshot の session を付けて `Resolved` を作るため、**既存の session 検査を素通りして別プロセス(あるいは同じポートを取った第三者)へ接続しうる**。→ **`record` は送信元 session を受け取り、現行でなければ拒否。読み出しも現行 session と一致するときだけ URL を返す。** 送信元 session は既存の仕組みで得られる: 通知ハンドラは末尾パラメータの型で注入され(`PluginRegistry.kt:32`)、`getUrl` の要求元は `GitLabLanguageServerClient.session`(同 `:54`)。**明示的な clear フックは要らない** — 読み出し時照合で同じ保証が得られ、取りこぼしが無い |
@@ -452,7 +529,9 @@ Rh(t) = Dn.parse(t.toString())
 | `WebviewUriResolver` | **`directUris` シームを 1 つ追加**(既定は「無し」)。**metadata 要求より前に引く**(直接アドレスは metadata を要さず、待たせる理由が無い)。session は従来どおり現行 snapshot から取るので supersession 検出は不変。既存の解決順序は不変 |
 | **`WebviewEditorPart.kt:41`** | **`directUris` を渡す配線を追加。**(P1-c) |
 | **`AgenticTabsView.kt:27`** | **同上。** |
-| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `clear()` を `outboundLock` 区間に追加**(§9.1)。送信内容は不変 |
+| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `clear()` を `outboundLock` 区間に追加**、`SecurityScanLauncher` は**送信直前に `ScanContextLedger.record`** も行う(§9.1)。送信内容は不変 |
+| `CommandWaiters` / `DiagnosticGenerationRegistry` | **変更しない。** `ScanContextLedger` は `DiagnosticGenerationRegistry.lock` を**共有するだけ**(`CommandWaiters` と同じ扱い)。既存のロック順序 outbound `Mutex` → モニタ を守る |
+| `SecurityScanLifecycle` | 接続停止時の後始末に **`ScanContextLedger.clear(deadEpoch)` を 1 行追加**(`CommandWaiters.clear` と同じ引数・同じ位置)。**死んだ接続の epoch を渡す**(進めた後の値ではない) |
 | `GitLabLanguageServer` | `@JsonRequest("$/gitlab/plugin/request")` を 1 つ追加 |
 | `GitLabLanguageServerClient` | `$/gitlab/openUrl` ハンドラと store への記録を追加 |
 | `WebviewEditorInput` | ファクトリを 2 つ追加 |
@@ -508,7 +587,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 
 | 層 | 方式 | 対象 |
 |---|---|---|
-| 純ロジック | **TDD** | `VulnerabilityStore`(世代・**fingerprint**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
+| 純ロジック | **TDD** | **`ScanContextLedger`(パス別 FIFO・隔離・失効・上限・世代。A13b-1〜5。時刻はシームで注入して失効を決定的にテストする)** / `VulnerabilityStore`(世代・**fingerprint**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
 | 受信配線 | `GitLabLanguageServerClient` のハンドラを直接呼ぶ | store への記録、`openUrl` の委譲、**旧 session の `ready` 拒否** |
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
 | 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形 |
@@ -537,6 +616,11 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | A12 | 実機: `gkg` 導入時に Knowledge Graph が開く | **実機**(`gkg` 必須) |
 | **A13** | **fingerprint が変われば store が消える。** 全量送信の 2 箇所でのみ計算され、**`workspaceFolders` だけの部分送信では消えない**(N5 / P1-a) | 自動 |
 | **A13b** | **要求時 fingerprint と現行 fingerprint が食い違う応答は記録されない**(設定変更前に飛行していた scan)。控えたエントリは着信で消費される(§9.1) | 自動 |
+| **A13b-1** | **設定変更を挟んだ同一パスの重複要求**: `A` 要求(FA)→ fingerprint を FB へ変更 → **同じパスを** `B` 要求(FB)→ 応答 A → 応答 B。**応答 A の所見が記録されない**(= 前アカウント由来の所見が現行として残らない)。応答 B も隔離により記録されない | 自動 |
+| **A13b-2** | **順序が入れ替わっても同じ**: 同じ筋書きで**応答 B → 応答 A** の順に着信しても、**FA 由来の所見は記録されない**(順序保証に依存しないこと) | 自動 |
+| **A13b-3** | **応答欠落で恒久停止しない**: 要求 2 件に対し応答が 1 件しか返らず、**その滞留中に新しい要求が入った**場合でも、`RESPONSE_DEADLINE_MS` 経過後は**新しい要求の応答が記録される**(余分に 1 件拒否されない = 隔離を境界 `quarantineUntilSeq` で持つことの検証) | 自動(時刻はシームで注入) |
+| **A13b-4** | **過剰拒否しない(liveness)**: fingerprint が変わらないまま同一パスへ重複要求した場合、**両方の応答が記録される**。隔離が常時 on になっていないこと | 自動 |
+| **A13b-5** | **死んだ接続のエントリだけが消える**: `clear(epoch)` が名指しした epoch のエントリのみ捨て、生きている接続の飛行分を巻き添えにしない | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
 | **A15b** | **`WebviewEditorPart.kt:41` / `AgenticTabsView.kt:27` がそのファクトリを呼んでいる** | **目視 + 実機**(SWT `Composite` を受けるため headless で呼べない) |
@@ -568,6 +652,9 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **`gkg` 不在で D6 が実機でも検証できない** | 受け入れ確認ができない | R8 のメッセージ頁までは検証可能。**PR にその旨を明記** |
 | **外部データを webview が HTML 展開する** | **XSS** | **同梱バンドルはサニタイズしない(§14 に実ソース根拠)。クライアント側でエスケープする**(`VulnerabilityProjection`)。A17 |
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
+| **同一パスの重複要求で旧文脈の応答が新要求のエントリを消費する** | **同上(認可境界の違反)。** 単一スロットで上書きすると成立してしまう | **パス別 FIFO + 隔離**(`ScanContextLedger`、§9.1)。A13b-1 / A13b-2 |
+| **設定変更を跨いだパスで正しい応答まで捨てる** | scan 結果 1 回分の損失 | **意図した代償**(fail-closed)。次の保存・コマンドで撃ち直せる。A13b-4 が過剰拒否でないことを固定 |
+| **応答欠落でエントリが滞留し隔離が解けない** | そのパスの所見が恒久的に記録されない | `RESPONSE_DEADLINE_MS`(60 秒)で失効 + キュー長・パス数の上限。A13b-3 |
 | **LS 再起動を跨いだ旧 session の遅延応答** | 停止済み / 第三者のプロセスへ接続 | `(url, session)` 束縛と読み出し時照合(§11)。A14 |
 | **`directUris` の本番配線漏れ** | **コンパイルは通るが機能が常に `NotAdvertised`** | §16.1 で 2 生成箇所を名指し。A15 |
 | **`updateDetails` 送信失敗で前の所見が残る** | 誤表示(B を見ているつもりで A) | **LS 不在は送信前に検知(A18)。接続が生きている場合の送信失敗のみ検知手段が無い**(§12 / U6)。緩和は payload の `filePath` + 行番号。**PR の「既知の制限」へ転記** |
@@ -600,6 +687,9 @@ PR #88 の Codex レビューで **P1×7 + P2×1**。**8 件すべて妥当と�
 | P1-f | §5.3 N6 / §7 / §8.1 / §9.2 / **§10.1** / **§14** / §18 / §19 A17・A17b / §20 U8 / §21 |
 | P1-g | §8.1 / §10 / §11 / §18 / §19 A19 |
 | P2-a | §8.1 / §9.2 / **§10.1** / §12 / §18 / §19 A4b / §21 |
+
+**round 2(P1-h)の反映先**: §8.1(`ScanContextLedger`)/ **§9.1「単一スロットにしてはならない」「採る方式」** /
+§11 / §16 / §18 / §19 A13b-1〜5 / §21 / §22 第 4 版。
 
 第 3 版で追加・修正した節(自己レビュー分): §8.3(`pluginRequest` の名前衝突)/ §9.1(要求時 fingerprint)/
 §9.2 手順 6(LS 不在の事前確認)/ §12(限界の縮小・根拠の訂正)/ §14(表示劣化)/ §16.1(本番ファクトリ)/
@@ -637,7 +727,7 @@ PR #88 の Codex レビューで **P1×7 + P2×1**。**8 件すべて妥当と�
 **純ロジックは実装・検証済み**(`feat/webview-remnants` @ 1 コミット目、新規テスト 55 本、`FAILSET_IDENTICAL`、detekt ベースラインちょうど)。
 `VulnerabilityStore` / `VulnerabilityLookup` / `VulnerabilityProjection` / `VulnerabilityPayload` / `KnowledgeGraphState` / `DirectWebview` / `WebviewUriResolver` のシーム。
 
-**未実装(次に着手する順)**: P1-a の fingerprint(**要求時捕捉を含む**)/ P1-b の session 束縛 /
+**未実装(次に着手する順)**: P1-a の fingerprint(**`ScanContextLedger` によるパス別 FIFO + 隔離を含む**)/ P1-b の session 束縛 /
 P1-c の本番ファクトリと配線(**シーム型を `(String, LanguageServerSession) -> DirectWebview?` へ変更**)/
 P1-e のランチャー差し替え / 受信配線(`GitLabLanguageServerClient`)/ 送信クライアント(**`pluginRequest` の
 戻り値型は `Any?`**)/ ハンドラ 2 件 / `plugin.xml` / Koin 登録。
@@ -653,6 +743,7 @@ P1-e のランチャー差し替え / 受信配線(`GitLabLanguageServerClient`)
 | P2 群 | §14 の「見た目が変わらない」を訂正(コードスパン・URL が劣化する)/ シームのシグネチャと「現行 session」の入手元を 1 つに確定 / A15 を自動・目視に分割(生成箇所は headless で呼べない)/ P1-d の限界を「接続が生きている場合の送信失敗」に縮小し、LS 不在は送信前に検知(A18)/ `didChangeConfiguration` の**3 箇所目**(部分送信)を fingerprint の対象外と明記 / P1-g の受け入れ条件 A19 を追加 |
 | P3 群 | ベースを `0319421`(PR #87 マージ済)へ更新 / `gkg` の spawn 引数と起動タイミング / OAuth トークン更新で fingerprint が変わる問題を U7 へ / `ready` payload のログ露出 / `ShowDocumentLauncher` のログ文言 |
 
+
 **根拠の訂正**: 第 2 版は lsp4j の notify 握り潰しを「#20 の既知事項」としていたが、**#20 に該当記述は無い。**
 根拠は `RemoteEndpoint.notify` の実装そのもの(§12)。あわせて、**既存コメント
 `SecurityScanLauncher.kt:306-308` が逆のことを主張している**ことを申し送りに含めた。
@@ -662,3 +753,29 @@ P1-e のランチャー差し替え / 受信配線(`GitLabLanguageServerClient`)
 「接続が消えたら `clear()`」と書いており §11 と食い違う(**`clear()` を残すか消すかを実装時に決める**)/
 `VulnerabilityStore` の KDoc が "least recently **written**" と書いているが `accessOrder = true` なので
 **アクセス順が正**。
+
+### 第 4 版(2026-09-22)— Codex レビュー round 2 反映
+
+round 2 の指摘は **P1×1**。**妥当と判断し、実コード・プロトコルで裏を取ったうえで反映した。**
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **P1-h** | **同一パスの要求を単一 fingerprint で上書きしない。** fingerprint A の scan が飛行中に設定を B へ変え、同じパスを B で再要求すると、応答 A が B のエントリを消費して現行 B と一致し、**前アカウント由来の所見が記録される**。正しい応答 B は対応エントリを失う。「要求順に返る」前提はこの誤対応を**確定させる** | **妥当。第 3 版の退行で、round 1 の P1-a が正しく閉じていなかった。** 「同一パスへの再要求は上書きでよい」と書いたのは誤り。**実在の条件であることも確認**: 重複排除もデバウンスも無く、`SecurityScanLauncher.kt:399` が「応答期限が来るころには同じファイルに別の scan が queue されている可能性がある」と明言、期限は `RESPONSE_DEADLINE_MS = 60_000`(`:41`)。→ **`ScanContextLedger`(パス別 FIFO + 隔離)へ置き換え**(§9.1) |
+
+**この形は新規発明ではない。** `CommandWaiters` が**同一の問題**(同一パスに複数要求・応答は要求を識別しない)を
+**パス別 FIFO の `consumeOldest`** で解いており(`CommandWaiters.kt`)、**構造・モニタ・ロック順序をそのまま踏襲**した。
+
+**順序保証にも依存しない形にした。** 単純な FIFO 照合は、応答が入れ替わると安全側に倒れない
+(`[FA, FB]` で応答 B が先に着くと `FA` を消費して拒否し、続く応答 A が `FB` と**一致してしまう**)。
+**そのパスの飛行分を捨てきるまで拒否し続ける「隔離」**にすることで、**順序が崩れても旧文脈の所見は記録されない。**
+
+**代償を明示した**: 設定変更を跨いだパスでは正しい応答も捨てる(fail-closed)。失うのは scan 結果 1 回分で、
+次の保存・コマンドで撃ち直せる。**過剰拒否になっていないこと**は A13b-4 で固定する。
+
+**応答欠落で恒久停止しないこと**も設計に入れた: 滞留エントリは `RESPONSE_DEADLINE_MS`(既存値を流用・新定数を作らない)
+で失効し、キュー長とパス数に上限を置く。**隔離は最大でも「汚染された最後の要求から 60 秒 + 次の応答 1 件」で必ず解ける**(A13b-3)。
+
+**自己レビューで 1 段階詰めた点**: 隔離を**真偽値 +「キューが空なら解除」**にすると、滞留中に新しい要求が入った場合に
+**失効後の正しい応答が 1 件だけ余分に拒否される**。**`quarantineUntilSeq` という境界**で持てばこの穴が無い。
+`seq` は `CommandWaiters.ids` と同じく**前進のみで、`clear` でも世代交代でもリセットしない**
+(番号の再利用は、古い判定を別の新しい scan に適用させる)。
