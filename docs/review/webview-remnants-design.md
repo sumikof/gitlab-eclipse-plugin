@@ -72,7 +72,7 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 | R4 | 所見は `$/gitlab/plugin/notification` の `updateDetails` で webview へ送る。 |
 | R5 | webview 内リンクのクリック(`$/gitlab/openUrl`)をブラウザで開く。 |
 | R6 | LS が `ready` を通知したら Knowledge Graph の URL を保持し、コマンドで開けるようにする。 |
-| R7 | 取りこぼしに備え、LS 接続確立後に `getUrl` を 1 度問い合わせる。 |
+| R7 | 取りこぼしに備え、**コマンド実行時に URL を持っていなければ** `getUrl` を 1 度問い合わせる(★ 第 10 版で「接続確立後に 1 度」から変更。`gkg` は最初の `didChangeConfiguration` の後に起動するため、接続直後の問い合わせは補償にならない。§9.3)。 |
 | R8 | `gkg` が動いていなければ、**その旨を説明するメッセージ頁**を出す(黙って何も起きない、にしない)。 |
 
 ### 5.3 非機能要件
@@ -155,7 +155,7 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 | `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**パスあたり整数 1 個と真偽値 1 個**、加えて**全体で保持世代 `heldGeneration` 1 個**(第 7 版)。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない。自前の錠も持たない**(`VulnerabilityIntake` の区間の中でのみ触られる) |
 | `VulnerabilityProjection` | **選ばれた 1 件を webview 用に投影する。** 描画対象 5 フィールド(`name` / `severity` / `description` / `location.start_line` / `.start_column`)を**個別に検証・正規化し、HTML エスケープ**する。`location` が使えない 1 件は `null`(= 除外)、表示テキストが欠けるだけの所見は安全な既定値で描画(§10.1 / §14) |
 | `VulnerabilityPayload` | `updateDetails` のペイロード 3 つ組を組み立てる。`timestamp` の文字列化を含む |
-| `KnowledgeGraphState` | `ready` / `getUrl` で受けた URL を**送信元 `LanguageServerSession` と組で**保持。未設定を表現でき、**現行でない session の書き込み・読み出しを拒否**する(§11) |
+| `KnowledgeGraphState` | `ready` / `getUrl` で受けた URL を**送信元 `LanguageServerSession` と組で**保持。未設定を表現でき、**現行でない session の書き込み・読み出しを拒否**する(§11)。★ 第 10 版: **`record(url, senderSession, currentSession)`** —— **現行 session は呼び出し側が渡す**(State は wrapper を知らない。§16.1 の制約を維持)。不一致なら**捨てるだけで、保持中の値を上書きしない**(§9.3 / R8-2) |
 
 ### 8.2 プラットフォーム接触(シームの背後)
 
@@ -163,8 +163,8 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 |---|---|---|
 | `SecurityVulnDetailsClient` | 捕捉した `handle` の下で所見を読み、`handle.proxy` へ `updateDetails` を送る。タブ開きは UI スレッド | ★ 第 9 版: **送信はコルーチンで `outboundLock` 区間の中**(`didChangeConfiguration` と直列化)。**UI スレッドは `outboundLock` を取れない**(`withLock` は `suspend`)ので手順 4 で離れる。**`wrapper.languageServer` を送信時に読み直さない** —— 再接続しても新 proxy へ付け替わらないこと(round 7 R7-1) |
 | `ShowVulnDetailsHandler` | カーソル行の取得 → lookup → client | UI スレッド専用(`ITextEditor` 操作) |
-| `KnowledgeGraphController` | `PluginController("knowledge-graph")` の `@PluginNotification("ready")`。**ハンドラ末尾で `LanguageServerSession` を受け取り**、`KnowledgeGraphState.record(url, session)` へ渡す(`PluginRegistry.kt:32` が末尾パラメータの型を見て注入する既存の仕組み) | lsp4j ディスパッチスレッド。**旧接続の遅延通知**(§11) |
-| `ShowKnowledgeGraphHandler` | タブを開く | UI スレッド |
+| `KnowledgeGraphController` | `PluginController("knowledge-graph")` の `@PluginNotification("ready")`。**ハンドラ末尾で送信元 `LanguageServerSession` を受け取り**(`PluginRegistry.kt:32` が末尾パラメータの型を見て注入する既存の仕組み)、★ 第 10 版: **`wrapper.currentSnapshot` を 1 回だけ読んで `handle?.session` を `currentSession` として添え**、`KnowledgeGraphState.record(url, senderSession, currentSession)` を呼ぶ。**`handle` が null なら記録しない** | lsp4j ディスパッチスレッド。**旧接続の遅延通知**(§11) |
+| `ShowKnowledgeGraphHandler` | タブを開く。★ 第 10 版: **URL 未設定なら先に `pluginRequest("knowledge-graph", "getUrl")` を 1 回投げる**(R7 の補償。§9.3)。**要求時に捕捉した `handle` を持ち回り、完了時に現行 `currentSnapshot` を読み直して照合する。`CompletableFuture` を UI スレッドで `get()` しない** | UI スレッド。**要求と完了の間の再接続**(§9.3)。**戻り値は `Any?`(`Map`)として扱う**(§8.3)。タイムアウト・エラーはメッセージ頁へ縮退(§12) |
 | `GitLabLanguageServer.pluginRequest` | **新設の `@JsonRequest("$/gitlab/plugin/request")`。戻り値型は `CompletableFuture<Any?>` に固定し、`{url}` は手で取り出す** | **★ 同名メソッドがクライアント側に既に存在する**(§8.3)。DTO 戻り値を宣言しても実際には `Object` で返り、**呼び出し側が `ClassCastException` になる**。あわせて **override に `@JsonRequest` を重ねない**(#20 の既知事項: `GenericEndpoint` が `Multiple methods for name` を投げ、クライアントが接続不能になる) |
 | `OpenUrlHandler` | `$/gitlab/openUrl` を受けてブラウザで開く | UI スレッド。**PR #85 の `ShowDocumentLauncher` を使う。`BrowserLauncher` は使わない** — 後者は scheme / host を制限せず、失敗時に **URL 全文と例外メッセージをログへ書く**(`BrowserLauncher.kt:17,32`)。所見の markdown に `file:` リンクや token 付き query があると、ローカル resource を開く / 秘密を永続ログに残す。`ShowDocumentLauncher` は `isBrowsableExternalUrl`(絶対 http/https・host あり・userinfo なし)で**ブラウザに触れる前に拒否**し、**URI もメッセージも一切ログに出さない**(出るのは例外クラス名と、拒否時の scheme のみ)。用途もまさに同じ「LS が寄越した URI」である |
 
@@ -635,36 +635,71 @@ LS は **5 つ**の早期 return で**応答を返さずに終わる**ことが�
    **以降、proxy も epoch もこの `handle` からしか取らない。**
 4. **UI スレッドの仕事はここまで。** 3 で得た `handle` と パス・行を持って**コルーチンへ渡す**(fire and forget)。
    **UI スレッドは待たない**(`CopyTextHandler` と同じ扱い。§8.2)。
-5. コルーチンで **`outboundLock` を取る。** 以下 6〜9 はその区間の中。
-6. **`VulnerabilityIntake.read(path, handle.connectionEpoch)`**
-   → **モニタ区間の中で**世代と fingerprint を照合し、**不変スナップショット `FileVulnerabilities` を返す**
-   (不一致なら `null`)。**`store` を外から直接読まない**(R7-2)。
-7. `VulnerabilityLookup.at(snapshot, line)` → 一致する所見(**選択のみ**)。
-   `VulnerabilityProjection.of(finding)` → 描画用オブジェクト(**検証・正規化・エスケープ**)。
-   `null`(= `location` が使えない)なら、その 1 件は**無かったものとして扱う**。
-   **どちらも純関数なので、モニタ区間の外で走ってよい。** ただし **`outboundLock` は持ったまま**である
-   (モニタは 6 で出ている。**錠は 2 つあり、ここで手放してよいのはモニタだけ**)。
-8. **送信直前にもう一度 `VulnerabilityIntake.read(path, handle.connectionEpoch)` を呼び、6 で得た値と
-   参照同一であることを確かめる。違えば中止**(通知のみ)。
-   **値は不変なので、同一インスタンスであることが「6 以降この path の記録は動いていない」の証明**になる
-   (`LanguageServerHandle` を参照比較する `unregisterLanguageServer` と同じ手口)。
-9. **`handle.proxy` へ**
-   `pluginNotification(ExtensionToPluginNotification("security-vuln-details", "updateDetails", payload))`。
-   **`wrapper.languageServer` を読み直さない。** 再接続していれば送信は死んだ proxy へ向かい、
-   **新しい接続には決して付け替わらない。**
-10. **`outboundLock` を離してから**、`asyncExec` で UI スレッドへ戻り
-    `WebviewEditorOpener.openOrReload(page, WebviewEditorInput.securityVulnDetails())` でタブを開く。
-    **錠を持ったまま UI スレッドへホップしない**(§9.1 の規律。UI スレッドは `outboundLock` を取らないので
-    現状デッドロックはしないが、**錠を握ったまま他スレッドを待つ形を作らない**のが既存の方針)。
-    **送信と開くのに順序の制約は無い** —— LS は後から接続した webview インスタンスにも `updateDetails` を再生する
-    (§8.3)。**3 および 6〜8 で中止した場合はタブを開かない。**
+   **★ コルーチン本体は丸ごと `contained` で包む**(下記「★★ 共有スコープを壊さない」)。
+5. **まだ `outboundLock` は取らない。** 先に**重い仕事を済ませる**(下記「★★ 錠の下でやらないこと」):
+   - **`VulnerabilityIntake.read(path, handle.connectionEpoch)`**
+     → **モニタ区間の中で**世代と fingerprint を照合し、**不変スナップショット `FileVulnerabilities` を返す**
+     (不一致なら `null`)。**`store` を外から直接読まない**(R7-2)。
+   - `VulnerabilityLookup.at(snapshot, line)` → 一致する所見(**選択のみ**)。
+   - `VulnerabilityProjection.of(finding)` → 描画用オブジェクト(**検証・正規化・エスケープ**)。
+     `null`(= `location` が使えない)なら、その 1 件は**無かったものとして扱う**。
+   - `VulnerabilityPayload` まで組み立てる。**ここまでは純関数で、どの錠も要らない**
+     (`read` が内側でモニタを取り、その中で出る)。
+6. **得られなければ通知**(「この行に GitLab の所見はありません」)して終了。**タブを開かない。**
+7. **ここで初めて `outboundLock` を取る。区間の中でやるのは次の 2 つだけ。**
+   - **再照合**: もう一度 `VulnerabilityIntake.read(path, handle.connectionEpoch)` を呼び、
+     **5 で得た値と参照同一**であることを確かめる。**違えば中止**(通知のみ)。
+     **値は不変なので、同一インスタンスであることが「5 以降この path の記録は動いていない」の証明**になる
+     (`LanguageServerHandle` を参照比較する `unregisterLanguageServer` と同じ手口)。
+   - **送信**: **`handle.proxy` へ**
+     `pluginNotification(ExtensionToPluginNotification("security-vuln-details", "updateDetails", payload))`。
+     **`wrapper.languageServer` を読み直さない。** 再接続していれば送信は死んだ proxy へ向かい、
+     **新しい接続には決して付け替わらない。**
+8. **`outboundLock` を離してから**、`asyncExec` で UI スレッドへ戻り
+   `WebviewEditorOpener.openOrReload(page, WebviewEditorInput.securityVulnDetails())` でタブを開く。
+   **錠を持ったまま UI スレッドへホップしない**(§9.1 の規律。UI スレッドは `outboundLock` を取らないので
+   現状デッドロックはしないが、**錠を握ったまま他スレッドを待つ形を作らない**のが既存の方針)。
+   **送信と開くのに順序の制約は無い** —— LS は後から接続した webview インスタンスにも `updateDetails` を再生する
+   (§8.3)。**3 / 6 / 7 で中止した場合はタブを開かない。**
+
+##### ★★ 錠の下でやらないこと(第 10 版 / round 8 R8-4)
+
+**第 9 版は `read`・lookup・projection・送信をまとめて `outboundLock` 区間に入れていた。**
+**projection は外部由来の untyped な所見に対する `toString()`・正規化・全文 HTML エスケープ**で、
+**所見のサイズに比例した CPU 仕事**である。巨大な `description` を引いた 1 回のコマンドが、
+**同じ `Mutex` を使う `didChangeConfiguration` と全 scan 要求を止める。**
+
+**分け方**: **重い純粋計算は錠の外**、**錠の中は「参照同一の再照合 + 送信」だけ。**
+**A22 の文脈束縛は失われない** —— 束縛を成立させているのは**送信と同じ区間にある再照合**であって、
+読み出しがいつ行われたかではないからである。5 と 7 の間に何が起きても、**7 の再照合が落とす。**
+
+##### ★★ 共有スコープを壊さない(第 10 版 / round 8 R8-1)
+
+**手順 4 の `launch` は「共有スコープへ投げる」以上のことを言っていなかった。**
+本プロジェクトの `CoroutineScope` は **`WorkspaceModule.kt` の `single<CoroutineScope> { CoroutineScope(Dispatchers.IO) }`**
+—— **`SupervisorJob` ではない素の `Job`** である。したがって
+
+> **この操作から非 `CancellationException` が 1 つ漏れると、共有スコープごと cancel され、
+> 以後の設定送信・scan・他機能のコルーチンが黙って動かなくなる。**
+
+漏れうる箇所は **`read`**(前提違反時)/ **外部由来値の projection** / **proxy 呼び出し** /
+**停止中 `Display` への `asyncExec`** と、**手順 4〜8 のほぼ全域**である。
+
+**規律**: **コルーチン本体を丸ごと `contained` で包む。**
+
+| 項目 | 内容 |
+|---|---|
+| **`CancellationException` は再送出** | スコープの協調キャンセルを壊さない |
+| **それ以外はこの操作の中で捕捉** | **記録するのは例外クラス名だけ**(§15。パス・所見本文・URL は出さない) |
+| **既存の型をそのまま使う** | `SecurityScanLauncher.kt:351` の `contained` と同じ形。**同ファイルのコメントが「This is the SHARED plain-Job scope — an escape would cancel it and every other coroutine on it」と既に明言している** —— **新しい概念ではなく、既存の規律の適用漏れだった** |
+| **専用スコープは作らない** | `SupervisorJob` の別スコープを足すより、**既存の `contained` に揃えるほうが規律が 1 つで済む** |
 
 #### ★ 読み出し側にも同じ規律をかける(第 9 版 / round 7)
 
 | 指摘 | 第 8 版までの穴 | 第 9 版 |
 |---|---|---|
-| **R7-2** | 手順 3 が `VulnerabilityLookup.at(store, …)` と書いており、**UI スレッドが `store` を直接読む**。**第 6 版で store 自前の錠を外した**ので、これは `LinkedHashMap` の**無施錠の読み**になる。しかも **`accessOrder = true` では読みがアクセス順を書き換える** = **read が write である**。lsp4j 側の `put` / `removeEldestEntry` と並行すると、例外・アクセス順の破損・不整合な選択が起こりうる | **`VulnerabilityIntake.read` がモニタ区間の中で不変スナップショットを返し、`VulnerabilityLookup` はそのスナップショットだけを見る。** `store` / `tracker` は外から参照できない |
-| **R7-1** | 手順 6 は `currentSnapshot` が **非 null かどうかしか見ていない**。読み出しと送信の間に**再接続**すれば旧接続の所見が**新しい proxy** へ送られ、**同一接続のまま fingerprint が変われば**旧アカウントの所見が現行として送られる。`WebviewLoadCoordinator` の session 検査は **webview URI の解決しか守らず、ペイロードの出所を見ない** | **`handle` を 1 回捕捉し、読み出しも送信もその `handle` に束縛する。** 送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化し、**送信直前に参照同一で再照合**する |
+| **R7-2** | **第 8 版の**手順 3 が `VulnerabilityLookup.at(store, …)` と書いており、**UI スレッドが `store` を直接読む**。**第 6 版で store 自前の錠を外した**ので、これは `LinkedHashMap` の**無施錠の読み**になる。しかも **`accessOrder = true` では読みがアクセス順を書き換える** = **read が write である**。lsp4j 側の `put` / `removeEldestEntry` と並行すると、例外・アクセス順の破損・不整合な選択が起こりうる | **`VulnerabilityIntake.read` がモニタ区間の中で不変スナップショットを返し、`VulnerabilityLookup` はそのスナップショットだけを見る。** `store` / `tracker` は外から参照できない |
+| **R7-1** | **第 8 版の**手順 6 は `currentSnapshot` が **非 null かどうかしか見ていない**。読み出しと送信の間に**再接続**すれば旧接続の所見が**新しい proxy** へ送られ、**同一接続のまま fingerprint が変われば**旧アカウントの所見が現行として送られる。`WebviewLoadCoordinator` の session 検査は **webview URI の解決しか守らず、ペイロードの出所を見ない** | **`handle` を 1 回捕捉し、読み出しも送信もその `handle` に束縛する。** 送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化し、**送信直前に参照同一で再照合**する |
 
 **なぜ `outboundLock` まで要るのか**: 再接続は `handle` を固定すれば防げるが、
 **同一接続のままの fingerprint 変更**は防げない。fingerprint を動かすのは
@@ -685,14 +720,65 @@ LS は **5 つ**の早期 return で**応答を返さずに終わる**ことが�
 
 ### 9.3 F2 Knowledge Graph を開く
 
-1. LS 接続確立後、`pluginRequest("knowledge-graph", "getUrl")` を 1 度投げ、返った `{url}` を
-   **その要求を出した session と組で** `KnowledgeGraphState` へ(R7)。
-2. `ready` 通知が来たら同じく保持(こちらが主経路)。**通知ハンドラが受け取った session を添える。**
-3. **1 と 2 のいずれも、`record` 時点で現行 session でなければ捨てる。**(§11)
-4. コマンド → `WebviewEditorOpener` でタブを開く。`WebviewUriResolver` は `knowledge-graph` に対し
+**常時(背景)**
+
+1. `ready` 通知が来たら保持する(**こちらが主経路**)。**通知ハンドラが受け取った送信元 session を添える。**
+   `record` は**現行 session も受け取り**、送信元と一致しなければ**捨てる**
+   (**保持中の値を上書きしない**。下記「★★ 現行 session は呼び出し側から渡す」)。
+
+**コマンド実行時(`ShowKnowledgeGraphHandler`。UI スレッドから始まる)**
+
+2. `wrapper.currentSnapshot` を **1 回だけ**読む。`null` ならメッセージ頁(手順 6)で終了。
+3. `KnowledgeGraphState` を `handle.session` で引く。
+   - **URL が取れた** → 手順 5 へ。
+   - **未設定** → **★ ここで初めて** `pluginRequest("knowledge-graph", "getUrl")` を **1 回**投げる
+     (第 10 版で「接続確立後に 1 度」から変更。下記「★★ R7 の補償を効く場所へ移した」)。
+4. **要求は非同期に扱う。UI スレッドで待たない**(`CompletableFuture` を `get()` しない)。
+   完了したら **`record(url, handle.session, 現行 session)`** —— **現行 session は完了時にもう一度
+   `wrapper.currentSnapshot` を読んで得る**(要求と完了の間の再接続をここで落とす)。
+   そのうえで `asyncExec` で UI スレッドへ戻り手順 5 へ。**空 URL なら手順 6 へ。**
+   **タイムアウト・エラーも手順 6 へ縮退**(§12)。
+5. `WebviewEditorOpener` でタブを開く。`WebviewUriResolver` は `knowledge-graph` に対し
    **`directUris` シームから URL を返す**。シームは**現行 session を引数に取り**、
    **保持している session と一致するときだけ** URL を返す。
-5. URL 未設定・session 不一致なら `NotAdvertised` 相当のメッセージ頁に **`gkg` の説明文**を出す(R8)。
+6. URL 未設定・session 不一致なら `NotAdvertised` 相当のメッセージ頁に **`gkg` の説明文**を出す(R8)。
+
+##### ★★ 現行 session は呼び出し側から渡す(第 10 版 / round 8 R8-2)
+
+**第 9 版までの `KnowledgeGraphState.record(url, session)` は送信元 session しか受け取らないのに、
+手順 3 は「現行 session でなければ捨てる」と要求していた。** 状態も `(url, session)` だけで、
+**現行 session を知る入力も依存先も無い。** しかも §16.1 は **State 側から wrapper を引くことを禁じている**ので、
+**そのままでは実装できない仕様**だった —— round 4 の `requestFingerprint` と同じ型の自己矛盾である。
+
+**壊れ方は fail-safe だが liveness を失う**: 読み出し側の session 照合があるので**危険な URL は出ない**。
+しかし**旧接続の遅延 `ready` / `getUrl` 完了が新しい値を上書きする**と、
+以後その接続の間ずっと **Knowledge Graph が `NotAdvertised` のまま**になる。
+
+**確定**: **`record(url, senderSession, currentSession)`** ——
+`senderSession !== currentSession` なら捨て、**保持中の値には触れない**(上書きしない)。
+
+| 誰が `currentSession` を渡すか | どこから得るか |
+|---|---|
+| `KnowledgeGraphController`(`ready` 通知) | **`wrapper.currentSnapshot` を 1 回だけ読み**、`handle?.session` を渡す(§9.1「★★ epoch と proxy は同じ 1 回の読み取りから取る」と同じ規律) |
+| `ShowKnowledgeGraphHandler`(`getUrl` 応答) | **要求を出すときに捕捉した `handle`** をそのまま持ち回り、完了時に `handle.session` を渡す |
+
+**`handle` が null なら記録しない。** **State は wrapper を知らないまま**(§16.1 の制約は維持)。
+
+##### ★★ R7 の補償を効く場所へ移した(第 10 版 / round 8 R8-3)
+
+**§8.3 が既に「`gkg` は最初の `didChangeConfiguration` の後に起動するので、initialize 直後の
+`getUrl` はほぼ常に `{url: undefined}` を返す」と確定している。**
+にもかかわらず第 9 版の手順 1 は「接続確立後に 1 度」で、**`ready` を取りこぼした条件では、
+唯一の問い合わせが既に空で終わっている** —— **補償として機能しない。**
+**しかも §8.2 / §16 のどこにも、この要求を出すコンポーネントが無かった**(設計にあって配線に無い)。
+
+**確定**: **問い合わせは `ShowKnowledgeGraphHandler` が、コマンド実行時に URL 未設定のときだけ出す。**
+
+- **時点が正しい**: ユーザがコマンドを押すのは接続と設定送信のずっと後で、**`gkg` が起動済みの可能性が最も高い瞬間**。
+- **回数が要らない**: 再試行ループもタイマも作らない。**押されたときに 1 回**。空なら R8 のメッセージ頁。
+- **`getUrl` は `$/gitlab/plugin/request`** なので戻り値は `Any?`(`Map`)として扱う(§8.3)。
+  **タイムアウト・エラーはメッセージ頁へ縮退**(§12)。
+- **配線先を §8.2 / §16 に明記した**(第 9 版まで抜けていた)。
 
 ### 9.4 F1 のリンククリック
 
@@ -934,7 +1020,7 @@ Rh(t) = Dn.parse(t.toString())
 | **`GitLabLanguageServerClient.kt:62`** | **★ 第 8 版: `connectionEpoch` を `private val` から読める可視性へ**(provider が複製するため)。**値の決まり方は変えない** |
 | `CommandWaiters` / `DiagnosticGenerationRegistry` | **変更しない。** `ScanFlightTracker` は `DiagnosticGenerationRegistry.lock` を**共有するだけ**(`CommandWaiters` と同じ扱い)。既存のロック順序 outbound `Mutex` → モニタ を守る |
 | `SecurityScanLifecycle` | 接続停止時の後始末に **`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を 1 行追加**(`CommandWaiters.clear` と同じ引数・同じ位置)。**死んだ接続の epoch を渡す**(進めた後の値ではない)。**これが §9.1 の「証明可能なバリア」の実体。** ★ 第 7 版で **`ScanFlightTracker.clear` の直接呼び出しから `VulnerabilityIntake` 経由へ変更**した —— tracker は自前の錠を持たないので、直接呼ぶと**無施錠の `clear` が `onResponse` / `onRequestSent` と並行して同じ状態を書く**(round 5 R5-3) |
-| `GitLabLanguageServer` | `@JsonRequest("$/gitlab/plugin/request")` を 1 つ追加 |
+| `GitLabLanguageServer` | `@JsonRequest("$/gitlab/plugin/request")` を 1 つ追加。**★ 第 10 版: これを実際に呼ぶのは `ShowKnowledgeGraphHandler`**(第 9 版まで、要求を出すコンポーネントが設計のどこにも無かった。R8-3) |
 | `GitLabLanguageServerClient` | `$/gitlab/openUrl` ハンドラと store への記録を追加 |
 | `WebviewEditorInput` | ファクトリを 2 つ追加 |
 | `plugin.xml` | コマンド 2・ハンドラ 2・メニュー寄与 2。**末尾追記のみ**。`feat/diagnostics` と衝突する(#20 §4) |
@@ -994,6 +1080,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
 | 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形。**★ 第 9 版: 送信先が捕捉済み `handle.proxy` であって `wrapper.languageServer` の読み直しでないこと**(A22 (i))。**読み出しと送信の間に再接続 / fingerprint 変更を挟むラッチ**で A22 を決定的に再現する |
 | ログ陰性 | `LoggingKotestExtension` | 所見本文・パス・URL・**fingerprint** が出ないこと(A7)/ **拒否 scheme と token 付き URL**(A16) |
+| **例外封じ込め** | 共有 scope に後続コルーチンを流して生存確認 | **A23**(`read` / projection / proxy / `asyncExec` の各失敗で scope が死なないこと) |
 | UI 実体 | **テストしない**(headless 不可) | エディタのカーソル行取得、タブ表示、Browser |
 | **`updateDetails` 送信失敗** | **テストしない**(検知手段が無い。§12) | **実機の「既知の制限」として PR に記載** |
 
@@ -1032,6 +1119,10 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A13b-10** | **前提 Q / R / S の成文化**: 応答の `filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)、**URI 形式の `filePath` も素のパスと同じキーへ正規化される**(前提 S)、**未着件数 0 での着信は拒否 + 汚染**。3 つとも fail-closed 側であること | 自動 |
 | **A21** | **★ 読み出しが `VulnerabilityIntake` 経由に限られる**(R7-2)。**(i)** `VulnerabilityLookup` は `VulnerabilityStore` を受け取らず、不変スナップショットしか受け取らない(シグネチャで固定)。**(ii)** `read` と並行して `record` / `clear` / 上限 eviction を走らせても、**例外が出ず、読み出し結果が不整合にならず、アクセス順が壊れない**。**(iii)** `store` / `tracker` への参照が `VulnerabilityIntake` の外へ漏れない | 自動 |
 | **A22** | **★ round 7 の筋書き(読み出しと送信の束縛)**(R7-1)。読み出しと送信の間に割り込ませる: **(i) 再接続** —— 旧接続で読んだ所見が**新しい proxy へ送られない**(送信先が捕捉済み `handle.proxy` に固定されていること)。**(ii) 同一接続のままの fingerprint 変更** —— 送信直前の参照同一照合で**中止され、旧文脈の所見が送られない**。**(iii)** 中止したときは**タブを開かない**(旧表示のタブを前面に出さない)。**(iv)** 正常系では 1 回で送られ、過剰中止にならない | 自動 |
+| **A23** | **★ 共有スコープを壊さない**(R8-1)。`read` / projection / proxy 呼び出し / 停止中 `Display` への `asyncExec` のいずれかが例外を投げても、**共有 `CoroutineScope` が cancel されず、同じスコープで次のコルーチン(設定送信・scan)が動く**。**`CancellationException` は再送出される**。**ログに出るのは例外クラス名だけ**(パス・所見本文・URL が出ない) | 自動 |
+| **A24** | **★ 錠の保持時間**(R8-4)。`outboundLock` 区間の中で実行されるのは**参照同一の再照合と送信だけ**で、**`VulnerabilityProjection` / `VulnerabilityLookup` / 最初の `read` は区間の外**である(**巨大な `description` を持つ所見でも、錠の保持時間がその長さに比例しない**ことで固定する)。**それでも A22 の文脈束縛は保たれる** | 自動 |
+| **A25** | **★ `KnowledgeGraphState.record` が現行 session を受け取る**(R8-2)。**(i)** 新しい値を記録した後に**旧接続の遅延 `ready` / `getUrl` 完了**が届いても、**新しい値が残る**(上書きされない)。**(ii)** `currentSession` が `null`(`handle` 無し)なら記録しない。**(iii)** `KnowledgeGraphState` が `GitLabLanguageServerWrapper` へ依存しない(§16.1 の制約が維持されている) | 自動 |
+| **A26** | **★ R7 の補償が効く**(R8-3)。**「初回 `getUrl` は空 → `ready` は届かない → その後コマンド実行」で URL が得られる**。**URL を既に持っていれば問い合わせない**。**空のまま返ったらメッセージ頁**(例外にしない)。**要求と完了の間に再接続したら記録しない**(A25 (i) と同じ規律) | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
 | **A15b** | **`WebviewEditorPart.kt:41` / `AgenticTabsView.kt:27` がそのファクトリを呼んでいる** | **目視 + 実機**(SWT `Composite` を受けるため headless で呼べない) |
@@ -1065,6 +1156,9 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
 | **★ 判定と記録の隙間に設定変更が割り込む** | **認可境界の違反**(clear を生き延びた旧所見が現行として読める) | **判定・fingerprint 更新・clear・record を `DiagnosticGenerationRegistry.lock` の単一区間に入れ、`RecordPermit` を同一区間で消費する**(§9.1 / §11)。A13b-7 / A13b-8 |
 | **★ 再接続を跨いだ送信が新世代の件数を汚す** | 残留 `+1` が新世代に残り、**次の設定変更でそのパスが接続更新まで恒久的に汚染される**(詳細が出ない) | **書き込み側 4 操作に捕捉済み epoch を運ばせ、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」)。`CommandWaiters` と同じ形。A13b-11 |
+| **★ 共有スコープが 1 つの例外で cancel される** | **設定送信・scan・他機能のコルーチンが以後すべて黙って動かなくなる**(`WorkspaceModule.kt` の scope は `SupervisorJob` ではない素の `Job`) | **コルーチン本体を `contained` で包む**(`CancellationException` だけ再送出、他は例外クラス名のみ記録)。**既存 `SecurityScanLauncher.kt:351` と同じ形**(§9.2)。A23 |
+| **★ 所見のサイズが送信経路全体を止める** | 巨大な `description` の projection 中、**同じ `Mutex` を使う `didChangeConfiguration` と全 scan 要求が停止**する | **重い純粋計算を `outboundLock` の外へ出し、錠の中は再照合と送信だけにする**(§9.2)。A24 |
+| **★ 旧接続の遅延 `ready` が新しい URL を上書きする** | **その接続の間ずっと Knowledge Graph が `NotAdvertised`**(fail-safe だが liveness を失う) | **`record(url, senderSession, currentSession)` で現行 session を呼び出し側から渡し、不一致なら捨てるだけで上書きしない**(§9.3)。A25 |
 | **★ 読み出した所見が別の接続・別の文脈へ送られる** | **N1 / N5 の認可境界を読み出し側で破る**(旧アカウントの所見が現行として webview に出る) | **`handle` を 1 回捕捉して読み出しも送信も束縛し、送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化、送信直前に参照同一で再照合**(§9.2 / §11)。A22 |
 | **★ UI スレッドが store を無施錠で読む** | **`accessOrder = true` では読みが write なので**、例外・アクセス順の破損・不整合な選択 | **読み出しを `VulnerabilityIntake.read` の不変スナップショットに限定**(§9.2)。A21 |
 | **★ epoch と proxy が別々の読み取りで食い違う** | **(旧 epoch, 新 server)** = 生きた応答が前提違反と誤判定されてパスが汚染される(詳細が出ない)/ **(新 epoch, 旧 server)** = **追跡 fingerprint が生きている接続の設定を表さなくなる**(認可境界の土台が偶然頼みになる) | **`currentSnapshot` を 1 回だけ読み、`LanguageServerHandle` に `connectionEpoch` を持たせて proxy と同じ 1 値から取る**(§9.1 / §16)。既存の `AtomicReference` がそのまま使えるので**窓そのものが消える**。A13b-12 |
@@ -1462,3 +1556,44 @@ fingerprint を動かすのは `didChangeConfiguration` を送る 2 箇所で、
 §8.1(`VulnerabilityLookup` / `VulnerabilityIntake.read`)/ §8.2(`SecurityVulnDetailsClient`)/
 **§9.2(手順を全面的に組み直し + 新節「★ 読み出し側にも同じ規律をかける」)** / §11(読み出しと送信の束縛)/
 §18 / §19(**A21 / A22** 追加、A18 の手順番号追従)/ §21(リスク 2 行)。
+
+### 第 10 版(2026-09-22)— Codex レビュー round 8 反映
+
+round 8 の指摘は **P1×2 + P2×2**。**4 件とも妥当**で、**うち 2 件(R8-1 / R8-4)は第 9 版の変更が作った穴**、
+**2 件(R8-2 / R8-3)は §9.3 に第 2 版から残っていた穴**である。
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **R8-1**(P1) | **fire-and-forget の例外を局所的に封じ込めよ。** 第 9 版の手順 4 は共有 `CoroutineScope` へ `launch` するだけで封じ込めを定義していない。`WorkspaceModule.kt` の scope は **`SupervisorJob` ではない素の `Job`** なので、非 `CancellationException` が 1 つ漏れると**共有スコープごと cancel され、以後の設定送信・scan・他機能が黙って止まる** | **妥当。実コードで確認**: `single<CoroutineScope> { CoroutineScope(Dispatchers.IO) }`。**しかも本リポジトリは既にこれを知っている** —— `SecurityScanLauncher.kt` のコメントが「This is the SHARED plain-Job scope — an escape would cancel it and every other coroutine on it」と明言し、`contained` ヘルパが **3 箇所**に存在する(`SecurityScanLauncher.kt:351` / `SecurityScanSaveListener.kt:764` / `PluginRegistry.kt:92`)。**新しい概念ではなく、既存規律の適用漏れだった。** → **コルーチン本体を丸ごと `contained` で包む**(`CancellationException` は再送出、他は**例外クラス名だけ**記録)。**専用 supervised scope は作らない** —— 既存に揃えるほうが規律が 1 つで済む。A23 |
+| **R8-4**(P2) | **所見の投影処理を `outboundLock` の外へ出せ。** 第 9 版は `read`・lookup・projection・送信をまとめて錠の中に入れていた。projection は**外部由来の untyped な所見に対する `toString()`・正規化・全文 HTML エスケープ**で、**所見サイズに比例した CPU 仕事**。巨大な `description` の 1 回のコマンドが、**同じ `Mutex` を使う `didChangeConfiguration` と全 scan 要求を止める** | **妥当。第 9 版が明らかに広く取りすぎていた。** → **重い純粋計算(最初の `read`・lookup・projection・payload 組み立て)を錠の外へ出し、錠の中は「参照同一の再照合 + 送信」だけ**にした。**A22 の文脈束縛は失われない** —— 束縛を成立させているのは**送信と同じ区間にある再照合**であって、読み出しの時刻ではないから。A24 |
+| **R8-2**(P1) | **現行 session を `KnowledgeGraphState` の記録 API に渡せ。** §9.3 手順 3 は「`record` 時点で現行 session でなければ捨てる」と要求するのに、`record(url, session)` は**送信元しか受け取らず**、状態も `(url, session)` だけで**現行 session を知る入力も依存先も無い**。§16.1 は State 側から wrapper を引くことも禁じている | **妥当。round 4 の `requestFingerprint` と同じ型の自己矛盾**(**実装できない仕様**)。壊れ方は **fail-safe だが liveness を失う** —— 読み出し側の照合で危険な URL は出ないが、**旧接続の遅延完了が新しい値を上書きすると、その接続の間ずっと `NotAdvertised`** になる。→ **`record(url, senderSession, currentSession)`**。現行 session は**呼び出し側が渡す**(`KnowledgeGraphController` は `wrapper.currentSnapshot` を 1 回読む / `ShowKnowledgeGraphHandler` は完了時に読み直す)。**不一致なら捨てるだけで上書きしない。State は wrapper を知らないまま**(§16.1 維持)。A25 |
+| **R8-3**(P2) | **`getUrl` を `ready` 取りこぼし後にも有効にせよ。** 「接続確立後に 1 度」では補償にならない —— **§8.3 自身が**「`gkg` は最初の `didChangeConfiguration` の後に起動するので initialize 直後の `getUrl` はほぼ常に空」と確定している。しかも §8.2 / §16 に**この要求を出すコンポーネントが無い** | **妥当。設計が自分で否定した補償を残していた**うえ、**配線も存在しなかった。** → **問い合わせを `ShowKnowledgeGraphHandler` のコマンド実行時・URL 未設定時だけに移した。** 時点が正しく(押されるのは設定送信のずっと後 = `gkg` 起動済みの可能性が最も高い)、**再試行ループもタイマも要らない**(押されたときに 1 回)。**配線先を §8.2 / §16 に明記**した。A26 |
+
+#### 自己レビューで併せて直した点(第 10 版の反映そのものに対して)
+
+- **`getUrl` を UI スレッドでブロックしうる書き方だった。** `ShowKnowledgeGraphHandler` は UI スレッドから始まるので、
+  `CompletableFuture` をそこで待つ実装が書けてしまう。**「`get()` しない。完了時に `asyncExec` で戻る」**と確定した。
+- **§9.3 が背景経路とコマンド経路を 1 本の番号で混ぜていた。** **「常時(背景)」と「コマンド実行時」に分け**、
+  コマンド側は**手順 2〜6 の一本道**にした(URL 取得 → 未設定なら問い合わせ → タブ or メッセージ頁)。
+- **§9.2 の新節が参照する手順番号が、第 9 版の組み直しで変わっていた。** 「**第 8 版の**手順 3 / 手順 6」と明示した。
+
+#### 5 版続けて同じ型が出ている(記録として残す)
+
+| 版 | 入れた変更 | 次に出た指摘 |
+|---|---|---|
+| 第 6 版 | 錠の統合 | 依存記述の追従漏れ → R5-2 / R5-3 |
+| 第 7 版 | epoch の持ち回り | 運ぶ値の出どころ未定義 → R6-1 |
+| 第 8 版 | 1 回読み | 読み出し側に同じ規律が無い → R7-1 / R7-2 |
+| 第 9 版 | 読み出し側を錠の下へ | **錠を広く取りすぎ / 例外封じ込め未定義** → R8-4 / R8-1 |
+
+**第 9 版で「新しい規律を全経路へ広げたか」は点検したが、「新しく錠とコルーチンを導入したことで、
+既存の 2 つの規律(錠の保持は最小に / 共有スコープへ例外を漏らさない)に違反していないか」は点検していなかった。**
+**第 10 版では、本リポジトリが既に守っている規律の側から**点検した ——
+`contained` の 3 箇所、`outboundLock` を取る既存 3 箇所の保持内容、`asyncExec` / `syncExec` の使い分け。
+
+#### 反映先
+
+§5.2(R7 の書き換え)/ §8.1(`KnowledgeGraphState.record`)/ §8.2(`KnowledgeGraphController` / `ShowKnowledgeGraphHandler`)/
+**§9.2(手順 4〜8 を組み直し + 新節「★★ 錠の下でやらないこと」「★★ 共有スコープを壊さない」)** /
+**§9.3(背景経路とコマンド経路に分割 + 新節「★★ 現行 session は呼び出し側から渡す」「★★ R7 の補償を効く場所へ移した」)** /
+§16 / §18 / §19(**A23 / A24 / A25 / A26**)/ §21(リスク 3 行)。
