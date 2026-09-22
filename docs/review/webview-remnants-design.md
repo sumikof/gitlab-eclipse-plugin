@@ -149,10 +149,10 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 | コンポーネント | 責務 |
 |---|---|
-| `VulnerabilityIntake` | **★ 第 6 版で新設。`ScanFlightTracker` と `VulnerabilityStore` を `DiagnosticGenerationRegistry.lock` の単一区間で束ねる唯一の入口。** 公開するのは `onRequestSent` / `onContextChanged` / `onResponse` / `read` の 4 つだけで、**判定と記録を別々に呼べる API を外へ出さない**(§9.1「判定と記録は一操作」) |
+| `VulnerabilityIntake` | **★ 第 6 版で新設。`ScanFlightTracker` と `VulnerabilityStore` を `DiagnosticGenerationRegistry.lock` の単一区間で束ねる唯一の入口。** 公開するのは **5 つだけ**: `onRequestSent(path, capturedEpoch)` / `onContextChanged(newFingerprint, capturedEpoch)` / `onResponse(..., connectionEpoch)` / **`onConnectionClosed(deadEpoch)`**(第 7 版で追加)/ `read(path, epoch)`。**判定と記録を別々に呼べる API を外へ出さない**(§9.1「判定と記録は一操作」)。**書き込み側 4 つはすべて epoch を受け取り、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」) |
 | `VulnerabilityStore` | パス → (所見リスト, timestamp, 世代, **scan context fingerprint**)。**記録・順序採番・上限 eviction は単一ロック下の 1 操作**(`LinkedHashMap(accessOrder = true)` の `removeEldestEntry`)。**自前の錠は持たない** —— 守るのは `VulnerabilityIntake` が取る `DiagnosticGenerationRegistry.lock`(第 6 版)。記録は `RecordPermit` を受け取り、**現行の世代・fingerprint と突き合わせてから**書く |
 | `VulnerabilityLookup` | **所見を「選ぶ」だけ。** 所見の生 `Map` から `location.start_line` を取り出し、カーソル行に一致する先頭 1 件を返す。**型は仮定しない**(LS の形が変わっても落ちない) |
-| `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**整数 1 個と真偽値 1 個**。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない。自前の錠も持たない**(`VulnerabilityIntake` の区間の中でのみ触られる) |
+| `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**パスあたり整数 1 個と真偽値 1 個**、加えて**全体で保持世代 `heldGeneration` 1 個**(第 7 版)。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない。自前の錠も持たない**(`VulnerabilityIntake` の区間の中でのみ触られる) |
 | `VulnerabilityProjection` | **選ばれた 1 件を webview 用に投影する。** 描画対象 5 フィールド(`name` / `severity` / `description` / `location.start_line` / `.start_column`)を**個別に検証・正規化し、HTML エスケープ**する。`location` が使えない 1 件は `null`(= 除外)、表示テキストが欠けるだけの所見は安全な既定値で描画(§10.1 / §14) |
 | `VulnerabilityPayload` | `updateDetails` のペイロード 3 つ組を組み立てる。`timestamp` の文字列化を含む |
 | `KnowledgeGraphState` | `ready` / `getUrl` で受けた URL を**送信元 `LanguageServerSession` と組で**保持。未設定を表現でき、**現行でない session の書き込み・読み出しを拒否**する(§11) |
@@ -333,8 +333,9 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 **順序に関係なく**、旧文脈の応答が飛行中に残っていないことが**証明できる。**
 **この 3 つは本方式が寄りかかっている前提のすべてであり、どれかが崩れれば方式ごと崩れる。**
 
-| 状態(パスごと・接続世代スコープ) | 内容 |
+| 状態 | 内容 |
 |---|---|
+| `heldGeneration` | **この `byPath` がどの接続世代のものか**(第 7 版。§9.1「★ 世代の束縛」の遅延ロールオーバで使う) |
 | `outstanding(P)` | 送信済みで未着の scan 要求の件数。送信で +1、応答で −1 |
 | `contaminated(P)` | **fingerprint 変更の瞬間に `outstanding(P) > 0` だったか** |
 
@@ -411,12 +412,97 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 |---|---|
 | **錠** | **`DiagnosticGenerationRegistry.lock` ただ 1 つ。** `ScanFlightTracker` と `VulnerabilityStore` は**2 つのオブジェクトだが 1 つの錠の下にある** |
 | **`VulnerabilityStore` 自前の錠を廃止** | 第 5 版の `Collections.synchronizedMap` ラップを**外す**。二重施錠は無意味なうえ、「store は自分で自分を守る」という誤読を招く。**`LinkedHashMap(accessOrder = true)` と `removeEldestEntry` はそのまま**(P1-g / A19 は退行しない。`removeEldestEntry` は `put` の内側で走り、その `put` が上記の区間の中にある) |
-| **入口** | 外から呼べるのは `VulnerabilityIntake` の**4 つだけ**: 書き込み側の `onRequestSent(path)` / `onContextChanged(newFingerprint)` / `onResponse(...)` と、読み出しの `read(path, epoch)`。**tracker と store を個別に外から叩く API を公開しない**(公開すれば、いつか誰かが 2 回に分けて呼ぶ) |
-| **許可トークン** | `RecordPermit(path, epoch, fingerprint)`。**判定区間で生成され、同じ区間で消費される。** `VulnerabilityStore` 側は受け取った permit を**現行値と突き合わせてから**記録する。単一区間なのでこの再照合は**必ず成功する** —— 失敗したらそれは「permit が区間をまたいだ」というバグの検出器である(A13b-8) |
+| **入口** | 外から呼べるのは `VulnerabilityIntake` の**5 つだけ**: 書き込み側の `onRequestSent(path, capturedEpoch)` / `onContextChanged(newFingerprint, capturedEpoch)` / `onResponse(..., connectionEpoch)` / **`onConnectionClosed(deadEpoch)`** と、読み出しの `read(path, epoch)`。**tracker と store を個別に外から叩く API を公開しない**(公開すれば、いつか誰かが 2 回に分けて呼ぶ)。**`ScanFlightTracker.clear` を外から直接呼ぶ経路は作らない**(第 7 版 / round 5 R5-3) |
+| **許可トークン** | `RecordPermit(path, epoch, fingerprint, regionNonce)`。**判定区間で生成され、同じ区間で消費される。** 値の一致だけでは「同じ区間」を証明できない(下記「★ permit は値の一致では守れない」)ので、**単回消費の区間 nonce と `Thread.holdsLock` の 2 つで束縛する**(第 7 版 / round 5 R5-2)。A13b-8 |
 | **区間の中でしてよいこと** | **メモリ上の読み書きだけ。** 区間の中で**サスペンドしない・送信しない・UI スレッドへホップしない・ファイルに触れない**。したがってこのモニタを持ったまま `outboundLock` や UI スレッドを待つことは無く、**順序は一方向のまま**である |
 | **読み出し(UI スレッド)** | 同じ区間に入り、**値のスナップショットだけ取って出る。** 投影(`VulnerabilityProjection`)も webview 送信も**区間の外**で行う |
 
-**変更側の区間のネスト**: `outboundLock.withLock { … synchronized(lock) { 比較・更新・汚染・clear } ; 送信 … }`。
+###### ★ permit は値の一致では守れない(第 7 版 / round 5 R5-2)
+
+**第 6 版は `RecordPermit(path, epoch, fingerprint)` を「現行値と突き合わせれば区間をまたいだと分かる」と書いたが、
+これは成立しない。** 値の比較で落とせるのは「値が違う permit」だけで、**「同じ値を持つ、区間外で作られた permit」は
+素通りする**。具体的に 2 つ抜ける:
+
+| 抜け道 | なぜ値比較で落ちないか |
+|---|---|
+| **区間外で生成し、現行 epoch と現行 fingerprint を詰めた permit** | 値としては現行と一致するので比較は成功する |
+| **ABA**: fingerprint が A → B → A と戻った後に、古い A の permit を使う | 現行値がふたたび A なので比較は成功する。**間に挟まった B の `clear()` は取り消されない**ので、**消えたはずの所見を書き戻せる** |
+
+**したがって第 6 版の A13b-8(「区間外の permit は拒否される」)は、第 6 版の機構では原理的に達成できなかった。**
+これは round 4 P1-1 の①と同じ型の誤り —— **受け入れ条件が機構の能力を超えて書かれていた。**
+
+**2 段で塞ぐ**:
+
+1. **第一の保証は字句スコープ(lexical containment)。**
+   `RecordPermit` は **`VulnerabilityIntake` の private な入れ子型**にし、生成子も private にする。
+   `VulnerabilityStore` の記録入口は permit を要求するので、**`VulnerabilityIntake` の外からは
+   permit を構築できず、記録入口を呼べない。** 抜け道は「作れない」のが本筋であって、
+   「作られたら検出する」は保険である。
+2. **第二の保証は実行時の検出器。**
+   permit に**単回消費の区間 nonce**を持たせる。nonce は**モニタ区間の中で単調増加のカウンタから採番**し、
+   tracker 側に「いま生きている nonce」として 1 個だけ保持、**消費時に破棄**する。
+   `VulnerabilityStore` の記録入口は、記録の前に次の 2 つを確かめる:
+   - **`Thread.holdsLock(DiagnosticGenerationRegistry.lock)` が真である**
+     (= 呼び出し元が本当にモニタを保持している。JVM 標準 API で、テストからも観測できる)。
+   - **permit の nonce が「いま生きている nonce」と一致する**(= 同じ区間で採番されたもので、未消費)。
+
+   **nonce は再利用しない**ので、**ABA も、区間外で現行値を詰めた permit も、使い回した permit も落ちる。**
+
+> **★ この 2 段は「単一区間だから安全」という主張を置き換えるものではない。**
+> 安全性の根拠はあくまで**単一区間**であり、nonce と `holdsLock` は
+> **その前提が将来のリファクタリングで崩れたときに、静かにではなく大きな音で壊れるようにするため**にある。
+
+###### ★ 世代の束縛 —— 書き込み側は必ず epoch を運ぶ(第 7 版 / round 5 R5-1)
+
+**第 6 版の `onRequestSent(path)` / `onContextChanged(newFingerprint)` には世代が無く、
+「接続世代スコープ」という前提を実装できなかった。**
+
+**実在の条件**: `SecurityScanLauncher.launch` は **server と epoch をコルーチン実行より前に捕捉する**
+(`val epoch = DiagnosticGenerationRegistry.currentEpoch` … `dispatch(params, path, source, server, epoch)`)。
+実際の送信はその後、`outboundLock` を取ってから起きる。**捕捉と送信の間に再接続が入ると**:
+
+> 旧 server へ送る処理が、**新世代の** tracker を `+1` する。
+> その要求の応答は**旧接続のクライアント**に届き、**世代照合で拒否されて減算されない**。
+> ⇒ **新世代に永久の残留 `+1` が残り、次の fingerprint 変更でそのパスが汚染され、接続更新まで解けない。**
+
+`GitLabLanguageServerConfigurationService.sendConfiguration` も同じ形
+(「Send to the server captured at CALL time」)なので、**旧接続向けの `onContextChanged` が
+現行 store を消す**余地もある。
+
+**規律**: **書き込み側の 4 操作はすべて epoch を引数に取り、区間の中で現行世代と照合してから状態を変える。**
+
+| 操作 | 渡された epoch が現行世代でないとき |
+|---|---|
+| `onRequestSent(path, capturedEpoch)` | **何もしない**(`+1` しない)。その要求の応答は旧クライアントへ行き、どのみち減算されない。**`+1` も `−1` も起きないので釣り合う** |
+| `onContextChanged(newFingerprint, capturedEpoch)` | **何もしない**(現行 store を消さない・現行パスを汚染しない)。旧世代の状態は `onConnectionClosed` かロールオーバが捨てる |
+| `onResponse(…, connectionEpoch)` | **拒否**(既存規律。減算もしない) |
+| `onConnectionClosed(deadEpoch)` | **これだけは性質が違う** —— `deadEpoch` は**現行でないのが当たり前**である。下記の規則で「保持中の世代がまさに `deadEpoch` のときだけ」捨てる |
+
+**照合は必ず区間の中で行う** —— 区間の外で `currentEpoch` を読んでから入ると、読んだ瞬間に古くなる。
+
+**★ 「その世代の状態」を実装可能にするために、tracker は保持中の世代を持つ。**
+これを書かないと「旧世代の状態だけ捨てる」が実装者によって別物になる:
+
+```
+ScanFlightTracker の状態 = (heldGeneration: Long, byPath: Map<String, (outstanding, contaminated)>)
+```
+
+| 規則 | 内容 |
+|---|---|
+| **書き込み 3 操作の共通前処理** | `capturedEpoch != currentEpoch` なら**何もしないで戻る**。そうでなく `heldGeneration != currentEpoch` なら、**`byPath` を捨てて `heldGeneration = currentEpoch` にしてから**本体を適用する(**遅延ロールオーバ**) |
+| **`onConnectionClosed(deadEpoch)`** | `heldGeneration == deadEpoch` のときだけ `byPath` を捨てる。**既に新しい世代へロールオーバ済みなら何もしない**(現行世代を巻き添えにしない) |
+
+**遅延ロールオーバがあるので、`onConnectionClosed` が呼ばれ損ねても旧世代の件数が新世代へ漏れない。**
+`onConnectionClosed` は**取りこぼしを早く解消するための明示的なバリア**であって、正しさの唯一の担保ではない
+—— **両方あることが、fail-closed の解除が遅れすぎないことと、漏れないことの両方を保証する。**
+
+**この形は新規発明ではない。** `CommandWaiters` が**同じ問題**を
+**捕捉した epoch を引数で持ち回る**ことで解いている(`CommandWaiters.consumeById(waiterId, epoch)` /
+`armDeadline(waiterId, path, epoch)`)。**構造をそのまま踏襲する。**
+
+###### 区間のネスト
+
+**変更側の区間のネスト**: `outboundLock.withLock { … synchronized(lock) { 世代照合・比較・更新・汚染・clear } ; 送信 … }`。
 
 > **★ 区間の順序は load-bearing である。** `SecurityScanLauncher.kt:303-304` は**同じ `outboundLock` 区間で
 > `didChangeConfiguration` と `runSecurityScan` を続けて送る**ので、この区間には**モニタ区間が 2 回**入る:
@@ -433,7 +519,7 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 - **期限切れも上限 eviction も、証明として使わない。** どちらも「エントリを捨てる」だけで
   **対応する応答を取り消さない**ため、第 4 版はここで破れた。**本方式にキューも期限も上限も無い。**
-  状態はパスあたり**整数 1 個と真偽値 1 個**だけで、第 4 版の台帳より**単純**である。
+  状態はパスあたり**整数 1 個と真偽値 1 個**(＋全体で保持世代 1 個)だけで、第 4 版の台帳より**単純**である。
 - **fail-closed**。判断できないときは記録しない。**「記録しない」の最悪は詳細が出ないことで、
   「記録する」の最悪は他アカウントの機密が現行として表示されること。**
 
@@ -451,8 +537,10 @@ LS は **5 つ**の早期 return で**応答を返さずに終わる**ことが�
 
 > **★ バリア = 接続の更新。** LS 接続が張り直されると `GitLabLanguageServerClient` が作り直され、
 > **旧接続の応答は新しいクライアントには到達しえない**(到達しても接続世代の照合で落ちる)。
-> したがって**接続世代が進んだ時点で `outstanding` と `contaminated` をすべて捨ててよい。**
+> したがって**接続世代が進んだ時点で、その世代の `outstanding` と `contaminated` を捨ててよい。**
 > **これは N1 で既に持っている仕組みそのもので、新しい概念を足していない。**
+> **実体は `VulnerabilityIntake.onConnectionClosed(deadEpoch)`**(第 7 版。tracker を直接叩かない。§16)。
+> **捨てるのは死んだ世代の分だけ**で、**現行世代の件数・汚染は巻き添えにしない**(A13b-11 (iii))。
 
 **影響範囲は狭い、ただし条件付きである**: 汚染されるのは**「fingerprint 変更の瞬間に `outstanding(P) > 0`
 だったパス」だけ**である。設定変更は稀で、そのとき飛行中の scan は通常 0 件なので、**平常時は何も汚染されない。**
@@ -532,11 +620,22 @@ data class FileVulnerabilities(
 記録の入口は permit を取る:
 
 ```kotlin
-/** 判定区間で生成され、同じ区間で消費される許可トークン。区間をまたぐと拒否される(A13b-8)。 */
-data class RecordPermit(
+/**
+ * 判定区間で生成され、同じ区間で消費される許可トークン。
+ *
+ * **`VulnerabilityIntake` の private な入れ子型**で、生成子も private。外からは構築できないので、
+ * permit を要求する記録入口も外からは呼べない ―― これが第一の保証である(§9.1)。
+ *
+ * [regionNonce] は**モニタ区間の中で単調増加カウンタから採番される単回消費の値**。再利用しない。
+ * 値の一致だけでは「同じ区間」を証明できず、**区間外で現行値を詰めた permit と ABA が素通りする**
+ * ため、記録入口は `Thread.holdsLock(DiagnosticGenerationRegistry.lock)` と
+ * 「いま生きている nonce と一致するか」を併せて確かめる(A13b-8)。
+ */
+private data class RecordPermit(
   val path: String,
   val epoch: Long,
   val contextFingerprint: String,
+  val regionNonce: Long,
 )
 ```
 
@@ -571,7 +670,7 @@ data class RecordPermit(
 | 論点 | 方針 |
 |---|---|
 | 応答着信(lsp4j ディスパッチ)と読み出し(UI スレッド) | **`DiagnosticGenerationRegistry.lock` の下の `LinkedHashMap(accessOrder = true)`。** 値は不変。**`Collections.synchronizedMap` は第 6 版で外した**(下行) |
-| **★ 判定・fingerprint 更新・clear・record の原子性**(第 6 版 / round 4 P1-1) | **錠は `DiagnosticGenerationRegistry.lock` ただ 1 つ**にまとめる。`ScanFlightTracker` と `VulnerabilityStore` は 2 オブジェクト・1 ロックで、**入口は `VulnerabilityIntake` の複合操作だけ**。判定区間で作った `RecordPermit` を**同じ区間で**消費する。**受信側は `outboundLock`(kotlinx `Mutex`・`withLock` は `suspend`)を取れない**ため、両側が取れる錠はこのプレーンモニタしかない。区間の中では**サスペンド・送信・UI ホップ・I/O を一切しない**ので、ロック順序「送信 `Mutex` → このモニタ」は一方向のまま(§9.1) |
+| **★ 判定・fingerprint 更新・clear・record の原子性**(第 6 版 / round 4 P1-1) | **錠は `DiagnosticGenerationRegistry.lock` ただ 1 つ**にまとめる。`ScanFlightTracker` と `VulnerabilityStore` は 2 オブジェクト・1 ロックで、**入口は `VulnerabilityIntake` の複合操作だけ**。判定区間で作った `RecordPermit` を**同じ区間で**消費する(**区間の同一性は値比較では証明できない**ので、**単回消費の区間 nonce + `Thread.holdsLock`** で束縛し、`RecordPermit` 自体を `VulnerabilityIntake` の private 入れ子型にして外から構築できなくする。第 7 版 / R5-2)。**書き込み側 4 操作はすべて捕捉済み epoch を運び、区間の中で現行世代と照合してから状態を変える**(第 7 版 / R5-1)。**受信側は `outboundLock`(kotlinx `Mutex`・`withLock` は `suspend`)を取れない**ため、両側が取れる錠はこのプレーンモニタしかない。区間の中では**サスペンド・送信・UI ホップ・I/O を一切しない**ので、ロック順序「送信 `Mutex` → このモニタ」は一方向のまま(§9.1) |
 | **記録と上限 eviction の原子性** | **`ConcurrentHashMap` では駄目。** 個々の get/put/remove しか原子的でなく、「記録して上限超過なら最古を捨てる」という**複合操作を守らない** — 上限 N の状態へ複数応答が並行着信すると、両方が同じ最古要素を選んで消して最終サイズが N を超えたり、同一パスの新しい値を古い空応答が消したりできる。**`removeEldestEntry` は `put` の内側で走り、その `put` は上記の単一区間の中にある**ので、記録・順序採番・eviction が**単一操作**になる(P1-g は第 6 版でも退行しない) |
 | **退去順序** | `timestamp` ではなく **`LinkedHashMap` のアクセス順**で決まる。`timestamp` が null の所見が混じっても順序が壊れない(応答に timestamp が無い場合の挿入順が別途要る、という問題が起きない) |
 | 接続世代 | 既存 `DiagnosticGenerationRegistry.currentEpoch` を使う(marker と同じ土俵)。**読み出し時に世代を照合**し、古ければ「所見なし」を返す |
@@ -718,9 +817,9 @@ Rh(t) = Dn.parse(t.toString())
 | `WebviewUriResolver` | **`directUris` シームを 1 つ追加**(既定は「無し」)。**metadata 要求より前に引く**(直接アドレスは metadata を要さず、待たせる理由が無い)。session は従来どおり現行 snapshot から取るので supersession 検出は不変。既存の解決順序は不変 |
 | **`WebviewEditorPart.kt:41`** | **`directUris` を渡す配線を追加。**(P1-c) |
 | **`AgenticTabsView.kt:27`** | **同上。** |
-| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `clear()` を `outboundLock` 区間に追加**、`SecurityScanLauncher` は**送信直前に `ScanFlightTracker.onSent`** も行う(§9.1)。**送信内容も送信可否も不変**(要求は一切抑止しない) |
+| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `VulnerabilityIntake.onContextChanged(fp, capturedEpoch)` を `outboundLock` 区間の内側のモニタ区間に追加**、`SecurityScanLauncher` は**送信直前に `VulnerabilityIntake.onRequestSent(path, capturedEpoch)`** も行う。**いずれも捕捉済みの epoch を渡す**(§9.1「★ 世代の束縛」)。**送信内容も送信可否も不変**(要求は一切抑止しない) |
 | `CommandWaiters` / `DiagnosticGenerationRegistry` | **変更しない。** `ScanFlightTracker` は `DiagnosticGenerationRegistry.lock` を**共有するだけ**(`CommandWaiters` と同じ扱い)。既存のロック順序 outbound `Mutex` → モニタ を守る |
-| `SecurityScanLifecycle` | 接続停止時の後始末に **`ScanFlightTracker.clear(deadEpoch)` を 1 行追加**(`CommandWaiters.clear` と同じ引数・同じ位置)。**死んだ接続の epoch を渡す**(進めた後の値ではない)。**これが §9.1 の「証明可能なバリア」の実体** |
+| `SecurityScanLifecycle` | 接続停止時の後始末に **`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を 1 行追加**(`CommandWaiters.clear` と同じ引数・同じ位置)。**死んだ接続の epoch を渡す**(進めた後の値ではない)。**これが §9.1 の「証明可能なバリア」の実体。** ★ 第 7 版で **`ScanFlightTracker.clear` の直接呼び出しから `VulnerabilityIntake` 経由へ変更**した —— tracker は自前の錠を持たないので、直接呼ぶと**無施錠の `clear` が `onResponse` / `onRequestSent` と並行して同じ状態を書く**(round 5 R5-3) |
 | `GitLabLanguageServer` | `@JsonRequest("$/gitlab/plugin/request")` を 1 つ追加 |
 | `GitLabLanguageServerClient` | `$/gitlab/openUrl` ハンドラと store への記録を追加 |
 | `WebviewEditorInput` | ファクトリを 2 つ追加 |
@@ -776,7 +875,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 
 | 層 | 方式 | 対象 |
 |---|---|---|
-| 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
+| 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9 / **A13b-11**。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する。**世代束縛は `currentEpoch` を進めるだけで再現でき、実接続は要らない**)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
 | 受信配線 | `GitLabLanguageServerClient` のハンドラを直接呼ぶ | store への記録、`openUrl` の委譲、**旧 session の `ready` 拒否** |
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
 | 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形 |
@@ -810,10 +909,11 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A13b-3** | **期限を超えた遅延応答も記録されない**: 応答が `RESPONSE_DEADLINE_MS` より後に届いても、未着件数が 0 になっていなければ拒否される。**期限切れを「出し切った」証明に使っていない**こと | 自動(時刻に依存しない = 件数だけで判定していることの裏返し) |
 | **A13b-4** | **過剰拒否しない(liveness)**: fingerprint が変わらないまま同一パスへ重複要求した場合、**両方の応答が記録される**。汚染が常時 on になっていないこと | 自動 |
 | **A13b-5** | **汚染はパス単位**: 変更時に飛行中だったパスだけが汚染され、**飛行中でなかった別パスは直後から記録される** | 自動 |
-| **A13b-6** | **応答が返らない要求は fail-closed**: 応答が 1 件も返らない要求があるパスは、**接続世代が進むまで汚染されたまま**(詳細が出ない)。**`clear(deadEpoch)` で解除され、以後は記録される**。生きている接続の件数を巻き添えにしない | 自動 |
+| **A13b-6** | **応答が返らない要求は fail-closed**: 応答が 1 件も返らない要求があるパスは、**接続世代が進むまで汚染されたまま**(詳細が出ない)。**`VulnerabilityIntake.onConnectionClosed(deadEpoch)` で解除され、以後は記録される**。生きている接続の件数を巻き添えにしない | 自動 |
 | **A13b-7** | **★ round 4 の筋書き(原子性)**: 応答 FA が着信して `outstanding` が 0 になり「記録可」と判定される、その**判定と記録の間**に別スレッドが fingerprint を FB へ変更して `clear()` する。**FA の所見が FB の所見として復活しない。** 実装は「変更スレッドを `VulnerabilityIntake` の区間の入口で待たせ、応答スレッドの区間が閉じてから入れる」順と、その逆の順の**両方**を走らせ、どちらでも復活しないことを固定する | 自動 |
-| **A13b-8** | **`RecordPermit` が区間をまたげない。** 区間の外で作った(あるいは古い世代・古い fingerprint の)permit を `VulnerabilityStore` へ渡すと**拒否される**。単一区間で運用する限りこの拒否は起きないので、**これは「permit が区間をまたいだ」というバグの検出器**である | 自動 |
-| **A13b-9** | **`VulnerabilityStore` が自前の錠を持たない。** 読み書きはすべて `VulnerabilityIntake` 経由で、**tracker と store を別々に叩く public API が存在しない**(公開 API の本数で固定する) | 自動 |
+| **A13b-8** | **`RecordPermit` が区間をまたげない**(第 7 版で機構ごと強化)。**値の一致では守れない**ので、次の 3 つを名指しで固定する: **(i) 区間外で生成し現行 epoch・現行 fingerprint を詰めた permit が拒否される**(`Thread.holdsLock` と nonce の両方で落ちること)/ **(ii) fingerprint が A → B → A と戻ったあと、古い A の permit が拒否される**(ABA。間の `clear()` を取り消せないため)/ **(iii) 一度消費した permit の再利用が拒否される**。**第一の保証は `RecordPermit` を `VulnerabilityIntake` の private 入れ子型にして構築自体を不可能にすること**で、本条件はその保険が効いていることの確認 | 自動 |
+| **A13b-9** | **`VulnerabilityStore` も `ScanFlightTracker` も自前の錠を持たない。** 読み書きはすべて `VulnerabilityIntake` 経由で、**tracker と store を別々に叩く public API が存在しない**(公開 API を**書き込み 4 + 読み出し 1 = 5 本**に固定する)。**とくに `ScanFlightTracker.clear` が外から呼べないこと**(round 5 R5-3) | 自動 |
+| **A13b-11** | **★ round 5 の筋書き(世代束縛)**: `SecurityScanLauncher.launch` が server と epoch を捕捉した**後**、`outboundLock` を取る**前**に接続世代が進む。このとき **(i) 旧 epoch の `onRequestSent` は新世代の件数を `+1` しない**(残留 `+1` を作らない)、**(ii) 旧 epoch の `onContextChanged` は現行 store を消さず現行パスを汚染しない**、**(iii) `onConnectionClosed(deadEpoch)` は旧世代の状態だけを捨て、現行世代の件数・汚染を巻き添えにしない**。**照合が区間の中で行われていること**は、照合と更新の間に世代を進めるラッチで固定する。あわせて **(iv) `onConnectionClosed` が呼ばれないまま世代が進んだ場合も、最初の書き込みで `byPath` がロールオーバし旧世代の件数が漏れない**(遅延ロールオーバ)、**(v) 既にロールオーバ済みのところへ遅れて届いた `onConnectionClosed(deadEpoch)` が現行世代を消さない** | 自動 |
 | **A13b-10** | **前提 Q / R / S の成文化**: 応答の `filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)、**URI 形式の `filePath` も素のパスと同じキーへ正規化される**(前提 S)、**未着件数 0 での着信は拒否 + 汚染**。3 つとも fail-closed 側であること | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
@@ -847,6 +947,9 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **外部データを webview が HTML 展開する** | **XSS** | **同梱バンドルはサニタイズしない(§14 に実ソース根拠)。クライアント側でエスケープする**(`VulnerabilityProjection`)。A17 |
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
 | **★ 判定と記録の隙間に設定変更が割り込む** | **認可境界の違反**(clear を生き延びた旧所見が現行として読める) | **判定・fingerprint 更新・clear・record を `DiagnosticGenerationRegistry.lock` の単一区間に入れ、`RecordPermit` を同一区間で消費する**(§9.1 / §11)。A13b-7 / A13b-8 |
+| **★ 再接続を跨いだ送信が新世代の件数を汚す** | 残留 `+1` が新世代に残り、**次の設定変更でそのパスが接続更新まで恒久的に汚染される**(詳細が出ない) | **書き込み側 4 操作に捕捉済み epoch を運ばせ、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」)。`CommandWaiters` と同じ形。A13b-11 |
+| **★ `RecordPermit` の抜け道(区間外生成・ABA)** | **clear 済みの古い所見を書き戻せる = 認可境界の違反** | **第一に字句スコープ**(private 入れ子型で構築不能)、**第二に単回消費 nonce + `Thread.holdsLock`**(§9.1「★ permit は値の一致では守れない」)。A13b-8 |
+| **★ 無施錠の `clear` が並行更新と競合する** | 例外・計数の取り違え・**新世代を巻き込む消去** | **`ScanFlightTracker.clear` を外から呼べなくし、`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を第 5 の複合操作として共有モニタの下に置く**(§16)。A13b-9 |
 | **★ LS を上げて前提 Q / R が崩れる** | 計数されない応答が静穏を偽証し、**認可境界が破れる** | **前提を §9.1 に全列挙付きで成文化し、LS 更新時の再検証手順を §6 と PR に置く。** 崩れた場合の観測(未着件数 0 での着信)は**拒否 + 汚染**で fail-closed(§11)。A13b-10 |
 | **遅延した旧文脈の応答が「現行のもの」として受理される** | **同上(認可境界の違反)。** **応答を要求に対応づける方式はすべてここで破れる**(単一スロット・FIFO・隔離境界のいずれも) | **対応づけを諦め、未着件数が 0 に戻ることで静穏を証明する**(`ScanFlightTracker`、§9.1)。A13b-1 |
 | **設定変更を跨いだパスで正しい応答まで捨てる** | scan 結果 1 回分の損失 | **意図した代償**(fail-closed)。次の保存・コマンドで撃ち直せる。A13b-4 が過剰拒否でないことを固定 |
@@ -1095,3 +1198,46 @@ LS の失敗経路は `filePath ?? documentSource.toString()`(`:193`)で **URI �
   痩せ具合を測るために**残留件数(整数のみ・パスを出さない)の観測**を §15 に足した。
 - **A19(P1-g)の文言が旧ロック前提のままだった。** store 自前の錠を外したので、
   「`removeEldestEntry` が `VulnerabilityIntake` の区間の中で走ること」の確認へ読み替えた。
+
+### 第 7 版(2026-09-22)— Codex レビュー round 5 反映
+
+round 5 の指摘は **P1×3**。**3 件とも文言レベルではなく実体のある指摘**で、実コードと設計書本文で裏を取ったうえで全件反映した。
+**3 件のうち 2 件(R5-2 / R5-3)は第 6 版で自分が入れ込んだ退行**である。
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **R5-1** | **送信計数を捕捉済みの接続世代に束縛せよ。** `onRequestSent(path)` / `onContextChanged(newFingerprint)` に世代が無く、「接続世代スコープ」を実装できない。server 捕捉後・`outboundLock` 取得前に再接続すると、旧 server へ送る処理が**新世代**の tracker を `+1` し、その応答は世代照合で拒否されて減算されないため**恒久的な残留 `+1`** になる | **妥当。実コードで確認**: `SecurityScanLauncher.launch` は `val epoch = DiagnosticGenerationRegistry.currentEpoch` … `dispatch(params, path, source, server, epoch)` と**コルーチン実行前に捕捉**し、送信は `outboundLock` 取得後。`sendConfiguration` も「Send to the server captured at CALL time」と同じ形。→ **書き込み側 4 操作すべてに epoch を持ち回らせ、区間の中で現行世代と照合してから状態を変える**形にした(§9.1「★ 世代の束縛」)。**`CommandWaiters.consumeById(waiterId, epoch)` / `armDeadline(waiterId, path, epoch)` と同じ構造**で、新しい概念は足していない。A13b-11 |
+| **R5-2** | **`RecordPermit` を同一区間に束縛できる形にせよ。** `(path, epoch, fingerprint)` の値比較では「同じ区間で生成・消費された」ことを検証できない。**区間外で現行値を詰めた permit** と **fingerprint が A→B→A と戻る ABA** はどちらも比較が成功するので、第 6 版の A13b-8 は原理的に達成不能 | **妥当。第 6 版の退行で、round 4 P1-1 ①と同じ型の誤り** —— **受け入れ条件が機構の能力を超えて書かれていた。** → **2 段で塞いだ**: ①**第一の保証は字句スコープ** —— `RecordPermit` を `VulnerabilityIntake` の **private 入れ子型**にし、外から構築できなくする(記録入口も呼べなくなる)。②**第二の保証は実行時の検出器** —— **単回消費の区間 nonce**(区間内で採番・消費時に破棄・再利用しない)と **`Thread.holdsLock(DiagnosticGenerationRegistry.lock)`**。**ABA も区間外 permit も使い回しも落ちる。** A13b-8 を (i) 区間外 + 現行値 / (ii) ABA / (iii) 再利用 の 3 本へ書き換え |
+| **R5-3** | **接続停止時の `clear` も `VulnerabilityIntake` 経由にせよ。** §16 が `SecurityScanLifecycle` から `ScanFlightTracker.clear(deadEpoch)` を直接呼ぶと指定しているが、第 6 版で tracker は自前の錠を失ったので、**無施錠の `clear` が `onResponse` / `onRequestSent` と並行して同じ状態を書く**。A13b-9 の「入口は複合操作だけ」も満たせない | **妥当。これも第 6 版の退行。** 第 5 版までは tracker が自分でモニタを取っていたので直接呼び出しで整合していたが、**第 6 版で錠を外したときに §16 を追従させ忘れた**。→ **`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を第 5 の複合操作として追加**し、§16 / §8.1 / 「確定する規律」/ A13b-6 / A13b-9 を揃えた。**`ScanFlightTracker.clear` を外から呼べる経路は作らない** |
+
+#### 第 6 版の退行が 2 件出たことについて
+
+**第 6 版は「錠を 1 つにまとめる」という変更を入れたが、その前提に依存していた記述の追従が漏れた。**
+
+- **R5-3** は §16 の配線表。tracker が自分で錠を取っていたときの記述がそのまま残っていた。
+- **R5-2** は、機構を弱めた(store 自前の錠を外した)にもかかわらず、**受け入れ条件だけが強いまま**残っていた。
+
+**第 6 版の自己レビューはこの 2 件を見落とした。** 見落とした理由は、レビューの軸が
+「**新しく書いた節が正しいか**」に寄っており、「**この変更に依存していた既存記述はどれか**」を
+洗っていなかったこと。**第 7 版では、変更した概念(錠・公開 API・permit)ごとに
+全文を grep して参照箇所を突き合わせた**(`ScanFlightTracker.clear` / `clear(deadEpoch)` /
+`onSent` / `onRequestSent` / `onContextChanged` / `onConnectionClosed`)。
+
+#### 反映先
+
+§8.1(`VulnerabilityIntake` を 5 操作へ・epoch 付き)/
+**§9.1(「確定する規律」の入口行・許可トークン行 / 新節「★ permit は値の一致では守れない」/
+新節「★ 世代の束縛」/ バリアの実体を `onConnectionClosed` に明記)** /
+§10(`RecordPermit` に `regionNonce` を追加し private 入れ子型に)/ §11(原子性の行)/
+§16(配線 2 行)/ §18(テスト対象)/ §19(A13b-6 / A13b-8 / A13b-9 を書き換え、**A13b-11** を追加)/
+§21(リスク 3 行)。
+
+#### 自己レビューで併せて直した点(第 7 版の反映そのものに対して)
+
+- **「旧世代の状態だけを捨てる」が実装可能でなかった。** tracker が**どの世代の状態を保持しているか**を
+  持っていなかったため、実装者によって別物になる(= P1 の「解釈が分かれる曖昧な記述」)。
+  → **`heldGeneration` を状態に加え、書き込み 3 操作の共通前処理として遅延ロールオーバ**を規定した。
+  これにより **`onConnectionClosed` が呼ばれ損ねても旧世代の件数が新世代へ漏れない**(A13b-11 (iv))。
+- **`onConnectionClosed` を「渡された epoch が現行でないとき」の表に並べていたのが誤り。**
+  この操作だけは**現行でない epoch を渡すのが正常**である。表から切り出し、
+  「保持中の世代がまさに `deadEpoch` のときだけ捨てる」という規則へ書き直した(A13b-11 (v))。
