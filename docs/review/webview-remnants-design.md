@@ -500,6 +500,65 @@ ScanFlightTracker の状態 = (heldGeneration: Long, byPath: Map<String, (outsta
 **捕捉した epoch を引数で持ち回る**ことで解いている(`CommandWaiters.consumeById(waiterId, epoch)` /
 `armDeadline(waiterId, path, epoch)`)。**構造をそのまま踏襲する。**
 
+###### ★★ epoch と proxy は「同じ 1 回の読み取り」から取る(第 8 版 / round 6 R6-1)
+
+**「捕捉した epoch を運ぶ」だけでは足りない。epoch と送信先 proxy が同じ接続のものでなければ、
+世代照合はかえって害になる。**
+
+**実在の条件**: `SecurityScanLauncher.launch` は **2 つを別々に読む**。
+
+```kotlin
+val epoch = DiagnosticGenerationRegistry.currentEpoch   // ← ここ
+val enabled = isEnabled()
+DiagnosticGenerationRegistry.reconcileSource(…)
+val path = DiagnosticUri.normalize(uri)
+…
+val server = languageServerWrapper.languageServer       // ← と、ここ（6 文あと）
+```
+
+`GitLabLanguageServerConfigurationService.sendConfiguration()` も
+`languageServerWrapper.languageServer` を単独で読む(`:37`)。**2 つの読み取りの間の再接続**で、
+**食い違った組**ができる:
+
+| 組 | 何が起きるか |
+|---|---|
+| **(旧 epoch, 新 server)** | `onRequestSent` は stale epoch として**何もしない**が、**要求は新 server へ実際に送られる**。その応答は新世代として**受理**され、`outstanding == 0` なので**前提違反と判定されてパスが汚染**される。**次の再接続まで詳細が出ない** |
+| **(新 epoch, 旧 server)** | `onContextChanged` は現行世代として**通る**ので、**クライアントの追跡 fingerprint は進む**。しかし `didChangeConfiguration` は**死んだ接続へ送られて効かない**。生きている接続が独立に同じ設定へ行き着くかは readiness 経路次第であり、**「追跡 fingerprint が生きている接続の設定を表している」という本方式の土台が、偶然に依存する**。ここは**偶然に頼ってよい場所ではない** |
+
+**第 7 版の A13b-11 は「両方を捕捉した後」の再接続しか固定していないので、この競合を検出できない。**
+
+**規律**: **送信側は接続の identity を 1 回だけ読み、proxy と epoch をその 1 つの値から取る。**
+
+**これも新規発明ではない。** 本リポジトリには**まさにこの目的の型が既にある**:
+
+- `GitLabLanguageServerWrapper.currentSnapshot: LanguageServerHandle?` は `AtomicReference` から**1 回で読める**。
+- `LanguageServerHandle` の KDoc がその意図を明言している ——
+  「**Published as one immutable value so that a reader can never observe a new proxy paired with the
+  session of the connection it replaced.**」
+- `WebviewUriResolver` / `WebviewLoadCoordinator` は**既にこの読み方をしている**。
+
+**足りないのは epoch だけ**なので、**`LanguageServerHandle` に接続 epoch を加える**:
+
+```kotlin
+data class LanguageServerHandle(
+  val proxy: GitLabLanguageServer,
+  val session: LanguageServerSession,
+  val connectionEpoch: Long,   // ★ 第 8 版で追加
+)
+```
+
+| 決めたこと | 理由 |
+|---|---|
+| **値は `GitLabLanguageServerClient` の `connectionEpoch` をそのまま複製する**(`GitLabLanguageServerProcessProvider.kt:155` は `client` を既にスコープに持つ) | **送信側が使う epoch が、受信側が照合に使う epoch と同一値であることが構成上保証される。** `DiagnosticGenerationRegistry.currentEpoch` を別に読む形だと、`onActivate` の走るタイミング次第でずれうる |
+| **既定引数を付けない** | 既定値は「epoch を渡し忘れた呼び出し」を黙って通す = **本指摘の穴をそのまま再導入する**。構築箇所は**本番 1 つ**(`GitLabLanguageServerProcessProvider.kt:155`)と**テスト 8 箇所**(`GitLabLanguageServerWrapperTest.kt:131,133,177,178,189` / `WebviewUriResolverTest.kt:47,161` / `AgenticChatWebViewClientTest.kt:109`)だけなので、明示更新で足りる |
+| **送信側は `currentSnapshot` を 1 回だけ読む** | `SecurityScanLauncher.launch` は `languageServer` ではなく `currentSnapshot` を読み、`handle.proxy` と `handle.connectionEpoch` を使う。`sendConfiguration()`(引数なし)も同様。`sendConfiguration(server)` は**handle を受け取る形へ**(`GitLabLanguageServerProcessProvider.kt:187` は `:155` の `handle` を既に持っている) |
+| **`handle` が null なら送らない・数えない** | 既存の「No server means nothing was sent」と同じ扱い。**`+1` も `onContextChanged` も起こさない** |
+
+> **★ 読み取りは 1 回でよく、ロックは要らない。** `AtomicReference.get()` が 1 回で不可分な値を返すので、
+> **「2 つの読み取りの間」という窓がそもそも消える。** 読んだ直後に再接続しても、
+> 手元の handle は**一貫した 1 つの接続**を指し続け、その epoch は区間の中の照合で stale と判定される
+> —— **これは本節が既に扱っている正常な経路**である。
+
 ###### 区間のネスト
 
 **変更側の区間のネスト**: `outboundLock.withLock { … synchronized(lock) { 世代照合・比較・更新・汚染・clear } ; 送信 … }`。
@@ -809,6 +868,15 @@ Rh(t) = Dn.parse(t.toString())
 
 ## 16. 既存機能への影響
 
+> **★ 第 8 版でスコープが 1 段広がった(明示する)。** round 6 R6-1 の対応で、
+> **本サイクルは `LanguageServerHandle` に 1 フィールド、その構築箇所 1 つ、`GitLabLanguageServerClient` の
+> 可視性 1 つを触る。** 第 7 版までは「既存の LSP 接続まわりは読むだけ」という範囲だった。
+> **理由**: 送信側が proxy と epoch を別々に読む限り、どんな照合規律を足しても食い違った組を作れてしまう
+> (§9.1「★★ epoch と proxy は同じ 1 回の読み取りから取る」)。**照合を足すより、窓を消すほうが小さい。**
+> **追加は 1 フィールドで、既存の値の決まり方・公開 API の意味・ロック規律はどれも変えない。**
+> **ディレクトリ構成もビルドシステムも変えない**(§6 の共通制約は維持)。
+> **実装 PR の説明文に「逸脱」として記載し、ユーザー承認を得ること。**
+
 | 既存 | 影響 |
 |---|---|
 | `SecurityScanStatusReporter` | **変更しない。** store への記録はクライアント側で分岐して行う |
@@ -817,7 +885,10 @@ Rh(t) = Dn.parse(t.toString())
 | `WebviewUriResolver` | **`directUris` シームを 1 つ追加**(既定は「無し」)。**metadata 要求より前に引く**(直接アドレスは metadata を要さず、待たせる理由が無い)。session は従来どおり現行 snapshot から取るので supersession 検出は不変。既存の解決順序は不変 |
 | **`WebviewEditorPart.kt:41`** | **`directUris` を渡す配線を追加。**(P1-c) |
 | **`AgenticTabsView.kt:27`** | **同上。** |
-| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `VulnerabilityIntake.onContextChanged(fp, capturedEpoch)` を `outboundLock` 区間の内側のモニタ区間に追加**、`SecurityScanLauncher` は**送信直前に `VulnerabilityIntake.onRequestSent(path, capturedEpoch)`** も行う。**いずれも捕捉済みの epoch を渡す**(§9.1「★ 世代の束縛」)。**送信内容も送信可否も不変**(要求は一切抑止しない) |
+| `GitLabLanguageServerConfigurationService` / `SecurityScanLauncher` | **fingerprint の計算と `VulnerabilityIntake.onContextChanged(fp, capturedEpoch)` を `outboundLock` 区間の内側のモニタ区間に追加**、`SecurityScanLauncher` は**送信直前に `VulnerabilityIntake.onRequestSent(path, capturedEpoch)`** も行う。**★ 第 8 版: どちらも `languageServerWrapper.currentSnapshot` を 1 回だけ読み、`handle.proxy` と `handle.connectionEpoch` を同じ 1 値から取る**(§9.1「★★ epoch と proxy は同じ 1 回の読み取りから取る」)。`sendConfiguration(server)` は **handle を受け取る形へ**変更。**送信内容も送信可否も不変**(要求は一切抑止しない) |
+| **`LanguageServerHandle`(`LanguageServerSession.kt:15`)** | **★ 第 8 版: `connectionEpoch: Long` を 1 フィールド追加**(既定引数は付けない。付けると渡し忘れを黙って通す)。値は `GitLabLanguageServerClient.connectionEpoch` の複製で、**送信側の epoch と受信側の照合 epoch が構成上同一**になる |
+| **`GitLabLanguageServerProcessProvider.kt:155`** | **★ 第 8 版: `LanguageServerHandle(proxy, client.session, client.connectionEpoch)` へ。** `client` は既にスコープにある。`:187` の `sendConfiguration(readinessServer)` は `:155` の `handle` を渡す形へ |
+| **`GitLabLanguageServerClient.kt:62`** | **★ 第 8 版: `connectionEpoch` を `private val` から読める可視性へ**(provider が複製するため)。**値の決まり方は変えない** |
 | `CommandWaiters` / `DiagnosticGenerationRegistry` | **変更しない。** `ScanFlightTracker` は `DiagnosticGenerationRegistry.lock` を**共有するだけ**(`CommandWaiters` と同じ扱い)。既存のロック順序 outbound `Mutex` → モニタ を守る |
 | `SecurityScanLifecycle` | 接続停止時の後始末に **`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を 1 行追加**(`CommandWaiters.clear` と同じ引数・同じ位置)。**死んだ接続の epoch を渡す**(進めた後の値ではない)。**これが §9.1 の「証明可能なバリア」の実体。** ★ 第 7 版で **`ScanFlightTracker.clear` の直接呼び出しから `VulnerabilityIntake` 経由へ変更**した —— tracker は自前の錠を持たないので、直接呼ぶと**無施錠の `clear` が `onResponse` / `onRequestSent` と並行して同じ状態を書く**(round 5 R5-3) |
 | `GitLabLanguageServer` | `@JsonRequest("$/gitlab/plugin/request")` を 1 つ追加 |
@@ -875,7 +946,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 
 | 層 | 方式 | 対象 |
 |---|---|---|
-| 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9 / **A13b-11**。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する。**世代束縛は `currentEpoch` を進めるだけで再現でき、実接続は要らない**)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
+| 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9 / **A13b-11**。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する。**世代束縛は `currentEpoch` を進めるだけで再現でき、実接続は要らない**。**A13b-12 は「`currentSnapshot` を 1 回しか読まないこと」を fake wrapper の読み取り回数で固定する**)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
 | 受信配線 | `GitLabLanguageServerClient` のハンドラを直接呼ぶ | store への記録、`openUrl` の委譲、**旧 session の `ready` 拒否** |
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
 | 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形 |
@@ -914,6 +985,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A13b-8** | **`RecordPermit` が区間をまたげない**(第 7 版で機構ごと強化)。**値の一致では守れない**ので、次の 3 つを名指しで固定する: **(i) 区間外で生成し現行 epoch・現行 fingerprint を詰めた permit が拒否される**(`Thread.holdsLock` と nonce の両方で落ちること)/ **(ii) fingerprint が A → B → A と戻ったあと、古い A の permit が拒否される**(ABA。間の `clear()` を取り消せないため)/ **(iii) 一度消費した permit の再利用が拒否される**。**第一の保証は `RecordPermit` を `VulnerabilityIntake` の private 入れ子型にして構築自体を不可能にすること**で、本条件はその保険が効いていることの確認 | 自動 |
 | **A13b-9** | **`VulnerabilityStore` も `ScanFlightTracker` も自前の錠を持たない。** 読み書きはすべて `VulnerabilityIntake` 経由で、**tracker と store を別々に叩く public API が存在しない**(公開 API を**書き込み 4 + 読み出し 1 = 5 本**に固定する)。**とくに `ScanFlightTracker.clear` が外から呼べないこと**(round 5 R5-3) | 自動 |
 | **A13b-11** | **★ round 5 の筋書き(世代束縛)**: `SecurityScanLauncher.launch` が server と epoch を捕捉した**後**、`outboundLock` を取る**前**に接続世代が進む。このとき **(i) 旧 epoch の `onRequestSent` は新世代の件数を `+1` しない**(残留 `+1` を作らない)、**(ii) 旧 epoch の `onContextChanged` は現行 store を消さず現行パスを汚染しない**、**(iii) `onConnectionClosed(deadEpoch)` は旧世代の状態だけを捨て、現行世代の件数・汚染を巻き添えにしない**。**照合が区間の中で行われていること**は、照合と更新の間に世代を進めるラッチで固定する。あわせて **(iv) `onConnectionClosed` が呼ばれないまま世代が進んだ場合も、最初の書き込みで `byPath` がロールオーバし旧世代の件数が漏れない**(遅延ロールオーバ)、**(v) 既にロールオーバ済みのところへ遅れて届いた `onConnectionClosed(deadEpoch)` が現行世代を消さない** | 自動 |
+| **A13b-12** | **★ round 6 の筋書き(epoch と proxy の食い違い)**: **2 つの読み取りの間**で再接続する。**(i) (旧 epoch, 新 server)** —— 要求が新 server へ送られたのに `+1` されず、応答が `outstanding == 0` で**前提違反と判定されてパスが汚染される**、が**起きないこと**。**(ii) (新 epoch, 旧 server)** —— 死んだ接続へ送った `didChangeConfiguration` で**追跡 fingerprint だけが進む**、が**起きないこと**。**固定の仕方**: `currentSnapshot` を 1 回だけ読む実装では**そもそもこの組が作れない**ので、テストは**「送信側が `currentSnapshot` を 1 回しか読まない」ことと、handle の `connectionEpoch` が受信側クライアントの `connectionEpoch` と同一値であること**を固定する(**組を作れないことの証明**であって、作ってから落とすテストではない) | 自動 |
 | **A13b-10** | **前提 Q / R / S の成文化**: 応答の `filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)、**URI 形式の `filePath` も素のパスと同じキーへ正規化される**(前提 S)、**未着件数 0 での着信は拒否 + 汚染**。3 つとも fail-closed 側であること | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
@@ -948,6 +1020,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
 | **★ 判定と記録の隙間に設定変更が割り込む** | **認可境界の違反**(clear を生き延びた旧所見が現行として読める) | **判定・fingerprint 更新・clear・record を `DiagnosticGenerationRegistry.lock` の単一区間に入れ、`RecordPermit` を同一区間で消費する**(§9.1 / §11)。A13b-7 / A13b-8 |
 | **★ 再接続を跨いだ送信が新世代の件数を汚す** | 残留 `+1` が新世代に残り、**次の設定変更でそのパスが接続更新まで恒久的に汚染される**(詳細が出ない) | **書き込み側 4 操作に捕捉済み epoch を運ばせ、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」)。`CommandWaiters` と同じ形。A13b-11 |
+| **★ epoch と proxy が別々の読み取りで食い違う** | **(旧 epoch, 新 server)** = 生きた応答が前提違反と誤判定されてパスが汚染される(詳細が出ない)/ **(新 epoch, 旧 server)** = **追跡 fingerprint が生きている接続の設定を表さなくなる**(認可境界の土台が偶然頼みになる) | **`currentSnapshot` を 1 回だけ読み、`LanguageServerHandle` に `connectionEpoch` を持たせて proxy と同じ 1 値から取る**(§9.1 / §16)。既存の `AtomicReference` がそのまま使えるので**窓そのものが消える**。A13b-12 |
 | **★ `RecordPermit` の抜け道(区間外生成・ABA)** | **clear 済みの古い所見を書き戻せる = 認可境界の違反** | **第一に字句スコープ**(private 入れ子型で構築不能)、**第二に単回消費 nonce + `Thread.holdsLock`**(§9.1「★ permit は値の一致では守れない」)。A13b-8 |
 | **★ 無施錠の `clear` が並行更新と競合する** | 例外・計数の取り違え・**新世代を巻き込む消去** | **`ScanFlightTracker.clear` を外から呼べなくし、`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を第 5 の複合操作として共有モニタの下に置く**(§16)。A13b-9 |
 | **★ LS を上げて前提 Q / R が崩れる** | 計数されない応答が静穏を偽証し、**認可境界が破れる** | **前提を §9.1 に全列挙付きで成文化し、LS 更新時の再検証手順を §6 と PR に置く。** 崩れた場合の観測(未着件数 0 での着信)は**拒否 + 汚染**で fail-closed(§11)。A13b-10 |
@@ -1241,3 +1314,56 @@ round 5 の指摘は **P1×3**。**3 件とも文言レベルではなく実体�
 - **`onConnectionClosed` を「渡された epoch が現行でないとき」の表に並べていたのが誤り。**
   この操作だけは**現行でない epoch を渡すのが正常**である。表から切り出し、
   「保持中の世代がまさに `deadEpoch` のときだけ捨てる」という規則へ書き直した(A13b-11 (v))。
+
+### 第 8 版(2026-09-22)— Codex レビュー round 6 反映
+
+round 6 の指摘は **P1×1**(第 7 版で 3 件 → 1 件)。**妥当と判断し、実コードで裏を取ったうえで反映した。**
+**第 7 版の修正そのものが作った穴**である。
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **R6-1** | **server と epoch を不可分に捕捉せよ。** 第 7 版は「捕捉した epoch を運ぶ」と決めたが、**epoch と送信先 proxy が同じ接続のものである保証が無い**。`SecurityScanLauncher.launch` は 2 つを別々に読むので、その間の再接続で **(旧 epoch, 新 server)** ができ、要求は新 server へ送られるのに `onRequestSent` は stale として `+1` せず、**新世代の応答が `outstanding == 0` で前提違反と判定されてパスが汚染**される。逆順の `sendConfiguration` では **(新 epoch, 旧 server)** もできる。A13b-11 は「両方を捕捉した後」の再接続しか固定していない | **妥当。実コードで確認**: `launch` は `val epoch = …currentEpoch` と `val server = …languageServer` を **6 文はさんで別々に**読む。`sendConfiguration()` も `languageServer` を単独で読む(`:37`)。→ **照合を足すのではなく窓を消した** —— **送信側は `currentSnapshot` を 1 回だけ読み、proxy と epoch をその 1 値から取る**(§9.1「★★ epoch と proxy は同じ 1 回の読み取りから取る」)。A13b-12 |
+
+#### 正解は既にリポジトリにあった
+
+**`GitLabLanguageServerWrapper.currentSnapshot` は `AtomicReference` から 1 回で読める不可分な値**で、
+`LanguageServerHandle` の KDoc は**まさにこの目的**を明言している ——
+「Published as one immutable value so that a reader can never observe a new proxy paired with the
+session of the connection it replaced.」**`WebviewUriResolver` / `WebviewLoadCoordinator` は既にこの読み方をしている。**
+
+**足りないのは epoch だけ**だったので、`LanguageServerHandle` に `connectionEpoch: Long` を 1 つ足し、
+**値は `GitLabLanguageServerClient.connectionEpoch` の複製**にした。
+これで**送信側が使う epoch と受信側が照合に使う epoch が構成上同一**になる ——
+`DiagnosticGenerationRegistry.currentEpoch` を別に読む形だと `onActivate` のタイミング次第でずれうる。
+**既定引数は付けない**(渡し忘れを黙って通すのは、この指摘の穴の再導入そのもの)。
+
+#### 受け入れ条件の形を変えた
+
+**A13b-12 は「食い違った組を作ってから落とす」テストではない。**
+`currentSnapshot` を 1 回だけ読む実装では**その組が作れない**ので、固定するのは
+
+- **送信側が `currentSnapshot` を 1 回しか読まないこと**(fake wrapper の読み取り回数で観測)
+- **handle の `connectionEpoch` が受信側クライアントの `connectionEpoch` と同一値であること**
+
+の 2 つ、すなわち**組を作れないことの証明**である。
+
+#### スコープが 1 段広がったことを明示した
+
+第 7 版までは「既存の LSP 接続まわりは読むだけ」だったが、本版で
+**`LanguageServerHandle` に 1 フィールド / 構築箇所 1 つ / `GitLabLanguageServerClient` の可視性 1 つ**を触る。
+§16 の冒頭に**逸脱として明記**し、**実装 PR の説明文でユーザー承認を得る**ことにした。
+**ディレクトリ構成・ビルドシステム・既存の値の決まり方・公開 API の意味・ロック規律はどれも変えない。**
+
+#### 3 版続けて「自分の修正が次の穴を作る」型が出ている
+
+- 第 6 版: 錠を 1 つにまとめた → その前提に依存する記述の追従漏れで **R5-2 / R5-3**。
+- 第 7 版: epoch を運ぶことにした → **運ぶ値の出どころ**を決めていなかったので **R6-1**。
+
+**共通しているのは「新しく導入した概念が、既存のどの読み取り・どの記述に依存しているか」を
+洗っていないこと。** 第 8 版では **`currentSnapshot` / `languageServer` / `connectionEpoch` /
+`LanguageServerHandle` の全参照箇所**を実コードと設計書の両方で grep して突き合わせた。
+
+#### 反映先
+
+§9.1(新節「★★ epoch と proxy は同じ 1 回の読み取りから取る」)/ §16(冒頭の逸脱注記 + 配線 4 行)/
+§18 / §19 A13b-12 / §21(リスク 1 行)。
