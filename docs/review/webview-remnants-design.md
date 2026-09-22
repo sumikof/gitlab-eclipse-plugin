@@ -149,9 +149,9 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 | コンポーネント | 責務 |
 |---|---|
-| `VulnerabilityIntake` | **★ 第 6 版で新設。`ScanFlightTracker` と `VulnerabilityStore` を `DiagnosticGenerationRegistry.lock` の単一区間で束ねる唯一の入口。** 公開するのは **5 つだけ**: `onRequestSent(path, capturedEpoch)` / `onContextChanged(newFingerprint, capturedEpoch)` / `onResponse(..., connectionEpoch)` / **`onConnectionClosed(deadEpoch)`**(第 7 版で追加)/ `read(path, epoch)`。**判定と記録を別々に呼べる API を外へ出さない**(§9.1「判定と記録は一操作」)。**書き込み側 4 つはすべて epoch を受け取り、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」) |
+| `VulnerabilityIntake` | **★ 第 6 版で新設。`ScanFlightTracker` と `VulnerabilityStore` を `DiagnosticGenerationRegistry.lock` の単一区間で束ねる唯一の入口。** 公開するのは **5 つだけ**: `onRequestSent(path, capturedEpoch)` / `onContextChanged(newFingerprint, capturedEpoch)` / `onResponse(..., connectionEpoch)` / **`onConnectionClosed(deadEpoch)`**(第 7 版で追加)/ `read(path, epoch)`。**判定と記録を別々に呼べる API を外へ出さない**(§9.1「判定と記録は一操作」)。**書き込み側 4 つはすべて epoch を受け取り、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」)。**`read` は区間の中で世代・fingerprint を照合し、不変スナップショットを返す**(不一致なら `null`)。**`store` / `tracker` への参照を外へ漏らさない**(第 9 版 / R7-2) |
 | `VulnerabilityStore` | パス → (所見リスト, timestamp, 世代, **scan context fingerprint**)。**記録・順序採番・上限 eviction は単一ロック下の 1 操作**(`LinkedHashMap(accessOrder = true)` の `removeEldestEntry`)。**自前の錠は持たない** —— 守るのは `VulnerabilityIntake` が取る `DiagnosticGenerationRegistry.lock`(第 6 版)。記録は `RecordPermit` を受け取り、**現行の世代・fingerprint と突き合わせてから**書く |
-| `VulnerabilityLookup` | **所見を「選ぶ」だけ。** 所見の生 `Map` から `location.start_line` を取り出し、カーソル行に一致する先頭 1 件を返す。**型は仮定しない**(LS の形が変わっても落ちない) |
+| `VulnerabilityLookup` | **所見を「選ぶ」だけ。** ★ 第 9 版: 受け取るのは **`VulnerabilityIntake.read` がモニタ区間の中で返した不変スナップショット `FileVulnerabilities`** であって、**`VulnerabilityStore` そのものではない**(round 7 R7-2)。所見の生 `Map` から `location.start_line` を取り出し、カーソル行に一致する先頭 1 件を返す。**型は仮定しない**(LS の形が変わっても落ちない) |
 | `ScanFlightTracker` | **パスごとに「未着の scan 要求の件数」と「fingerprint 変更時に飛行中だったか」だけを持つ**(§9.1)。状態は**パスあたり整数 1 個と真偽値 1 個**、加えて**全体で保持世代 `heldGeneration` 1 個**(第 7 版)。送信で `+1`、応答で `−1`、汚染中は記録させず、`0` に戻った時点で汚染を解く。**キューも期限も上限も持たない。自前の錠も持たない**(`VulnerabilityIntake` の区間の中でのみ触られる) |
 | `VulnerabilityProjection` | **選ばれた 1 件を webview 用に投影する。** 描画対象 5 フィールド(`name` / `severity` / `description` / `location.start_line` / `.start_column`)を**個別に検証・正規化し、HTML エスケープ**する。`location` が使えない 1 件は `null`(= 除外)、表示テキストが欠けるだけの所見は安全な既定値で描画(§10.1 / §14) |
 | `VulnerabilityPayload` | `updateDetails` のペイロード 3 つ組を組み立てる。`timestamp` の文字列化を含む |
@@ -161,7 +161,7 @@ webview が実際に描画するのは `vulnerability.name` / `.severity` / `.de
 
 | コンポーネント | 責務 | 危険な点 |
 |---|---|---|
-| `SecurityVulnDetailsClient` | タブを開き `updateDetails` を送る | UI スレッド・接続世代 |
+| `SecurityVulnDetailsClient` | 捕捉した `handle` の下で所見を読み、`handle.proxy` へ `updateDetails` を送る。タブ開きは UI スレッド | ★ 第 9 版: **送信はコルーチンで `outboundLock` 区間の中**(`didChangeConfiguration` と直列化)。**UI スレッドは `outboundLock` を取れない**(`withLock` は `suspend`)ので手順 4 で離れる。**`wrapper.languageServer` を送信時に読み直さない** —— 再接続しても新 proxy へ付け替わらないこと(round 7 R7-1) |
 | `ShowVulnDetailsHandler` | カーソル行の取得 → lookup → client | UI スレッド専用(`ITextEditor` 操作) |
 | `KnowledgeGraphController` | `PluginController("knowledge-graph")` の `@PluginNotification("ready")`。**ハンドラ末尾で `LanguageServerSession` を受け取り**、`KnowledgeGraphState.record(url, session)` へ渡す(`PluginRegistry.kt:32` が末尾パラメータの型を見て注入する既存の仕組み) | lsp4j ディスパッチスレッド。**旧接続の遅延通知**(§11) |
 | `ShowKnowledgeGraphHandler` | タブを開く | UI スレッド |
@@ -624,16 +624,58 @@ LS は **5 つ**の早期 return で**応答を返さずに終わる**ことが�
 
 ### 9.2 F1 詳細を開く
 
+> **★ 第 9 版で手順を組み直した(round 7 R7-1 / R7-2)。**
+> 第 8 版まで、この節は **store を UI スレッドから直接読み**、**読み出しと送信の間を何も束縛していなかった。**
+> **§9.1 で書き込み側に課した規律が、読み出し側には一切かかっていなかった。**
+
 1. 右クリック → 「Show Vulnerability Details」(エディタの既存 `GitLab` サブメニュー配下)。
 2. アクティブエディタのファイルとカーソル行(1 始まり)を得る。**UI スレッド。**
-3. `VulnerabilityLookup.at(store, path, line)` → 一致する所見(**選択のみ**)。
-4. `VulnerabilityProjection.of(finding)` → 描画用オブジェクト(**検証・正規化・エスケープ**)。
+3. **`wrapper.currentSnapshot` を 1 回だけ読む**(§9.1「★★ epoch と proxy は同じ 1 回の読み取りから取る」)。
+   **`null` なら通知のみ出して終了 — タブに触れない**(§12)。
+   **以降、proxy も epoch もこの `handle` からしか取らない。**
+4. **UI スレッドの仕事はここまで。** 3 で得た `handle` と パス・行を持って**コルーチンへ渡す**(fire and forget)。
+   **UI スレッドは待たない**(`CopyTextHandler` と同じ扱い。§8.2)。
+5. コルーチンで **`outboundLock` を取る。** 以下 6〜9 はその区間の中。
+6. **`VulnerabilityIntake.read(path, handle.connectionEpoch)`**
+   → **モニタ区間の中で**世代と fingerprint を照合し、**不変スナップショット `FileVulnerabilities` を返す**
+   (不一致なら `null`)。**`store` を外から直接読まない**(R7-2)。
+7. `VulnerabilityLookup.at(snapshot, line)` → 一致する所見(**選択のみ**)。
+   `VulnerabilityProjection.of(finding)` → 描画用オブジェクト(**検証・正規化・エスケープ**)。
    `null`(= `location` が使えない)なら、その 1 件は**無かったものとして扱う**。
-5. **3 か 4 で得られなければ通知**(「この行に GitLab の所見はありません」)して終了。
-6. **`wrapper.currentSnapshot` を確認する。`null` なら通知のみ出して終了 —
-   タブに触れない**(§12)。**旧所見を表示したままのタブを前面に出して何も送らない、を防ぐ。**
-7. `WebviewEditorOpener.openOrReload(page, WebviewEditorInput.securityVulnDetails())` でタブを開く。
-8. `pluginNotification(ExtensionToPluginNotification("security-vuln-details", "updateDetails", payload))`。
+   **どちらも純関数なので、モニタ区間の外で走ってよい。** ただし **`outboundLock` は持ったまま**である
+   (モニタは 6 で出ている。**錠は 2 つあり、ここで手放してよいのはモニタだけ**)。
+8. **送信直前にもう一度 `VulnerabilityIntake.read(path, handle.connectionEpoch)` を呼び、6 で得た値と
+   参照同一であることを確かめる。違えば中止**(通知のみ)。
+   **値は不変なので、同一インスタンスであることが「6 以降この path の記録は動いていない」の証明**になる
+   (`LanguageServerHandle` を参照比較する `unregisterLanguageServer` と同じ手口)。
+9. **`handle.proxy` へ**
+   `pluginNotification(ExtensionToPluginNotification("security-vuln-details", "updateDetails", payload))`。
+   **`wrapper.languageServer` を読み直さない。** 再接続していれば送信は死んだ proxy へ向かい、
+   **新しい接続には決して付け替わらない。**
+10. **`outboundLock` を離してから**、`asyncExec` で UI スレッドへ戻り
+    `WebviewEditorOpener.openOrReload(page, WebviewEditorInput.securityVulnDetails())` でタブを開く。
+    **錠を持ったまま UI スレッドへホップしない**(§9.1 の規律。UI スレッドは `outboundLock` を取らないので
+    現状デッドロックはしないが、**錠を握ったまま他スレッドを待つ形を作らない**のが既存の方針)。
+    **送信と開くのに順序の制約は無い** —— LS は後から接続した webview インスタンスにも `updateDetails` を再生する
+    (§8.3)。**3 および 6〜8 で中止した場合はタブを開かない。**
+
+#### ★ 読み出し側にも同じ規律をかける(第 9 版 / round 7)
+
+| 指摘 | 第 8 版までの穴 | 第 9 版 |
+|---|---|---|
+| **R7-2** | 手順 3 が `VulnerabilityLookup.at(store, …)` と書いており、**UI スレッドが `store` を直接読む**。**第 6 版で store 自前の錠を外した**ので、これは `LinkedHashMap` の**無施錠の読み**になる。しかも **`accessOrder = true` では読みがアクセス順を書き換える** = **read が write である**。lsp4j 側の `put` / `removeEldestEntry` と並行すると、例外・アクセス順の破損・不整合な選択が起こりうる | **`VulnerabilityIntake.read` がモニタ区間の中で不変スナップショットを返し、`VulnerabilityLookup` はそのスナップショットだけを見る。** `store` / `tracker` は外から参照できない |
+| **R7-1** | 手順 6 は `currentSnapshot` が **非 null かどうかしか見ていない**。読み出しと送信の間に**再接続**すれば旧接続の所見が**新しい proxy** へ送られ、**同一接続のまま fingerprint が変われば**旧アカウントの所見が現行として送られる。`WebviewLoadCoordinator` の session 検査は **webview URI の解決しか守らず、ペイロードの出所を見ない** | **`handle` を 1 回捕捉し、読み出しも送信もその `handle` に束縛する。** 送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化し、**送信直前に参照同一で再照合**する |
+
+**なぜ `outboundLock` まで要るのか**: 再接続は `handle` を固定すれば防げるが、
+**同一接続のままの fingerprint 変更**は防げない。fingerprint を動かすのは
+`didChangeConfiguration` を送る 2 箇所で、**どちらも `outboundLock` 区間**にある(§9.1)。
+**同じ錠の中へ送信を入れることが、「送った内容が送った時点の設定に対応している」ことの唯一の保証**である。
+
+> **★ UI スレッドは `outboundLock` を取らない。** `outboundLock` は `kotlinx` の `Mutex` で
+> `withLock` は `suspend` なので、**取れるのはコルーチンだけ**である(§9.1 と同じ理由)。
+> だから手順 4 で**コルーチンへ渡して UI スレッドは離れる**。**UI スレッドは待たない**ので、
+> ワークベンチ停止中に取りこぼされたランナブルがハンドラを止めることもない。
+> **ロック順序は既存のまま outbound `Mutex` → モニタ**で、逆流はどこにも無い。
    **ペイロードは 4 の投影結果**を `VulnerabilityPayload.of` に渡して組み立てる(生の所見ではない)。
 
 > **順序について**: §8.3 のとおり LS が再生するため、7 と 8 の順序はどちらでもよい。
@@ -740,6 +782,7 @@ private data class RecordPermit(
 | 応答の順序 | **クライアント側**は lsp4j ディスパッチスレッド上で同期に処理される(`securityScanResponse` は `runAsync` しない)。**サーバ側は順序を保証しない** — `handleScanNotification` は `async` な通知ハンドラで、ディスパッチャは完了を待たない(`security_diagnostics_publisher.ts:108-113`)。**既存コードの「サーバは要求順に答える」という仮定は、本機能では使わない** |
 | **順序仮定への非依存** | **`ScanFlightTracker` は順序も期限も使わない。** 使うのは **前提 Q(全応答は計数済みの 1 要求に由来する)** と **前提 R(観測される応答は 1 要求につき 0 件か 1 件)** だけ(§9.1)。したがって**応答が入れ替わっても、期限を超えて遅延しても、旧文脈の所見は記録されない** |
 | **★ 前提が崩れたときの挙動** | 前提 Q / R は**同梱 LS 9.3.0 のバイナリに対する全列挙で証明した**ものであり、**LS を上げたら再検証が要る**(§6 / §21)。崩れた場合に観測されるのは「未着件数が 0 なのに応答が届く」で、**その応答は拒否され、そのパスは汚染される**(§9.1 の境界条件)。**前提違反は静かに記録を通さず、fail-closed 側へ倒れる** |
+| **★ 読み出しと送信の束縛**(第 9 版 / round 7) | **読み出しも送信も、1 回捕捉した `LanguageServerHandle` に束縛する。** `VulnerabilityIntake.read(path, handle.connectionEpoch)` が**モニタ区間の中で**不変スナップショットを返し、**送信は `handle.proxy` へ、`outboundLock` 区間の中で**行う。**送信直前に参照同一で再照合**して、読み出し以降その path の記録が動いていないことを確かめる。**`store` を UI スレッドから直接読まない** —— `accessOrder = true` の `LinkedHashMap` は**読みがアクセス順を書き換える**ので、無施錠の読みは実質 write である(§9.2) |
 | `KnowledgeGraphState` | **`(url, session)` の組。** `String?` 1 個では足りない |
 | `getUrl` と `ready` の競合 | **同一 session 内なら後勝ちで構わない**(同一の `gkg` プロセスを指す) |
 | **LS 再起動を跨ぐ競合** | **後勝ちは同一接続内でしか成立しない。** 再起動中に旧接続の遅延した `getUrl` 完了または `ready` が新接続の値を上書きすると、**停止済み `gkg` の localhost URL が現行 URL として返る**。しかも `WebviewUriResolver` は現行 snapshot の session を付けて `Resolved` を作るため、**既存の session 検査を素通りして別プロセス(あるいは同じポートを取った第三者)へ接続しうる**。→ **`record` は送信元 session を受け取り、現行でなければ拒否。読み出しも現行 session と一致するときだけ URL を返す。** 送信元 session は既存の仕組みで得られる: 通知ハンドラは末尾パラメータの型で注入され(`PluginRegistry.kt:32`)、`getUrl` の要求元は `GitLabLanguageServerClient.session`(同 `:54`)。**明示的な clear フックは要らない** — 読み出し時照合で同じ保証が得られ、取りこぼしが無い |
@@ -949,7 +992,7 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | 純ロジック | **TDD** | **`VulnerabilityIntake`(判定と記録の原子性。A13b-7 / A13b-8 / A13b-9 / **A13b-11**。区間の入口で相手スレッドを待たせるラッチを注入して**両方の順序**を決定的に再現する。**世代束縛は `currentEpoch` を進めるだけで再現でき、実接続は要らない**。**A13b-12 は「`currentSnapshot` を 1 回しか読まないこと」を fake wrapper の読み取り回数で固定する**)** / **`ScanFlightTracker`(件数・汚染・世代。A13b-1〜6・A13b-10。時刻に依存しないので注入するシームも要らない)** / `VulnerabilityStore`(世代・**fingerprint**・**permit 照合**・上限・削除・**並行 record/delete と同時上限超過**)/ `VulnerabilityLookup`(行一致・異形無視)/ **`VulnerabilityProjection`(5 フィールドの検証・正規化・エスケープ)** / `VulnerabilityPayload` / `KnowledgeGraphState`(**session 束縛・再起動競合**) |
 | 受信配線 | `GitLabLanguageServerClient` のハンドラを直接呼ぶ | store への記録、`openUrl` の委譲、**旧 session の `ready` 拒否** |
 | 解決経路 | `WebviewUriResolver` に fake wrapper + fake `directUris` | **通常 webview が metadata 経路のまま**(keep-behaviour)/ **Knowledge Graph が直接経路**(A15) |
-| 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形 |
+| 送信 | 注入シームに fake proxy | `updateDetails` のペイロード形。**★ 第 9 版: 送信先が捕捉済み `handle.proxy` であって `wrapper.languageServer` の読み直しでないこと**(A22 (i))。**読み出しと送信の間に再接続 / fingerprint 変更を挟むラッチ**で A22 を決定的に再現する |
 | ログ陰性 | `LoggingKotestExtension` | 所見本文・パス・URL・**fingerprint** が出ないこと(A7)/ **拒否 scheme と token 付き URL**(A16) |
 | UI 実体 | **テストしない**(headless 不可) | エディタのカーソル行取得、タブ表示、Browser |
 | **`updateDetails` 送信失敗** | **テストしない**(検知手段が無い。§12) | **実機の「既知の制限」として PR に記載** |
@@ -987,13 +1030,15 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **A13b-11** | **★ round 5 の筋書き(世代束縛)**: `SecurityScanLauncher.launch` が server と epoch を捕捉した**後**、`outboundLock` を取る**前**に接続世代が進む。このとき **(i) 旧 epoch の `onRequestSent` は新世代の件数を `+1` しない**(残留 `+1` を作らない)、**(ii) 旧 epoch の `onContextChanged` は現行 store を消さず現行パスを汚染しない**、**(iii) `onConnectionClosed(deadEpoch)` は旧世代の状態だけを捨て、現行世代の件数・汚染を巻き添えにしない**。**照合が区間の中で行われていること**は、照合と更新の間に世代を進めるラッチで固定する。あわせて **(iv) `onConnectionClosed` が呼ばれないまま世代が進んだ場合も、最初の書き込みで `byPath` がロールオーバし旧世代の件数が漏れない**(遅延ロールオーバ)、**(v) 既にロールオーバ済みのところへ遅れて届いた `onConnectionClosed(deadEpoch)` が現行世代を消さない** | 自動 |
 | **A13b-12** | **★ round 6 の筋書き(epoch と proxy の食い違い)**: **2 つの読み取りの間**で再接続する。**(i) (旧 epoch, 新 server)** —— 要求が新 server へ送られたのに `+1` されず、応答が `outstanding == 0` で**前提違反と判定されてパスが汚染される**、が**起きないこと**。**(ii) (新 epoch, 旧 server)** —— 死んだ接続へ送った `didChangeConfiguration` で**追跡 fingerprint だけが進む**、が**起きないこと**。**固定の仕方**: `currentSnapshot` を 1 回だけ読む実装では**そもそもこの組が作れない**ので、テストは**「送信側が `currentSnapshot` を 1 回しか読まない」ことと、handle の `connectionEpoch` が受信側クライアントの `connectionEpoch` と同一値であること**を固定する(**組を作れないことの証明**であって、作ってから落とすテストではない) | 自動 |
 | **A13b-10** | **前提 Q / R / S の成文化**: 応答の `filePath` が null の応答は**減算せずに捨てられる**(`GitLabLanguageServerClient.kt:126`)、**URI 形式の `filePath` も素のパスと同じキーへ正規化される**(前提 S)、**未着件数 0 での着信は拒否 + 汚染**。3 つとも fail-closed 側であること | 自動 |
+| **A21** | **★ 読み出しが `VulnerabilityIntake` 経由に限られる**(R7-2)。**(i)** `VulnerabilityLookup` は `VulnerabilityStore` を受け取らず、不変スナップショットしか受け取らない(シグネチャで固定)。**(ii)** `read` と並行して `record` / `clear` / 上限 eviction を走らせても、**例外が出ず、読み出し結果が不整合にならず、アクセス順が壊れない**。**(iii)** `store` / `tracker` への参照が `VulnerabilityIntake` の外へ漏れない | 自動 |
+| **A22** | **★ round 7 の筋書き(読み出しと送信の束縛)**(R7-1)。読み出しと送信の間に割り込ませる: **(i) 再接続** —— 旧接続で読んだ所見が**新しい proxy へ送られない**(送信先が捕捉済み `handle.proxy` に固定されていること)。**(ii) 同一接続のままの fingerprint 変更** —— 送信直前の参照同一照合で**中止され、旧文脈の所見が送られない**。**(iii)** 中止したときは**タブを開かない**(旧表示のタブを前面に出さない)。**(iv)** 正常系では 1 回で送られ、過剰中止にならない | 自動 |
 | **A14** | **旧 session の `ready` / `getUrl` 完了は新接続の値を上書きしない。** 再起動競合で、停止済み `gkg` の URL が `Resolved` にならない(P1-b) | 自動 |
 | **A15** | **本番ファクトリが `knowledge-graph` を直接経路で解決し、他の id は metadata 経路のまま**(keep-behaviour)(P1-c) | 自動 |
 | **A15b** | **`WebviewEditorPart.kt:41` / `AgenticTabsView.kt:27` がそのファクトリを呼んでいる** | **目視 + 実機**(SWT `Composite` を受けるため headless で呼べない) |
 | **A16** | **`$/gitlab/openUrl` が `file:` / `javascript:` / userinfo 付き URL を開かない。** 失敗・拒否のいずれでも **URL 全文・query・fragment がログに出ない**(scheme のみ)(P1-e) | 自動 |
 | **A17** | **`description` に `<script>` 等を含む所見が、実行されずテキストとして描画される**(エスケープ済みで webview へ渡る)(P1-f) | 自動(投影の出力を検査)+ **実機**(A11 に相乗り) |
 | **A17b** | **コードスパン内の `<` が `&lt;` として投影される**ことを**既知の表示劣化として固定**する(§14。挙動を隠さないためのテスト) | 自動 |
-| **A18** | **`wrapper.currentSnapshot` が `null` のとき、タブを開かずに通知だけ出す**(§9.2 手順 6 / §12) | 自動 |
+| **A18** | **`wrapper.currentSnapshot` が `null` のとき、タブを開かずに通知だけ出す**(§9.2 **手順 3**(第 9 版で 6 → 3 に繰り上げ)/ §12) | 自動 |
 | **A19** | **上限 N の store へ複数スレッドが同時に `record` しても、最終サイズが N を超えず例外も出ない**(P1-g)。第 6 版で store 自前の錠を外したので、**`removeEldestEntry` が走る `put` が `VulnerabilityIntake` の `DiagnosticGenerationRegistry.lock` 区間の中にあること**を確認する形に読み替える | 自動 |
 | **A20** | **`$/gitlab/plugin/request` の応答が DTO ではなく `Map` として扱われ、`ClassCastException` にならない**(§8.3 の名前衝突)。`{url}` の取り出しが型に依存しない | 自動 |
 
@@ -1020,6 +1065,8 @@ fun WebviewUriResolver.Companion.forProduction(wrapper: GitLabLanguageServerWrap
 | **設定変更後も旧文脈の所見が見える** | **認可境界の違反**(前のインスタンス・前のアカウントの機密) | scan context fingerprint(§11)。A13 |
 | **★ 判定と記録の隙間に設定変更が割り込む** | **認可境界の違反**(clear を生き延びた旧所見が現行として読める) | **判定・fingerprint 更新・clear・record を `DiagnosticGenerationRegistry.lock` の単一区間に入れ、`RecordPermit` を同一区間で消費する**(§9.1 / §11)。A13b-7 / A13b-8 |
 | **★ 再接続を跨いだ送信が新世代の件数を汚す** | 残留 `+1` が新世代に残り、**次の設定変更でそのパスが接続更新まで恒久的に汚染される**(詳細が出ない) | **書き込み側 4 操作に捕捉済み epoch を運ばせ、区間の中で現行世代と照合してから状態を変える**(§9.1「★ 世代の束縛」)。`CommandWaiters` と同じ形。A13b-11 |
+| **★ 読み出した所見が別の接続・別の文脈へ送られる** | **N1 / N5 の認可境界を読み出し側で破る**(旧アカウントの所見が現行として webview に出る) | **`handle` を 1 回捕捉して読み出しも送信も束縛し、送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化、送信直前に参照同一で再照合**(§9.2 / §11)。A22 |
+| **★ UI スレッドが store を無施錠で読む** | **`accessOrder = true` では読みが write なので**、例外・アクセス順の破損・不整合な選択 | **読み出しを `VulnerabilityIntake.read` の不変スナップショットに限定**(§9.2)。A21 |
 | **★ epoch と proxy が別々の読み取りで食い違う** | **(旧 epoch, 新 server)** = 生きた応答が前提違反と誤判定されてパスが汚染される(詳細が出ない)/ **(新 epoch, 旧 server)** = **追跡 fingerprint が生きている接続の設定を表さなくなる**(認可境界の土台が偶然頼みになる) | **`currentSnapshot` を 1 回だけ読み、`LanguageServerHandle` に `connectionEpoch` を持たせて proxy と同じ 1 値から取る**(§9.1 / §16)。既存の `AtomicReference` がそのまま使えるので**窓そのものが消える**。A13b-12 |
 | **★ `RecordPermit` の抜け道(区間外生成・ABA)** | **clear 済みの古い所見を書き戻せる = 認可境界の違反** | **第一に字句スコープ**(private 入れ子型で構築不能)、**第二に単回消費 nonce + `Thread.holdsLock`**(§9.1「★ permit は値の一致では守れない」)。A13b-8 |
 | **★ 無施錠の `clear` が並行更新と競合する** | 例外・計数の取り違え・**新世代を巻き込む消去** | **`ScanFlightTracker.clear` を外から呼べなくし、`VulnerabilityIntake.onConnectionClosed(deadEpoch)` を第 5 の複合操作として共有モニタの下に置く**(§16)。A13b-9 |
@@ -1367,3 +1414,51 @@ session of the connection it replaced.」**`WebviewUriResolver` / `WebviewLoadCo
 
 §9.1(新節「★★ epoch と proxy は同じ 1 回の読み取りから取る」)/ §16(冒頭の逸脱注記 + 配線 4 行)/
 §18 / §19 A13b-12 / §21(リスク 1 行)。
+
+### 第 9 版(2026-09-22)— Codex レビュー round 7 反映
+
+round 7 の指摘は **P1×2**。**2 件とも妥当**で、**どちらも §9.2(読み出しと送信)**、すなわち
+**第 5 版以降まったく触っていなかった節**である。**第 6〜8 版で §9.1(書き込み側)を締め上げた結果、
+同じ規律が読み出し側に一切かかっていないことが浮き彫りになった形**で、うち 1 件は
+**第 6 版で store の錠を外したときの追従漏れ**である。
+
+| # | 指摘 | 検証結果と反映 |
+|---|---|---|
+| **R7-2** | **`VulnerabilityLookup.at(store, …)` が「外部入口は `VulnerabilityIntake` の 5 操作だけ」という §8.1 / §9.1 の規律と矛盾する。** UI スレッドが store を直接読むと、**第 6 版で自前の錠を外した** `LinkedHashMap(accessOrder = true)` の読み出しが lsp4j 側の record / clear / eviction と競合し、例外・アクセス順の破損・不整合な所見選択が起こりうる | **妥当。第 6 版の追従漏れ。** しかも `accessOrder = true` では **読みがアクセス順を書き換える = read が write である**ため、「読むだけだから安全」という逃げ道も無い。→ **`VulnerabilityIntake.read(path, epoch)` がモニタ区間の中で世代・fingerprint を照合して不変スナップショットを返し、`VulnerabilityLookup` はそのスナップショットしか受け取らない**(シグネチャで固定)。**`store` / `tracker` への参照を外へ漏らさない。** A21 |
+| **R7-1** | **所見の読み出しと送信を同じ接続・文脈に束縛せよ。** 手順 6 は `currentSnapshot` が非 null かしか見ないので、読み出し直後の**再接続**で旧接続の所見が**新しい proxy** へ送られ、**同一接続のままの fingerprint 変更**でも旧アカウントの所見が現行として送られる。`WebviewLoadCoordinator` の session 検査は **webview URI の解決しか守らず、ペイロードの出所を見ない** | **妥当。これは R6-1 と同じ型の穴が読み出し側にあったもの。** → **`handle` を 1 回捕捉し、読み出し(`handle.connectionEpoch`)も送信(`handle.proxy`)もそれに束縛**。**送信を `outboundLock` 区間に入れて `didChangeConfiguration` と直列化**し、**送信直前に参照同一で再照合**する。**`wrapper.languageServer` を送信時に読み直さない** —— 再接続しても新 proxy へ付け替わらない。A22 |
+
+#### なぜ `outboundLock` まで必要だったか
+
+**再接続は `handle` を固定すれば防げるが、同一接続のままの fingerprint 変更は防げない。**
+fingerprint を動かすのは `didChangeConfiguration` を送る 2 箇所で、**どちらも `outboundLock` 区間**にある。
+**同じ錠の中へ送信を入れることが、「送った内容が送った時点の設定に対応している」ことの唯一の保証**である。
+
+**UI スレッドは `outboundLock` を取れない**(`kotlinx` の `Mutex`・`withLock` は `suspend`)ので、
+**手順 4 でコルーチンへ渡して UI スレッドは離れる**(`CopyTextHandler` と同じ fire-and-forget)。
+**タブ開きは `outboundLock` を離してから `asyncExec` で UI へ戻る** —— **錠を握ったまま他スレッドを待つ形を作らない。**
+**ロック順序は既存のまま outbound `Mutex` → モニタ**で、逆流はどこにも無い。
+
+#### 自己レビューで併せて直した点(第 9 版の反映そのものに対して)
+
+- **手順 10(タブ開き)のスレッドと錠が未定義だった。** 「UI スレッド」とだけ書くと、
+  `outboundLock` を握ったままホップする実装もできてしまう。**離してから `asyncExec`** と確定した。
+- **手順 7 の「区間」が曖昧だった**(モニタ区間なのか `outboundLock` 区間なのか)。
+  **錠は 2 つあり、ここで手放してよいのはモニタだけ**と明記した。
+- **A18 が参照する手順番号が繰り上がっていた**(旧 6 → 新 3)。追従した。
+
+#### 4 版続けて同じ型が出ている
+
+- 第 6 版: 錠を統合 → 依存記述の追従漏れで **R5-2 / R5-3**
+- 第 7 版: epoch を運ぶ → 運ぶ値の出どころ未定義で **R6-1**
+- 第 8 版: 書き込み側を 1 回読みに → **読み出し側に同じ規律が無い**ことが露出して **R7-1 / R7-2**
+
+**いずれも「新しい規律を、それが当てはまる全経路へ広げたか」を確認していない。**
+第 9 版では **§9.1 の 3 規律(単一区間 / 世代束縛 / 1 回読み)を、
+§9.2・§9.3・§9.4 の各経路に 1 つずつ当てて**点検した
+(§9.3 / §9.4 は `KnowledgeGraphState` の session 束縛と `ShowDocumentLauncher` で既に閉じている)。
+
+#### 反映先
+
+§8.1(`VulnerabilityLookup` / `VulnerabilityIntake.read`)/ §8.2(`SecurityVulnDetailsClient`)/
+**§9.2(手順を全面的に組み直し + 新節「★ 読み出し側にも同じ規律をかける」)** / §11(読み出しと送信の束縛)/
+§18 / §19(**A21 / A22** 追加、A18 の手順番号追従)/ §21(リスク 2 行)。
