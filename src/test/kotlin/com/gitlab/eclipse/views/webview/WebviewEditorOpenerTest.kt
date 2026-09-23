@@ -86,7 +86,7 @@ private class Fixture(primed: Boolean = true) {
   /** The session the language server connection currently in place belongs to. */
   fun currentSessionIs(session: LanguageServerSession?) {
     every { wrapper.currentSnapshot } returns
-      session?.let { LanguageServerHandle(mockk<GitLabLanguageServer>(), it) }
+      session?.let { LanguageServerHandle(mockk<GitLabLanguageServer>(), it, 0L) }
   }
 
   fun openOrReload() = WebviewEditorOpener(wrapper).openOrReload(page, input)

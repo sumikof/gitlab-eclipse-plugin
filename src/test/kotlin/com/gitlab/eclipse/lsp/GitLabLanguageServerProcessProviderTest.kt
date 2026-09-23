@@ -16,6 +16,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
@@ -300,9 +301,9 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       // side effects really run (they never fired when the fake did not answer). The
       // callback must pass its captured (non-null) proxy, not rely on the default.
       eventually(2.seconds) {
-        val readinessServers = mutableListOf<GitLabLanguageServer?>()
-        verify { configurationService.sendConfiguration(captureNullable(readinessServers)) }
-        readinessServers.last().shouldNotBeNull()
+        val readinessHandles = mutableListOf<LanguageServerHandle?>()
+        verify { configurationService.sendConfiguration(captureNullable(readinessHandles)) }
+        readinessHandles.last().shouldNotBeNull()
       }
 
       provider.restart(bundle) shouldBe true
@@ -454,6 +455,33 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       // connection that replaced it.
       DiagnosticGenerationRegistry.currentEpoch shouldBe afterRestart
       provider.isRunning shouldBe true
+      provider.stop()
+    }
+  }
+
+  describe("connection epoch on the published handle (A13b-12)") {
+    it("publishes the client's epoch with the proxy and sends the readiness configuration to that very handle") {
+      val registered = mutableListOf<LanguageServerHandle>()
+      every { languageServerWrapper.registerLanguageServer(capture(registered)) } returns Unit
+      val provider = newProvider()
+
+      provider.start(bundle)
+      eventually(2.seconds) { verify { configurationService.sendConfiguration(any<LanguageServerHandle>()) } }
+      provider.restart(bundle) shouldBe true
+      eventually(2.seconds) {
+        verify(exactly = 2) { configurationService.sendConfiguration(any<LanguageServerHandle>()) }
+      }
+
+      // Each connection's handle carries the epoch its client was built at: the first one, then
+      // the one the restart's stop advanced to. Not a later read of the registry.
+      registered.map { it.connectionEpoch } shouldBe listOf(0L, 1L)
+      val readinessHandles = mutableListOf<LanguageServerHandle?>()
+      verify { configurationService.sendConfiguration(captureNullable(readinessHandles)) }
+      // By reference: the configuration send is bound to the handle that was published, not to a
+      // copy rebuilt from the proxy, so its epoch cannot come from anywhere else.
+      readinessHandles.size shouldBe 2
+      readinessHandles[0] shouldBeSameInstanceAs registered[0]
+      readinessHandles[1] shouldBeSameInstanceAs registered[1]
       provider.stop()
     }
   }

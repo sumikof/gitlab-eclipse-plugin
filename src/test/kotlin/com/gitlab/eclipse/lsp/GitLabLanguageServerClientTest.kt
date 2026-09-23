@@ -20,11 +20,15 @@ import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
 import com.gitlab.eclipse.security.CommandWaiters
 import com.gitlab.eclipse.security.SecurityScanResponse
 import com.gitlab.eclipse.security.SecurityScanStatusReporter
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.google.gson.JsonObject
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.*
 import org.eclipse.core.runtime.ILog
@@ -304,12 +308,14 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       DiagnosticGenerationRegistry.resetForTest()
       CommandWaiters.resetForTest()
       SecurityScanStatusReporter.resetForTest()
+      VulnerabilityRegistry.intake.resetForTest()
       mockkObject(NotificationUtils)
       every { NotificationUtils.show(any()) } returns Unit
     }
 
     afterEach {
       unmockkObject(NotificationUtils)
+      VulnerabilityRegistry.intake.resetForTest()
       SecurityScanStatusReporter.resetForTest()
       CommandWaiters.resetForTest()
       DiagnosticGenerationRegistry.resetForTest()
@@ -434,6 +440,131 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.securityScanResponse(SecurityScanResponse(filePath = path, status = 500))
 
       verify { NotificationUtils.show(any()) }
+    }
+  }
+
+  describe("security scan response into the findings intake") {
+    val path = "/p/a.kt"
+    val intake = VulnerabilityRegistry.intake
+    val finding = listOf<Any?>(mapOf("title" to "SECRET-FINDING"))
+
+    fun epoch() = DiagnosticGenerationRegistry.currentEpoch
+
+    /** What the sending side does before a scan of [path] leaves: a scan context, then one request. */
+    fun requestInFlight() {
+      intake.onContextChanged("context", epoch())
+      intake.onRequestSent(path, epoch())
+    }
+
+    beforeEach {
+      DiagnosticGenerationRegistry.resetForTest()
+      CommandWaiters.resetForTest()
+      SecurityScanStatusReporter.resetForTest()
+      VulnerabilityRegistry.intake.resetForTest()
+      mockkObject(NotificationUtils)
+      every { NotificationUtils.show(any()) } returns Unit
+    }
+
+    afterEach {
+      unmockkObject(NotificationUtils)
+      VulnerabilityRegistry.intake.resetForTest()
+      SecurityScanStatusReporter.resetForTest()
+      CommandWaiters.resetForTest()
+      DiagnosticGenerationRegistry.resetForTest()
+    }
+
+    it("carries the epoch of the connection it was built for (A13b-12)") {
+      DiagnosticGenerationRegistry.onServerStopped()
+
+      GitLabLanguageServerClient(pluginMessageService).connectionEpoch shouldBe epoch()
+    }
+
+    it("retains the findings of an answered request") {
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      requestInFlight()
+
+      receiver.securityScanResponse(
+        SecurityScanResponse(filePath = path, status = 200, results = finding, timestamp = 7L)
+      )
+
+      val retained = intake.read(path, epoch()).shouldNotBeNull()
+      retained.findings shouldBe finding
+      retained.timestampMillis shouldBe 7L
+    }
+
+    it("retains an answer that names its file as a URI under the bare path's key (premise S)") {
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      requestInFlight()
+
+      receiver.securityScanResponse(SecurityScanResponse(filePath = "file:$path", status = 200, results = finding))
+
+      intake.read(path, epoch()).shouldNotBeNull()
+    }
+
+    it("drops an answer with no file without counting it (A13b-10)") {
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      requestInFlight()
+
+      receiver.securityScanResponse(SecurityScanResponse(status = 200, results = finding))
+      intake.storedPathCountForTest() shouldBe 0
+
+      // Still one in flight: the real answer is the one that settles it, and it is recorded.
+      receiver.securityScanResponse(SecurityScanResponse(filePath = path, status = 200, results = finding))
+      intake.read(path, epoch()).shouldNotBeNull()
+    }
+
+    it("refuses an answer that reaches the client of a connection that has been replaced") {
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      DiagnosticGenerationRegistry.onServerStopped()
+      requestInFlight()
+
+      receiver.securityScanResponse(SecurityScanResponse(filePath = path, status = 200, results = finding))
+
+      intake.read(path, epoch()).shouldBeNull()
+    }
+
+    it("still counts the answer when reporting it failed") {
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      requestInFlight()
+      mockkObject(SecurityScanStatusReporter)
+      try {
+        every { SecurityScanStatusReporter.settle(any(), any(), any()) } throws RuntimeException("boom")
+
+        shouldNotThrowAny {
+          receiver.securityScanResponse(SecurityScanResponse(filePath = path, status = 200, results = finding))
+        }
+      } finally {
+        unmockkObject(SecurityScanStatusReporter)
+      }
+
+      intake.read(path, epoch()).shouldNotBeNull()
+    }
+
+    it("still tells the user, and logs only the class name, when the intake fails (A7)") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val receiver = GitLabLanguageServerClient(pluginMessageService)
+      CommandWaiters.add(path, epoch())
+      mockkObject(intake)
+      try {
+        every { intake.onResponse(any(), any(), any(), any()) } throws IllegalStateException("$path SECRET-FINDING")
+
+        shouldNotThrowAny {
+          receiver.securityScanResponse(SecurityScanResponse(filePath = path, status = 200, results = finding))
+        }
+      } finally {
+        unmockkObject(intake)
+      }
+
+      verify(exactly = 1) { NotificationUtils.show(any()) }
+      verify(exactly = 1) { log.warn("Failed to retain a security scan response: IllegalStateException") }
+      val logged = mutableListOf<String>()
+      verify(atLeast = 0) { log.warn(capture(logged)) }
+      verify(atLeast = 0) { log.info(capture(logged)) }
+      logged.forEach { line ->
+        line shouldNotContain path
+        line shouldNotContain "SECRET-FINDING"
+      }
     }
   }
 

@@ -128,9 +128,9 @@ class GitLabLanguageServerWrapperTest : DescribeSpec({
     // Design §21 A25 (consistency half). Read through the production accessors only.
     it("derives languageServer from currentSnapshot at every register and unregister transition") {
       val proxyA = mockk<GitLabLanguageServer>()
-      val handleA = LanguageServerHandle(proxyA, LanguageServerSession())
+      val handleA = LanguageServerHandle(proxyA, LanguageServerSession(), 0L)
       val proxyB = mockk<GitLabLanguageServer>()
-      val handleB = LanguageServerHandle(proxyB, LanguageServerSession())
+      val handleB = LanguageServerHandle(proxyB, LanguageServerSession(), 0L)
 
       val observed = mutableListOf<Pair<GitLabLanguageServer?, GitLabLanguageServer?>>()
       fun observe() {
@@ -174,8 +174,8 @@ class GitLabLanguageServerWrapperTest : DescribeSpec({
 
     // Design §21 A28, identity half.
     it("leaves the newer connection's snapshot alone when a superseded handle is revoked") {
-      val handleA = LanguageServerHandle(mockk(), LanguageServerSession())
-      val handleB = LanguageServerHandle(mockk(), LanguageServerSession())
+      val handleA = LanguageServerHandle(mockk(), LanguageServerSession(), 0L)
+      val handleB = LanguageServerHandle(mockk(), LanguageServerSession(), 0L)
       wrapper.registerLanguageServer(handleA)
       // A captured its own handle above; B takes over before A gets around to revoking.
       wrapper.registerLanguageServer(handleB)
@@ -186,7 +186,7 @@ class GitLabLanguageServerWrapperTest : DescribeSpec({
     }
 
     it("clears both accessors when the revoked handle is still the current one") {
-      val handleA = LanguageServerHandle(mockk(), LanguageServerSession())
+      val handleA = LanguageServerHandle(mockk(), LanguageServerSession(), 0L)
       wrapper.registerLanguageServer(handleA)
 
       val revoked = wrapper.unregisterLanguageServer(handleA)

@@ -44,7 +44,7 @@ class WebviewUriResolverTest : DescribeSpec({
   val languageServer = mockk<GitLabLanguageServer>()
   val wrapper = mockk<GitLabLanguageServerWrapper>()
   val session = LanguageServerSession()
-  val handle = LanguageServerHandle(languageServer, session)
+  val handle = LanguageServerHandle(languageServer, session, 0L)
   val resolver = WebviewUriResolver(wrapper)
 
   fun await(future: CompletableFuture<WebviewResolution>) = future.get(2, TimeUnit.SECONDS)
@@ -158,7 +158,7 @@ class WebviewUriResolverTest : DescribeSpec({
       // The Language Server restarts mid-flight: a new session becomes current before the
       // in-flight request's metadata future completes. §7.1a: the result must still carry
       // the session that was current when the request STARTED, not the one current now.
-      every { wrapper.currentSnapshot } returns LanguageServerHandle(mockk(), LanguageServerSession())
+      every { wrapper.currentSnapshot } returns LanguageServerHandle(mockk(), LanguageServerSession(), 0L)
 
       metadataFuture.complete(listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1"))))
       val result = await(future)

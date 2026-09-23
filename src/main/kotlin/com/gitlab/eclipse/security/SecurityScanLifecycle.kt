@@ -4,6 +4,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticFileResolver
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
@@ -46,7 +47,9 @@ private inline fun contain(what: String, body: () -> Unit) {
  *  - [CommandWaiters.clear], reached through [SecurityScanStatusReporter.cancelPending], wants the
  *    epoch of the connection that died — read **before** the registry is advanced. Given the new
  *    one it removes nothing, so every pending command leaks and the cancellation notice it is
- *    waiting for is never produced (design F6).
+ *    waiting for is never produced (design F6). The findings intake's `onConnectionClosed` wants the
+ *    same dead value, for the mirror-image reason: given the live one it could drop the live
+ *    connection's in-flight counts.
  *  - [DiagnosticMarkerService.deleteMarkersNotInEpoch] wants the epoch the registry advanced **to**,
  *    because it keeps what matches. Given the dead one the predicate inverts and it deletes the
  *    live connection's markers instead of the dead one's.
@@ -80,11 +83,15 @@ object SecurityScanLifecycle {
    *
    * The seam exists because the two epochs above are the property that has to be provable: a test
    * can only tell "before" from "after" by watching what each of these two receives.
+   *
+   * @param diagnose receives the one line saying how many scan requests of the dead connection were
+   *   never answered — a number and nothing else. Not an audit line: nothing the user did is recorded.
    */
   internal fun onServerStopped(
     markerService: DiagnosticMarkerService?,
     notify: (String) -> Unit,
     audit: (String) -> Unit,
+    diagnose: (String) -> Unit = { lifecycleLog.info(it) },
   ) {
     // (1) BEFORE the advance: this is the connection whose waiters have to go.
     var dead = 0L
@@ -95,6 +102,19 @@ object SecurityScanLifecycle {
     var report = CancellationReport(notify = null, auditLines = emptyList())
     contain("cancelling the pending scans of a dead connection") {
       report = SecurityScanStatusReporter.cancelPending(dead, ScanCancelReason.SERVER_STOPPED)
+    }
+    // (3b) The dead epoch again, for the same reason: given the live one, the findings intake would
+    // either do nothing or, once the next connection has counted a request, wipe the live counts.
+    // Requests that were never answered stop mattering here — their answers cannot reach the next
+    // connection's client — and how many there were is worth one line, outside every monitor.
+    var residual = 0
+    contain("dropping the in-flight scans of a dead connection") {
+      residual = VulnerabilityRegistry.intake.onConnectionClosed(dead)
+    }
+    if (residual > 0) {
+      contain("reporting the unanswered scans of a dead connection") {
+        diagnose("Remote security scan requests left unanswered by the stopped connection: $residual")
+      }
     }
     // (4) Audit first, then the user: a log that cannot be written must not swallow the one
     // notification a waiting command is going to get.
