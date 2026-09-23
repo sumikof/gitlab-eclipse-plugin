@@ -16,6 +16,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLauncher
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import com.gitlab.eclipse.security.SecurityScanSettings
+import com.gitlab.eclipse.security.details.SecurityVulnDetailsClient
 import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
@@ -69,6 +70,12 @@ val languageServerModule = module {
   // every document provider and page it attached to, and GitLabEclipseStartup.stop() detaches from
   // exactly those. A second instance would leak the first one's registrations.
   single<SecurityScanSaveListener> { SecurityScanSaveListener() }
+
+  // "Show Vulnerability Details": the shared scope and the outbound lock; its other seams default to
+  // the findings intake, the projection, asyncExec and NotificationUtils.
+  single<SecurityVulnDetailsClient> {
+    SecurityVulnDetailsClient(get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
 
   single<SecurityScanSettings> {
     SecurityScanSettings(get(), get(named(LANGUAGE_SERVER_OUTBOUND)), get())
