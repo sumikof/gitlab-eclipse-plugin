@@ -104,7 +104,7 @@ class ShowDocumentLauncher(
  * would sit — can reach this string. The parse failure itself is discarded rather than logged:
  * `URISyntaxException.getMessage` quotes the offending input in full.
  */
-private fun schemeOf(uri: String?): String {
+internal fun schemeOf(uri: String?): String {
   if (uri.isNullOrBlank()) return "none"
   return try {
     URI.create(uri).scheme?.lowercase() ?: "relative"

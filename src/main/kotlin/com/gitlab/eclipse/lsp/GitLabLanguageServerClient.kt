@@ -18,6 +18,7 @@ import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.messages.OpenFileParams
+import com.gitlab.eclipse.lsp.messages.OpenUrlParams
 import com.gitlab.eclipse.lsp.messages.StreamingCompletionResponse
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
@@ -200,6 +201,23 @@ class GitLabLanguageServerClient(
     params: CopyTextParams
   ): CompletableFuture<Void> = CompletableFuture.runAsync {
     service<CopyTextHandler>().handle(params)
+  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
+  /**
+   * A webview asks for a link to be opened outside the IDE — `$/gitlab/openUrl`.
+   *
+   * The language server's webview plugin is the only sender: it forwards the vulnerability details
+   * webview's `openLink` message as `{ url: href }`, where `href` is the clicked link as the webview's
+   * DOM resolved it. That makes it untrusted finding text, and possibly the webview's own tokened
+   * loopback address, so [OpenUrlHandler.open] re-checks it before anything is opened. The handler
+   * only queues work on the UI thread and returns; `runAsync` keeps even that off lsp4j's reader
+   * thread, as for the other notifications here. Nothing is logged here.
+   */
+  @JsonNotification("$/gitlab/openUrl")
+  fun gitlabOpenUrl(
+    params: OpenUrlParams?
+  ): CompletableFuture<Void> = CompletableFuture.runAsync {
+    service<OpenUrlHandler>().open(params?.url)
   }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   @JsonNotification("$/gitlab/token/check")

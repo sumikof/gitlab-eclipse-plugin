@@ -14,6 +14,7 @@ import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.messages.OpenFileParams
+import com.gitlab.eclipse.lsp.messages.OpenUrlParams
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.messages.PluginMessage
 import com.gitlab.eclipse.lsp.plugins.messages.WebViewMessage
@@ -74,6 +75,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val fileOpener = mockk<WorkspaceFileOpener>(relaxUnitFun = true)
   val copyTextHandler = mockk<CopyTextHandler>(relaxUnitFun = true)
   val showDocumentLauncher = mockk<ShowDocumentLauncher>()
+  val openUrlHandler = mockk<OpenUrlHandler>(relaxUnitFun = true)
 
   val client = GitLabLanguageServerClient(pluginMessageService)
 
@@ -94,6 +96,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
           single<WorkspaceFileOpener> { fileOpener }
           single<CopyTextHandler> { copyTextHandler }
           single<ShowDocumentLauncher> { showDocumentLauncher }
+          single<OpenUrlHandler> { openUrlHandler }
         }
       )
     }
@@ -791,6 +794,33 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       arrived.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
       verify { copyTextHandler.handle(CopyTextParams("some snippet")) }
+    }
+  }
+
+  describe("\$/gitlab/openUrl") {
+    it("passes the url the webview asked for to the handler") {
+      client.gitlabOpenUrl(OpenUrlParams("https://gitlab.com/x")).join()
+
+      verify(exactly = 1) { openUrlHandler.open("https://gitlab.com/x") }
+    }
+
+    it("hands a missing url, or missing params, to the handler as null without throwing") {
+      shouldNotThrowAny {
+        client.gitlabOpenUrl(OpenUrlParams(null)).join()
+        client.gitlabOpenUrl(null).join()
+      }
+
+      verify(exactly = 2) { openUrlHandler.open(null) }
+    }
+
+    it("dispatches \$/gitlab/openUrl to the handler through lsp4j") {
+      val arrived = CountDownLatch(1)
+      every { openUrlHandler.open(any()) } answers { arrived.countDown() }
+
+      GenericEndpoint(client).notify("\$/gitlab/openUrl", OpenUrlParams("mailto:a@b.c"))
+
+      arrived.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+      verify { openUrlHandler.open("mailto:a@b.c") }
     }
   }
 })

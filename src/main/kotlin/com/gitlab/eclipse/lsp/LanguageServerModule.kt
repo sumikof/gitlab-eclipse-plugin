@@ -51,13 +51,15 @@ val languageServerModule = module {
 
   single<DiagnosticMarkerService> { DiagnosticMarkerService() }
 
-  // The four server -> client handlers of GitLabLanguageServerClient. Every constructor argument of
-  // each one is a lambda with a production default, so building them touches neither SWT nor the
-  // workbench; Koin builds them on first use, which is the first message of that kind to arrive.
+  // The five server -> client handlers of GitLabLanguageServerClient. Every constructor argument of
+  // each one is a lambda with a production default (OpenUrlHandler's first one is the launcher below),
+  // so building them touches neither SWT nor the workbench; Koin builds them on first use, which is
+  // the first message of that kind to arrive.
   single<WorkspaceEditApplier> { WorkspaceEditApplier() }
   single<WorkspaceFileOpener> { WorkspaceFileOpener() }
   single<CopyTextHandler> { CopyTextHandler() }
   single<ShowDocumentLauncher> { ShowDocumentLauncher() }
+  single<OpenUrlHandler> { OpenUrlHandler(get()) }
 
   single<SecurityScanLauncher> {
     SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
