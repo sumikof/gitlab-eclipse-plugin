@@ -1,12 +1,15 @@
 package com.gitlab.eclipse.security
 
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
-import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.LanguageServerHandle
+import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticUri
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.security.details.ScanContextFingerprint
+import com.gitlab.eclipse.security.details.withIntakeContained
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
@@ -103,6 +106,25 @@ internal fun schedulePlatformDeadline(delayMs: Long, onDue: () -> Unit) {
     release()
   }
 }
+
+/**
+ * Tells the findings intake about the two sends that follow: the scan context of [configuration], then
+ * one more request in flight for [path], both on [epoch] (design §9.1).
+ *
+ * **In this order.** Counting the request first would make the context change see it in flight and
+ * contaminate the very request that carries the new context, so its answer would be refused. The intake
+ * cannot tell the two orders apart; only the call site can keep it.
+ *
+ * Contained: whatever the intake throws, the sends go out exactly as they would have.
+ *
+ * @return the class name of what the intake threw, or `null`. The caller logs only that — never the path
+ *   or the fingerprint.
+ */
+private fun trackScanRequest(configuration: GitLabLanguageServerConfigurationParams, path: String, epoch: Long) =
+  withIntakeContained { intake ->
+    intake.onContextChanged(ScanContextFingerprint.of(configuration), epoch)
+    intake.onRequestSent(path, epoch)
+  }
 
 /**
  * What a command is told when the feature it invokes is switched off.
@@ -202,9 +224,16 @@ class SecurityScanLauncher(
    * The connection epoch and the server proxy are both captured here, at call time. A restart
    * between this call and the coroutine actually running must strand the request with the connection
    * it was meant for, never redirect it at the new one.
+   *
+   * Both come from **one** read of the wrapper's snapshot (design §9.1): read separately, a reconnect
+   * between the two reads pairs a live proxy with a dead epoch, and the request then goes out uncounted
+   * and its answer contaminates the path. With no connection at all there is nothing to pair: nothing
+   * is sent or counted, and the registry's current epoch keeps the command's waiter where it always
+   * was, so its failure is still reported as "not sent" rather than as a restart.
    */
   fun launch(uri: String?, source: SecurityScanSource): SecurityScanLaunchOutcome {
-    val epoch = DiagnosticGenerationRegistry.currentEpoch
+    val handle = languageServerWrapper.currentSnapshot
+    val epoch = handle?.connectionEpoch ?: DiagnosticGenerationRegistry.currentEpoch
     val enabled = isEnabled()
     // Converge the source's suspended parity with the setting before any gate is evaluated: a
     // settings transition that was overtaken in the queue may have left the parity behind, and a
@@ -215,7 +244,6 @@ class SecurityScanLauncher(
     // A URI that does not resolve to a file on disk cannot be scanned, and a response could not
     // be matched back to it either, so it counts as "no editor".
     val scanUri = if (path == null) null else uri
-    val server = languageServerWrapper.languageServer
     val outcome = runSecurityScan(
       uri = scanUri,
       source = source,
@@ -231,7 +259,7 @@ class SecurityScanLauncher(
       hasToken = enabled && !scanUri.isNullOrBlank() && tokenProviderManager.getToken().isNotBlank(),
       // `path` is non-null on every path that reaches this lambda: a null one made `uri` null
       // above, and the gates answer NO_EDITOR for that before send is ever called.
-      send = { params -> if (path != null) dispatch(params, path, source, server, epoch) },
+      send = { params -> if (path != null) dispatch(params, path, source, handle, epoch) },
       notify = notify,
     )
     return outcome
@@ -245,7 +273,7 @@ class SecurityScanLauncher(
     params: SecurityScanParams,
     path: String,
     source: SecurityScanSource,
-    server: GitLabLanguageServer?,
+    handle: LanguageServerHandle?,
     epoch: Long,
   ) {
     val waiterId = if (source == SecurityScanSource.COMMAND) CommandWaiters.add(path, epoch) else null
@@ -294,14 +322,18 @@ class SecurityScanLauncher(
           }
           // No server means nothing was sent; leaving the deadline unarmed lets the completion
           // handler below report it as a failure.
-          val target = server ?: return@withLock
+          val target = handle ?: return@withLock
           // `buildParams()` reads SECURITY_SCAN_ENABLED a second time, so a flip between the check
           // above and this line sends `remoteSecurityScans=false` and then the scan request. That
           // fails safe: the server has just been told the feature is off, and the only thing that
           // left the plugin is a URI — never the file's contents. Closing the window would mean
           // holding the registry monitor across both sends, which inverts the lock order.
-          target.didChangeConfiguration(DidChangeConfigurationParams(configurationService.buildParams()))
-          target.runSecurityScan(params)
+          val configuration = configurationService.buildParams()
+          trackScanRequest(configuration, path, target.connectionEpoch)?.let { failure ->
+            runCatching { logger.warn("Failed to track a remote security scan request: $failure") }
+          }
+          target.proxy.didChangeConfiguration(DidChangeConfigurationParams(configuration))
+          target.proxy.runSecurityScan(params)
           // The one record that an opt-in upload of the user's file happened, written where the
           // claim it makes is true rather than merely intended: *after* the send returned without
           // throwing. An lsp4j proxy whose stream has died throws straight out of the two calls

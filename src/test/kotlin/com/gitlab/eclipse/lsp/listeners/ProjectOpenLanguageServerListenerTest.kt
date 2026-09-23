@@ -4,8 +4,11 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.every
@@ -100,6 +103,28 @@ class ProjectOpenLanguageServerListenerTest : DescribeSpec({
   }
 
   describe("resourceChanged") {
+    it("leaves the retained scan findings alone: a partial send carries no scan context (A13)") {
+      // Fingerprinted, this send would read null baseUrl and token, look like a context change on
+      // every project open, and wipe the findings each time.
+      val intake = VulnerabilityRegistry.intake
+      DiagnosticGenerationRegistry.resetForTest()
+      intake.resetForTest()
+      try {
+        val epoch = DiagnosticGenerationRegistry.currentEpoch
+        intake.onContextChanged("context", epoch)
+        intake.onRequestSent("/w/a.kt", epoch)
+        intake.onResponse("/w/a.kt", listOf(mapOf("title" to "finding")), 1L, epoch)
+
+        fireAndSettle(eventFor(delta(mockk<IProject>(), kind = IResourceDelta.ADDED)))
+
+        verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
+        intake.read("/w/a.kt", epoch).shouldNotBeNull()
+      } finally {
+        intake.resetForTest()
+        DiagnosticGenerationRegistry.resetForTest()
+      }
+    }
+
     it("sends the workspace folders exactly once when a project is added") {
       fireAndSettle(eventFor(delta(mockk<IProject>(), kind = IResourceDelta.ADDED)))
 

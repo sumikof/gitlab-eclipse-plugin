@@ -5,16 +5,25 @@ import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageServi
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.LanguageServerHandle
+import com.gitlab.eclipse.lsp.LanguageServerSession
+import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkAll
+import io.mockk.unmockkObject
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -26,11 +35,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.DidChangeConfigurationParams
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
+import org.osgi.framework.Bundle
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
@@ -49,6 +61,10 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
 
   extensions(LoggingKotestExtension)
 
+  /** A handle as the provider builds it: the epoch is the live connection's. */
+  fun handle(server: GitLabLanguageServer) =
+    LanguageServerHandle(server, LanguageServerSession(), DiagnosticGenerationRegistry.currentEpoch)
+
   beforeSpec {
     // `workspaceFolders` is a top-level val that calls ResourcesPlugin.getWorkspace();
     // it must be mocked or every test throws in a plain-JVM run.
@@ -64,8 +80,10 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
   }
 
   beforeEach {
+    DiagnosticGenerationRegistry.resetForTest()
+    VulnerabilityRegistry.intake.resetForTest()
     every { workspaceFolders } returns emptyList()
-    every { wrapper.languageServer } returns languageServer
+    every { wrapper.currentSnapshot } returns handle(languageServer)
     every { languageService.getAdditionalLanguages() } returns emptyList()
     every { languageService.getDisabledLanguages() } returns emptyList()
     every { tokenManager.getToken() } returns "token"
@@ -74,7 +92,11 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
     every { preferenceStore.getBoolean(any()) } returns false
   }
 
-  afterEach { clearAllMocks() }
+  afterEach {
+    clearAllMocks()
+    VulnerabilityRegistry.intake.resetForTest()
+    DiagnosticGenerationRegistry.resetForTest()
+  }
   afterSpec {
     stopKoin()
     unmockkAll()
@@ -95,9 +117,9 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       val testScope = TestScope(StandardTestDispatcher())
       val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
 
-      queuedService.sendConfiguration(serverA)
+      queuedService.sendConfiguration(handle(serverA))
       // A rapid second restart registers process B's proxy before the coroutine runs.
-      every { wrapper.languageServer } returns serverB
+      every { wrapper.currentSnapshot } returns handle(serverB)
       testScope.testScheduler.runCurrent()
 
       verify { serverA.didChangeConfiguration(any()) }
@@ -119,7 +141,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
       every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns false
 
-      queuedService.sendConfiguration(server)
+      queuedService.sendConfiguration(handle(server))
       // The user toggles again before the queued coroutine gets to run.
       every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns true
       testScope.testScheduler.advanceUntilIdle()
@@ -139,7 +161,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       val sharedScope = CoroutineScope(Job() + UnconfinedTestDispatcher() + swallowUncaught)
       val scopedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, sharedScope, Mutex())
 
-      scopedService.sendConfiguration(languageServer)
+      scopedService.sendConfiguration(handle(languageServer))
 
       sharedScope.isActive shouldBe true
       verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
@@ -249,6 +271,110 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
 
       capturedParams().duoChat!!.enabled shouldBe false
       capturedParams().duo!!.enabledWithoutGitlabProject shouldBe false
+    }
+  }
+
+  describe("scan context tracking (design §9.1 / §11)") {
+    val path = "/w/a.kt"
+    val intake = VulnerabilityRegistry.intake
+
+    fun epoch() = DiagnosticGenerationRegistry.currentEpoch
+
+    /** Retains one finding for [path] under whatever scan context the last full send established. */
+    fun retainOneFinding() {
+      intake.onRequestSent(path, epoch())
+      intake.onResponse(path, listOf(mapOf("title" to "finding")), 1L, epoch())
+      intake.read(path, epoch()).shouldNotBeNull()
+    }
+
+    it("reads the current snapshot once per send and never the bare proxy (A13b-12)") {
+      service.sendConfiguration()
+
+      verify(exactly = 1) { wrapper.currentSnapshot }
+      verify(exactly = 0) { wrapper.languageServer }
+      verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("drops the retained findings when a full send changes the scan context (A13)") {
+      service.sendConfiguration()
+      retainOneFinding()
+
+      every { tokenManager.getToken() } returns "another-token"
+      service.sendConfiguration()
+
+      intake.read(path, epoch()).shouldBeNull()
+    }
+
+    it("keeps the retained findings when a full send leaves the scan context as it was (A13)") {
+      service.sendConfiguration()
+      retainOneFinding()
+
+      // Not a component of the scan context: a change here must not cost the user their findings.
+      every { preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) } returns true
+      service.sendConfiguration()
+
+      intake.read(path, epoch()).shouldNotBeNull()
+    }
+
+    it("tracks the context on the handle's epoch, so a send to a dead connection changes nothing") {
+      service.sendConfiguration()
+      retainOneFinding()
+      // Captured before the connection died, queued, and only run once the next one is live.
+      val stale = handle(languageServer)
+      DiagnosticGenerationRegistry.onServerStopped()
+      intake.onRequestSent(path, epoch())
+      intake.onResponse(path, listOf(mapOf("title" to "live")), 2L, epoch())
+
+      every { tokenManager.getToken() } returns "another-token"
+      service.sendConfiguration(stale)
+
+      // Stale: the live connection's context was not moved, so its finding stands. The send itself
+      // is unchanged — it goes to the proxy it was bound to, as before.
+      intake.read(path, epoch()).shouldNotBeNull()
+      verify(exactly = 2) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("sends nothing and counts nothing without a connection") {
+      service.sendConfiguration()
+      retainOneFinding()
+      every { wrapper.currentSnapshot } returns null
+      every { tokenManager.getToken() } returns "another-token"
+
+      service.sendConfiguration()
+
+      intake.read(path, epoch()).shouldNotBeNull()
+      verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
+      verify(exactly = 1) { tokenManager.getToken() }
+    }
+
+    it("still sends, and logs only the class name, when the intake fails (A7)") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val loggingService = GitLabLanguageServerConfigurationService(
+        preferenceStore,
+        wrapper,
+        CoroutineScope(UnconfinedTestDispatcher()),
+        Mutex()
+      )
+      mockkObject(intake)
+      try {
+        every { intake.onContextChanged(any(), any()) } throws IllegalStateException("/w/a.kt token")
+
+        loggingService.sendConfiguration()
+      } finally {
+        unmockkObject(intake)
+      }
+
+      verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
+      verify(exactly = 1) { log.warn("Failed to track the security scan context: IllegalStateException") }
+      val logged = mutableListOf<String>()
+      verify(atLeast = 0) { log.warn(capture(logged)) }
+      verify(atLeast = 0) { log.info(capture(logged)) }
+      verify(atLeast = 0) { log.error(capture(logged)) }
+      logged.forEach { line ->
+        line shouldNotContain "/w/a.kt"
+        line shouldNotContain "token"
+      }
     }
   }
 })

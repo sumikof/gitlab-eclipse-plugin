@@ -26,7 +26,7 @@ class WebviewLoadCoordinatorTest : DescribeSpec({
   fun wrapperWith(session: LanguageServerSession?): GitLabLanguageServerWrapper {
     val wrapper = mockk<GitLabLanguageServerWrapper>()
     every { wrapper.currentSnapshot } returns
-      session?.let { LanguageServerHandle(mockk<GitLabLanguageServer>(), it) }
+      session?.let { LanguageServerHandle(mockk<GitLabLanguageServer>(), it, 0L) }
     return wrapper
   }
 

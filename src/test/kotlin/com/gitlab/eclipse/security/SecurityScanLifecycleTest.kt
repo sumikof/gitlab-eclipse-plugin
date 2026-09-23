@@ -3,6 +3,7 @@ package com.gitlab.eclipse.security
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
@@ -10,6 +11,8 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.verify
 import io.mockk.verifyOrder
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +43,7 @@ class SecurityScanLifecycleTest : DescribeSpec({
     DiagnosticGenerationRegistry.resetForTest()
     CommandWaiters.resetForTest()
     SecurityScanStatusReporter.resetForTest()
+    VulnerabilityRegistry.intake.resetForTest()
   }
 
   beforeEach { reset() }
@@ -140,6 +144,62 @@ class SecurityScanLifecycleTest : DescribeSpec({
 
       // Not merely swallowed: the steps that could run, ran.
       epoch() shouldBe dead + 1
+      verify { markerService.deleteMarkersNotInEpoch(dead + 1) }
+    }
+  }
+
+  describe("onServerStopped and the findings intake") {
+    val intake = VulnerabilityRegistry.intake
+
+    it("hands the intake the epoch of the connection that died, not the one it advanced to") {
+      val dead = epoch()
+      // Two requests out on the dying connection, one of them answered.
+      intake.onRequestSent(PATH_A, dead)
+      intake.onRequestSent(PATH_B, dead)
+      intake.onResponse(PATH_B, null, null, dead)
+      val diagnosed = mutableListOf<String>()
+      mockkObject(intake)
+      try {
+        SecurityScanLifecycle.onServerStopped(null, {}, {}, diagnose = { diagnosed += it })
+
+        verify(exactly = 1) { intake.onConnectionClosed(dead) }
+        verify(exactly = 0) { intake.onConnectionClosed(dead + 1) }
+      } finally {
+        unmockkObject(intake)
+      }
+
+      // Handed the post-stop epoch, the intake would find nothing of that generation and report 0,
+      // so this line would be missing. One line, a number and nothing else (A7): no path.
+      diagnosed shouldBe listOf("Remote security scan requests left unanswered by the stopped connection: 1")
+      // The dead generation's bookkeeping really went.
+      intake.onConnectionClosed(dead) shouldBe 0
+    }
+
+    it("says nothing when every request of the dead connection was answered") {
+      val dead = epoch()
+      intake.onRequestSent(PATH_A, dead)
+      intake.onResponse(PATH_A, null, null, dead)
+      val diagnosed = mutableListOf<String>()
+
+      SecurityScanLifecycle.onServerStopped(null, {}, {}, diagnose = { diagnosed += it })
+
+      diagnosed shouldBe emptyList()
+    }
+
+    it("finishes the teardown when the intake throws") {
+      val markerService = mockk<DiagnosticMarkerService>(relaxUnitFun = true)
+      val dead = epoch()
+      val waiter = pendingCommand()
+      mockkObject(intake)
+      try {
+        every { intake.onConnectionClosed(any()) } throws IllegalStateException(PATH_A)
+
+        shouldNotThrowAny { SecurityScanLifecycle.onServerStopped(markerService, {}, {}, diagnose = {}) }
+      } finally {
+        unmockkObject(intake)
+      }
+
+      CommandWaiters.isDeadlineArmed(waiter) shouldBe false
       verify { markerService.deleteMarkersNotInEpoch(dead + 1) }
     }
   }

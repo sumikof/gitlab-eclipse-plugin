@@ -4,16 +4,24 @@ import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.LanguageServerHandle
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.verify
 import io.mockk.verifyOrder
 import kotlinx.coroutines.CoroutineScope
@@ -243,18 +251,21 @@ class SecurityScanLauncherTest : DescribeSpec({
     beforeEach {
       DiagnosticGenerationRegistry.resetForTest()
       CommandWaiters.resetForTest()
+      VulnerabilityRegistry.intake.resetForTest()
       notified.clear()
       deadlines.clear()
       // These mocks live for the whole spec, so their recorded calls have to go: a
       // `verify(exactly = 0)` would otherwise see what an earlier test sent.
       clearMocks(preferenceStore, wrapper, configurationService, tokenManager, server)
-      every { wrapper.languageServer } returns server
+      every { wrapper.currentSnapshot } returns
+        LanguageServerHandle(server, LanguageServerSession(), DiagnosticGenerationRegistry.currentEpoch)
       every { tokenManager.getToken() } returns "token"
       every { configurationService.buildParams() } returns GitLabLanguageServerConfigurationParams()
       enable(true)
     }
 
     afterEach {
+      VulnerabilityRegistry.intake.resetForTest()
       CommandWaiters.resetForTest()
       DiagnosticGenerationRegistry.resetForTest()
     }
@@ -531,7 +542,7 @@ class SecurityScanLauncherTest : DescribeSpec({
     it("cleans up and reports when there is no language server to send to") {
       val log = mockk<ILog>(relaxUnitFun = true)
       every { Platform.getLog(any<Bundle>()) } returns log
-      every { wrapper.languageServer } returns null
+      every { wrapper.currentSnapshot } returns null
       val scope = TestScope(StandardTestDispatcher())
 
       launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
@@ -768,9 +779,11 @@ class SecurityScanLauncherTest : DescribeSpec({
       // who pressed a button would be told nothing at all (F6).
       val log = mockk<ILog>(relaxUnitFun = true)
       every { Platform.getLog(any<Bundle>()) } returns log
-      every { wrapper.languageServer } answers {
-        DiagnosticGenerationRegistry.onServerStopped()
-        server
+      // The one snapshot read returns the connection that is live at that instant, and it dies
+      // right after: the handle carries the epoch that has just gone.
+      every { wrapper.currentSnapshot } answers {
+        LanguageServerHandle(server, LanguageServerSession(), DiagnosticGenerationRegistry.currentEpoch)
+          .also { DiagnosticGenerationRegistry.onServerStopped() }
       }
       val scope = TestScope(StandardTestDispatcher())
 
@@ -808,6 +821,109 @@ class SecurityScanLauncherTest : DescribeSpec({
 
       CommandWaiters.consumeOldest(KEY_A, epoch()) shouldBe WaiterMatch.NO_WAITER
       CommandWaiters.clear(epoch() - 1) shouldNotBe emptyMap<String, Int>()
+    }
+
+    describe("findings intake (design §9.1)") {
+      val intake = VulnerabilityRegistry.intake
+      val finding = listOf<Any?>(mapOf("title" to "finding"))
+
+      fun contextOf(token: String) = GitLabLanguageServerConfigurationParams(baseUrl = "https://gitlab", token = token)
+
+      /** Launches a save scan of [uri] under the scan context of [token] and lets it send. */
+      fun sendUnder(token: String, uri: String = URI_A) {
+        every { configurationService.buildParams() } returns contextOf(token)
+        val scope = TestScope(StandardTestDispatcher())
+        launcher(scope).launch(uri, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.SENT
+        scope.testScheduler.runCurrent()
+      }
+
+      it("reads the current snapshot once per launch and never the bare proxy (A13b-12)") {
+        sendUnder("token")
+
+        verify(exactly = 1) { wrapper.currentSnapshot }
+        verify(exactly = 0) { wrapper.languageServer }
+        verify(exactly = 1) { server.runSecurityScan(any()) }
+      }
+
+      it("counts the request on the handle's epoch") {
+        sendUnder("token")
+
+        // The residual count is the tracker's own probe: one request out, none answered.
+        intake.onConnectionClosed(epoch()) shouldBe 1
+      }
+
+      it("records the answer to a request sent right after its own scan context changed") {
+        // An earlier context, with nothing left in flight.
+        sendUnder("token-a")
+        intake.onResponse(KEY_A, finding, 1L, epoch())
+
+        // The context changes and the same path is scanned in the one region. Counted first, the
+        // request would be in flight when the change looks for in-flight paths, and would be
+        // contaminated by the very context it carries: its answer would then be refused.
+        sendUnder("token-b")
+        intake.onResponse(KEY_A, finding, 2L, epoch())
+
+        intake.read(KEY_A, epoch()).shouldNotBeNull().timestampMillis shouldBe 2L
+      }
+
+      it("drops retained findings when a scan's full send changes the scan context (A13)") {
+        sendUnder("token-a")
+        intake.onResponse(KEY_A, finding, 1L, epoch())
+        intake.read(KEY_A, epoch()).shouldNotBeNull()
+
+        sendUnder("token-b", uri = "file:/w/b.kt")
+
+        intake.read(KEY_A, epoch()).shouldBeNull()
+      }
+
+      it("keeps retained findings when a scan's full send leaves the scan context as it was") {
+        sendUnder("token-a")
+        intake.onResponse(KEY_A, finding, 1L, epoch())
+
+        sendUnder("token-a", uri = "file:/w/b.kt")
+
+        intake.read(KEY_A, epoch()).shouldNotBeNull()
+      }
+
+      it("counts nothing when there is no connection to send to") {
+        every { wrapper.currentSnapshot } returns null
+
+        sendUnder("token")
+
+        verify(exactly = 0) { server.runSecurityScan(any()) }
+        intake.onConnectionClosed(epoch()) shouldBe 0
+      }
+
+      it("still sends both notifications, and logs only the class name, when the intake fails (A7)") {
+        val log = mockk<ILog>(relaxUnitFun = true)
+        every { Platform.getLog(any<Bundle>()) } returns log
+        val scope = TestScope(StandardTestDispatcher())
+        mockkObject(intake)
+        try {
+          every { intake.onContextChanged(any(), any()) } throws IllegalStateException("$KEY_A token")
+
+          launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
+          scope.testScheduler.runCurrent()
+        } finally {
+          unmockkObject(intake)
+        }
+
+        verifyOrder {
+          server.didChangeConfiguration(any())
+          server.runSecurityScan(SecurityScanParams(URI_A, "command"))
+        }
+        // The send counts as sent: its deadline is armed and nobody is told it failed.
+        deadlines.size shouldBe 1
+        notified shouldBe emptyList()
+        verify(exactly = 1) { log.warn("Failed to track a remote security scan request: IllegalStateException") }
+        val logged = mutableListOf<String>()
+        verify(atLeast = 0) { log.warn(capture(logged)) }
+        verify(atLeast = 0) { log.info(capture(logged)) }
+        logged.forEach { line ->
+          line shouldNotContain KEY_A
+          line shouldNotContain "token"
+        }
+      }
     }
   }
 })

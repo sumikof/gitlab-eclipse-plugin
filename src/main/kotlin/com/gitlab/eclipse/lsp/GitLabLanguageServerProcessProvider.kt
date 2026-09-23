@@ -152,8 +152,10 @@ class GitLabLanguageServerProcessProvider(
     // Built once and handed to both, so the revocations below compare the very handle that was
     // published — compareAndSet is by reference, and an equal copy would never match. Stored in
     // handleRef first, so "the snapshot is published" implies "handleRef is set" without relying
-    // on lifecycleLock, which the initialize callback does not hold.
-    val handle = LanguageServerHandle(languageServerProxy.remoteProxy, client.session)
+    // on lifecycleLock, which the initialize callback does not hold. The epoch is the client's own
+    // value, copied rather than read from the registry again, so what a sender stamps on a request
+    // is exactly what this client compares the response against.
+    val handle = LanguageServerHandle(languageServerProxy.remoteProxy, client.session, client.connectionEpoch)
     handleRef.set(handle)
     languageServerWrapper.registerLanguageServer(handle)
 
@@ -187,8 +189,10 @@ class GitLabLanguageServerProcessProvider(
           // second restart can register the new server's proxy before they run. Binding
           // them here strands the superseded callback's queued work at the old server
           // instead of redirecting it at the new one before its initialize completes.
+          // The configuration send takes the whole handle: it needs this connection's epoch
+          // too, and it has to come from the same value as the proxy.
           val readinessServer = languageServerProxy.remoteProxy
-          languageServerConfigurationService.sendConfiguration(readinessServer)
+          languageServerConfigurationService.sendConfiguration(handle)
           languageServerOpenFilesService.sendOpenTabs(readinessServer)
           languageServerWebviewService.sendThemeChange(readinessServer)
           languageServerWebviewService.subscribeToThemeChanges()

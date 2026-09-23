@@ -106,7 +106,7 @@ private class Fixture {
 
   /** Makes [session] the connection the wrapper reports as current, or none at all when null. */
   fun current(session: LanguageServerSession?) {
-    every { wrapper.currentSnapshot } returns session?.let { LanguageServerHandle(proxy, it) }
+    every { wrapper.currentSnapshot } returns session?.let { LanguageServerHandle(proxy, it, 0L) }
   }
 
   /** The `view` every delivered notification carried, in order. */

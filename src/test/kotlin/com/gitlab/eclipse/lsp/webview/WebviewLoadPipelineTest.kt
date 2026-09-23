@@ -97,7 +97,7 @@ private class Fixture(coordinatorOverride: WebviewLoadCoordinator? = null) {
   )
 
   init {
-    every { wrapper.currentSnapshot } returns LanguageServerHandle(mockk<GitLabLanguageServer>(), session)
+    every { wrapper.currentSnapshot } returns LanguageServerHandle(mockk<GitLabLanguageServer>(), session, 0L)
   }
 
   fun resolvesWith(vararg futures: CompletableFuture<WebviewResolution>) {

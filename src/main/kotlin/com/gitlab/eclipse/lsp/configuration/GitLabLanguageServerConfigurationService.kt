@@ -5,8 +5,8 @@ import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.diagnostics.DiagnosticsSecrets
 import com.gitlab.eclipse.inject.service
-import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.LanguageServerHandle
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationParams.*
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -15,6 +15,9 @@ import com.gitlab.eclipse.preferences.PreferenceConstants.IGNORE_CERTIFICATE_ERR
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_LOG_LEVEL
 import com.gitlab.eclipse.preferences.PreferenceConstants.LANGUAGE_SERVER_STREAM_CODE_GENERATIONS
 import com.gitlab.eclipse.preferences.PreferenceConstants.TELEMETRY_ENABLED
+import com.gitlab.eclipse.security.details.ScanContextFingerprint
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
+import com.gitlab.eclipse.security.details.withIntakeContained
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -35,9 +38,20 @@ class GitLabLanguageServerConfigurationService(
   // Overload (not a default argument): a default expression reading the wrapper would be
   // evaluated by the Kotlin $default bridge even on MockK mocks, NPE-ing every test that
   // mocks this service and triggers a no-arg send.
-  fun sendConfiguration() = sendConfiguration(languageServerWrapper.languageServer)
+  // The snapshot is read exactly once: the proxy and the connection epoch must come from one value,
+  // or a reconnect between two reads pairs a live proxy with a dead epoch (or the reverse).
+  fun sendConfiguration() = sendConfiguration(languageServerWrapper.currentSnapshot)
 
-  fun sendConfiguration(server: GitLabLanguageServer?) {
+  /**
+   * Sends the full configuration to [handle]'s server; with no handle nothing is sent and nothing is
+   * counted.
+   *
+   * The full configuration carries the scan context, so the send also tells
+   * [VulnerabilityRegistry]'s intake which context the connection is now in (design §9.1 / §11). That
+   * happens inside the outbound region, right before the send, with the epoch taken from the same
+   * [handle] as the proxy. A failure there is contained and never stops the send.
+   */
+  fun sendConfiguration(handle: LanguageServerHandle?) {
     logger.info("Sending configuration change notification to Language Server.")
     // Send to the server captured at CALL time, never the wrapper's current proxy at
     // coroutine-execution time: a rapid restart may register a new pre-initialize server
@@ -56,9 +70,11 @@ class GitLabLanguageServerConfigurationService(
           // store BEFORE calling, so whoever wins the lock reads the newest values and the
           // last send to run is the newest one (issue #16). SecurityScanLauncher already
           // builds its params inside its own lock region for the same reason.
-          server?.didChangeConfiguration(
-            DidChangeConfigurationParams(buildParams())
-          )
+          // No handle: nothing is built, sent or counted, exactly as before.
+          val target = handle ?: return@withLock
+          val params = buildParams()
+          trackScanContext(params, target.connectionEpoch)
+          target.proxy.didChangeConfiguration(DidChangeConfigurationParams(params))
         }
       } catch (e: CancellationException) {
         throw e
@@ -73,6 +89,19 @@ class GitLabLanguageServerConfigurationService(
         logger.error("Configuration change notification failed: ${e.javaClass.name}")
       }
     }
+  }
+
+  /**
+   * Reports the scan context of a full configuration that is about to be sent on [epoch]. Contained:
+   * this runs on the shared plain-`Job` scope, and the send after it must happen whatever the intake
+   * does. Only the exception's class name is logged — never the fingerprint, which derives from the
+   * token.
+   */
+  private fun trackScanContext(params: GitLabLanguageServerConfigurationParams, epoch: Long) {
+    val failure = withIntakeContained { intake ->
+      intake.onContextChanged(ScanContextFingerprint.of(params), epoch)
+    } ?: return
+    runCatching { logger.warn("Failed to track the security scan context: $failure") }
   }
 
   /**

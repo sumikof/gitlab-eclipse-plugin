@@ -27,6 +27,8 @@ import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
 import com.gitlab.eclipse.security.ResponseDecision
 import com.gitlab.eclipse.security.SecurityScanResponse
 import com.gitlab.eclipse.security.SecurityScanStatusReporter
+import com.gitlab.eclipse.security.details.VulnerabilityRegistry
+import com.gitlab.eclipse.security.details.withIntakeContained
 import com.gitlab.eclipse.security.securityScanPathKey
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
@@ -59,8 +61,12 @@ class GitLabLanguageServerClient(
    * language server start, and `restart()` stops before it starts, so a new client always sees a
    * newer epoch than the one it replaces. Every diagnostics callback checks the captured value so
    * that late notifications from a dead connection cannot publish markers.
+   *
+   * `internal` so that `GitLabLanguageServerProcessProvider` can copy this very value into the
+   * [LanguageServerHandle] it publishes: a sender then stamps its requests with the epoch this client
+   * compares their responses against, by construction rather than by reading the registry twice.
    */
-  private val connectionEpoch: Long = DiagnosticGenerationRegistry.currentEpoch
+  internal val connectionEpoch: Long = DiagnosticGenerationRegistry.currentEpoch
 
   @JsonNotification("streamingCompletionResponse")
   fun streamingCompletionResponse(
@@ -121,6 +127,12 @@ class GitLabLanguageServerClient(
    * that cannot be written must not swallow the notification the user is waiting for (Phase 5A).
    * The notification goes through [NotificationUtils.show], not `showOnUiThread`: this runs on
    * lsp4j's dispatch thread, and building the popup there would be invalid thread access.
+   *
+   * The findings are then handed to [VulnerabilityRegistry]'s intake, in a `finally` and contained on
+   * their own: retaining them is a separate obligation from reporting, so neither may cost the other.
+   * The arrival still has to be counted when the report failed, or the path would be left looking as if
+   * a request were in flight. The same path key serves both, so a `file:` URI and a bare path meet in
+   * one entry (premise S); an answer with no file is dropped before either, uncounted (A13b-10).
    */
   @JsonNotification("$/gitlab/security/remoteSecurityScan/response")
   fun securityScanResponse(response: SecurityScanResponse) {
@@ -128,12 +140,16 @@ class GitLabLanguageServerClient(
       // Nothing identifies the request, so an answer with no file cannot be matched to one.
       val filePath = response.filePath ?: return
       val path = securityScanPathKey(filePath)
-      when (val decision = SecurityScanStatusReporter.settle(path, response, connectionEpoch)) {
-        is ResponseDecision.Rejected -> Unit
-        is ResponseDecision.Report -> {
-          runCatching { logger.info(decision.auditLine) }
-          decision.notify?.let { NotificationUtils.show(it) }
+      try {
+        when (val decision = SecurityScanStatusReporter.settle(path, response, connectionEpoch)) {
+          is ResponseDecision.Rejected -> Unit
+          is ResponseDecision.Report -> {
+            runCatching { logger.info(decision.auditLine) }
+            decision.notify?.let { NotificationUtils.show(it) }
+          }
         }
+      } finally {
+        retainFindings(path, response)
       }
     }.onFailure { failure ->
       // Contained like the audit line above it: this is the outermost handler on lsp4j's dispatch
@@ -142,6 +158,17 @@ class GitLabLanguageServerClient(
         logger.warn("Failed to handle a security scan response: ${failure::class.simpleName}")
       }
     }
+  }
+
+  /**
+   * Hands a scan response to the intake that keeps findings for the details view. Never throws: it runs
+   * in a `finally` on lsp4j's dispatch thread. Only the exception's class name is logged.
+   */
+  private fun retainFindings(path: String, response: SecurityScanResponse) {
+    val failure = withIntakeContained { intake ->
+      intake.onResponse(path, response.results, response.timestamp, connectionEpoch)
+    } ?: return
+    runCatching { logger.warn("Failed to retain a security scan response: $failure") }
   }
 
   /**
