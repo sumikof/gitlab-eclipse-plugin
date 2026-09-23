@@ -42,6 +42,10 @@ class WebviewEditorInput(val key: WebviewEditorKey, private val fallbackTitle: S
     private const val MCP_TITLE = "MCP Dashboard"
     private const val FLOW_TITLE = "Flow Builder"
 
+    /** The language server's vulnerability details webview; one shared tab (design §13). */
+    const val SECURITY_VULN_DETAILS_WEBVIEW_ID = "security-vuln-details"
+    private const val SECURITY_VULN_DETAILS_TITLE = "Vulnerability Details"
+
     /** Design §7.3a rule 8 puts the file this names into the query. */
     private const val FLOW_URI_PARAM = "uri"
 
@@ -49,5 +53,10 @@ class WebviewEditorInput(val key: WebviewEditorKey, private val fallbackTitle: S
 
     fun flowBuilder(fileUri: String): WebviewEditorInput =
       WebviewEditorInput(WebviewEditorKey(FLOW_WEBVIEW_ID, mapOf(FLOW_URI_PARAM to fileUri)), FLOW_TITLE)
+
+    fun securityVulnDetails(): WebviewEditorInput = WebviewEditorInput(
+      WebviewEditorKey(SECURITY_VULN_DETAILS_WEBVIEW_ID, emptyMap()),
+      SECURITY_VULN_DETAILS_TITLE,
+    )
   }
 }

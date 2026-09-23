@@ -43,8 +43,14 @@ class WebviewEditorPart : EditorPart(), WebviewEditorSurface {
       onUiThread = { display.asyncExec(it) },
     )
 
-    // The sink design §7.3's rename happens through.
-    val created = WebviewBrowserHost(parent, coordinator) { partName = it }
+    // The sink design §7.3's rename happens through; the guard only for a page that renders
+    // untrusted links (TopLevelNavigationGuard).
+    val created = WebviewBrowserHost(
+      parent,
+      coordinator,
+      setTitle = { partName = it },
+      navigationGuard = navigationGuardFor(webviewInput.key.webviewId),
+    )
     host = created
     reload()
   }

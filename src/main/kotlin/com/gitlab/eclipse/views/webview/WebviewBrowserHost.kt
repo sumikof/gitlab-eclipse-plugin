@@ -8,6 +8,9 @@ import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
+import org.eclipse.swt.browser.LocationListener
+import org.eclipse.swt.browser.OpenWindowListener
+import org.eclipse.swt.browser.ProgressListener
 import org.eclipse.swt.custom.StackLayout
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Control
@@ -24,10 +27,16 @@ import org.eclipse.swt.widgets.Control
  * [coordinator] is taken rather than a ready-made [WebviewLoadPipeline], which cannot exist before
  * the widgets its sinks capture: a deviation from design §7.2's listing. One coordinator still
  * belongs to exactly one pipeline (design §7.2a).
+ *
+ * A non-null [navigationGuard] confines the content page to the loads [load] asks for: see
+ * [TopLevelNavigationGuard] for why, and [installNavigationGuard] for how. With `null` nothing is
+ * installed and the host behaves as it always has.
  */
 class WebviewBrowserHost(
   parent: Composite,
   coordinator: WebviewLoadCoordinator,
+  // Ahead of setTitle so that callers passing setTitle as a trailing lambda stay unchanged.
+  private val navigationGuard: TopLevelNavigationGuard? = null,
   setTitle: (String) -> Unit,
 ) {
   private val logger = logger<WebviewBrowserHost>()
@@ -52,7 +61,7 @@ class WebviewBrowserHost(
     }
   }
   private val messagePage = newBrowser()
-  private val contentPage = newBrowser()
+  private val contentPage = newBrowser().apply { navigationGuard?.let { installNavigationGuard(this, it) } }
 
   /**
    * The control that [setLoadingVisible] returns to, and the answer to `hasStableContent`. Design
@@ -66,6 +75,8 @@ class WebviewBrowserHost(
     // on screen, so a refused `Browser` call is raised rather than dropped. Design §17 keeps the
     // url out of the message.
     showUrl = { url ->
+      // Before `setUrl`: the location events of the load it starts must find the window open.
+      navigationGuard?.expectLoad(url)
       if (!contentPage.setUrl(url)) error("The browser refused the resolved url.")
       show(contentPage)
     },
@@ -114,6 +125,52 @@ class WebviewBrowserHost(
     stableControl = control
     stackLayout.topControl = control
     container.layout()
+  }
+
+  /**
+   * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
+   * there: a failure is recorded by class name only. A guard that fails refuses the navigation.
+   * The record of a refusal names no location, not even its scheme (design §17).
+   */
+  private fun installNavigationGuard(browser: Browser, guard: TopLevelNavigationGuard) {
+    browser.addLocationListener(
+      LocationListener.changingAdapter { event ->
+        val allowed = try {
+          guard.allows(event.location, event.top)
+        } catch (e: Exception) {
+          recordListenerFailure(e)
+          false
+        }
+        if (!allowed) {
+          event.doit = false
+          try {
+            logger.info("Blocked a top-level navigation away from the webview.")
+          } catch (_: Exception) {
+            // There is nowhere left to record this: the log is the thing that failed.
+          }
+        }
+      },
+    )
+    browser.addProgressListener(
+      ProgressListener.completedAdapter {
+        try {
+          guard.loadCompleted()
+        } catch (e: Exception) {
+          recordListenerFailure(e)
+        }
+      },
+    )
+    // `required` with no `browser` refuses the new window: `window.open`, `target=_blank` and a
+    // ctrl- or middle-click, on Edge and WebKit alike.
+    browser.addOpenWindowListener(OpenWindowListener { event -> event.required = true })
+  }
+
+  private fun recordListenerFailure(e: Exception) {
+    try {
+      logger.warn("The webview navigation guard failed: ${e.javaClass.simpleName}")
+    } catch (_: Exception) {
+      // There is nowhere left to record this: the log is the thing that failed.
+    }
   }
 
   /** The same choice as `LanguageServerBrowserView.newBrowser`. Cited by name: a line range goes stale. */
