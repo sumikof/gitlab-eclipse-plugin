@@ -10,8 +10,12 @@ import java.util.Collections
  * the language server, and pinning it down here would turn a finding this plugin does not recognise
  * into a parse failure instead of something it can simply skip.
  *
- * **Immutable.** The list is copied on construction and exposed read-only, so a snapshot handed out
- * by `VulnerabilityIntake.read` stays consistent however the caller or the store changes afterwards.
+ * **Deeply immutable.** The findings are copied on construction — every `Map` and `List` at every depth,
+ * into read-only copies that keep key order — so a snapshot handed out by `VulnerabilityIntake.read`
+ * stays consistent however the caller or the store changes afterwards. Copying only the outer list is
+ * not enough: the findings Gson parses are mutable maps, and sharing them would let the response, the
+ * store and every reader rewrite retained findings without passing the intake's monitor (PR #89
+ * review). Scalars are kept as they are, since the JSON ones (strings, numbers, booleans) are immutable.
  * That is why this is a plain class rather than a `data class`: a data class cannot copy its
  * constructor argument, and its generated `copy` would let a mutable list back in.
  *
@@ -29,7 +33,7 @@ class FileVulnerabilities(
   val contextFingerprint: String,
 ) {
   /** The findings, in the order the language server sent them. Read-only. */
-  val findings: List<Any?> = Collections.unmodifiableList(ArrayList(findings))
+  val findings: List<Any?> = frozenList(findings)
 
   override fun equals(other: Any?): Boolean =
     other is FileVulnerabilities &&
@@ -50,5 +54,16 @@ class FileVulnerabilities(
 
   private companion object {
     const val HASH_MULTIPLIER = 31
+
+    fun frozen(value: Any?): Any? = when (value) {
+      is Map<*, *> -> frozenMap(value)
+      is List<*> -> frozenList(value)
+      else -> value
+    }
+
+    fun frozenList(list: List<*>): List<Any?> = Collections.unmodifiableList(list.mapTo(ArrayList(list.size), ::frozen))
+
+    fun frozenMap(map: Map<*, *>): Map<Any?, Any?> =
+      Collections.unmodifiableMap(map.entries.associateTo(LinkedHashMap(map.size)) { (k, v) -> k to frozen(v) })
   }
 }
