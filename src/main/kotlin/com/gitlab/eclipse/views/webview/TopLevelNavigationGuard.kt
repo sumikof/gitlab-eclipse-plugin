@@ -7,41 +7,65 @@ private const val HTTP_DEFAULT_PORT = 80
 private const val HTTPS_DEFAULT_PORT = 443
 
 /**
- * Decides which top-level navigations a webview `Browser` may perform: only the load its host asked for.
+ * Decides which navigations a webview `Browser` may perform: only the load its host asked for.
  *
  * A link whose text is formatted (`[**x**](https://…)`) is not intercepted by the vulnerability details bundle's
  * `handleLinkClick`, because the click target is the inner element rather than the `<a>`; the browser's default
  * action would then navigate the webview itself away from the language server's page (PR #89 known limitation 8).
- * Links that are intercepted reach the plugin as `$/gitlab/openUrl` instead, so refusing every other top-level
- * navigation costs the page nothing it needs.
+ * Links that are intercepted reach the plugin as `$/gitlab/openUrl` instead, so refusing every other navigation
+ * costs the page nothing it needs.
  *
  * The host calls [expectLoad] immediately before `Browser.setUrl`, which opens a window in which only that url
  * (same scheme, host, port and path; trailing `/`, query and fragment ignored, so the server's
- * `/webview/<id>` → `/webview/<id>/` redirect still lands) may load at top level. [loadCompleted] closes the window;
- * from then on every top-level navigation is refused, the same url and a fragment-only change included.
- * Sub-frames are out of scope: the page has none, and the details it renders are escaped HTML.
+ * `/webview/<id>` → `/webview/<id>/` redirect still lands) may load. Letting that url through admits the load, and
+ * only then does [loadCompleted] close the window: a `completed` that arrives first belongs to something else
+ * (Edge starts on `about:blank` and queues `setUrl` until it is ready) and leaves the window open. Once closed,
+ * every navigation is refused, the same url and a fragment-only change included.
+ *
+ * There is no frame flag: on WebKitGTK `changing` never sets `LocationEvent.top` (only the `changed` path does),
+ * so every navigation is judged. The page has no sub-frames, and refusing one would be the safe direction.
  *
  * Confined to the UI thread, like the `Browser` whose listeners call it, so its state is plain fields. It does not
  * log: the host records a refusal, without the location.
  */
 class TopLevelNavigationGuard {
+  /** Whether [expectLoad] opened a window that [loadCompleted] has not yet closed. */
+  private var windowOpen = false
+
+  /** The page the open window admits; `null` when [expectLoad] was given a url that does not parse. */
   private var expected: Target? = null
 
-  /** Opens the initial-load window for [url], replacing any earlier one. */
+  /** Whether [allows] has let the expected load through since the last [expectLoad]. */
+  private var admitted = false
+
+  /**
+   * True while the window is open for a url that did not parse: every navigation is then refused, the host's own
+   * load included, which the host records apart from an ordinary refusal.
+   */
+  val expectedLoadUnparseable: Boolean
+    get() = windowOpen && expected == null
+
+  /** Opens the window for [url], replacing any earlier one and its admission. */
   fun expectLoad(url: String) {
+    windowOpen = true
     expected = Target.parse(url)
+    admitted = false
   }
 
-  /** Closes the initial-load window. */
+  /** Closes the window, but only once the expected load has been admitted. */
   fun loadCompleted() {
+    if (!admitted) return
+    windowOpen = false
     expected = null
+    admitted = false
   }
 
-  fun allows(location: String?, topLevel: Boolean): Boolean {
-    if (!topLevel) return true
-    val window = expected ?: return false
+  fun allows(location: String?): Boolean {
+    val window = expected?.takeIf { windowOpen } ?: return false
     val target = location?.let(Target::parse) ?: return false
-    return target == window
+    if (target != window) return false
+    admitted = true
+    return true
   }
 
   /** The part of a url that identifies the page: never the query or fragment, which carry the CSRF token. */

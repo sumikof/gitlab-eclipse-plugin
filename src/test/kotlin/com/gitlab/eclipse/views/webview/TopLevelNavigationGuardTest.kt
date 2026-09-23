@@ -10,128 +10,184 @@ private const val OTHER_WEBVIEW_URL = "http://127.0.0.1:40222/webview/security-v
 
 private fun openGuard() = TopLevelNavigationGuard().apply { expectLoad(WEBVIEW_URL) }
 
+/** A guard whose expected load was admitted and then completed. */
+private fun completedGuard() = openGuard().apply {
+  allows(WEBVIEW_URL)
+  loadCompleted()
+}
+
 class TopLevelNavigationGuardTest : DescribeSpec({
   describe("TopLevelNavigationGuard before any expected load") {
     it("blocks a top-level navigation") {
-      TopLevelNavigationGuard().allows(WEBVIEW_URL, topLevel = true) shouldBe false
-    }
-
-    it("allows a sub-frame navigation") {
-      TopLevelNavigationGuard().allows("https://example.com/", topLevel = false) shouldBe true
+      TopLevelNavigationGuard().allows(WEBVIEW_URL) shouldBe false
     }
   }
 
   describe("TopLevelNavigationGuard while the initial load is expected") {
     it("allows the exact expected url") {
-      openGuard().allows(WEBVIEW_URL, topLevel = true) shouldBe true
+      openGuard().allows(WEBVIEW_URL) shouldBe true
     }
 
     it("allows the server's redirect to the trailing-slash variant") {
       openGuard().allows(
         "http://127.0.0.1:39111/webview/security-vuln-details/?_csrf=abc",
-        topLevel = true,
       ) shouldBe true
     }
 
     it("ignores the query and fragment when matching") {
-      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details#top", topLevel = true) shouldBe true
+      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details#top") shouldBe true
     }
 
     it("blocks the same path on another port") {
       openGuard().allows(
         "http://127.0.0.1:39112/webview/security-vuln-details?_csrf=abc",
-        topLevel = true,
       ) shouldBe false
     }
 
     it("blocks the same path on another host") {
       openGuard().allows(
         "http://example.com:39111/webview/security-vuln-details?_csrf=abc",
-        topLevel = true,
       ) shouldBe false
     }
 
     it("blocks the same path under another scheme") {
       openGuard().allows(
         "https://127.0.0.1:39111/webview/security-vuln-details?_csrf=abc",
-        topLevel = true,
       ) shouldBe false
     }
 
     it("blocks another path on the same origin") {
-      openGuard().allows("http://127.0.0.1:39111/webview/root/mcp?_csrf=abc", topLevel = true) shouldBe false
+      openGuard().allows("http://127.0.0.1:39111/webview/root/mcp?_csrf=abc") shouldBe false
     }
 
     it("blocks a path that only starts with the expected one") {
       openGuard().allows(
         "http://127.0.0.1:39111/webview/security-vuln-details/evil?_csrf=abc",
-        topLevel = true,
       ) shouldBe false
     }
 
     it("blocks an external https url") {
-      openGuard().allows("https://gitlab.com/some/project", topLevel = true) shouldBe false
+      openGuard().allows("https://gitlab.com/some/project") shouldBe false
     }
 
     it("blocks about:blank") {
-      openGuard().allows("about:blank", topLevel = true) shouldBe false
+      openGuard().allows("about:blank") shouldBe false
     }
 
     it("blocks a javascript: url") {
-      openGuard().allows("javascript:alert(1)", topLevel = true) shouldBe false
+      openGuard().allows("javascript:alert(1)") shouldBe false
     }
 
     it("blocks a null location") {
-      openGuard().allows(null, topLevel = true) shouldBe false
+      openGuard().allows(null) shouldBe false
     }
 
     it("blocks an unparseable location") {
-      openGuard().allows("http://127.0.0.1:39111/web view/%zz", topLevel = true) shouldBe false
-    }
-
-    it("allows a sub-frame navigation") {
-      openGuard().allows("https://example.com/", topLevel = false) shouldBe true
+      openGuard().allows("http://127.0.0.1:39111/web view/%zz") shouldBe false
     }
   }
 
   describe("TopLevelNavigationGuard after the load completed") {
-    val completed = { openGuard().apply { loadCompleted() } }
-
     it("blocks the same url") {
-      completed().allows(WEBVIEW_URL, topLevel = true) shouldBe false
+      completedGuard().allows(WEBVIEW_URL) shouldBe false
     }
 
     it("blocks a fragment-only change") {
-      completed().allows("$WEBVIEW_URL#section", topLevel = true) shouldBe false
+      completedGuard().allows("$WEBVIEW_URL#section") shouldBe false
     }
 
     it("blocks an http url") {
-      completed().allows("http://example.com/", topLevel = true) shouldBe false
+      completedGuard().allows("http://example.com/") shouldBe false
     }
 
     it("blocks an https url") {
-      completed().allows("https://gitlab.com/some/project", topLevel = true) shouldBe false
-    }
-
-    it("still allows a sub-frame navigation") {
-      completed().allows("https://example.com/", topLevel = false) shouldBe true
+      completedGuard().allows("https://gitlab.com/some/project") shouldBe false
     }
   }
 
   describe("TopLevelNavigationGuard on a second expected load") {
     it("re-opens the window for the new url after a completed load") {
-      val guard = openGuard().apply {
-        loadCompleted()
-        expectLoad(OTHER_WEBVIEW_URL)
-      }
+      val guard = completedGuard().apply { expectLoad(OTHER_WEBVIEW_URL) }
 
-      guard.allows(OTHER_WEBVIEW_URL, topLevel = true) shouldBe true
+      guard.allows(OTHER_WEBVIEW_URL) shouldBe true
     }
 
     it("no longer treats the old url as special") {
       val guard = openGuard().apply { expectLoad(OTHER_WEBVIEW_URL) }
 
-      guard.allows(WEBVIEW_URL, topLevel = true) shouldBe false
+      guard.allows(WEBVIEW_URL) shouldBe false
+    }
+  }
+
+  // WebKitGTK never sets `LocationEvent.top` on `changing`, so nothing may depend on a frame flag.
+  describe("TopLevelNavigationGuard without a frame flag") {
+    it("refuses an off-window location, whatever frame it came from") {
+      openGuard().allows("https://example.com/frame") shouldBe false
+    }
+
+    it("refuses every location before any expected load") {
+      TopLevelNavigationGuard().allows("https://example.com/frame") shouldBe false
+    }
+  }
+
+  describe("TopLevelNavigationGuard admission") {
+    it("keeps the window open when a load completes before the expected one was admitted") {
+      val guard = openGuard().apply { loadCompleted() }
+
+      guard.allows(WEBVIEW_URL) shouldBe true
+    }
+
+    it("closes the window when the admitted load completes") {
+      val guard = openGuard().apply {
+        allows(WEBVIEW_URL) shouldBe true
+        loadCompleted()
+      }
+
+      guard.allows(WEBVIEW_URL) shouldBe false
+    }
+
+    it("does not count a refused location as admission") {
+      val guard = openGuard().apply {
+        allows("https://example.com/") shouldBe false
+        loadCompleted()
+      }
+
+      guard.allows(WEBVIEW_URL) shouldBe true
+    }
+
+    it("resets admission on a new expected load") {
+      val guard = openGuard().apply {
+        allows(WEBVIEW_URL)
+        expectLoad(OTHER_WEBVIEW_URL)
+        loadCompleted()
+      }
+
+      guard.allows(OTHER_WEBVIEW_URL) shouldBe true
+    }
+  }
+
+  describe("TopLevelNavigationGuard with an unparseable expected url") {
+    val unparseable = { TopLevelNavigationGuard().apply { expectLoad("http://127.0.0.1:39111/web view/%zz") } }
+
+    it("refuses the following load") {
+      unparseable().allows("http://127.0.0.1:39111/web view/%zz") shouldBe false
+    }
+
+    it("refuses any other location") {
+      unparseable().allows(WEBVIEW_URL) shouldBe false
+    }
+
+    it("reports that its expected url did not parse") {
+      unparseable().expectedLoadUnparseable shouldBe true
+    }
+
+    it("does not report that for a parseable expected url") {
+      openGuard().expectedLoadUnparseable shouldBe false
+    }
+
+    it("does not report that once no load is expected") {
+      TopLevelNavigationGuard().expectedLoadUnparseable shouldBe false
+      completedGuard().expectedLoadUnparseable shouldBe false
     }
   }
 

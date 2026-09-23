@@ -130,13 +130,14 @@ class WebviewBrowserHost(
   /**
    * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
    * there: a failure is recorded by class name only. A guard that fails refuses the navigation.
-   * The record of a refusal names no location, not even its scheme (design §17).
+   * The record of a refusal names no location, not even its scheme (design §17). `event.top` is
+   * not consulted: WebKitGTK never sets it on `changing` (see [TopLevelNavigationGuard]).
    */
   private fun installNavigationGuard(browser: Browser, guard: TopLevelNavigationGuard) {
     browser.addLocationListener(
       LocationListener.changingAdapter { event ->
         val allowed = try {
-          guard.allows(event.location, event.top)
+          guard.allows(event.location)
         } catch (e: Exception) {
           recordListenerFailure(e)
           false
@@ -144,7 +145,11 @@ class WebviewBrowserHost(
         if (!allowed) {
           event.doit = false
           try {
-            logger.info("Blocked a top-level navigation away from the webview.")
+            if (guard.expectedLoadUnparseable) {
+              logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
+            } else {
+              logger.info("Blocked a top-level navigation away from the webview.")
+            }
           } catch (_: Exception) {
             // There is nowhere left to record this: the log is the thing that failed.
           }
