@@ -268,6 +268,12 @@ class SecurityScanLauncher(
   /**
    * Queues the request. The waiter is registered here rather than inside the coroutine so it exists
    * before anything can be answered, and only for a command: a save has nobody waiting for it.
+   *
+   * [handle] and [epoch] arrive separately, although [launch] derives both from one snapshot read,
+   * because [handle] may be `null`. When a handle exists, [epoch] *is* its `connectionEpoch`. When none
+   * does, [epoch] is the registry's current epoch: there is no connection to pair with, but a command
+   * still needs a waiter registered under a live epoch so that the "nothing was sent" path below reports
+   * it as not sent, rather than `CommandWaiters.add` refusing it as if a restart had intervened.
    */
   private fun dispatch(
     params: SecurityScanParams,
