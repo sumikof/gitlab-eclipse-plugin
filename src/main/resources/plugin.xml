@@ -418,6 +418,12 @@
                 name="Open GitLab Repository"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ShowVulnerabilityDetails"
+                name="Show Vulnerability Details"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -965,6 +971,11 @@
                 commandId="com.gitlab.eclipse.commands.OpenRepository"
                 class="com.gitlab.eclipse.clone.handlers.OpenRepositoryHandler"
         />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ShowVulnerabilityDetails"
+                class="com.gitlab.eclipse.security.actions.ShowVulnDetailsHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -1204,6 +1215,11 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.RunSecurityScan"
                         label="Run Remote Scan (SAST)"
+                />
+
+                <command
+                        commandId="com.gitlab.eclipse.commands.ShowVulnerabilityDetails"
+                        label="Show Vulnerability Details"
                 />
 
                 <separator name="gitlab-eclipse-plugin.navigation.sep4" visible="true"/>
