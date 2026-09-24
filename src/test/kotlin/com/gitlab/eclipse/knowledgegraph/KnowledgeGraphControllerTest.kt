@@ -23,7 +23,7 @@ private const val URL_OLD = "http://localhost:1111"
 private const val URL_NEW = "http://localhost:2222"
 
 /**
- * Plan §8.2 (`KnowledgeGraphController`), §15 (tolerant `ready` DTO), A14 / A25. The state is a
+ * Plan §8.2 (`KnowledgeGraphController`), §15 (tolerant `ready` payload), A14 / A25. The state is a
  * global object, so every case uses fresh [LanguageServerSession]s (see [KnowledgeGraphStateTest]).
  */
 class KnowledgeGraphControllerTest : DescribeSpec({
@@ -38,7 +38,7 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       val current = LanguageServerSession()
       val controller = KnowledgeGraphController(wrapperWithCurrent(current))
 
-      controller.ready(KnowledgeGraphReady(URL_NEW), current)
+      controller.ready(mapOf("url" to URL_NEW), current)
 
       KnowledgeGraphState.urlFor(current) shouldBe URL_NEW
     }
@@ -48,8 +48,8 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       val new = LanguageServerSession()
       val controller = KnowledgeGraphController(wrapperWithCurrent(new))
 
-      controller.ready(KnowledgeGraphReady(URL_NEW), new)
-      controller.ready(KnowledgeGraphReady(URL_OLD), old)
+      controller.ready(mapOf("url" to URL_NEW), new)
+      controller.ready(mapOf("url" to URL_OLD), old)
 
       KnowledgeGraphState.urlFor(new) shouldBe URL_NEW
       KnowledgeGraphState.urlFor(old).shouldBeNull()
@@ -59,7 +59,7 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       val sender = LanguageServerSession()
       val controller = KnowledgeGraphController(wrapperWithCurrent(null))
 
-      controller.ready(KnowledgeGraphReady(URL_NEW), sender)
+      controller.ready(mapOf("url" to URL_NEW), sender)
 
       KnowledgeGraphState.urlFor(sender).shouldBeNull()
     }
@@ -68,9 +68,9 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       val current = LanguageServerSession()
       val controller = KnowledgeGraphController(wrapperWithCurrent(current))
 
-      controller.ready(KnowledgeGraphReady(42), current)
-      controller.ready(KnowledgeGraphReady(), current)
-      controller.ready(KnowledgeGraphReady(mapOf("x" to 1)), current)
+      controller.ready(mapOf("url" to 42), current)
+      controller.ready(mapOf<String, Any>(), current)
+      controller.ready(mapOf("url" to mapOf("x" to 1)), current)
       controller.ready(null, current)
 
       KnowledgeGraphState.urlFor(current).shouldBeNull()
@@ -80,7 +80,7 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       val current = LanguageServerSession()
       val wrapper = wrapperWithCurrent(current)
 
-      KnowledgeGraphController(wrapper).ready(KnowledgeGraphReady(URL_NEW), current)
+      KnowledgeGraphController(wrapper).ready(mapOf("url" to URL_NEW), current)
 
       verify(exactly = 1) { wrapper.currentSnapshot }
     }
@@ -123,6 +123,9 @@ class KnowledgeGraphControllerTest : DescribeSpec({
       service.dispatch(route, mapOf("url" to mapOf("a" to 1)), current).get()
       service.dispatch(route, mapOf("url" to 42), current).get()
       service.dispatch(route, mapOf<String, Any>(), current).get()
+      service.dispatch(route, "http://localhost:1", current).get()
+      service.dispatch(route, listOf(1), current).get()
+      service.dispatch(route, 42, current).get()
 
       KnowledgeGraphState.urlFor(current).shouldBeNull()
       verify(exactly = 0) { log.warn(any<String>()) }

@@ -59,6 +59,7 @@ private class Fixture(timeoutMillis: Long = 10_000L) {
   val session = LanguageServerSession()
   val proxy = mockk<GitLabLanguageServer>()
   val handle = LanguageServerHandle(proxy, session, 0L)
+
   @Volatile var current: LanguageServerHandle? = handle
   val response = CompletableFuture<Any?>()
   val requests = mutableListOf<ExtensionToPluginRequest>()
@@ -323,7 +324,10 @@ class KnowledgeGraphCommandTest : DescribeSpec({
         run()
       }
 
-      log.forEach { it shouldNotContain GRAPH_URL; it shouldNotContain "localhost" }
+      log.forEach {
+        it shouldNotContain GRAPH_URL
+        it shouldNotContain "localhost"
+      }
     }
 
     it("does not log a missing gkg") {

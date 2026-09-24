@@ -14,11 +14,11 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
-import java.util.concurrent.CompletableFuture
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
+import java.util.concurrent.CompletableFuture
 
 private const val WEBVIEW_ID = "root/flow"
 private const val BASE_URI = "https://gitlab.example.com/root/flow"

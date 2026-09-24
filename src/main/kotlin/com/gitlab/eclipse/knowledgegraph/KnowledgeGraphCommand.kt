@@ -35,8 +35,9 @@ class KnowledgeGraphCommand(
 
   /**
    * Opens the Knowledge Graph tab with [openTab], after asking the server for the address if none is
-   * held. Called on the UI thread; [openTab] is always run on it too, exactly once. Throws nothing
-   * that [openTab] does not.
+   * held. Called on the UI thread; [openTab] is only ever run on it too, and at most once — not at
+   * all if the workbench/display is gone by the time the answer arrives. Throws nothing that
+   * [openTab] does not.
    */
   fun run(openTab: () -> Unit) {
     val handle = currentSnapshot()
