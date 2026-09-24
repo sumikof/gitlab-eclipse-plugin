@@ -4,6 +4,7 @@ import com.gitlab.eclipse.authentication.GitLabOAuthService
 import com.gitlab.eclipse.authentication.GitLabTokenProviderManager
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.PatTokenProvider
+import com.gitlab.eclipse.knowledgegraph.KnowledgeGraphController
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
@@ -11,6 +12,7 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
+import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLauncher
@@ -19,6 +21,7 @@ import com.gitlab.eclipse.security.SecurityScanSettings
 import com.gitlab.eclipse.security.details.SecurityVulnDetailsClient
 import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
 import org.koin.core.qualifier.named
+import org.koin.dsl.bind
 import org.koin.dsl.module
 
 val languageServerModule = module {
@@ -80,4 +83,7 @@ val languageServerModule = module {
   single<SecurityScanSettings> {
     SecurityScanSettings(get(), get(named(LANGUAGE_SERVER_OUTBOUND)), get())
   }
+
+  // The Knowledge Graph plugin's `ready` receiver; it reads the current connection from the wrapper.
+  single<KnowledgeGraphController> { KnowledgeGraphController(get()) } bind PluginController::class
 }

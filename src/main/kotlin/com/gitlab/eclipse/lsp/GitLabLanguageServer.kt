@@ -4,6 +4,7 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationPar
 import com.gitlab.eclipse.lsp.messages.InlineCompletionParams
 import com.gitlab.eclipse.lsp.messages.StreamWithId
 import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginNotification
+import com.gitlab.eclipse.lsp.plugins.messages.ExtensionToPluginRequest
 import com.gitlab.eclipse.lsp.webview.ThemeChangedParams
 import com.gitlab.eclipse.preferences.healthcheck.FeatureStateParams
 import com.gitlab.eclipse.security.SecurityScanParams
@@ -74,6 +75,23 @@ interface GitLabLanguageServer {
 
   @JsonNotification("$/gitlab/plugin/notification")
   fun pluginNotification(notification: ExtensionToPluginNotification)
+
+  /**
+   * Sends a request to an LS-side plugin (`ExtensionConnectionMessageBusProvider`, whose
+   * `handleRequestMessage` routes on [ExtensionToPluginRequest.pluginId] and
+   * [ExtensionToPluginRequest.type]) and completes with the plugin handler's result.
+   *
+   * **The name collides with the client-side receiver** `GitLabLanguageServerClient.gitlabPluginRequest`,
+   * which handles the same method in the other direction. lsp4j merges remote and local methods into one
+   * map by name with the local one written last, so a response to this request is parsed with the
+   * receiver's return type — `Object` — and arrives as a Gson `LinkedTreeMap`, whatever is declared here.
+   * The return type is therefore fixed to `Any?`: declaring a DTO would compile, pass every headless
+   * test, and throw `ClassCastException` only against the real server. Read fields out of the `Map` by
+   * hand. The two do not raise `Multiple methods for name`, so the connection stays usable; an override
+   * must not repeat `@JsonRequest`, which would.
+   */
+  @JsonRequest("$/gitlab/plugin/request")
+  fun pluginRequest(request: ExtensionToPluginRequest): CompletableFuture<Any?>
 
   @JsonNotification("$/gitlab/theme/didChangeTheme")
   fun didChangeTheme(params: ThemeChangedParams)
