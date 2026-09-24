@@ -130,12 +130,13 @@ class WebviewBrowserHost(
   /**
    * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
    * there: a failure is recorded by class name only. A guard that fails refuses the navigation, and
-   * `changing` catches every `Throwable` to make that hold: both engines hand the event over with
-   * `doit = true` and read it only after the listeners return normally, so anything escaping —
-   * an `Error` included — skips the refusal and the engine's default lets the navigation through
-   * (WebKitGTK `webkit_decide_policy`, Edge `handleNavigationStarting`). The record of a refusal names no
-   * location, not even its scheme (design §17). `event.top` is not consulted: WebKitGTK never sets
-   * it on `changing` (see [TopLevelNavigationGuard]).
+   * `changing` catches every `Throwable` — from the guard and from the log of a refusal alike — to
+   * make that hold: both engines hand the event over with `doit = true` and read it only after the
+   * listeners return normally, so anything escaping, an `Error` included, skips the refusal and the
+   * engine's default lets the navigation through (WebKitGTK `webkit_decide_policy`, Edge
+   * `handleNavigationStarting`). The record of a refusal names no location, not even its scheme
+   * (design §17). `event.top` is not consulted: WebKitGTK never sets it on `changing` (see
+   * [TopLevelNavigationGuard]).
    *
    * The engine's own context menu is suppressed as well: its "Download Linked File" / "Save link as"
    * and "Open Link in New Window" entries reach a finding's link without passing
@@ -146,7 +147,6 @@ class WebviewBrowserHost(
     browser.addLocationListener(
       LocationListener.changingAdapter { event ->
         event.doit = false
-        @Suppress("TooGenericExceptionCaught") // See the KDoc: an escaping Error lets the navigation through.
         val allowed = try {
           guard.allows(event.location)
         } catch (e: Throwable) {
@@ -154,24 +154,14 @@ class WebviewBrowserHost(
           false
         }
         event.doit = allowed
-        if (!allowed) {
-          try {
-            if (guard.expectedLoadUnparseable) {
-              logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
-            } else {
-              logger.info("Blocked a top-level navigation away from the webview.")
-            }
-          } catch (_: Exception) {
-            // There is nowhere left to record this: the log is the thing that failed.
-          }
-        }
+        if (!allowed) recordRefusal(guard.expectedLoadUnparseable)
       },
     )
     browser.addProgressListener(
       ProgressListener.completedAdapter {
         try {
           guard.loadCompleted()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
           recordListenerFailure(e)
         }
       },
@@ -182,10 +172,27 @@ class WebviewBrowserHost(
     browser.addListener(SWT.MenuDetect) { event -> event.doit = false }
   }
 
+  /**
+   * Records a refusal after `doit` is already `false`. Catches every `Throwable`, like [recordListenerFailure]: a
+   * log that fails with an `Error` would otherwise end `changing` abnormally, and the engine would skip the refusal
+   * (PR #90 review).
+   */
+  private fun recordRefusal(expectedLoadUnparseable: Boolean) {
+    try {
+      if (expectedLoadUnparseable) {
+        logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
+      } else {
+        logger.info("Blocked a top-level navigation away from the webview.")
+      }
+    } catch (_: Throwable) {
+      // There is nowhere left to record this: the log is the thing that failed.
+    }
+  }
+
   private fun recordListenerFailure(e: Throwable) {
     try {
       logger.warn("The webview navigation guard failed: ${e.javaClass.simpleName}")
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
       // There is nowhere left to record this: the log is the thing that failed.
     }
   }

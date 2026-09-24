@@ -37,12 +37,20 @@ private const val UPDATE_DETAILS = "updateDetails"
  * not stall them. Under it happen exactly two things: a re-read that must return the **same instance**
  * as the first read, and the send. The intake's snapshots are immutable and replaced wholesale, so
  * reference identity proves the file's findings did not move since they were projected, and holding the
- * lock across the check and the send is what binds the two (A22). The re-read takes the registry monitor
- * while the lock is held, which is the permitted order.
+ * lock across the check and the send is what binds the two (A22) — against the writers that take this
+ * lock, i.e. every scan-context change (`onContextChanged`), which is the authorization axis. A scan
+ * response for the same connection and the same context is recorded under the registry monitor alone
+ * and may land between the check and the send; the payload is then that same context's findings as of
+ * the check, no different from a response arriving just after the send, and closing it would need a
+ * send under the monitor or this lock on the lsp4j dispatch thread, both ruled out (design §11). The
+ * re-read takes the registry monitor while the lock is held, which is the permitted order.
  *
  * **Bound to one connection.** The proxy and the epoch come from the one [LanguageServerHandle] the caller
  * read; the wrapper is never read again, so a reconnect in the middle can neither redirect the send nor
- * pair this connection's proxy with another's findings.
+ * pair this connection's proxy with another's findings. Between the wrapper dropping that connection
+ * and its epoch advancing, the re-read still returns only that connection's findings in the current
+ * context, so a send in that interval reaches the connection they came from — the same policy as
+ * `SecurityScanLauncher` and `GitLabLanguageServerConfigurationService` (plan §9.1).
  *
  * **Never breaks the shared scope.** [coroutineScope] is the Koin one, built on a plain `Job`
  * (`WorkspaceModule`): one escaping failure cancels it for the rest of the session. The whole body is

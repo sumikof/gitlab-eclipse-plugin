@@ -16,8 +16,12 @@ private const val HTTPS_DEFAULT_PORT = 443
  * costs the page nothing it needs.
  *
  * The host calls [expectLoad] immediately before `Browser.setUrl`, which opens a window in which only that url
- * (same scheme, host, port and path; trailing `/`, query and fragment ignored, so the server's
- * `/webview/<id>` → `/webview/<id>/` redirect still lands) may load. Letting that url through admits the load, and
+ * (same scheme, host, port, path and raw query; a trailing `/` on the path and the fragment ignored, so a
+ * `/webview/<id>` → `/webview/<id>/` redirect, which keeps the query, still lands) may load. The query is compared
+ * because the page is interactive before `completed`: a formatted relative link such as `[**x**](?error=1)` would
+ * otherwise pass as the expected load, dropping or replacing the `_csrf` token (PR #90 review). Comparing it raw is
+ * safe: the language server's `@fastify/csrf` token uses only URL-safe characters and `WebviewQueryBuilder`
+ * percent-encodes everything else, so the engine reports the query exactly as it was set. Letting that url through admits the load, and
  * only then does [loadCompleted] close the window: a `completed` that arrives first belongs to something else
  * (Edge starts on `about:blank` and queues `setUrl` until it is ready) and leaves the window open. Once closed,
  * every navigation is refused, the same url and a fragment-only change included.
@@ -68,8 +72,13 @@ class TopLevelNavigationGuard {
     return true
   }
 
-  /** The part of a url that identifies the page: never the query or fragment, which carry the CSRF token. */
-  private data class Target(val scheme: String, val host: String, val port: Int, val path: String) {
+  /**
+   * The part of a url that identifies the load: everything but the fragment and a trailing `/`. Its query carries the
+   * CSRF token, so [toString] names none of it.
+   */
+  private data class Target(val scheme: String, val host: String, val port: Int, val path: String, val query: String) {
+    override fun toString(): String = "Target(scheme=$scheme)"
+
     companion object {
       fun parse(url: String): Target? {
         val uri = try {
@@ -85,7 +94,7 @@ class TopLevelNavigationGuard {
           scheme == "https" -> HTTPS_DEFAULT_PORT
           else -> -1
         }
-        return Target(scheme, host, port, uri.rawPath.orEmpty().removeSuffix("/"))
+        return Target(scheme, host, port, uri.rawPath.orEmpty().removeSuffix("/"), uri.rawQuery.orEmpty())
       }
     }
   }

@@ -34,8 +34,30 @@ class TopLevelNavigationGuardTest : DescribeSpec({
       ) shouldBe true
     }
 
-    it("ignores the query and fragment when matching") {
-      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details#top") shouldBe true
+    it("ignores only the fragment when matching") {
+      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details?_csrf=abc#top") shouldBe true
+    }
+
+    // PR #90 Codex round 1: the page is interactive before `completed`, so a formatted relative link
+    // such as `[**x**](?error=1)` reaches the guard as the same path with a different query.
+    it("blocks the same path without the expected query") {
+      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details") shouldBe false
+      openGuard().allows("http://127.0.0.1:39111/webview/security-vuln-details#top") shouldBe false
+    }
+
+    it("blocks the same path with a replaced, extended or reordered query") {
+      val guard = openGuard()
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details?error=1") shouldBe false
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details?_csrf=def") shouldBe false
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details?_csrf=abc&error=1") shouldBe false
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details?_csrf=abc&") shouldBe false
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details/?error=1") shouldBe false
+    }
+
+    it("still admits the expected load after refusing a same-path link with another query") {
+      val guard = openGuard()
+      guard.allows("http://127.0.0.1:39111/webview/security-vuln-details?error=1") shouldBe false
+      guard.allows(WEBVIEW_URL) shouldBe true
     }
 
     it("blocks the same path on another port") {
