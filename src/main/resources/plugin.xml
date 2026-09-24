@@ -424,6 +424,13 @@
                 name="Show Vulnerability Details"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- Plan §9.3. The name is the reference extension's title for gl.knowledgeGraph.show. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowKnowledgeGraph"
+                name="Show GitLab Knowledge Graph"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -975,6 +982,11 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.ShowVulnerabilityDetails"
                 class="com.gitlab.eclipse.security.actions.ShowVulnDetailsHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowKnowledgeGraph"
+                class="com.gitlab.eclipse.views.webview.actions.ShowKnowledgeGraphHandler"
         />
     </extension>
 
@@ -1658,6 +1670,12 @@
                     commandId="gitlab-eclipse-plugin.commands.ShowAgenticTabs"
                     label="Open Duo Agent Platform"
                     tooltip="Open the GitLab Duo Agent Platform view"/>
+
+            <!-- Plan §9.3; design U5: always enabled, the tab explains a missing gkg. -->
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowKnowledgeGraph"
+                    label="Open Knowledge Graph"
+                    tooltip="Open the GitLab Knowledge Graph served by gkg"/>
 
             <!-- Design §7.5: this menu too, and deliberately not chatSelectorMenu. -->
             <command

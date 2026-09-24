@@ -132,5 +132,13 @@ class WebviewEditorInputTest : DescribeSpec({
     it("exposes the language server's vulnerability details webview id") {
       WebviewEditorInput.SECURITY_VULN_DETAILS_WEBVIEW_ID shouldBe "security-vuln-details"
     }
+
+    it("names the Knowledge Graph tab with the server's title") {
+      WebviewEditorInput.knowledgeGraph().name shouldBe "Knowledge Graph"
+    }
+
+    it("keys the Knowledge Graph by its plugin id and no query, so there is one tab for it") {
+      WebviewEditorInput.knowledgeGraph().key shouldBe WebviewEditorKey("knowledge-graph", emptyMap())
+    }
   }
 })
