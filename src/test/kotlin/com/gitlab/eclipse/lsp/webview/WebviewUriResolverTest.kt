@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp.webview
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.knowledgegraph.KnowledgeGraphState
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.LanguageServerHandle
@@ -186,6 +187,124 @@ class WebviewUriResolverTest : DescribeSpec({
       val result = await(resolver.resolve(WEBVIEW_ID))
 
       result.shouldBeInstanceOf<WebviewResolution.Failed>()
+    }
+  }
+
+  // Plan §16 / §16.1: a webview the client can address directly is asked for before the metadata
+  // request, with the resolver's own snapshot session. Null keeps the metadata path untouched.
+  describe("resolve with a direct address") {
+    val direct = DirectWebview("Direct", "http://localhost:4242")
+
+    it("resolves through the seam without asking the language server for metadata") {
+      val directResolver = WebviewUriResolver(wrapper, directUris = { _, _ -> direct })
+
+      val result = await(directResolver.resolve(WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.Resolved(WEBVIEW_ID, "Direct", "http://localhost:4242", session)
+      (result as WebviewResolution.Resolved).session shouldBeSameInstanceAs session
+      verify(exactly = 0) { languageServer.webviewMetadata() }
+    }
+
+    it("hands the seam the id asked for and exactly the snapshot's session") {
+      val seenIds = mutableListOf<String>()
+      val seenSessions = mutableListOf<LanguageServerSession>()
+      val directResolver = WebviewUriResolver(wrapper, directUris = { id, s ->
+        seenIds += id
+        seenSessions += s
+        direct
+      })
+
+      await(directResolver.resolve(WEBVIEW_ID))
+
+      seenIds shouldBe listOf(WEBVIEW_ID)
+      seenSessions.single() shouldBeSameInstanceAs session
+    }
+
+    it("falls through to the metadata path unchanged when the seam has nothing") {
+      every { languageServer.webviewMetadata() } returns CompletableFuture.completedFuture(
+        listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1"))),
+      )
+      val directResolver = WebviewUriResolver(wrapper, directUris = { _, _ -> null })
+
+      val result = await(directResolver.resolve(WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.Resolved(WEBVIEW_ID, "MCP", "gitlab://webview/mcp/1", session)
+      verify(exactly = 1) { languageServer.webviewMetadata() }
+    }
+
+    it("resolves Failed rather than throwing when the seam throws") {
+      val cause = IllegalStateException("seam exploded")
+      val directResolver = WebviewUriResolver(wrapper, directUris = { _, _ -> throw cause })
+
+      val future = directResolver.resolve(WEBVIEW_ID)
+
+      future.isCompletedExceptionally shouldBe false
+      val result = await(future)
+      result.shouldBeInstanceOf<WebviewResolution.Failed>()
+      (result as WebviewResolution.Failed).cause shouldBeSameInstanceAs cause
+      verify(exactly = 0) { languageServer.webviewMetadata() }
+    }
+
+    it("resolves LanguageServerUnavailable without asking the seam when there is no current session") {
+      every { wrapper.currentSnapshot } returns null
+      var asked = false
+      val directResolver = WebviewUriResolver(wrapper, directUris = { _, _ ->
+        asked = true
+        direct
+      })
+
+      await(directResolver.resolve(WEBVIEW_ID)) shouldBe WebviewResolution.LanguageServerUnavailable
+      asked shouldBe false
+    }
+  }
+
+  // A15 (plan §19) / A14's read side: the production factory is what the two SWT construction sites
+  // call (A15b), so this is where the wiring's behaviour is pinned. `KnowledgeGraphState` is a
+  // global object; each case uses fresh sessions so none can see another's held address.
+  describe("forProduction") {
+    fun productionWith(current: LanguageServerSession): WebviewUriResolver {
+      val productionWrapper = mockk<GitLabLanguageServerWrapper>()
+      every { productionWrapper.currentSnapshot } returns LanguageServerHandle(languageServer, current, 0L)
+      return WebviewUriResolver.forProduction(productionWrapper)
+    }
+
+    it("resolves the Knowledge Graph through its held address without a metadata request") {
+      val current = LanguageServerSession()
+      KnowledgeGraphState.record("http://localhost:27495", current, current)
+
+      val result = await(productionWith(current).resolve(KnowledgeGraphState.WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.Resolved(
+        KnowledgeGraphState.WEBVIEW_ID,
+        KnowledgeGraphState.TITLE,
+        "http://localhost:27495",
+        current,
+      )
+      verify(exactly = 0) { languageServer.webviewMetadata() }
+    }
+
+    it("still resolves every other id through metadata") {
+      val current = LanguageServerSession()
+      KnowledgeGraphState.record("http://localhost:27495", current, current)
+      every { languageServer.webviewMetadata() } returns CompletableFuture.completedFuture(
+        listOf(WebviewInfo(WEBVIEW_ID, "MCP", listOf("gitlab://webview/mcp/1"))),
+      )
+
+      val result = await(productionWith(current).resolve(WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.Resolved(WEBVIEW_ID, "MCP", "gitlab://webview/mcp/1", current)
+      verify(exactly = 1) { languageServer.webviewMetadata() }
+    }
+
+    it("does not answer with an address another session reported") {
+      val other = LanguageServerSession()
+      KnowledgeGraphState.record("http://localhost:27495", other, other)
+      every { languageServer.webviewMetadata() } returns CompletableFuture.completedFuture(emptyList())
+
+      val result = await(productionWith(LanguageServerSession()).resolve(KnowledgeGraphState.WEBVIEW_ID))
+
+      result shouldBe WebviewResolution.NotAdvertised(KnowledgeGraphState.WEBVIEW_ID)
+      verify(exactly = 1) { languageServer.webviewMetadata() }
     }
   }
 

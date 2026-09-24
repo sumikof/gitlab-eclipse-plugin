@@ -4,6 +4,7 @@ import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.webview.WebviewLoadCoordinator
 import com.gitlab.eclipse.lsp.webview.WebviewUriResolver
+import com.gitlab.eclipse.lsp.webview.forProduction
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.IEditorInput
@@ -38,7 +39,7 @@ class WebviewEditorPart : EditorPart(), WebviewEditorSurface {
     // the one way `Display.asyncExec` fails.
     val display = parent.display
     val coordinator = WebviewLoadCoordinator(
-      resolver = WebviewUriResolver(languageServerWrapper),
+      resolver = WebviewUriResolver.forProduction(languageServerWrapper),
       wrapper = languageServerWrapper,
       onUiThread = { display.asyncExec(it) },
     )
