@@ -200,23 +200,21 @@ class SecurityVulnDetailsClientTest : DescribeSpec({
   }
 
   describe("context binding (A22)") {
-    it("(i) a reconnect after the read still sends only to the handle's proxy") {
-      // The client is given the handle once; a connection that replaces it after the read has its own
-      // proxy, which must never be reached from this command.
+    it("(i) both reads carry the handle's epoch, and the send goes to the handle's proxy") {
+      // The client is handed one handle and never looks at the wrapper again, so a reconnect cannot
+      // redirect it: what can go wrong is reading under some other epoch, or sending elsewhere.
       val stored = snapshot(finding())
-      val replacement = mockk<GitLabLanguageServer>(relaxed = true)
-      var wrapperCurrent: LanguageServerHandle? = null
+      val epochs = mutableListOf<Long>()
       val f = Fixture()
-      f.read = { _, _ ->
-        // The reconnect lands while the command is between its read and its send.
-        wrapperCurrent = LanguageServerHandle(replacement, LanguageServerSession(), EPOCH + 1)
+      f.read = { _, epoch ->
+        epochs += epoch
         stored
       }
       f.show()
       f.scheduler.advanceUntilIdle()
-      (wrapperCurrent?.proxy === replacement) shouldBe true
+      epochs shouldContainExactly listOf(EPOCH, EPOCH)
       verify(exactly = 1) { f.proxy.pluginNotification(any()) }
-      verify(exactly = 0) { replacement.pluginNotification(any()) }
+      f.opened shouldBe 1
     }
 
     it("(ii)+(iii) a snapshot replaced between the read and the re-check: no send, stale notice, no tab") {

@@ -129,21 +129,32 @@ class WebviewBrowserHost(
 
   /**
    * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
-   * there: a failure is recorded by class name only. A guard that fails refuses the navigation.
-   * The record of a refusal names no location, not even its scheme (design §17). `event.top` is
-   * not consulted: WebKitGTK never sets it on `changing` (see [TopLevelNavigationGuard]).
+   * there: a failure is recorded by class name only. A guard that fails refuses the navigation, and
+   * `changing` catches every `Throwable` to make that hold: both engines hand the event over with
+   * `doit = true` and read it only after the listeners return normally, so anything escaping —
+   * an `Error` included — skips the refusal and the engine's default lets the navigation through
+   * (WebKitGTK `webkit_decide_policy`, Edge `handleNavigationStarting`). The record of a refusal names no
+   * location, not even its scheme (design §17). `event.top` is not consulted: WebKitGTK never sets
+   * it on `changing` (see [TopLevelNavigationGuard]).
+   *
+   * The engine's own context menu is suppressed as well: its "Download Linked File" / "Save link as"
+   * and "Open Link in New Window" entries reach a finding's link without passing
+   * `VulnerabilityLinkPolicy` or this guard. Both WebKitGTK (`WebKit.webkit_context_menu`) and Edge
+   * (`handleContextMenuRequested`) skip their menu when an `SWT.MenuDetect` listener clears `doit`.
    */
   private fun installNavigationGuard(browser: Browser, guard: TopLevelNavigationGuard) {
     browser.addLocationListener(
       LocationListener.changingAdapter { event ->
+        event.doit = false
+        @Suppress("TooGenericExceptionCaught") // See the KDoc: an escaping Error lets the navigation through.
         val allowed = try {
           guard.allows(event.location)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
           recordListenerFailure(e)
           false
         }
+        event.doit = allowed
         if (!allowed) {
-          event.doit = false
           try {
             if (guard.expectedLoadUnparseable) {
               logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
@@ -168,9 +179,10 @@ class WebviewBrowserHost(
     // `required` with no `browser` refuses the new window: `window.open`, `target=_blank` and a
     // ctrl- or middle-click, on Edge and WebKit alike.
     browser.addOpenWindowListener(OpenWindowListener { event -> event.required = true })
+    browser.addListener(SWT.MenuDetect) { event -> event.doit = false }
   }
 
-  private fun recordListenerFailure(e: Exception) {
+  private fun recordListenerFailure(e: Throwable) {
     try {
       logger.warn("The webview navigation guard failed: ${e.javaClass.simpleName}")
     } catch (_: Exception) {
