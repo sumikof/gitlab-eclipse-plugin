@@ -16,6 +16,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLauncher
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import com.gitlab.eclipse.security.SecurityScanSettings
+import com.gitlab.eclipse.security.details.SecurityVulnDetailsClient
 import com.gitlab.eclipse.utils.LANGUAGE_SERVER_OUTBOUND
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
@@ -51,13 +52,15 @@ val languageServerModule = module {
 
   single<DiagnosticMarkerService> { DiagnosticMarkerService() }
 
-  // The four server -> client handlers of GitLabLanguageServerClient. Every constructor argument of
-  // each one is a lambda with a production default, so building them touches neither SWT nor the
-  // workbench; Koin builds them on first use, which is the first message of that kind to arrive.
+  // The five server -> client handlers of GitLabLanguageServerClient. Every constructor argument of
+  // each one is a lambda with a production default (OpenUrlHandler's first one is the launcher below),
+  // so building them touches neither SWT nor the workbench; Koin builds them on first use, which is
+  // the first message of that kind to arrive.
   single<WorkspaceEditApplier> { WorkspaceEditApplier() }
   single<WorkspaceFileOpener> { WorkspaceFileOpener() }
   single<CopyTextHandler> { CopyTextHandler() }
   single<ShowDocumentLauncher> { ShowDocumentLauncher() }
+  single<OpenUrlHandler> { OpenUrlHandler(get()) }
 
   single<SecurityScanLauncher> {
     SecurityScanLauncher(get(), get(), get(), get(), get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
@@ -67,6 +70,12 @@ val languageServerModule = module {
   // every document provider and page it attached to, and GitLabEclipseStartup.stop() detaches from
   // exactly those. A second instance would leak the first one's registrations.
   single<SecurityScanSaveListener> { SecurityScanSaveListener() }
+
+  // "Show Vulnerability Details": the shared scope and the outbound lock; its other seams default to
+  // the findings intake, the projection, asyncExec and NotificationUtils.
+  single<SecurityVulnDetailsClient> {
+    SecurityVulnDetailsClient(get(), get(named(LANGUAGE_SERVER_OUTBOUND)))
+  }
 
   single<SecurityScanSettings> {
     SecurityScanSettings(get(), get(named(LANGUAGE_SERVER_OUTBOUND)), get())

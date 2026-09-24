@@ -8,6 +8,9 @@ import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.swt.SWT
 import org.eclipse.swt.browser.Browser
+import org.eclipse.swt.browser.LocationListener
+import org.eclipse.swt.browser.OpenWindowListener
+import org.eclipse.swt.browser.ProgressListener
 import org.eclipse.swt.custom.StackLayout
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Control
@@ -24,10 +27,16 @@ import org.eclipse.swt.widgets.Control
  * [coordinator] is taken rather than a ready-made [WebviewLoadPipeline], which cannot exist before
  * the widgets its sinks capture: a deviation from design §7.2's listing. One coordinator still
  * belongs to exactly one pipeline (design §7.2a).
+ *
+ * A non-null [navigationGuard] confines the content page to the loads [load] asks for: see
+ * [TopLevelNavigationGuard] for why, and [installNavigationGuard] for how. With `null` nothing is
+ * installed and the host behaves as it always has.
  */
 class WebviewBrowserHost(
   parent: Composite,
   coordinator: WebviewLoadCoordinator,
+  // Ahead of setTitle so that callers passing setTitle as a trailing lambda stay unchanged.
+  private val navigationGuard: TopLevelNavigationGuard? = null,
   setTitle: (String) -> Unit,
 ) {
   private val logger = logger<WebviewBrowserHost>()
@@ -52,7 +61,7 @@ class WebviewBrowserHost(
     }
   }
   private val messagePage = newBrowser()
-  private val contentPage = newBrowser()
+  private val contentPage = newBrowser().apply { navigationGuard?.let { installNavigationGuard(this, it) } }
 
   /**
    * The control that [setLoadingVisible] returns to, and the answer to `hasStableContent`. Design
@@ -66,6 +75,8 @@ class WebviewBrowserHost(
     // on screen, so a refused `Browser` call is raised rather than dropped. Design §17 keeps the
     // url out of the message.
     showUrl = { url ->
+      // Before `setUrl`: the location events of the load it starts must find the window open.
+      navigationGuard?.expectLoad(url)
       if (!contentPage.setUrl(url)) error("The browser refused the resolved url.")
       show(contentPage)
     },
@@ -114,6 +125,76 @@ class WebviewBrowserHost(
     stableControl = control
     stackLayout.topControl = control
     container.layout()
+  }
+
+  /**
+   * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
+   * there: a failure is recorded by class name only. A guard that fails refuses the navigation, and
+   * `changing` catches every `Throwable` — from the guard and from the log of a refusal alike — to
+   * make that hold: both engines hand the event over with `doit = true` and read it only after the
+   * listeners return normally, so anything escaping, an `Error` included, skips the refusal and the
+   * engine's default lets the navigation through (WebKitGTK `webkit_decide_policy`, Edge
+   * `handleNavigationStarting`). The record of a refusal names no location, not even its scheme
+   * (design §17). `event.top` is not consulted: WebKitGTK never sets it on `changing` (see
+   * [TopLevelNavigationGuard]).
+   *
+   * The engine's own context menu is suppressed as well: its "Download Linked File" / "Save link as"
+   * and "Open Link in New Window" entries reach a finding's link without passing
+   * `VulnerabilityLinkPolicy` or this guard. Both WebKitGTK (`WebKit.webkit_context_menu`) and Edge
+   * (`handleContextMenuRequested`) skip their menu when an `SWT.MenuDetect` listener clears `doit`.
+   */
+  private fun installNavigationGuard(browser: Browser, guard: TopLevelNavigationGuard) {
+    browser.addLocationListener(
+      LocationListener.changingAdapter { event ->
+        event.doit = false
+        val allowed = try {
+          guard.allows(event.location)
+        } catch (e: Throwable) {
+          recordListenerFailure(e)
+          false
+        }
+        event.doit = allowed
+        if (!allowed) recordRefusal(guard.expectedLoadUnparseable)
+      },
+    )
+    browser.addProgressListener(
+      ProgressListener.completedAdapter {
+        try {
+          guard.loadCompleted()
+        } catch (e: Throwable) {
+          recordListenerFailure(e)
+        }
+      },
+    )
+    // `required` with no `browser` refuses the new window: `window.open`, `target=_blank` and a
+    // ctrl- or middle-click, on Edge and WebKit alike.
+    browser.addOpenWindowListener(OpenWindowListener { event -> event.required = true })
+    browser.addListener(SWT.MenuDetect) { event -> event.doit = false }
+  }
+
+  /**
+   * Records a refusal after `doit` is already `false`. Catches every `Throwable`, like [recordListenerFailure]: a
+   * log that fails with an `Error` would otherwise end `changing` abnormally, and the engine would skip the refusal
+   * (PR #90 review).
+   */
+  private fun recordRefusal(expectedLoadUnparseable: Boolean) {
+    try {
+      if (expectedLoadUnparseable) {
+        logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
+      } else {
+        logger.info("Blocked a top-level navigation away from the webview.")
+      }
+    } catch (_: Throwable) {
+      // There is nowhere left to record this: the log is the thing that failed.
+    }
+  }
+
+  private fun recordListenerFailure(e: Throwable) {
+    try {
+      logger.warn("The webview navigation guard failed: ${e.javaClass.simpleName}")
+    } catch (_: Throwable) {
+      // There is nowhere left to record this: the log is the thing that failed.
+    }
   }
 
   /** The same choice as `LanguageServerBrowserView.newBrowser`. Cited by name: a line range goes stale. */

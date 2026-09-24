@@ -120,5 +120,17 @@ class WebviewEditorInputTest : DescribeSpec({
       WebviewEditorInput.flowBuilder(SECRET_PATH).key shouldBe
         WebviewEditorKey(FLOW_ID, mapOf("uri" to SECRET_PATH))
     }
+
+    it("names the vulnerability details tab") {
+      WebviewEditorInput.securityVulnDetails().name shouldBe "Vulnerability Details"
+    }
+
+    it("keys the vulnerability details webview by its id and no query, so there is one tab for it") {
+      WebviewEditorInput.securityVulnDetails().key shouldBe WebviewEditorKey("security-vuln-details", emptyMap())
+    }
+
+    it("exposes the language server's vulnerability details webview id") {
+      WebviewEditorInput.SECURITY_VULN_DETAILS_WEBVIEW_ID shouldBe "security-vuln-details"
+    }
   }
 })
