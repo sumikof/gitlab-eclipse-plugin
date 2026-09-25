@@ -82,7 +82,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | R16 | クリップボードを使う経路(§9.3 第 3 段)は、**文字列以外の内容があれば実行せず**、実行した場合は**必ず元の内容を復元する**(`finally`)。 |
 | R18 | ハンドラは LS 往復の前に、feature state と実行部位を自分で検証する(§9.3.1)。メニューの非表示を唯一の防御にしない。 |
 | R19 | `content` は 400,000 UTF-16 コード単位を上限とし、超過時は末尾を残して通知する(§9.3.2)。 |
-| R20 | `add` のタイムアウトは「結果不明」として扱い、遅れて成功したら同じ項目を `remove` する(§9.3.3)。 |
+| R20 | `add` を送った後は、`current-items` で item の不在を確認するまで同じ接続の F3 再実行と他の classic prompt の送出を止める(§9.3.3 / §9.3.5)。確認できなければ安全側に倒し、LS 再起動を案内する。 |
 | R17 | 選択内容・クリップボード内容・ファイル内容を**ログに出さない**(§19)。 |
 
 ### 5.4 非機能要件
@@ -165,7 +165,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 
 | コンポーネント | 責務 | 根拠・既存パターン |
 |---|---|---|
-| `AuthenticationSourceProvider` | `AbstractSourceProvider`。変数 `gitlab_authenticated` を `"unknown"` / `"true"` / `"false"` の 3 値で提供。`update(FeatureStateChange)` で `allChecks` を見て、`checkId` が `authentication-required` または `invalid-token` で `engaged == true` のものがあれば `"false"`、なければ `"true"`。`fireSourceChanged` は UI スレッド(`asyncExec`)。 | check id は LS map @23528968(`AUTHENTICATION_REQUIRED = "authentication-required"`, `INVALID_TOKEN = "invalid-token"`)。既存 `AuthenticationStateService.kt:38` も `authentication-required` を見る。プロバイダの形は `DuoChatStateService.kt:10-53` の複製 |
+| `AuthenticationSourceProvider` | `AbstractSourceProvider`。変数 `gitlab_authenticated` を `"unknown"` / `"true"` / `"false"` の 3 値で提供。**値は既存 `AuthenticationStateService` の 2 秒デバウンスを通った後にだけ更新する**(Codex round 3 P2 反映。`AuthenticationStateService.kt:31-33` が「LS 起動直後の連続通知は古い認証状態を含みうる」として debounce を必須にしているため)。`update(change, session)` は debounce 後の同じ `featureStateChange` を受け、`checkId` が `authentication-required` または `invalid-token` で `engaged == true` のものがあれば `"false"`、なければ `"true"`。**`session` が現在の接続と異なる更新は捨てる**(停止前に始まった debounce が再起動後に着地しても反映しない)。**LS の停止・終了で `reset()` し `"unknown"` に戻す**(§9.1)。`fireSourceChanged` は UI スレッド(`asyncExec`)。 | check id は LS map @23528968(`AUTHENTICATION_REQUIRED = "authentication-required"`, `INVALID_TOKEN = "invalid-token"`)。既存 `AuthenticationStateService.kt:38` も `authentication-required` を見る。プロバイダの形は `DuoChatStateService.kt:10-53` の複製 |
 | `ShowDuoForum` / `ShowDuoDocumentation` | `AbstractHandler`。固定 URL を `BrowserLauncher.open`(`navigation/BrowserLauncher.kt:12-20`)で開く。 | `ShowDocumentation.kt:14-21` と同型。URL は定数として `companion object` に置き、テストで文字列一致を固定する |
 | `SignIn`(command id のみ) | ハンドラクラスは **既存 `ShowSettings`**(`ShowSettings.kt:10-19`)を別 command id に割り当てる。 | 「同一クラス・複数 command id」は `ShowDiagnostics` / `ShowDiagnosticsFromSidePanel` で既に採用(`plugin.xml:902-910`) |
 
@@ -181,7 +181,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ディスク上のフォルダの有無・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で行動列を実行。`rule = workspace.root`、`isUser = true`。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
 | `DuoTutorialHandler` | `AbstractHandler`。状態の読み取り → Planner → Writer の起動 → 完了時に `asyncExec` で `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
-| `DuoTutorialOwnership` | 所有記録の読み書き(`PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION`、§9.2)。`isOwned(locationUri)` / `record(locationUri)`。設定ストアは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
+| `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
 
 ### 8.3 F3(パッケージ `com.gitlab.eclipse.chat.terminal` / `com.gitlab.eclipse.chat.commands` / `com.gitlab.eclipse.lsp.messages`)
 
@@ -201,7 +201,8 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 
 ### 9.1 F1
 
-1. LS が `$/gitlab/featureStateChange` を送る → `GitLabLanguageServerClient.kt:107` の `"authentication"` case に `service<AuthenticationSourceProvider>().update(change)` を **1 行追加**(既存 `AuthenticationStateService.update` はそのまま)。
+1. LS が `$/gitlab/featureStateChange` を送る → 既存どおり `GitLabLanguageServerClient.kt:107` の `"authentication"` case が `AuthenticationStateService.update(change)` を呼ぶ。**`AuthenticationStateService` の debounce ブロック(`:33-46`)の中、判定の直前に `service<AuthenticationSourceProvider>().update(featureStateChange, session)` を 1 行追加**する(ポップアップの挙動は不変。`update` に `session` 引数を足し、クライアントは自分の `session` を渡す)。
+1'. LS の停止・終了: `GitLabLanguageServerProcessProvider` が既に `SecurityScanLifecycle.onServerStopped()` を呼んでいる 2 箇所(`:228` 終了コールバック / `:262` 停止経路)に並べて `AuthenticationSourceProvider.reset()` と `TerminalContextStateService.reset()` を呼ぶ(表示用の変数を `unknown` / `false` に戻す)。
 2. プロバイダが `gitlab_authenticated` を発火 → メニューの `visibleWhen` が再評価される。
 3. 項目の動作: Forum / Duo Documentation は外部ブラウザ、Sign in は設定ダイアログ。いずれも同期・即時・LS 往復なし。
 
@@ -219,29 +220,32 @@ execute(event)                                   ← UI スレッド
   └ 5. Job 完了(JobChangeAdapter.done、OK のとき) → asyncExec { openInActiveEditor(file) }
 ```
 
-**所有権の記録(Codex round 1 P1 反映)**: プラグインが作ったプロジェクトかどうかを**名前では判定しない**。
-新規作成時に、プロジェクトのロケーション URI(`IProject.getLocationURI()` の `toString()`)を**非表示の設定キー**
-`PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION = "gitlab.duoTutorial.projectLocation"` に記録する
-(非表示の設定キーを持つ前例: `DUO_CHAT_SELECTED_WEBVIEW`、`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。
-**所有 = 「同名の既存プロジェクトの実ロケーション URI が記録値と一致する」**(プロジェクトの無いフォルダは所有の対象にしない)。nature やマーカーファイルは使わない
-(`plugin.xml` の拡張もユーザーのプロジェクトへの書き込みも要らない)。
+**所有権の記録(Codex round 1 / round 2 / round 3 P1 反映)**: プラグインが作ったプロジェクトかどうかを**名前でもパスだけでも判定しない**。
+新規作成時に次の 2 つを記録し、**両方が一致するときだけ**所有とみなす。
 
-- 記録は**作成の直前**に行う。作成が失敗しても、記録先にプロジェクトもフォルダもなければ次回は「なし・なし」行に落ちて作り直すだけで、誤判定は起きない。
-- 記録値は 1 つだけ(最新の作成)。ワークスペースを切り替えると設定ストア(`InstanceScope`)も切り替わるので、ワークスペースをまたいで所有を誤認しない。
-- 設定キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
+1. **ランダム ID**: 作成ごとに `UUID.randomUUID()` を生成し、(a) 作成したプロジェクトの **persistent property**
+   `QualifiedName("com.gitlab.eclipse", "duoTutorialId")` と、(b) 非表示の設定キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_ID = "gitlab.duoTutorial.projectId"` の両方に書く。
+   persistent property はワークスペースのメタデータに保存され、**プロジェクトを削除すると消える**(同じフォルダを再 import しても復活しない)。
+   これで「削除 → 同じパスにユーザーが無関係なフォルダを作成 → import」を識別できる。
+2. **ロケーション URI**: `IProject.getLocationURI().toString()` を非表示キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION = "gitlab.duoTutorial.projectLocation"` に書く(プロジェクト記述を差し替えて別の場所を指させた場合の検出)。
+
+**所有 = 同名プロジェクトが存在し、開いており、`getPersistentProperty(duoTutorialId)` が記録 ID と一致し、かつ `locationURI` が記録ロケーションと一致する。**
+非表示の設定キーを持つ前例は `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。nature やマーカーファイルは使わない(`plugin.xml` の拡張もユーザーから見えるファイルも増やさない)。キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
+
+- **閉じた同名プロジェクトは所有判定をしない**(persistent property は開いていないと読めない)。判定のためにユーザーのプロジェクトを開くことはせず、一律 `Refuse`(安全側)。
+- **記録の順序**: 設定キーへの記録(ID・ロケーション)→ `create` → `open` → persistent property の設定 → `CreateFile`。property の設定前に失敗した場合、次回は「ID 不一致」で `Refuse` に倒れる(プロジェクトは残るので、ユーザーが削除すれば「なし・なし」行で作り直せる)。
+- 記録は 1 組だけ(最新の作成)。設定ストアは `InstanceScope`(ワークスペース単位)なので、ワークスペースをまたいで所有を誤認しない。
 
 **分岐表(R9。`state` → 行動)**:
 
-| プロジェクト `GitLab Duo Tutorial` | 所有(ロケーション一致) | ディスク上のフォルダ | `duo_tutorial.js` | 行動 |
+| プロジェクト `GitLab Duo Tutorial` | 所有(ID とロケーションの両方一致) | ディスク上のフォルダ | `duo_tutorial.js` | 行動 |
 |---|---|---|---|---|
-| なし | — | なし | — | 所有ロケーションを記録 → `CreateProject`(既定ロケーション = ワークスペース直下)→ `OpenProject` → `CreateFile` → `OpenEditor` |
-| なし | **問わない**(記録と一致しても。Codex round 2 反映: パスは再利用されうるため、記録だけでは既存フォルダの由来を証明できない) | あり | — | **`Refuse`**。プロジェクトの無い既存フォルダは一切取り込まない。通知「A folder named 'GitLab Duo Tutorial' already exists in the workspace location. Rename or remove it to use the tutorial.」 |
-| あり(開閉問わず) | **不一致 / 未記録**(ユーザー自身の同名プロジェクト) | — | — | **`Refuse`**。**ユーザーのプロジェクトを開かず、ファイルも追加しない。** 通知「A project named 'GitLab Duo Tutorial' already exists and was not created by GitLab. Rename it to use the tutorial.」 |
-| あり・閉じている | 一致 | — | — | `OpenProject` → ファイルの有無で下の行へ |
+| なし | — | なし | — | ID とロケーションを記録 → `CreateProject`(既定ロケーション = ワークスペース直下)→ `OpenProject` → property 設定 → `CreateFile` → `OpenEditor` |
+| なし | **問わない** | あり | — | **`Refuse`**。プロジェクトの無い既存フォルダは一切取り込まない(パスは再利用されうるため、記録だけでは由来を証明できない)。通知「A folder named 'GitLab Duo Tutorial' already exists in the workspace location. Rename or remove it to use the tutorial.」 |
+| あり・閉じている | **判定しない** | — | — | **`Refuse`**。プロジェクトを開かない。通知「A project named 'GitLab Duo Tutorial' exists but is closed. Open it and run the command again, or rename it.」 |
+| あり・開いている | **不一致 / 未記録**(ユーザー自身の同名プロジェクト、削除後に再 import されたもの等) | — | — | **`Refuse`**。**ファイルを追加しない。** 通知「A project named 'GitLab Duo Tutorial' already exists and was not created by GitLab. Rename it to use the tutorial.」 |
 | あり・開いている | 一致 | — | なし | `CreateFile` → `OpenEditor` |
 | あり・開いている | 一致 | — | あり | **`OpenEditor` のみ**(内容は一切触らない) |
-
-閉じたプロジェクトでも `IProject.getLocationURI()` はプロジェクト記述から得られる前提で、所有判定のためにユーザーのプロジェクトを開くことはしない(実機での確認は U10)。
 
 **ファイル作成は `IFile.create(InputStream, false, monitor)`**(`force = false`)。ディスク上に同名ファイルがあり Eclipse が未同期なら `CoreException` になり、その場合は `refreshLocal` してから「あり」行に落とす(上書きしない)。
 
@@ -257,26 +261,23 @@ execute(event)                                   ← UI スレッド
 execute(event)                                            ← UI スレッド
   ├ 0. handle = GitLabLanguageServerWrapper.currentSnapshot を 1 回だけ読む(proxy + session を組で捕捉、§9.3.5)
   │     null → 通知「GitLab Duo Chat is not available.」、return
-  ├ 1. 実行時ゲート(§9.3.1): chat 有効 && terminal context 可(**handle.session で観測した値に限る**)&& 部位が許可リスト
+  ├ 1. 実行時ゲート(§9.3.1): terminal context 可(**handle.session で観測した値に限る**)&& 部位が許可リスト
   │     否 → 通知して return(LS 往復は一切しない)
-  ├ 2. 実行中の run があり、その run の session == handle.session → 通知「A previous request is still in progress.」、return(§9.3.3)
-  │     実行中の run の session が古い(LS 再起動済み)→ その run を破棄扱いにして続行
+  ├ 2. 同じ接続に未解決の run がある → 通知「A previous request is still in progress.」、return(§9.3.3)
+  │     run の接続が古い(LS 再起動済み)→ その run を破棄扱いにして続行
   ├ 3. text = TerminalOutputSelectionReader.read(current, menu)   ← 第 1・1'・2 段(クリップボード不使用)
   ├ 4. text == null && 部位が Terminal → text = ClipboardSelectionCapture.capture()   ← 第 3 段(前提条件つき)
   ├ 5. text が null/空 → 通知(§14)、return(run は登録されない)
   ├ 6. text = TerminalOutputLimit.apply(text)(§9.3.2。切り詰めたら通知)
-  ├ 7. run を登録(handle と item を保持)→ ExplainTerminalOutputCommand.run  ← 以降バックグラウンド(future 連鎖)
-  │     a. item = TerminalAiContextItems.selected(text)
-  │     b. original = handle.proxy.addAiContextItem(item)
-  │        guarded = original を**別の future に写して**から 10 秒のタイムアウトを付ける(§9.3.3)
-  │     c. guarded が true → asyncExec { 追跡付きで prompt を依頼(§9.3.5)}
-  │           結果 Sent → run 終了
-  │           結果 Dropped → 同じ handle で remove(item)(handle がまだ現在の接続なら)→ run 終了
-  │        false / 例外 → 通知(§14)→ run 終了
-  │        timeout → 通知。run は**終了しない**: original が確定するまで保持し、
-  │                 遅れて true なら remove(item) の完了後に run 終了、false / 例外なら即 run 終了(§9.3.3)
-  └ 8. run 終了 = 実行中の登録を外す(compareAndSet で自分の run のときだけ)
+  ├ 7. item = TerminalAiContextItems.selected(text)
+  │     tracked = TrackedPrompt(payload = NewPromptRequest("explainTerminalOutput", null), attachment = item,
+  │                             session = handle.session, 配送期限 30 秒)
+  │     run を登録(session, tracked)
+  └ 8. openDuoChatWindowWithTrackedClassicPrompt(tracked)   ← ここで F3 のハンドラは戻る
+        以降の配送・文脈の追加・後始末は §9.3.5 の送出手順が行い、run は tracked の「解決」(§9.3.3)で終わる
 ```
+
+**この時点では LS に何も追加していない。** 文脈の追加は、prompt を実際に送る直前(クライアントの送出手順の中、§9.3.5)に行う。したがって、ビューを出せない・classic 以外に解決した・後続の依頼で上書きされた・期限切れ・破棄のいずれで配送が止まっても、**LS 側に取り消すべきものが存在しない。**
 
 **選択テキストの取得 3 段(Reader が 1・2、Capture が 3)**:
 
@@ -326,18 +327,30 @@ chat 側の有効性も同じ理由で接続に結び付く必要があるが、
 - 切り詰めたときは通知「Only the last 400,000 characters of the selection were sent.」を出す(数値は定数から生成)。
 - 上限適用は取得直後・DTO 生成前(§9.3 手順 5)。第 3 段のクリップボード読み出し自体は SWT が文字列全体を返すので、そこでの上限はかけられない(残るリスクとして §27)。
 
-#### 9.3.3 タイムアウトと遅延成功の補償(**Codex round 1 P1 反映 / round 2 P1 反映**)
+#### 9.3.3 解決の定義・タイムアウト・未解決の扱い(**Codex round 1 / 2 / 3 P1 反映**)
 
-- **`orTimeout` は `this` を返し元の future 自体を例外完了させる**(#20 の既知事実)。元の応答を観測し続けるため、`original.thenApply { it }`(別インスタンス)に `orTimeout(10s)` を付けたものを `guarded` とする。**`original` には `orTimeout` も `cancel` も付けない**(lsp4j の `cancel` は `$/cancelRequest` を送るが、LS 側の処理の取り消しは保証されない)。
-- `guarded` がタイムアウトしたら: 通知「Duo Chat did not respond in time.」を出す。**`newPrompt` は送らない。**
-- **実行中の登録(run)は解除しない**(round 2 反映)。タイムアウト直後に再実行を許すと、2 回目の `add` と prompt が先行し、その後で 1 回目が遅れて `true` になった場合に、2 回目の prompt が新旧両方の文脈で処理されうる(remove は後からでは生成済みの応答を取り消せない)。したがって run は次のいずれかでだけ終わる:
-  1. `original` が `true` で確定 → 同じ `item` を同じ `handle.proxy` で `$/gitlab/ai-context/remove` → **remove の応答(または remove 自体のタイムアウト 10 秒)の後**に終了。
-  2. `original` が `false` / 例外で確定 → 即終了(追加されていない)。
-  3. **LS の接続が変わった**(`currentSnapshot.session` が run の `session` と異なる)→ 次の実行がその run を破棄扱いにする(手順 2)。旧接続の LS プロセスごと選択中の文脈は失われているので、補償は不要。
-- この結果、**同じ接続の上では「未確定の item」と「次の add」が同時に存在しない**。LS が応答しないまま生き続ける場合、ユーザーは通知「A previous request is still in progress.」を受け、「Restart Language Server」(既存コマンド)で接続を替えれば再実行できる。
-- `remove` の契約: `REMOVE: '$/gitlab/ai-context/remove'`(LS map @28600940)、サーバの受け口 `onRequest(AIContextEndpoints.REMOVE, (item) => chatContextManager.removeSelectedContextItem(item))`(@29322261)。manager は `item.metadata.subType` で provider を引き、`provider.removeSelectedContextItem(item.id)` を呼び、成功で `true`、例外で `false`(@25794149)。provider は id が見つからないと例外(@25789499)→ `false`。したがって **`remove` に渡す `item` は `add` に渡したものと同一(`id` と `metadata.subType` が一致)** でなければならない。
-- `remove` の応答は待つが結果で分岐しない(ログに `true` / `false` / クラス名のみ)。`remove` にもタイムアウト 10 秒(写しに付ける)。
-- 補償の対象は「タイムアウト後の遅延成功」と「prompt が配送されなかった場合」(§9.3.5)。prompt が配送された後は、webview がプロンプト処理時に選択中の文脈を消費・クリアする(`handleExtensionPrompt` が `GitLabChatRecord.buildWithContext` で文脈を記録へ取り込んだ直後に `Promise.all([processNewUserRecord(record), _clearSelectedContextItems()])`、`packages/webview_duo_chat_classic/dist/index.mjs`、LS map @26258642 付近)ので補償は不要。
+F3 の不変条件: **同じ LS 接続の上で、F3 が追加した terminal item が「選択中の文脈」に残ったまま、他の classic prompt が送られることはない。**
+これを 1 つの概念で担保する: tracked prompt の**解決(resolution)**。
+
+| 状態 | 意味 | run / 送出バリア(§9.3.5) |
+|---|---|---|
+| 未送出で終了(`Dropped`: `VIEW_UNAVAILABLE` / `NOT_SHOWN` / `SUPERSEDED` / `EXPIRED` / `DISPOSED` / `SESSION_CHANGED`) | `add` を一度も送っていない | 即解決。run 終了。バリアは張られていない |
+| `add` を送った後 | 結果にかかわらず、**`$/gitlab/ai-context/current-items` で item の不在を確認できたときだけ**解決 | 解決まで run とバリアを保持 |
+| 接続が替わった(`currentSnapshot.session` が tracked の `session` と異なる) | 旧 LS プロセスごと選択中の文脈が失われている | 解決扱い。run とバリアは次の送出・次の実行の時点で破棄 |
+
+**`add` を送った後の解決手順**(`TerminalItemResolver`、送出と同じ捕捉済み `proxy` に対して行う):
+
+1. `original = proxy.addAiContextItem(item)`。**`orTimeout` は写し(`original.thenApply { it }`)にだけ付ける**(#20 の既知事実: `orTimeout` は `this` を返し元の future を例外完了させる)。写しが 10 秒でタイムアウトしたら、prompt は送らず `Dropped(ADD_TIMEOUT)` で通知「Duo Chat did not respond in time.」。**ただし解決はしない**: `original` が確定するまで待つ(確定前に `current-items` を見ても、後から追加されうるため)。`original` が永遠に確定しない場合は「未解決」(下記)。
+2. `original` が `true` かつ prompt 送出が可能(§9.3.5 手順 e)→ `newPrompt` を送る(`Sent`)。`false` / 例外 → prompt は送らず `Dropped(ADD_FAILED)`。
+3. 確認ループ(最大 10 秒、200 ms 間隔): `proxy.currentAiContextItems()` を呼び、`id` が item と一致する要素が**無ければ解決**。
+   - `Sent` の場合: webview がプロンプト処理時に選択中の文脈をクリアする(`handleExtensionPrompt` の `Promise.all([processNewUserRecord(record), _clearSelectedContextItems()])`、`packages/webview_duo_chat_classic/dist/index.mjs`、LS map @26258642 付近)ので、通常は数回の確認で不在になる。**5 秒経っても残っていれば** `remove(item)` を送り、確認を続ける。
+   - `Sent` 以外(`ADD_TIMEOUT` / `ADD_FAILED`): 残っていれば直ちに `remove(item)` を送り、確認を続ける(`false` でも内部で追加済みの可能性を排除しない)。
+   - **`remove` の戻り値は解決の根拠にしない**(`false` は「見つからない」と「失敗」を区別しない。@25794149 / @25789499)。根拠は常に `current-items` の結果。
+4. 10 秒で不在を確認できない、`current-items` 自体が失敗・タイムアウトする、または `original` が確定しない → **未解決**。run とバリアを保持し、通知「GitLab Duo Chat could not confirm that the terminal output was cleared. Restart the language server to continue.」。**安全側に倒す**: 同じ接続では F3 の再実行も他の classic prompt の送出も止まる(§9.3.5 のバリア)。「Restart Language Server」で接続が替われば解決扱いになる。
+
+`current-items` の契約: `CURRENT_ITEMS: '$/gitlab/ai-context/current-items'`(LS map @28600981)、型 `request: undefined; response: AIContextItem[]`(@28601281)、受け口 `onRequest(AIContextEndpoints.CURRENT_ITEMS, () => chatContextManager.getSelectedContextItems())`(@29322403)。`remove` の契約: `REMOVE`(@28600940)、受け口(@29322261)、manager は `metadata.subType` で provider を引き `removeSelectedContextItem(item.id)`(@25794149)、provider は id が無いと例外(@25789499)→ `false`。**`remove` に渡す `item` は `add` に渡したものと同一**でなければならない。
+
+**なぜ `remove` の成功ではなく不在確認か**: round 3 の指摘どおり、`remove` の `false` / 例外 / タイムアウトは item が残っている可能性を排除しない。一方 `current-items` は LS の選択中文脈そのもの(`getSelectedContextItems`)を返すので、「残っていない」を直接確認できる。
 
 #### 9.3.4 Terminal 経路の実現性ゲート(**Codex round 1 P1 反映**)
 
@@ -348,26 +361,35 @@ Terminal の選択取得は、第 1' / 2 / 3 段のどれが実機で機能す�
 3. **手戻りの範囲を局所化する。** 取得手段は `TerminalOutputSelectionReader` / `ClipboardSelectionCapture` の 2 クラスに閉じ込め、DTO・LS 要求・ゲート・上限・送信・Console 経路はどの取得手段でも共通に使う。依存追加に切り替えても、差し替えは取得クラスと `Require-Bundle` だけで済む。
 4. **実機検証の順序**: 実装 PR の手動検証では **M5(Terminal)を最初に行う**。結果(成立した段、または全段不成立)を PR 本文に記録し、マージ判断と台帳の値はそれに従う。どの段で取れたかは debug ログ(段の番号のみ、内容は出さない)で判別できるようにする。
 
-#### 9.3.5 prompt の配送追跡と接続の固定(**Codex round 2 P1 / P2 反映**)
+#### 9.3.5 追跡付き配送・送出直前の追加・送出バリア(**Codex round 2 / round 3 反映**)
 
-**現状の配送経路は成否を返さない**。`openDuoChatWindowWithClassicPrompt`(`DuoChatWindow.kt:30-32`)は戻り値なし、ビューは prompt を**1 枠**の `pendingClassicPrompt` に置き(`LanguageServerBrowserView.kt:77, 177-180`)、次の依頼で上書きし、解決結果が classic 以外なら捨てる(`:296-307`、`ChatIntentRouter.kt:46-57`)。classic クライアントはフォーカスが無い間 `messagesAwaitingReady` に積み、**送る瞬間の** `languageServer` に送る(`GitLabDuoChatWebViewClient.kt:12-34`)。このままでは、`add` 済みの item が「prompt が届かないまま」LS に残り、次の会話(ユーザーの別のプロンプトを含む)に添付されうる。また `add` と prompt が別の接続に届きうる。
+**現状の配送経路は成否を返さない**。`openDuoChatWindowWithClassicPrompt`(`DuoChatWindow.kt:30-32`)は戻り値なし、ビューは prompt を**1 枠**の `pendingClassicPrompt` に置き(`LanguageServerBrowserView.kt:77, 177-180`)、次の依頼で上書きし、解決結果が classic 以外なら捨てる(`:296-307`、`ChatIntentRouter.kt:46-57`)。classic クライアント(Koin の singleton)はフォーカスが無い間 `messagesAwaitingReady` に積み、**送る瞬間の** `languageServer` に送る(`GitLabDuoChatWebViewClient.kt:12-34`)。
 
-**設計**: 既存の呼び出し元の挙動は一切変えずに、**追跡付きの入口を 1 本追加**する。
+**設計**: 既存の呼び出し元の挙動を変えずに、**追跡付きの入口を 1 本追加**し、文脈の追加を**送出手順の中**へ移す。
 
 | 追加 | 内容 |
 |---|---|
-| `PromptDelivery`(`chat.webview`) | `sealed interface`: `Sent` / `Dropped(reason)`。`reason` は `VIEW_UNAVAILABLE`(ビューを出せない)/ `NOT_SHOWN`(解決結果が classic 以外・chat なし)/ `SUPERSEDED`(後続の依頼で 1 枠が上書きされた)/ `SESSION_CHANGED`(送る瞬間の接続が捕捉した接続と違う)/ `DISPOSED`(ビューまたはキューが破棄された) |
-| `TrackedPrompt` | `(payload: NewPromptRequest, session: LanguageServerSession, result: CompletableFuture<PromptDelivery>)`。**配送結果は一度だけ確定する**(`complete` の戻り値で二重確定を無視) |
-| `openDuoChatWindowWithTrackedClassicPrompt(payload, session): CompletableFuture<PromptDelivery>` | `DuoChatWindow.kt` に追加。`showDuoChatView()` が null なら `Dropped(VIEW_UNAVAILABLE)` を即返す |
-| `LanguageServerBrowserView.requestClassicPrompt(tracked: TrackedPrompt)` | 既存の `requestClassicPrompt(payload)` と**同じ 1 枠**を使う。枠に追跡付きの依頼が残っている状態で**どちらの形の**新しい依頼が来ても、古い方を `Dropped(SUPERSEDED)` で確定させる。`flushPendingIntents` で route されなければ `Dropped(NOT_SHOWN)`。`dispose` で `Dropped(DISPOSED)` |
-| `GitLabDuoChatWebViewClient.notify(tracked)` | 送る瞬間に `currentSnapshot` を 1 回読み、**`session` が一致するときだけ**その proxy の `pluginNotification` を呼んで `Sent` を確定。不一致・null なら送らず `Dropped(SESSION_CHANGED)`。フォーカス待ちの間はキューに積み、送出時に同じ判定を行う |
-| `PendingChatIntents` / `ChatIntentRouter` | `classicPrompt` が追跡情報を運べるようにする(判定規則は不変。追跡情報は route の結果にそのまま載るだけ) |
+| `PromptDelivery`(`chat.webview`) | `Sent` / `Dropped(reason)`。`reason` は `VIEW_UNAVAILABLE` / `NOT_SHOWN` / `SUPERSEDED` / `EXPIRED` / `DISPOSED` / `SESSION_CHANGED` / `ADD_FAILED` / `ADD_TIMEOUT` |
+| `TrackedPrompt` | `payload` / `attachment: AiContextItem` / `session` / `result: CompletableFuture<PromptDelivery>` / `resolved: CompletableFuture<Unit>`(§9.3.3 の解決)と、**状態機械 `AtomicReference<State>`(`PENDING` → `SENDING` → 終端、または `PENDING` → `EXPIRED`/`DROPPED`)**。遷移は CAS で一度だけ。期限: 作成から **30 秒**で `PENDING → EXPIRED` を試み、成功したら `Dropped(EXPIRED)`(タイマーは既存のスケジューラ。`SENDING` 以降には効かない) |
+| `openDuoChatWindowWithTrackedClassicPrompt(tracked)` | `DuoChatWindow.kt` に追加。`showDuoChatView()` が null なら `Dropped(VIEW_UNAVAILABLE)` |
+| `LanguageServerBrowserView.requestClassicPrompt(tracked)` | 既存と**同じ 1 枠**。追跡付きの依頼が枠にある間に**どちらの形の**新しい依頼が来ても、古い方を `Dropped(SUPERSEDED)`(`PENDING → DROPPED` の CAS)。route されなければ `Dropped(NOT_SHOWN)`。ビューの `dispose` で `Dropped(DISPOSED)`。枠の規則は SWT 非依存の `PendingClassicPromptSlot` に切り出す |
+| `GitLabDuoChatWebViewClient.notify(tracked)` | フォーカス待ちならキューに積む。送出時(即時またはフォーカス取得時)に下の**送出手順**を行う。**キュー上の tracked が既に終端(期限切れ等)なら何もせずキューから外す**ので、後日ビューを開いても古い prompt は送られない |
 
-**F3 側の扱い**: `Sent` → run 終了。`Dropped` → 捕捉した `handle` がまだ現在の接続なら同じ `item` を `remove` してから run 終了、`SESSION_CHANGED` / 接続が替わっていれば remove せず終了(旧接続の文脈は LS プロセスごと消えている)。いずれの `Dropped` もユーザーに通知「The request was not delivered to Duo Chat.」。
+**送出手順(UI スレッド、tracked 1 件につき)**:
 
-**残る順序の問題(明記)**: `SUPERSEDED` は「ユーザーが別の classic コマンド(Explain Code 等)を直後に実行した」ときに起きる。そのコマンドの prompt と F3 の `remove` は同じ JSON-RPC 接続に**この順で**送られる(`remove` は上書きの瞬間に UI スレッドから発行、上書きした側の prompt はビューの解決後に発行)。ただし LS がリクエストとノーティフィケーションを受信順に**処理し終える**ことまでは保証されないため、Explain Code の prompt に F3 の文脈が混入する可能性はゼロではない(U11)。
+- a. `PENDING → SENDING` の CAS。失敗(期限切れ・上書き済み)→ 何もしない。
+- b. `snapshot = currentSnapshot` を 1 回読む。null または `snapshot.session !== tracked.session` → `Dropped(SESSION_CHANGED)`(`add` を送っていないので後始末なし)。
+- c. **送出バリアを張る**(バリアは `session` 付き)。バリアが張られている間、同じクライアントへの**他の `notify`(追跡なしを含む)は送出順を保ったままバリア待ちキューに積む**。
+- d. `snapshot.proxy` に対して §9.3.3 の手順 1〜2(`add` → 結果に応じて `newPrompt` を送るか `Dropped`)。`newPrompt` を送る直前にも `currentSnapshot.session === tracked.session` を確認し、違えば送らず `Dropped(SESSION_CHANGED)`。
+- e. §9.3.3 の解決(不在確認)を待つ。**解決したらバリアを外し、バリア待ちキューを順に送出**(各メッセージは送る瞬間の `languageServer` へ。追跡なしの既存挙動と同じ)。未解決なら**バリアを保持**(§9.3.3 手順 4)。
+- f. バリアは `session` 付きなので、`currentSnapshot.session` がバリアの `session` と異なる状態で `notify` が来たら、バリアとバリア待ちキューを**新しい接続向けに解放**する(旧接続の文脈は LS プロセスごと消えている)。
 
-**既存経路への影響**: 追跡なしの `requestClassicPrompt(payload)` / `notify(type, payload)` は**挙動不変**(既存 Explain Code 等はそのまま)。唯一の変化は「追跡付きの依頼が枠にあるときに既存の依頼が来ると、追跡付きの方に `SUPERSEDED` が通知される」ことで、既存の依頼側から見た動作は従来どおり(後勝ち)。
+**上書き(`SUPERSEDED`)の扱い(round 3 P1 反映)**: 上書きは送出手順 a より前にしか起きない(枠にある = まだクライアントへ渡っていない)。したがって上書きされた F3 は `add` を送っておらず、上書きした側(Explain Code 等)の prompt に F3 の文脈が混入する経路は存在しない。**round 2 で U11 としていた処理順の問題は、構造的に消える。**
+逆に、F3 の送出手順 c〜e の途中で他の classic コマンドが実行された場合、その prompt はバリア待ちキューに入り、**F3 の item の不在を確認した後に**送られる。
+
+**既存経路への影響**: 追跡なしの `requestClassicPrompt(payload)` / `notify(type, payload)` は、**F3 の送出手順が進行中でない限り挙動不変**。進行中(通常は `add` 往復 + 確認の数百 ms、最悪で未解決の間ずっと)は、既存の classic prompt が送出順を保ったまま待たされる。未解決の間待たされるのは安全側の意図的な選択で、通知で LS の再起動を案内する。
+
+**残るリスク(明記)**: 同じ接続で、F3 の prompt より**後に**送られた prompt が、webview 内で F3 の prompt より先に文脈を読むこと。バリアにより「F3 の item の不在を確認するまで後続は送らない」ので、この順序は起こりえない。F3 より**前に**キューにあった prompt は、バリアを張る前(手順 c 以前)に送出済みか、同じキューの前方で先に送られる。
 
 ## 10. 等価表(F1: VSCode 項目 → Eclipse 項目)
 
@@ -463,6 +485,10 @@ fun addAiContextItem(item: AiContextItem): CompletableFuture<Boolean?>
 /** LS `AIContextEndpoints.REMOVE`. タイムアウト後の遅延成功の補償だけに使う(§9.3.3)。 */
 @JsonRequest("$/gitlab/ai-context/remove")
 fun removeAiContextItem(item: AiContextItem): CompletableFuture<Boolean?>
+
+/** LS `AIContextEndpoints.CURRENT_ITEMS`. 引数なし。追加した item の不在確認だけに使う(§9.3.3)。 */
+@JsonRequest("$/gitlab/ai-context/current-items")
+fun currentAiContextItems(): CompletableFuture<List<AiContextItem>?>
 ```
 
 - メソッド名と応答型: LS map @28600934(`ADD: '$/gitlab/ai-context/add'`、`request: AIContextItem; response: boolean`)。サーバ側の受け口は @29322157(`onRequest(AIContextEndpoints.ADD, item => chatContextManager.addSelectedContextItem(item))`)。
@@ -524,7 +550,7 @@ data class AiContextItemMetadata(
 
 - **F1**: なし(状態の読み取りと外部プロセス起動のみ)。
 - **F2**: `WorkspaceJob.runInWorkspace` 1 回が境界。`rule = workspace.root` で、プロジェクト作成・open・ファイル作成が 1 つのワークスペース操作としてロックされる。`create` 成功後 `open` に失敗した場合の補償(`ClonedProjectImporter.kt:176-200` の `deregisterAfterFailedOpen` 相当)は**行わない**: 閉じたプロジェクトが残っても次回実行の分岐表「あり・閉じている」で回復するため(§20)。
-- **F3**: LS 側の「コンテキスト追加」と「プロンプト送信」は **2 つの独立した操作**で、原子性はない。境界を閉じる手段は補償: prompt が配送されなかった(`Dropped`、§9.3.5)/ `add` がタイムアウト後に遅れて成功した(§9.3.3)場合は、同じ接続で同じ `item` を `$/gitlab/ai-context/remove` する。**同じ接続の上では、未確定の item がある間は次の `add` を始めない**(§9.3.3)。接続が替わった場合は旧 LS プロセスごと文脈が失われるので補償不要。補償後も残りうるのは U11(`SUPERSEDED` 直後の他コマンドの prompt との処理順)だけ。
+- **F3**: LS 側の「コンテキスト追加」と「プロンプト送信」は 2 つの独立した操作で、原子性はない。境界を閉じる手段は 2 つ: (1) **追加を送出手順の中へ移す**(§9.3.5)ので、配送が止まる経路はすべて「追加していない」状態で終わる。(2) 追加した後は、**`current-items` で item の不在を確認できるまで**(§9.3.3)同じ接続の他の classic prompt を送らない(送出バリア)。確認できなければ安全側(バリア保持 + LS 再起動の案内)に倒す。接続が替わった場合は旧 LS プロセスごと文脈が失われるので補償不要。
 
 ## 14. エラー処理
 
@@ -532,6 +558,8 @@ data class AiContextItemMetadata(
 |---|---|---|
 | F1 | 外部ブラウザ起動失敗 | `BrowserLauncher.open` が捕捉してログ(`BrowserLauncher.kt:14-18`)。追加処理なし |
 | F1 | `authentication` の `allChecks` が null | `"unknown"` のまま(表示しない) |
+| F1 | 起動直後の古い認証状態の連続通知 | debounce 後の最後の値だけを反映(既存ポップアップと同じ規則) |
+| F1 | LS の停止・再起動 | `"unknown"` に戻し、新しい接続の debounce 済みの値が届くまで Sign in 項目を出さない |
 | F2 | Planner が `Refuse`(同名のユーザープロジェクト / 未知の同名フォルダ) | §9.2 の文言で通知。ワークスペースは一切変更しない |
 | F2 | Job の `CoreException`(ワークスペースが読み取り専用、`.project` の解析失敗等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
 | F2 | `WorkspaceJob` 内の `CoreException` | Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す)。部分状態(プロジェクトだけできた等)は残してよい — 次回実行で分岐表が拾う |
@@ -544,9 +572,10 @@ data class AiContextItemMetadata(
 | F3 | 実行時ゲート不成立(§9.3.1) | 通知のみ。LS 往復なし |
 | F3 | 入力上限超過(§9.3.2) | 末尾 400,000 単位に切り詰めて続行 + 通知 |
 | F3 | 第 3 段の前提条件不成立(非テキスト内容あり等) | クリップボードに触れず「選択なし」扱い + §9.3 の文言で通知 |
-| F3 | prompt が配送されない(`Dropped`: ビューを出せない / classic 以外に解決 / 後続の依頼で上書き / 接続が替わった / 破棄) | 通知「The request was not delivered to Duo Chat.」+ 同じ接続なら `remove`(§9.3.5)。ビューを出せない場合は既存 `reportCannotShow`(`DuoChatWindow.kt:121-124`)の通知も出る |
+| F3 | prompt が配送されない(`Dropped`: ビューを出せない / classic 以外に解決 / 後続の依頼で上書き / 期限切れ / 破棄 / 接続が替わった) | 通知「The request was not delivered to Duo Chat.」。**`add` を送っていないので後始末なし**(§9.3.5)。ビューを出せない場合は既存 `reportCannotShow`(`DuoChatWindow.kt:121-124`)の通知も出る |
+| F3 | 追加後に item の不在を確認できない(§9.3.3 手順 4) | 通知「GitLab Duo Chat could not confirm that the terminal output was cleared. Restart the language server to continue.」。run とバリアを保持(安全側) |
 | F3 | クリップボード復元失敗 | §9.3 の表 |
-| F3 | 同じ接続で実行中の run がある(遅延中の `add` を含む) | 通知「A previous request is still in progress.」。LS 往復なし(§9.3.3) |
+| F3 | 同じ接続で未解決の run がある | 通知「A previous request is still in progress.」。LS 往復なし(§9.3.3) |
 
 通知は全て `NotificationUtils.show`(`NotificationUtils.kt:29-50`、任意スレッドから安全)。
 
@@ -572,8 +601,10 @@ data class AiContextItemMetadata(
 | ソース変数の更新 | `featureStateChange` は lsp4j のディスパッチスレッド(`GitLabLanguageServerClient.kt:99-103` は `runAsync`)。`fireSourceChanged` は `asyncExec` で UI へ(`DuoChatStateService.kt:25-32` と同じ)。フィールド書込は UI 転送前に行う(`ChatAvailabilityService.kt:19-21` の方針) |
 | F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。UI スレッドではワークスペースを変更しない。完了通知 → `asyncExec` → エディタ。ハンドラ内の状態読み取り(`exists` / `isOpen`)は UI スレッドで行う軽い読み取りで、Job 内で**再度**読み直して分岐する(読み取りと実行の間にユーザーがプロジェクトを消す可能性) |
 | F2 の二重起動 | Job に `rule = root` があるので 2 本は直列化される。2 本目は Job 内の再読み取りで「あり」行に落ち、開くだけ |
-| F3 のスレッド境界 | `execute`(UI): 接続の捕捉・ゲート・選択読み取り・クリップボード・run の登録。`add` / `remove` の応答: lsp4j スレッド。prompt 依頼: `asyncExec`(`LanguageServerBrowserView.kt:39-42` の契約: `requestClassicPrompt` は UI スレッドで呼ぶ)。`PromptDelivery` の確定: UI スレッド(ビュー・キューの操作と同じスレッド) |
-| F3 の二重起動・再実行 | `AtomicReference<Run?>`(`Run` は `handle` と `item` を持つ)。登録は `compareAndSet(null or 古い接続の run, 新 run)`、解除は `compareAndSet(自分, null)`。**解除は run の終端(§9.3 手順 7 の各分岐)でだけ行い、タイムアウトでは解除しない** |
+| F3 のスレッド境界 | `execute`(UI): 接続の捕捉・ゲート・選択読み取り・クリップボード・run の登録・追跡付き依頼。送出手順(§9.3.5 a〜c)と `newPrompt` の送出・バリア待ちキューの送出: UI スレッド。`add` / `current-items` / `remove` の応答: lsp4j スレッド → UI へは `asyncExec`。期限タイマー: スケジューラスレッド(状態機械の CAS だけを行い、UI には触れない) |
+| F3 の二重起動・再実行 | `AtomicReference<Run?>`(`Run` は `session` と `tracked` を持つ)。登録は `compareAndSet(null or 古い接続の run, 新 run)`、解除は `tracked.resolved` の完了時に `compareAndSet(自分, null)`。**解除は解決(§9.3.3)でだけ行い、タイムアウトや `Dropped(ADD_TIMEOUT)` では解除しない** |
+| 送出バリアと既存の classic prompt | バリアは `GitLabDuoChatWebViewClient` の内部状態(UI スレッドだけが触る)。バリア中の `notify` は FIFO で待たせ、解決後に順に送る。接続が替わったらバリアを解放(§9.3.5 f) |
+| tracked の状態機械 | `PENDING → SENDING`(送出手順 a)と `PENDING → EXPIRED / DROPPED`(期限・上書き・破棄)は CAS で排他。送出に入った tracked は期限切れにならず、期限切れになった tracked は送出されない |
 | クリップボードの競合 | 第 3 段の退避〜復元は UI スレッド上で同期的に完結するため、その間に他の UI コードが割り込むことはない。他プロセスがその瞬間に書き込む競合は防げない(VSCode と同じ) |
 
 ## 18. 認証と認可
@@ -596,7 +627,7 @@ data class AiContextItemMetadata(
 
 - **F1**: 項目が出ない → `gitlab_authenticated` の値を Diagnostics(`ShowDiagnostics`)の feature state で確認(`authentication` の checks)。設定ページは従来どおりメニュー「Show Settings」から到達できる。
 - **F2**: 中途半端な状態(プロジェクトだけ・閉じたまま)はコマンド再実行で回復(分岐表)。完全に消したいときは Project Explorer からプロジェクト削除(内容ごと)。
-- **F3**: 文脈が LS に残った(補償の remove 自体が失敗した等)→ Duo Chat の「/reset」(= `newConversation`、@26245433 `newConversation: "/reset"`)で新規会話にする。LS が応答しないまま run が残った → 「Restart Language Server」で接続を替えると再実行できる(§9.3.3)。クリップボードが復元されなかった → 通知の文面どおり、ユーザーが再コピーする。
+- **F3**: item の不在を確認できず未解決になった(§9.3.3 手順 4)→ 通知どおり「Restart Language Server」で接続を替えると、F3 の再実行も他の classic prompt の送出も再開する。それでも Duo Chat の会話に古い文脈が見える場合は「/reset」(= `newConversation`、@26245433 `newConversation: "/reset"`)で新規会話にする。クリップボードが復元されなかった → 通知の文面どおり、ユーザーが再コピーする。
 
 ## 21. 既存機能への影響
 
@@ -604,11 +635,12 @@ data class AiContextItemMetadata(
 |---|---|
 | `plugin.xml` | **追記のみ**、4 箇所: `org.eclipse.ui.commands`(`:4-434`)末尾にコマンド 5 件 / `org.eclipse.ui.services`(`:502-522`)にソースプロバイダ 2 件 / `org.eclipse.ui.handlers`(`:590-991`)末尾にハンドラ 5 件 / `org.eclipse.ui.menus`(`:1011-1711`)末尾に `menuContribution` ブロック(F1 用 2 つ + F3 用 5 つ)。既存の状態メニューブロック(`:1605-1711`)は**編集しない**(位置は `?before=` / `?after=` で指定) |
 | `GitLabLanguageServerClient.kt:106-115` | case 追加 2 件(`chat_terminal_context` は自分の `session` を添えて渡す)。既存 case の動作は不変 |
-| `DuoChatWindow.kt` / `LanguageServerBrowserView.kt` / `PendingChatIntents`・`ChatIntentRouter.kt` / `GitLabDuoChatWebViewClient.kt` | **追跡付きの入口を追加**(§9.3.5)。追跡なしの既存入口(Explain Code 等が使う)は挙動不変。追跡付きの依頼が 1 枠にある間に既存の依頼が来た場合、既存の依頼は従来どおり後勝ちで、追跡付きの方に `SUPERSEDED` が通知されるだけ。`LanguageServerBrowserView` は headless で構築できないため、枠と確定の規則は SWT 非依存の小さな保持クラス(`PendingClassicPromptSlot`)に切り出して試験する |
+| `DuoChatWindow.kt` / `LanguageServerBrowserView.kt` / `PendingChatIntents`・`ChatIntentRouter.kt` / `GitLabDuoChatWebViewClient.kt` | **追跡付きの入口と送出バリアを追加**(§9.3.5)。追跡なしの既存入口(Explain Code 等が使う)は、**F3 の送出手順が進行中でない限り**挙動不変。進行中は既存の classic prompt が FIFO で待たされる(通常は数百 ms、未解決時は LS 再起動まで)。枠の規則とバリアの規則はそれぞれ SWT 非依存のクラス(`PendingClassicPromptSlot` / `ClassicOutboundBarrier`)に切り出して試験する |
 | `GitLabLanguageServer.kt` | メソッド 1 件追加(§11.5)。既存メソッドは不変 |
 | `AuthModule.kt` / `ChatModule.kt` | `single` を各 1 件追加 |
-| `PreferenceConstants.kt` | 非表示キー `DUO_TUTORIAL_PROJECT_LOCATION` を 1 件追加(UI なし・既定値なし・LS へ送らない) |
-| `AuthenticationStateService` | **変更しない**(ポップアップは従来どおり) |
+| `PreferenceConstants.kt` | 非表示キー `DUO_TUTORIAL_PROJECT_ID` / `DUO_TUTORIAL_PROJECT_LOCATION` を 2 件追加(UI なし・既定値なし・LS へ送らない) |
+| `AuthenticationStateService` | debounce ブロック内に `AuthenticationSourceProvider.update(featureStateChange, session)` を 1 行追加、`update` に `session` 引数を追加(呼び出し元は `GitLabLanguageServerClient.kt:107` の 1 箇所)。ポップアップの挙動は不変 |
+| `GitLabLanguageServerProcessProvider.kt` | `SecurityScanLifecycle.onServerStopped()` の 2 箇所(`:228` / `:262`)に `reset()` 呼び出しを 2 件ずつ並べる。ライフサイクルの制御は不変 |
 | `ShowPluginStatusMenu` | 原則変更しない。U1 が否のときだけ `menuManager.update(true)` 1 行 |
 | `ShowSettings` | 変更なし(command id が 1 つ増えるだけ) |
 | `ExplainCode` / `FixCode` / `GenerateTests` / `RefactorCode` | 変更なし(`ChatCommandHandler` は流用せず、F3 は独立クラス。`ChatCommandHandler.kt:17-18` の「アクティブなテキストエディタが必要」という前提がターミナルには当てはまらない) |
@@ -628,7 +660,8 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 
 | Spec | 対象 | 主な検証 |
 |---|---|---|
-| `AuthenticationSourceProviderTest` | F1 | 初期 `"unknown"`; `authentication-required` engaged → `"false"`; `invalid-token` engaged → `"false"`; 全て非 engaged → `"true"`; `allChecks == null` → 変化なし。`getProvidedSourceNames`。UI 転送はシームで捕捉(`applyForTest` 相当) |
+| `AuthenticationSourceProviderTest` | F1 | 初期 `"unknown"`; `authentication-required` engaged → `"false"`; `invalid-token` engaged → `"false"`; 全て非 engaged → `"true"`; `allChecks == null` → 変化なし; **現在と異なる `session` の更新 → 無視**; **`reset()` → `"unknown"`**。`getProvidedSourceNames`。UI 転送はシームで捕捉 |
+| `AuthenticationStateServiceProviderFeedTest` | F1 | 既存 debounce を短縮した構成で「stale(未認証)→ 最新(認証済み)」を連続投入 → プロバイダには最新値だけが 1 回届く; 既存ポップアップの判定は不変(既存 spec の回帰) |
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
 | `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。所有記録が作成より前に行われる順序 |
@@ -638,12 +671,14 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `TerminalOutputLimitTest` | F3 | 399,999 / 400,000 / 400,001 単位の境界; 超過時は末尾を残す; 切り出し位置がサロゲートペアの後半 → ペアを割らない; マルチバイト(日本語・絵文字)入力; 切り詰めの有無フラグ |
 | `TerminalOutputGateTest` | F3 | 2 条件の全組み合わせ(捕捉した接続で terminal context 不可 / 部位が許可リスト外)で拒否、全て真のときだけ許可 |
 | `TerminalAiContextItemsTest` | F3 | `category="terminal"`, `metadata` の 6 固定値, `content` = 入力, `id` が UUID 形式で毎回異なる |
-| `ExplainTerminalOutputCommandTest` | F3 | `add` true → 追跡付き prompt 依頼 1 回・`NewPromptRequest("explainTerminalOutput", null)`、捕捉した `session` 付き; `Sent` → remove なし・run 終了; **各 `Dropped` 理由 → 同じ接続なら同一 `item` で remove 1 回・通知、`SESSION_CHANGED` / 接続変更 → remove なし**; false → 送信なし+通知; 例外 → 同; タイムアウト(短い timeout)→ 送信なし+通知+**run が残る**; タイムアウト後に元の future が true → 同一 `item` で remove 1 回 → **remove 完了後に** run 終了、prompt は送らない; タイムアウト後に false / 例外 → remove なし・run 終了; 元の future が `orTimeout` で例外完了していない(写しにだけ付いている); **prompt 依頼が add 完了より前に呼ばれない**; `add` / `remove` が捕捉した `handle.proxy` に送られる(wrapper を読み直さない) |
+| `ExplainTerminalOutputCommandTest` | F3 | ゲート通過・選択あり → `TrackedPrompt(NewPromptRequest("explainTerminalOutput", null), item, 捕捉した session)` の追跡付き依頼が 1 回; **依頼の時点で `add` が一度も呼ばれていない**; run の登録と解除(`resolved` 完了時のみ) |
+| `TerminalItemResolverTest` | F3 | fake proxy で: `add` true → `newPrompt` 送出 → `current-items` が item を含まなくなった時点で解決; `Sent` 後 5 秒残る → `remove` を送り、不在確認で解決; `add` false / 例外 → prompt なし、`current-items` に残っていれば `remove`、不在確認で解決; **`remove` が false / 例外 / タイムアウトでも、`current-items` に残る限り解決しない**; 10 秒で未確認 → 未解決(run・バリア保持 + 通知); `current-items` 自体が失敗 → 未解決; **`add` の写しがタイムアウト → prompt なし・`Dropped(ADD_TIMEOUT)`、元の future が確定するまで確認を始めない**; 元の future が遅れて true → 確認ループ(残っていれば remove); 元の future が `orTimeout` で例外完了していない; `newPrompt` 直前に session が変わった → 送らない |
 | `ExplainTerminalOutputCommandHandlerTest` | F3 | 選択なし → 通知・LS 未呼出; 機能無効(terminal context 不可 / 部位違い / 接続なし)の状態で `execute` を直接呼ぶ → `add` も `newPrompt` も一度も呼ばれない; **同じ接続で run が残っている間の再実行 → 拒否**; **run の接続が古い(LS 再起動済み)→ 再実行できる**; **LS 再起動前に許可・再起動後の接続で状態未着 → `add` が送られない** |
-| `GitLabLanguageServerAiContextRequestTest` | F3 | `@JsonRequest("$/gitlab/ai-context/add")` と `@JsonRequest("$/gitlab/ai-context/remove")` の両方が `ServiceEndpoints.getSupportedMethods` に含まれること; 戻り値が `CompletableFuture<Boolean>`; クライアント側 `GitLabLanguageServerClient` に同名メソッドがないこと(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
+| `GitLabLanguageServerAiContextRequestTest` | F3 | `$/gitlab/ai-context/add` / `remove` / `current-items` の 3 件が `ServiceEndpoints.getSupportedMethods` に含まれること; 戻り値の型; クライアント側 `GitLabLanguageServerClient` に同名メソッドがないこと(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
 | `TerminalContextStateServiceTest` | F3 | `DuoChatStateServiceTest` の写し + `isAvailableFor(session)`: 記録と同じ session → 値、別 session → `false`、記録なし → `false` |
-| `PendingClassicPromptSlotTest` | F3 | 追跡付きの依頼を置いた後に追跡付き / 追跡なしの依頼が来る → 古い方が `SUPERSEDED` で 1 回だけ確定; route されない解決 → `NOT_SHOWN`; route された → クライアントへ渡る(確定はクライアント側); 破棄 → `DISPOSED`; 追跡なしだけのときは従来と同じ後勝ち(既存の挙動の回帰試験) |
-| `GitLabDuoChatWebViewClientTrackedTest` | F3 | フォーカスあり・同じ session → `pluginNotification` 1 回 + `Sent`; session 不一致 / 接続なし → 送らず `SESSION_CHANGED`; フォーカス待ち → キューに積み、フォーカス時に同じ判定; 追跡なしの `notify` は従来どおり |
+| `PendingClassicPromptSlotTest` | F3 | 追跡付きの依頼を置いた後に追跡付き / 追跡なしの依頼が来る → 古い方が `SUPERSEDED` で 1 回だけ確定; route されない解決 → `NOT_SHOWN`; route された → クライアントへ渡る; 破棄 → `DISPOSED`; 期限切れ済みの tracked は route されない; 追跡なしだけのときは従来と同じ後勝ち(既存の挙動の回帰試験) |
+| `GitLabDuoChatWebViewClientTrackedTest` | F3 | フォーカスあり・同じ session → 送出手順(`add` → `newPrompt`); session 不一致 / 接続なし → `add` を送らず `SESSION_CHANGED`; フォーカス待ち → キューに積み、フォーカス時に同じ手順; **キュー上で期限切れ → フォーカス時に送らずキューから外れる**; 期限と送出の競合(CAS)で二重確定しない; 追跡なしの `notify` は、送出手順が進行中でなければ従来どおり即時 / キュー |
+| `ClassicOutboundBarrierTest` | F3 | バリア中の追跡なし `notify` 3 件が FIFO で保持され、解決後に同じ順で送られる; 未解決の間は送られない; 接続が替わった後の `notify` でバリアが解放され、新しい接続へ送られる; **「F3 送出中に Explain Code」→ Explain Code の `newPrompt` は F3 の item の不在確認より後に送られる**(受信順と処理完了順の逆転を fake LS で再現しても、F3 の item を含む状態で Explain Code が送られない) |
 
 **手動(実機)**: メニュー表示・可視性の切替・Terminal/Console での選択取得・クリップボード復元・エディタ種別・Code Suggestions の発火(§25)。
 
@@ -656,7 +691,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | A3 | `gitlab_authenticated` が §8.1 の規則どおり 3 値を取る | 自動 |
 | A4 | チュートリアルコマンドで `GitLab Duo Tutorial/duo_tutorial.js` が作られエディタで開き、`didOpen` の `languageId` が `javascript`(LS ログで確認)で、本文中の `const multiply` 直後で Code Suggestions が出る | 実機(M3) |
 | A5 | 2 回目の実行、本文を編集後の実行、プロジェクトを閉じた後の実行のいずれでも、**本文が書き換わらない**で開く | 実機(M4)+ 自動(Planner 全行) |
-| A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)や、未知の同名フォルダがある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
+| A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)、未知の同名フォルダ、**過去の Tutorial を削除した後に同じパスへ作って import したプロジェクト**がある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
 | A6 | 本文が §12.2 の翻案規則を満たす(MIT 表記あり、Quick Chat なし、実ラベル、エスケープ正しい) | 自動 |
 | A7 | チュートリアル実行後も Duo Chat / Code Suggestions が `duo-disabled-for-project` にならない | 実機(M3 で Diagnostics を確認) |
 | A8 | **新世代 Terminal**(`org.eclipse.terminal.*`、Pleiades 2025-12)で範囲選択 → 右クリック → 「Explain Terminal Output with Duo」で、Duo Chat に「Explain this terminal output」が投げられ、選択内容がコンテキストとして付く。旧世代は best-effort(✅ の条件外) | 実機(M5)。到達段(1' / 2 / 3)を記録。**不成立なら §9.3.4 に従い台帳は 🟡** |
@@ -666,15 +701,17 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | A11b | 実行前のクリップボードが画像のみ / ファイルのみ / 文字列 + リッチテキストのとき、第 3 段が実行されず、クリップボードの内容が実行前と同一 | 実機(M11)+ 自動(前提条件) |
 | A12 | `add` が完了する前に `newPrompt` が送られない | 自動 |
 | A13 | `add` が false / 例外 / タイムアウトで prompt が送られず通知される | 自動 |
-| A13b | タイムアウト後に `add` が遅れて成功したら、同じ項目で `remove` が 1 回送られる | 自動 |
+| A13b | `add` を送った後は、結果にかかわらず `current-items` で item の不在を確認できるまで run と送出バリアが解除されない。`remove` の false / 例外 / タイムアウトは解除の根拠にならない | 自動 |
 | A13c | 機能無効状態で(Quick Access / `executeCommand` 等から)直接実行しても、`add` / `newPrompt` が一切送られない | 自動 + 実機(M12) |
 | A13d | 400,000 単位を超える選択は末尾 400,000 単位に切り詰められ、通知が出る。境界とサロゲートペアで正しい | 自動 |
-| A13e | `add` がタイムアウトした後、同じ接続では、元の `add` が確定(遅延 `true` なら remove 完了)するまで再実行が拒否される。**「1 回目タイムアウト → 再実行 → 2 回目の add と prompt → 1 回目が遅れて true」の順序が起こりえない**ことを試験で再現して確認 | 自動 |
+| A13e | `add` がタイムアウトした後、同じ接続では、元の `add` が確定し不在確認が済むまで再実行も他の classic prompt も送られない。**「1 回目タイムアウト → 再実行 → 2 回目の add と prompt → 1 回目が遅れて true」の順序が起こりえない**ことを試験で再現して確認 | 自動 |
 | A13f | LS 再起動の前に terminal context が許可・再起動後の接続では状態未着(または不許可)のとき、`add` が送られない | 自動 |
-| A13g | prompt が配送されなかった各経路(ビュー不可 / classic 以外に解決 / 上書き / 接続変更 / 破棄)で、同じ接続なら同じ item の `remove` が 1 回送られ、ユーザーに通知される。接続が替わった場合は `remove` を送らない | 自動 |
+| A13g | prompt が配送されなかった各経路(ビュー不可 / classic 以外に解決 / 上書き / 期限切れ / 破棄 / 接続変更)で、**`add` が一度も送られていない**。キュー上で期限切れになった tracked は、後でビューがフォーカスされても送られない | 自動 |
+| A13i | F3 の送出中(`add` 〜 不在確認)に実行された他の classic コマンドの prompt は、F3 の item の不在確認の後に送られる | 自動(`ClassicOutboundBarrierTest`)+ 実機(M13) |
+| A3b | 起動直後の古い認証状態の連続通知で Sign in 項目が揺れない。LS の再起動後、新しい接続の状態が確定するまで Sign in 項目は出ない | 自動 + 実機(M2) |
 | A13h | `add` の完了と prompt 送信の間に LS が再起動したとき、prompt は新しい接続へ送られない(`SESSION_CHANGED`) | 自動 |
 | A14 | `chat_terminal_context` が engaged のとき、Terminal / Console のメニューに項目が出ない | 実機(M9: `include_terminal_context` 無効なインスタンス、または LS ログで engaged を確認) |
-| A15 | `GitLabLanguageServer` に `$/gitlab/ai-context/add` と `$/gitlab/ai-context/remove` が宣言され、`ServiceEndpoints` が認識する | 自動 |
+| A15 | `GitLabLanguageServer` に `$/gitlab/ai-context/add` / `remove` / `current-items` が宣言され、`ServiceEndpoints` が認識する | 自動 |
 | A16 | ログに選択内容・クリップボード内容・パスが出ない | コードレビュー + 自動(fake ログで文字列不在) |
 | A17 | `verify.sh` が `FAILSET_IDENTICAL`、detekt がベースラインちょうど | CI 相当 |
 | A18 | `Require-Bundle` が変わらない(`build.gradle.kts` 差分ゼロ) | `git diff` |
@@ -694,10 +731,10 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | M7 | 選択せずに右クリック → 項目 | 通知「Select text in the Terminal or Console first.」。Chat は開かない |
 | M8 | 任意の文字列をコピーしておく → M5 と同じ操作 → どこかに貼り付け | **第 3 段に入った場合**でも元の文字列が貼り付く。第 3 段に入らなかった(1'/2 で取れた)場合はその旨を記録 |
 | M9 | `include_terminal_context` が無効な GitLab インスタンス(または LS ログで `chat-include-terminal-context-unavailable` engaged の状態) | Terminal / Console の右クリックに項目が出ない |
-| M10 | 手で `GitLab Duo Tutorial` という名前のプロジェクト(中身は任意)を作る → コマンド実行 → そのプロジェクトを閉じた状態でも再実行 | どちらも拒否の通知のみ。プロジェクトにファイルが増えず、開閉状態も変わらない |
+| M10 | (1) 手で `GitLab Duo Tutorial` という名前のプロジェクトを作る → コマンド実行 → 閉じて再実行。(2) それを削除し、コマンドで Tutorial を作る → 内容ごと削除 → 同じパスにフォルダを作って import → コマンド実行 | どれも拒否の通知のみ。プロジェクトにファイルが増えず、開閉状態も変わらない |
 | M11 | 画像をコピー(スクリーンショット等)/ ファイルをエクスプローラでコピー / Word 等から書式付き文字列をコピー → Terminal で第 3 段に入る操作 → 貼り付け | 第 3 段は実行されず(debug ログで確認)、元の画像 / ファイル / 書式付き文字列がそのまま貼り付く |
 | M12 | `include_terminal_context` が無効な状態(M9)で Quick Access(Ctrl+3)から「Explain Terminal Output with Duo」を実行 | 実行できない(グレーアウト)か、実行しても通知のみ。Chat にプロンプトが出ず、LS ログに `ai-context/add` がない |
-| M13 | F3 を実行した直後(Duo Chat が開く前)に、エディタで Explain Code を実行する | Explain Code の回答が通常どおり出る。F3 については「The request was not delivered to Duo Chat.」が出る(`SUPERSEDED`)。Explain Code の回答にターミナル出力の内容が混ざらないか観察し、混ざったら U11 として記録 |
+| M13 | F3 を実行した直後(Duo Chat の応答が出る前)に、エディタで Explain Code を実行する | 両方の回答が順に出る。Explain Code の回答にターミナル出力の内容が混ざらない。Explain Code の送出がわずかに遅れるのは仕様(§9.3.5) |
 | M14 | F3 を実行 → Duo Chat が開く前に「Restart Language Server」 | 新しい接続に「Explain this terminal output」が送られない(通知のみ)。再起動後に再実行できる |
 
 ## 26. 未決事項
@@ -713,8 +750,9 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | U7 | ProcessConsole の type が `org.eclipse.debug.ui.ProcessConsoleType` として `#ContextMenu` に付くか。Gradle / Maven 等の他コンソール型 | 実機(M6)。他コンソール型は必要になったら locationURI を追加 |
 | U8 | F3 のキーバインド(VSCode `ctrl+alt+t`)を Eclipse で空いているか | 後続サイクル |
 | U9 | 第 3 段の前提条件(5 種の Transfer による非テキスト判定)が、普通にテキストをコピーした状態を誤ってスキップしないか(Windows の合成形式など) | 実機(M8 / M11) |
-| U10 | 閉じたプロジェクトで `IProject.getLocationURI()` が取れ、所有判定のために開く必要がないか | 実機(M10)。取れない場合は「閉じた同名プロジェクト」を一律 `Refuse`(安全側)に倒す |
-| U11 | `SUPERSEDED` の直後に別の classic コマンドの prompt が続いたとき、LS が F3 の `remove` を先に処理し終えるか(同一接続上の送信順は remove → prompt だが、処理完了順は LS 実装依存) | 実機では再現困難。混入しても影響は「その 1 回の Explain Code 等にターミナル文脈が付く」ことに限られる。§27 に記載 |
+| U10 | 所有判定のための persistent property(`duoTutorialId`)が、Eclipse の再起動後も保持され、プロジェクト削除で消えること | 実機(M10 の後に再起動 / 削除 → 同じパスで再 import) |
+| U11 | 配送期限 30 秒が、初回起動時(LS の起動・webview の初回読み込みを含む)に短すぎないか | 実機(M5 を Eclipse 起動直後に行う)。短すぎれば定数を調整(期限切れでも `add` を送っていないので安全) |
+| U12 | 引数なしの `@JsonRequest("$/gitlab/ai-context/current-items")` を lsp4j 1.0.0 がどう直列化するか(`params` 省略 / `null`)。LS の受け口は引数を読まない(@29322403)ので どちらでも動く想定 | 自動(`GitLabLanguageServerAiContextRequestTest` で送出 JSON を固定)+ 実機(M5 の LS ログ) |
 
 ## 27. 想定されるリスク
 
@@ -724,8 +762,8 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | クリップボードの非テキスト内容の消失(第 3 段) | ユーザーの貼り付け内容が失われる | 第 3 段は「文字列以外の既知形式がない」ときだけ実行(§9.3 の前提条件)。残るのは 5 種の Transfer で識別できないアプリ固有形式のみ(U9)。第 1'・2 段で取れれば第 3 段に入らない |
 | 巨大な選択 | UI スレッドでのクリップボード読み出し・文字列複製のメモリ | 送信前に 400,000 単位へ切り詰め(§9.3.2)。クリップボード読み出し自体は SWT が全体を返すので上限をかけられない(残るリスク) |
 | Terminal で全段不成立 | F3 の Terminal 側が機能しない | §9.3.4 の実機ゲート。台帳は 🟡、依存追加は別サイクルで判断。取得手段は 2 クラスに局所化済み |
-| 追跡付き prompt の導入で既存の chat 経路が変わる | Explain Code 等の既存コマンドの回帰 | 既存入口は無変更。1 枠の後勝ち規則を `PendingClassicPromptSlot` に切り出し、既存挙動を回帰試験で固定(§23)。実機では M13 で Explain Code を併用 |
-| LS が応答しないまま生き続ける | F3 の再実行ができない(run が残る) | 通知で「Restart Language Server」を案内(§9.3.3)。LS 無応答時は chat 自体も機能しないため、実害は F3 に固有ではない |
+| 送出バリアの導入で既存の chat 経路が変わる | Explain Code 等が F3 の送出中に待たされる。未解決時は LS 再起動まで止まる | 通常は数百 ms。未解決は安全側の意図的な選択で、通知で再起動を案内。規則は `ClassicOutboundBarrier` に切り出して回帰試験で固定(§23)、実機では M13 |
+| LS が応答しないまま生き続ける | F3 と他の classic prompt が止まる(run・バリアが残る) | 通知で「Restart Language Server」を案内(§9.3.3)。LS 無応答時は chat 自体も機能しないため、実害は F3 に固有ではない |
 | 状態メニューの可視性が追随しない(U1) | 未認証項目が出っぱなし/出ない | `update(true)` の 1 行で解消可能 |
 | `WorkspaceJob` の `rule = root` が他の Job と競合して待たされる | チュートリアルが数秒遅れる | `isUser = true` で進捗が見える。ワークスペース全体のビルド中でも正しく直列化される |
 | 同名プロジェクト/フォルダがユーザーのもの | ユーザーの資産を変更してしまう | 所有記録(§9.2)と一致しなければ無変更で拒否。拒否時はユーザーがリネームする必要がある(UX 上の代償) |
@@ -740,8 +778,9 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | # | タスク | 内容 | モデル | 理由(CLAUDE.md の表) |
 |---|---|---|---|---|
 | T1 | F1 | `AuthenticationSourceProvider` + Koin 登録 + ディスパッチ 1 行 + `ShowDuoForum` / `ShowDuoDocumentation` + `plugin.xml`(コマンド 3・ハンドラ 3・ソースプロバイダ 1・メニュー 2 ブロク)+ spec 3 本 | `opus` | 既存パターンの複製 + plugin.xml 配線。誤りは次段レビューで検出可能 |
-| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 1 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → エディタの**スレッド境界**と `IProject` 状態の再読み取り・所有判定を含む。headless で検証不能 |
-| T3 | F3 | DTO + `GitLabLanguageServer` 追加 2 件(add / remove)+ `TerminalContextStateService`(接続に結び付く)+ ディスパッチ case + `Gate` / `Limit` / `SelectionReader` / `ClipboardSelectionCapture` / `Command` / `Handler` + **追跡付き配送(`PromptDelivery` / `TrackedPrompt` / `PendingClassicPromptSlot` / `DuoChatWindow`・`LanguageServerBrowserView`・`ChatIntentRouter`・`GitLabDuoChatWebViewClient` への入口追加)** + `plugin.xml`(コマンド 1・ハンドラ 1(`enabledWhen` 付き)・ソースプロバイダ 1・メニュー 5 ブロック)+ spec 11 本 | `fable` | SWT `Clipboard`・リフレクション・lsp4j ディスパッチ・UI スレッドホップ・接続識別・既存 chat 経路への入口追加。全て「ユーザー実機でのみ発覚」する種類。**規模が大きいため T3a(追跡付き配送 + 接続に結び付く状態)と T3b(取得・ゲート・上限・コマンド・ハンドラ・plugin.xml)に分けて順に実装・レビューする** |
+| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 2 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → エディタの**スレッド境界**と `IProject` 状態の再読み取り・所有判定(persistent property)を含む。headless で検証不能 |
+| T3a | F3 基盤 | DTO + `GitLabLanguageServer` 追加 3 件(add / remove / current-items)+ `TerminalContextStateService`(接続に結び付く)+ ディスパッチ case + **追跡付き配送(`PromptDelivery` / `TrackedPrompt` 状態機械 / `PendingClassicPromptSlot` / `ClassicOutboundBarrier` / `TerminalItemResolver` / `DuoChatWindow`・`LanguageServerBrowserView`・`ChatIntentRouter`・`GitLabDuoChatWebViewClient` への入口追加)** + spec 7 本 | `fable` | 既存 chat 経路への入口追加・lsp4j ディスパッチ・UI スレッドホップ・状態機械。全て「ユーザー実機でのみ発覚」する種類 |
+| T3b | F3 取得・UI | `Gate` / `Limit` / `SelectionReader` / `ClipboardSelectionCapture` / `Command` / `Handler` + `plugin.xml`(コマンド 1・ハンドラ 1(`enabledWhen` 付き)・ソースプロバイダ 1・メニュー 5 ブロック)+ spec 6 本 | `fable` | SWT `Clipboard`・リフレクション・ワークベンチの選択。T3a の後に実装する |
 | R1〜R3 | 各タスクのコードレビュー | — | `fable` | 唯一の安全網。実装者と別モデル(T1)/ 別インスタンス(T2, T3) |
 | R4 | ブランチ全体レビュー + PR 本文(M1〜M9 の手順・U-item 一覧・台帳更新案) | — | `fable` | 同上 |
 | L | 台帳 #7(D3 +2、D4 +1、D1 4 行を「対象外(単一アカウント運用)」に)、#14 / #8 の `vscode.comments` 記述訂正 | — | `haiku` | 即座に目視確認できる |
@@ -763,3 +802,8 @@ T3 の実装ブリーフには §9.3 の 3 段と §11.5 の LS 実値、§6.4 �
 | 2 | P1 ロケーションだけで所有権を復元するな | 採用。「プロジェクトなし・記録一致・フォルダあり」の取り込み行を削除し、プロジェクトの無い既存フォルダは常に拒否 | §9.2 |
 | 2 | P1 prompt 未送信時は追加済みコンテキストを補償せよ | 採用。既存入口を変えずに追跡付きの配送(`PromptDelivery` = `Sent` / `Dropped(理由)`)を追加し、`Dropped` なら同じ接続で同じ item を remove。1 枠の後勝ち規則は SWT 非依存クラスに切り出して回帰試験。残る処理順の問題は U11 として明記 | §9.3.5, §13, §14, §21, A13g, M13 |
 | 2 | P2 add と prompt を同じ LS 接続に固定せよ | 採用。実行開始時に `currentSnapshot`(proxy + session)を 1 回だけ捕捉し、`add` / `remove` はその proxy に、prompt は送出瞬間に session を照合して一致時のみ送る | §9.3 手順 0, §9.3.5, A13h, M14 |
+| 3 | P1 remove の成功を確認するまで run を解放するな | 採用し、さらに強めた。解決の根拠を `remove` の戻り値ではなく **`current-items` による item の不在確認**にした(`false` は「見つからない」と「失敗」を区別しないため)。確認できなければ run とバリアを保持し、LS 再起動を案内 | §9.3.3, R20, A13b, `TerminalItemResolverTest` |
+| 3 | P1 フォーカス待ちの tracked prompt に終了条件を | 採用。tracked に状態機械と 30 秒の配送期限を持たせ、期限切れ・上書き・破棄は CAS で一度だけ確定。キュー上で終端済みの tracked は送らずに外す。さらに **文脈の追加を送出手順の中へ移した**ので、終了条件で止まった tracked には後始末すべきものがない | §9.3, §9.3.5, A13g, U11 |
+| 3 | P1 SUPERSEDED 後の prompt を remove 完了まで保留せよ | 構造で解消。上書きは送出手順より前にしか起きず、その時点で `add` を送っていないため混入経路が存在しない。送出中に来た他の classic prompt は送出バリアで待たせ、F3 の item の不在確認の後に送る。round 2 の U11(処理順の問題)は削除 | §9.3.5, A13i, `ClassicOutboundBarrierTest`, M13 |
+| 3 | P1 永続パスだけで再作成プロジェクトを所有扱いするな | 採用。作成ごとのランダム ID をプロジェクトの persistent property(削除で消え、再 import で復活しない)と非表示設定キーの両方に書き、ロケーションと合わせて両方一致のときだけ所有。閉じた同名プロジェクトは判定せず拒否 | §9.2, A5b, M10, U10 |
+| 3 | P2 authentication の stale event を表示に反映するな | 採用。プロバイダの更新を既存 `AuthenticationStateService` の 2 秒 debounce の後に置き、`session` 違いの更新は捨て、LS の停止・終了(`SecurityScanLifecycle.onServerStopped()` と同じ 2 箇所)で `unknown` に戻す | §8.1, §9.1, §14, §21, A3b |
