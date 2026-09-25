@@ -17,7 +17,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | `gl.duoTutorial` | D3 | ❌ |
 | `gl.webview.explainSelectedTerminalOutput` | D3 | ❌ |
 
-パリティは **74/85 → 77/85**(D3 +2、D4 +1)。
+パリティは **74/85 → 77/85**(D3 +2、D4 +1)。ただし D3「ターミナル出力を説明」の ✅ は §9.3.4 の実機ゲート次第で、Terminal 側が全段不成立なら 🟡 とし **76/85 + 🟡1** になる。
 
 **台帳・ロードマップの記述訂正を伴う。** #14(2026-08-07 の分析)および #8 は「D4 の全行が `vscode.comments` API に依存する」としているが、`gl.showDuoQuickPickMenu` は **Quick Chat とも `vscode.comments` とも無関係**である(`src/common/duo_quick_pick/commands/show_quick_pick_menu.ts:100-118` は `QuickPick` だけで構成され、`comments` を import しない)。本サイクルで D4 のこの 1 行を等価実装で ✅ にし、#14 / #8 の当該記述を訂正する。
 
@@ -67,7 +67,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | R6 | コマンド実行で、ワークスペースに **`GitLab Duo Tutorial`** という名前のプロジェクトを(なければ)作成し、その直下の **`duo_tutorial.js`** をエディタで開く。 |
 | R7 | 開いたエディタで **Code Suggestions が動く**こと。すなわち (a) `IFileEditorInput` で開かれ `didOpen` が送られる(`GitLabLanguageServerOpenFilesService.kt:119-125, 144-149`)、(b) `languageId` が `javascript` になる(`LanguageServerLanguage.kt:15, 34-40`: 拡張子 `js` → `"javascript"`)、(c) JavaScript が既定で有効である(`CodeSuggestionsLanguageService.kt:22-29`: サポート言語は `CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES` に含まれない限り有効、既定値は `""`(`PreferenceInitializer.kt:17`))。 |
 | R8 | 内容は VSCode の `duo_tutorial.ts:4-157` を **Eclipse 向けに翻案**する(§12.2): キーは `plugin.xml:444-500` の実バインド、Quick Chat 節は削除、Explain / Tests / Refactor はエディタ右クリック「GitLab Duo Chat」サブメニューの**実ラベル**(`plugin.xml:1093` Explain Code / `:1117` Generate Tests / `:1129` Refactor Code)、MIT 表記を保持、上流の誤記(`duo_tutorial.ts:36-37`: Command と Control の OS が逆)を修正。 |
-| R9 | **ユーザーの編集を上書きしない。** ファイルが既にあれば内容を書き換えず開くだけ(§9.2 の分岐表)。 |
+| R9 | **ユーザーの編集を上書きしない。ユーザーのプロジェクト・フォルダに触らない。** ファイルが既にあれば内容を書き換えず開くだけ。同名のプロジェクト/フォルダがプラグイン作成のもの(§9.2 の所有記録と一致)でなければ、何も変更せず拒否する(§9.2 の分岐表)。 |
 | R10 | 表示条件は VSCode の `commandPalette` の `when`(`package.json:218-221`: `config.gitlab.duoChat.enabled && gitlab:chatAvailable && gitlab:chatAvailableForProject`)に対応させる。Eclipse では `duo_chat_enabled == true` がその等価物(§11.3)。 |
 
 ### 5.3 F3 ターミナル出力の説明
@@ -79,7 +79,10 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | R13 | 表示条件は `chat_terminal_context` feature の engaged チェックがゼロ(`chat_state_manager.ts:54-56`)かつ `duo_chat_enabled == true`。 |
 | R14 | 選択がない/空のときは何も送らず、ユーザーに通知する(§14)。VSCode は無言で戻る(`duo_chat_commands.ts:38-40`)が、Eclipse には「最後のコマンド」フォールバックがないため、無言だと押しても何も起きないように見える。 |
 | R15 | UI スレッドをブロックしない。LS 応答待ちは `CompletableFuture` + タイムアウト(§15)。 |
-| R16 | クリップボードを使う経路(§9.3 第 3 段)は、**必ず元の内容を復元する**(`finally`)。 |
+| R16 | クリップボードを使う経路(§9.3 第 3 段)は、**文字列以外の内容があれば実行せず**、実行した場合は**必ず元の内容を復元する**(`finally`)。 |
+| R18 | ハンドラは LS 往復の前に、feature state と実行部位を自分で検証する(§9.3.1)。メニューの非表示を唯一の防御にしない。 |
+| R19 | `content` は 400,000 UTF-16 コード単位を上限とし、超過時は末尾を残して通知する(§9.3.2)。 |
+| R20 | `add` のタイムアウトは「結果不明」として扱い、遅れて成功したら同じ項目を `remove` する(§9.3.3)。 |
 | R17 | 選択内容・クリップボード内容・ファイル内容を**ログに出さない**(§19)。 |
 
 ### 5.4 非機能要件
@@ -178,6 +181,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ディスク上のフォルダの有無・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で行動列を実行。`rule = workspace.root`、`isUser = true`。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
 | `DuoTutorialHandler` | `AbstractHandler`。状態の読み取り → Planner → Writer の起動 → 完了時に `asyncExec` で `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
+| `DuoTutorialOwnership` | 所有記録の読み書き(`PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION`、§9.2)。`isOwned(locationUri)` / `record(locationUri)`。設定ストアは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
 
 ### 8.3 F3(パッケージ `com.gitlab.eclipse.chat.terminal` / `com.gitlab.eclipse.chat.commands` / `com.gitlab.eclipse.lsp.messages`)
 
@@ -189,6 +193,8 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 | `ClipboardSelectionCapture` | 第 3 段(クリップボード)。**UI スレッド専用**。`ClipboardTarget` 相当のシーム(`ClipboardWriter.kt:15-25` を読み取り・クリアまで拡張した `ClipboardPort`)の背後で、退避 → プレースホルダ書込 → コピー実行 → 読み出し → `finally` 復元。 | `ClipboardWriter.kt:101-125`(dispose を `finally`、`SWTError` を捕まえる) |
 | `ExplainTerminalOutputCommand` | 純ロジック。「テキスト → add → 結果分岐 → prompt 送信」の順序・タイムアウト・失敗分岐を `CompletableFuture` で表現。LS 呼び出しと chat 送信は関数として注入。 | `WorkspaceFileOpener.kt:46-51` の注入シーム |
 | `ExplainTerminalOutputCommandHandler`(`chat.commands`) | `AbstractHandler`。`HandlerUtil` で選択と部位を取り、Reader → (Capture) → Command を組み立てる。二重起動ガード。 | `ChatCommandHandler.kt:11-37` |
+| `TerminalOutputGate` | 純関数。`chatEnabled` / `terminalContextAvailable` / `activePartId` から実行可否を返す(§9.3.1) | — |
+| `TerminalOutputLimit` | 純関数。400,000 UTF-16 コード単位の上限、末尾保持、サロゲートペア保護、切り詰めフラグ(§9.3.2) | LS map @26232942 `MAX_CONTENT_LENGTH` |
 | `TerminalContextStateService`(`chat`) | `AbstractSourceProvider`。変数 `duo_chat_terminal_context_available`(Boolean)。`update(FeatureStateChange)` で `allChecks?.none { it.engaged } ?: false`。 | `DuoChatStateService.kt:16-33` の複製。engaged になる check は `chat-include-terminal-context-unavailable`(LS map @23530333)、その値は `DuoFeature.IncludeTerminalContext` の可否(@28544002) |
 
 ## 9. 処理フロー
@@ -205,26 +211,38 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 
 ```
 execute(event)                                   ← UI スレッド
-  ├ 1. state = 状態の読み取り(IProject.exists/isOpen、.project の有無、ディスク上のフォルダ、IFile.exists)
+  ├ 1. state = 状態の読み取り(IProject.exists/isOpen/locationURI、ディスク上のフォルダ、記録済み所有ロケーション、IFile.exists)
   ├ 2. plan = DuoTutorialProjectPlanner.plan(state)
-  ├ 3. plan が Refuse → 通知して終了
+  ├ 3. plan が Refuse → 通知して終了(ワークスペースは一切変更しない)
   ├ 4. Writer(WorkspaceJob, rule=root).schedule()   ← バックグラウンド
-  │      runInWorkspace: CreateProject → OpenProject → CreateFile を順に
+  │      runInWorkspace: 状態を再読み取りして plan を再計算(Refuse なら何もせず終了)→ 行動列を順に実行
   └ 5. Job 完了(JobChangeAdapter.done、OK のとき) → asyncExec { openInActiveEditor(file) }
 ```
 
+**所有権の記録(Codex round 1 P1 反映)**: プラグインが作ったプロジェクトかどうかを**名前では判定しない**。
+新規作成時に、プロジェクトのロケーション URI(`IProject.getLocationURI()` の `toString()`)を**非表示の設定キー**
+`PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION = "gitlab.duoTutorial.projectLocation"` に記録する
+(非表示の設定キーを持つ前例: `DUO_CHAT_SELECTED_WEBVIEW`、`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。
+**所有 = 「同名プロジェクト(またはフォルダ)の実ロケーション URI が記録値と一致する」**。nature やマーカーファイルは使わない
+(`plugin.xml` の拡張もユーザーのプロジェクトへの書き込みも要らない)。
+
+- 記録は**作成の直前**に行う。作成が失敗しても、記録先にプロジェクトもフォルダもなければ次回は「なし・なし」行に落ちて作り直すだけで、誤判定は起きない。
+- 記録値は 1 つだけ(最新の作成)。ワークスペースを切り替えると設定ストア(`InstanceScope`)も切り替わるので、ワークスペースをまたいで所有を誤認しない。
+- 設定キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
+
 **分岐表(R9。`state` → 行動)**:
 
-| プロジェクト `GitLab Duo Tutorial` | ディスク上のフォルダ | `duo_tutorial.js` | 行動 |
-|---|---|---|---|
-| なし | なし | — | `CreateProject`(既定ロケーション = ワークスペース直下)→ `OpenProject` → `CreateFile` → `OpenEditor` |
-| なし | **あり**(過去に削除したがフォルダが残った等) | — | `CreateProject`(既定ロケーションのまま。`.project` が残っていれば Eclipse がそれを再利用する)→ `OpenProject` → ファイルの有無で次行へ |
-| あり・閉じている | — | — | `OpenProject` → ファイルの有無で次行へ |
-| あり・開いている | — | なし | `CreateFile` → `OpenEditor` |
-| あり・開いている | — | あり | **`OpenEditor` のみ**(内容は一切触らない) |
-| あり・開いている・**同名の別プロジェクト**(ユーザー自身のもの) | — | — | 区別する手段が名前しかないため、**同名なら自分のものとみなす**。`duo_tutorial.js` がなければ作り、あれば開く。ユーザーのファイルを消したり書き換えたりする行動は表に存在しない |
+| プロジェクト `GitLab Duo Tutorial` | 所有(ロケーション一致) | ディスク上のフォルダ | `duo_tutorial.js` | 行動 |
+|---|---|---|---|---|
+| なし | — | なし | — | 所有ロケーションを記録 → `CreateProject`(既定ロケーション = ワークスペース直下)→ `OpenProject` → `CreateFile` → `OpenEditor` |
+| なし | **一致**(過去に作ったプロジェクトを「内容を残して」削除した等) | あり | — | `CreateProject`(既定ロケーション。既存フォルダを取り込む)→ `OpenProject` → ファイルの有無で下の行へ |
+| なし | **不一致 / 未記録** | あり | — | **`Refuse`**。未知のフォルダを取り込まない。通知「A folder named 'GitLab Duo Tutorial' already exists in the workspace location. Rename or remove it to use the tutorial.」 |
+| あり(開閉問わず) | **不一致 / 未記録**(ユーザー自身の同名プロジェクト) | — | — | **`Refuse`**。**ユーザーのプロジェクトを開かず、ファイルも追加しない。** 通知「A project named 'GitLab Duo Tutorial' already exists and was not created by GitLab. Rename it to use the tutorial.」 |
+| あり・閉じている | 一致 | — | — | `OpenProject` → ファイルの有無で下の行へ |
+| あり・開いている | 一致 | — | なし | `CreateFile` → `OpenEditor` |
+| あり・開いている | 一致 | — | あり | **`OpenEditor` のみ**(内容は一切触らない) |
 
-「自分のプロジェクトか」を判定する専用のマーカー(nature 等)は**置かない**。置くとディレクトリ構成・`plugin.xml` の拡張が増えるうえ、表のどの行でも破壊的な行動がないので判定の必要がない。
+閉じたプロジェクトでも `IProject.getLocationURI()` はプロジェクト記述から得られる前提で、所有判定のためにユーザーのプロジェクトを開くことはしない(実機での確認は U10)。
 
 **ファイル作成は `IFile.create(InputStream, false, monitor)`**(`force = false`)。ディスク上に同名ファイルがあり Eclipse が未同期なら `CoreException` になり、その場合は `refreshLocal` してから「あり」行に落とす(上書きしない)。
 
@@ -238,16 +256,21 @@ execute(event)                                   ← UI スレッド
 
 ```
 execute(event)                                            ← UI スレッド
-  ├ 0. inFlight.compareAndSet(false, true) に失敗 → return(二重起動)
-  ├ 1. text = TerminalOutputSelectionReader.read(current, menu)   ← 第 1・2 段(クリップボード不使用)
-  ├ 2. text == null && 部位が Terminal → text = ClipboardSelectionCapture.capture()   ← 第 3 段
-  ├ 3. text が null/空 → 通知(§14)、inFlight=false、return
-  ├ 4. ExplainTerminalOutputCommand.run(text)             ← 以降バックグラウンド(future 連鎖)
+  ├ 0. 実行時ゲート(§9.3.1): duo_chat_enabled && terminal context available && 部位が許可リスト
+  │     否 → 通知して return(LS 往復は一切しない)
+  ├ 1. inFlight.compareAndSet(false, true) に失敗 → return(二重起動)
+  ├ 2. text = TerminalOutputSelectionReader.read(current, menu)   ← 第 1・1'・2 段(クリップボード不使用)
+  ├ 3. text == null && 部位が Terminal → text = ClipboardSelectionCapture.capture()   ← 第 3 段(前提条件つき)
+  ├ 4. text が null/空 → 通知(§14)、inFlight=false、return
+  ├ 5. text = TerminalOutputLimit.apply(text)(§9.3.2。切り詰めたら通知)
+  ├ 6. ExplainTerminalOutputCommand.run(text)             ← 以降バックグラウンド(future 連鎖)
   │     a. item = TerminalAiContextItems.selected(text)
-  │     b. languageServer.addAiContextItem(item).orTimeout(10s)
-  │     c. 結果 true → asyncExec { openDuoChatWindowWithClassicPrompt(NewPromptRequest("explainTerminalOutput", null)) }
-  │        false / 例外 / timeout → 通知(§14)
-  └ 5. whenComplete で inFlight=false
+  │     b. original = languageServer.addAiContextItem(item)
+  │        guarded = original を**別の future に写して**から 10 秒のタイムアウトを付ける(§9.3.3)
+  │     c. guarded が true → asyncExec { openDuoChatWindowWithClassicPrompt(NewPromptRequest("explainTerminalOutput", null)) }
+  │        false / 例外 → 通知(§14)
+  │        timeout → 通知 + 「結果不明」として original の監視を続け、遅れて true なら remove(§9.3.3)
+  └ 7. guarded の whenComplete で inFlight=false
 ```
 
 **選択テキストの取得 3 段(Reader が 1・2、Capture が 3)**:
@@ -265,15 +288,54 @@ execute(event)                                            ← UI スレッド
 
 | 論点 | 方針 |
 |---|---|
-| 退避する形式 | **`TextTransfer` のみ**(`clipboard.getContents(TextTransfer.getInstance()) as? String`)。VSCode も `readText()` / `writeText()` の文字列だけ(`:65, 98`) |
-| 非テキスト形式(ファイル・画像・RTF 等) | **失われる。** プレースホルダの書込で他形式は消え、復元は文字列しか戻せない。VSCode と同じ制限であり、正直に記載する。緩和: 第 1'・2 段で取れた場合は第 3 段に入らない(= 通常経路ではクリップボードに触らない) |
-| 退避結果が `null`(クリップボードが空/非テキスト) | 復元は `clearContents()`。「空だったものを空に戻す」 |
+| 第 3 段に入る前提条件(**Codex round 1 P1 反映**) | 次の**いずれか**に当たれば第 3 段を**実行しない**(クリップボードに一切書き込まない)。(1) `Clipboard.getAvailableTypes()` のいずれかが `RTFTransfer` / `HTMLTransfer` / `FileTransfer` / `ImageTransfer` / `URLTransfer` の `isSupportedType` で真(= 文字列以外の内容を持つ)。(2) 利用可能な形式が 1 つ以上あるのに `TextTransfer` で読めない(= 非テキストのみ)。(3) `EDIT_COPY` が未ハンドル。スキップ時は「選択なし」扱いで、通知は「Copy the output with the Terminal's Copy command, or select it and try again.」 |
+| 退避・復元する形式 | 上の前提条件を通った場合、クリップボードは「空」か「文字列のみ」なので、**`TextTransfer` の退避・復元で元の内容が戻る**。VSCode も文字列だけを扱う(`:65, 98`) |
+| 残るリスク | 上記 5 種の Transfer では識別できないアプリ固有形式が、文字列と一緒に置かれている場合(例: 一部アプリの独自形式)。その形式は失われうる。OS が自動合成する派生形式(Windows の `CF_LOCALE` / `CF_OEMTEXT` 等)は文字列から再合成されるので問題にならない。前提条件が実機で「普通にテキストをコピーした状態」を誤ってスキップしないかは **U9** |
+| 退避結果が `null`(クリップボードが空) | 復元は `clearContents()`。「空だったものを空に戻す」 |
 | 復元のタイミング | **`finally`**。コピー実行・読出のどこで例外が出ても必ず走る |
 | 復元の失敗 | ログ(例外クラス名のみ)+ 通知「クリップボードを復元できませんでした」。VSCode は `log.debug` だけ(`:99-101`)だが、Eclipse ではユーザーの貼り付け内容が置き換わったままになるので通知する |
 | `Clipboard` の生成・破棄 | 1 回の capture につき 1 つ生成し `finally` で `dispose()`(`ClipboardWriter.kt:101-109` と同じ) |
 | スレッド | **UI スレッド専用**(`Clipboard` は `Display` を要する。ハンドラの `execute` は UI スレッドで呼ばれるのでその場で同期的に行う)。`executeCommand` も同期 |
 | プレースホルダ | `"GitLab for Eclipse has temporarily reset the clipboard to read terminal selection"`(VSCode `:6-7` の文言の製品名だけ置換)。読出結果がプレースホルダと一致 = 何もコピーされなかった |
 | `SWTError` | `Clipboard.setContents` はクリップボードを確保できないと `SWTError`(`Error` 系)を投げる(`ClipboardWriter.kt:111-116`)。`Throwable` ではなく `SWTError` と `RuntimeException` を個別に捕まえる |
+
+#### 9.3.1 実行時ゲート(**Codex round 1 P1 反映**: メニューの非表示を認可境界にしない)
+
+`visibleWhen` は表示を絞るだけで、Quick Access や `IHandlerService.executeCommand` からの直接実行は止めない。さらに LS は policy 不許可でも `add` に `true` を返す(§11.5)。したがって**ハンドラ自身が LS 往復の前に拒否する**。
+
+| 層 | 内容 |
+|---|---|
+| `plugin.xml` の `<handler>` | `<enabledWhen>` に §11.3 と同じ `and(duo_chat_enabled == true, duo_chat_terminal_context_available == true)` を置く(無効時は Quick Access でもグレーアウト) |
+| `execute` 冒頭(正本) | `TerminalOutputGate.check(chatEnabled, terminalContextAvailable, activePartId)` を評価する純関数。3 条件のどれかが否なら通知「Explaining terminal output is not available.」(部位違いは R14 の文言)で **return し、`add` も `newPrompt` も送らない**。値は `DuoChatStateService` と `TerminalContextStateService` のフィールドを直接読む(評価コンテキストの遅延に依存しない) |
+| 部位の許可リスト | `HandlerUtil.getActivePartId(event)` が `org.eclipse.terminal.view.ui.TerminalsView` / `org.eclipse.tm.terminal.view.ui.TerminalsView` / `org.eclipse.ui.console.ConsoleView` のいずれか |
+
+`terminalContextAvailable` の初期値は `false`(feature state が届くまで実行不可)。LS 再起動時も `featureStateChange` が再送されるまでは直前の値を保持する(`DuoChatStateService` と同じ扱い)。
+
+#### 9.3.2 入力上限(**Codex round 1 P1 反映**)
+
+- LS / `AIContextItemSchema` に `content` の長さ上限はない(VSCode 側にも切り詰めはない、`gitlab_chat_terminal_context.ts` 全体)。
+- 一方 LS の classic chat webview は、エディタのファイル文脈を **`MAX_CONTENT_LENGTH = 4e5`(JS の文字列長 = UTF-16 コード単位)** で切り詰めている(`packages/webview_duo_chat_classic/dist/index.mjs` `trimActiveFileContext`、LS map @26232942)。本機能はこれと**同じ単位・同じ値**を上限とする: `TerminalOutputLimit.MAX_CHARS = 400_000`(Kotlin の `String.length` も UTF-16 コード単位なので単位が一致する)。
+- 超過時は**末尾を残す**(ターミナル出力は末尾ほど新しく、エラーは末尾に出る。LS の `contentAboveCursor.slice(-max)` と同じ向き)。切り出し位置がサロゲートペアの後半に当たる場合は 1 単位進めて、ペアを割らない。
+- 切り詰めたときは通知「Only the last 400,000 characters of the selection were sent.」を出す(数値は定数から生成)。
+- 上限適用は取得直後・DTO 生成前(§9.3 手順 5)。第 3 段のクリップボード読み出し自体は SWT が文字列全体を返すので、そこでの上限はかけられない(残るリスクとして §27)。
+
+#### 9.3.3 タイムアウトと遅延成功の補償(**Codex round 1 P1 反映**)
+
+- **`orTimeout` は `this` を返し元の future 自体を例外完了させる**(#20 の既知事実)。元の応答を観測し続けるため、`original.thenApply { it }`(別インスタンス)に `orTimeout(10s)` を付けたものを `guarded` とする。**`original` には `orTimeout` も `cancel` も付けない**(lsp4j の `cancel` は `$/cancelRequest` を送るが、LS 側の処理の取り消しは保証されない)。
+- `guarded` がタイムアウトしたら: 通知「Duo Chat did not respond in time.」を出し、`inFlight` を解除する(LS が応答しない場合に再実行を永久に塞がないため)。**`newPrompt` は送らない。**
+- 同時に `original.whenComplete` を登録し、**遅れて `true` が返ったら `$/gitlab/ai-context/remove` を同じ `item` で 1 回送る**。これで「プロンプトを伴わないターミナル文脈」が次の会話に紛れ込まない。`false` / 例外なら何もしない(追加されていない)。
+- `remove` の契約: `REMOVE: '$/gitlab/ai-context/remove'`(LS map @28600940)、サーバの受け口 `onRequest(AIContextEndpoints.REMOVE, (item) => chatContextManager.removeSelectedContextItem(item))`(@29322261)。manager は `item.metadata.subType` で provider を引き、`provider.removeSelectedContextItem(item.id)` を呼び、成功で `true`、例外で `false`(@25794149)。provider は id が見つからないと例外(@25789499)→ `false`。したがって **`remove` に渡す `item` は `add` に渡したものと同一(`id` と `metadata.subType` が一致)** でなければならない。
+- `remove` 自体の応答は待つが結果で分岐しない(ログにクラス名 / `true` / `false` のみ)。`remove` にもタイムアウト 10 秒(同じく写しに付ける)。
+- 補償の対象は「タイムアウト後の遅延成功」だけ。通常の成功経路で `newPrompt` を送った後は、webview がプロンプト処理時に選択中の文脈を消費・クリアする(`handleExtensionPrompt` が `GitLabChatRecord.buildWithContext` で文脈を記録へ取り込んだ直後に `Promise.all([processNewUserRecord(record), _clearSelectedContextItems()])`、`packages/webview_duo_chat_classic/dist/index.mjs`、LS map @26258642 付近)ので補償は不要。
+
+#### 9.3.4 Terminal 経路の実現性ゲート(**Codex round 1 P1 反映**)
+
+Terminal の選択取得は、第 1' / 2 / 3 段のどれが実機で機能するかを headless で確定できない(U4 / U5 / U6)。そのため:
+
+1. **完了判定を 2 つに分ける。** 台帳 D3「ターミナル出力を説明」行は、**新世代 Terminal(`org.eclipse.terminal.*`、ユーザー環境 = Pleiades 2025-12)で A8 が 1 段以上で成立し、かつ Console で A9 が成立したときだけ ✅** とする。旧世代(`org.eclipse.tm.terminal.*`)は best-effort で、✅ の条件に含めない。
+2. **Terminal が全段で不成立なら**、同行は **🟡(Console のみ)** と記録し、パリティは 77/85 ではなく **76/85 + 🟡1** とする。そのうえで「Terminal バンドルへの依存追加(Q3 の選択肢 (a))」を**別サイクルの判断事項としてユーザーに提示する**(本サイクル内で方式を変えない。Q3=(b) の決定を維持する)。
+3. **手戻りの範囲を局所化する。** 取得手段は `TerminalOutputSelectionReader` / `ClipboardSelectionCapture` の 2 クラスに閉じ込め、DTO・LS 要求・ゲート・上限・送信・Console 経路はどの取得手段でも共通に使う。依存追加に切り替えても、差し替えは取得クラスと `Require-Bundle` だけで済む。
+4. **実機検証の順序**: 実装 PR の手動検証では **M5(Terminal)を最初に行う**。結果(成立した段、または全段不成立)を PR 本文に記録し、マージ判断と台帳の値はそれに従う。どの段で取れたかは debug ログ(段の番号のみ、内容は出さない)で判別できるようにする。
 
 ## 10. 等価表(F1: VSCode 項目 → Eclipse 項目)
 
@@ -304,7 +366,7 @@ execute(event)                                            ← UI スレッド
 | `gitlab-eclipse-plugin.commands.DuoTutorial` | GitLab Duo Tutorial | `com.gitlab.eclipse.codesuggestions.tutorial.DuoTutorialHandler` |
 | `gitlab-eclipse-plugin.commands.ExplainTerminalOutput` | Explain Terminal Output with Duo | `com.gitlab.eclipse.chat.commands.ExplainTerminalOutputCommandHandler` |
 
-5 件とも **`<command>` を宣言する**(§4-4 の癖を繰り返さない)。
+5 件とも **`<command>` を宣言する**(§4-4 の癖を繰り返さない)。`ExplainTerminalOutput` の `<handler>` には §9.3.1 の `<enabledWhen>` を付ける(他 4 件は常時有効)。
 
 ### 11.2 ソース変数(`org.eclipse.ui.services`、`plugin.xml:502-522` に追記)
 
@@ -365,6 +427,10 @@ VSCode の `when`(`package.json:255-257`)の `config.gitlab.duoChat.enabled && g
 /** LS `AIContextEndpoints.ADD`. 応答は「追加を受理したか」。名前衝突なし(§6.4)。 */
 @JsonRequest("$/gitlab/ai-context/add")
 fun addAiContextItem(item: AiContextItem): CompletableFuture<Boolean?>
+
+/** LS `AIContextEndpoints.REMOVE`. タイムアウト後の遅延成功の補償だけに使う(§9.3.3)。 */
+@JsonRequest("$/gitlab/ai-context/remove")
+fun removeAiContextItem(item: AiContextItem): CompletableFuture<Boolean?>
 ```
 
 - メソッド名と応答型: LS map @28600934(`ADD: '$/gitlab/ai-context/add'`、`request: AIContextItem; response: boolean`)。サーバ側の受け口は @29322157(`onRequest(AIContextEndpoints.ADD, item => chatContextManager.addSelectedContextItem(item))`)。
@@ -434,13 +500,18 @@ data class AiContextItemMetadata(
 |---|---|---|
 | F1 | 外部ブラウザ起動失敗 | `BrowserLauncher.open` が捕捉してログ(`BrowserLauncher.kt:14-18`)。追加処理なし |
 | F1 | `authentication` の `allChecks` が null | `"unknown"` のまま(表示しない) |
-| F2 | Planner が `Refuse`(ワークスペースが読み取り専用、`.project` の解析失敗 = `readDescription` が null 等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
+| F2 | Planner が `Refuse`(同名のユーザープロジェクト / 未知の同名フォルダ) | §9.2 の文言で通知。ワークスペースは一切変更しない |
+| F2 | Job の `CoreException`(ワークスペースが読み取り専用、`.project` の解析失敗等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
 | F2 | `WorkspaceJob` 内の `CoreException` | Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す)。部分状態(プロジェクトだけできた等)は残してよい — 次回実行で分岐表が拾う |
 | F2 | エディタを開けない(`PartInitException`) | `WorkspaceFileOpener.kt:89-103` と同じ包み方。通知 + クラス名ログ。**ファイルは作られている**ので Project Explorer から開ける |
 | F3 | 選択が空 / プレースホルダ / Console でも Terminal でもない部位 | 通知「Select text in the Terminal or Console first.」(R14)。LS 往復なし |
 | F3 | LS 未接続(`languageServer == null`、`GitLabLanguageServerWrapper.kt:24-25`) | 通知「GitLab Duo Chat is not available.」 |
 | F3 | `add` が `false` | 通知「Could not add the terminal output to Duo Chat.」**prompt は送らない**。VSCode は結果を見ずに送る(`:42-43`)が、コンテキストなしの「Explain this terminal output」は空振りになるため、意図的な差 |
-| F3 | `add` が例外 / タイムアウト(§15) | 同上 + ログはクラス名のみ(`TimeoutException` も同様) |
+| F3 | `add` が例外 | 同上 + ログはクラス名のみ |
+| F3 | `add` がタイムアウト(§9.3.3) | 通知「Duo Chat did not respond in time.」。prompt は送らない。遅延成功なら `remove`(結果はログに `true`/`false`/クラス名のみ) |
+| F3 | 実行時ゲート不成立(§9.3.1) | 通知のみ。LS 往復なし |
+| F3 | 入力上限超過(§9.3.2) | 末尾 400,000 単位に切り詰めて続行 + 通知 |
+| F3 | 第 3 段の前提条件不成立(非テキスト内容あり等) | クリップボードに触れず「選択なし」扱い + §9.3 の文言で通知 |
 | F3 | prompt 送信側の失敗(ビューが出せない) | 既存 `reportCannotShow`(`DuoChatWindow.kt:121-124`)が通知・ログする。補償なし(§13) |
 | F3 | クリップボード復元失敗 | §9.3 の表 |
 | F3 | 二重起動 | 2 回目は無視(通知なし、debug ログ 1 行) |
@@ -449,7 +520,7 @@ data class AiContextItemMetadata(
 
 ## 15. タイムアウトとリトライ
 
-- **F3 の `add`**: `.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)` の既存定数と同じ **10 秒**(`GitLabLanguageServerClient.kt:49, 77, 118`)。`ExplainTerminalOutputCommand` は値を引数で受け(テストでは短く)、既定 10 秒。
+- **F3 の `add`**: 既存定数と同じ **10 秒**(`GitLabLanguageServerClient.kt:49, 77, 118`)。ただし **`orTimeout` は元の future に付けず、写し(`thenApply { it }`)に付ける**(§9.3.3。`orTimeout` は `this` を返し元の future を例外完了させるため、付けると遅延成功を観測できない)。`ExplainTerminalOutputCommand` は値を引数で受け(テストでは短く)、既定 10 秒。
 - **UI スレッドを待たせない**: `execute` は future を返した時点で戻る。継続は `whenComplete` で行い、UI に触る継続だけ `asyncExec`(`ClipboardWriter.kt:43-44`、`WorkspaceFileOpener.kt:37-38`: **`syncExec` は使わない**)。
 - **リトライしない。** ユーザーが右クリックし直せばよい。
 - **F1 / F2**: ネットワーク往復がないためタイムアウトなし。F2 の `WorkspaceJob` はキャンセル可能(`IProgressMonitor.isCanceled` を各行動の頭で確認)。
@@ -460,7 +531,7 @@ data class AiContextItemMetadata(
 |---|---|
 | F1 | 完全に冪等(閲覧・ダイアログ表示) |
 | F2 | **冪等**(§9.2 の分岐表: 2 回目以降は既存を開くだけ)。ただし「ユーザーが本文を空にした」場合もそのまま開く(空 ≠ 未作成。書き戻さない) |
-| F3 | **非冪等**(毎回新しい UUID でコンテキストが追加され、毎回新しいプロンプトが送られる)。これは仕様(VSCode も同じ)。二重起動ガードは「同時」だけを防ぐ |
+| F3 | **非冪等**(毎回新しい UUID でコンテキストが追加され、毎回新しいプロンプトが送られる)。これは仕様(VSCode も同じ)。二重起動ガードは「同時」だけを防ぐ。タイムアウト後に再実行した場合、先行分が遅れて成功しても §9.3.3 の `remove` で取り除かれるので、文脈が二重に残らない |
 
 ## 17. 並行処理
 
@@ -503,6 +574,7 @@ data class AiContextItemMetadata(
 | `GitLabLanguageServerClient.kt:106-115` | case 追加 2 件。既存 case の動作は不変 |
 | `GitLabLanguageServer.kt` | メソッド 1 件追加(§11.5)。既存メソッドは不変 |
 | `AuthModule.kt` / `ChatModule.kt` | `single` を各 1 件追加 |
+| `PreferenceConstants.kt` | 非表示キー `DUO_TUTORIAL_PROJECT_LOCATION` を 1 件追加(UI なし・既定値なし・LS へ送らない) |
 | `AuthenticationStateService` | **変更しない**(ポップアップは従来どおり) |
 | `ShowPluginStatusMenu` | 原則変更しない。U1 が否のときだけ `menuManager.update(true)` 1 行 |
 | `ShowSettings` | 変更なし(command id が 1 つ増えるだけ) |
@@ -526,14 +598,16 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `AuthenticationSourceProviderTest` | F1 | 初期 `"unknown"`; `authentication-required` engaged → `"false"`; `invalid-token` engaged → `"false"`; 全て非 engaged → `"true"`; `allChecks == null` → 変化なし。`getProvidedSourceNames`。UI 転送はシームで捕捉(`applyForTest` 相当) |
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
-| `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9) |
+| `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。所有記録が作成より前に行われる順序 |
 | `DuoTutorialHandlerTest` | F2 | `Refuse` → 通知のみ・Job 未起動; Job 完了 OK → エディタ open シームが 1 回; Job 失敗 → open されない |
 | `TerminalOutputSelectionReaderTest` | F3 | `ITextSelection` → text; 空 `ITextSelection` → null; `StructuredSelection(String)` → text; `StructuredSelection(fake CTabItem-like)` でリフレクション経路(`getSelection(): String` を持つ fake の data)→ text; `getSelection` なし → null; `getSelection` が例外 → null(伝播しない) |
-| `ClipboardSelectionCaptureTest` | F3 | fake `ClipboardPort` で: 退避 → プレースホルダ → コピー → 読出 → 復元の**呼び出し順**; 読出がプレースホルダ → null; 復元は例外時も走る(`finally`); 退避 null → `clear` で復元; `SWTError` を捕捉; `dispose` が必ず 1 回; コピーコマンド未ハンドル(`isHandled=false`)→ 一切書き込まない |
+| `ClipboardSelectionCaptureTest` | F3 | fake `ClipboardPort` で: 退避 → プレースホルダ → コピー → 読出 → 復元の**呼び出し順**; 読出がプレースホルダ → null; 復元は例外時も走る(`finally`); 退避 null(空)→ `clear` で復元; `SWTError` を捕捉; `dispose` が必ず 1 回; コピーコマンド未ハンドル → 一切書き込まない; **非テキストのみ(画像 / ファイル)・文字列 + RTF/HTML の複数形式 → 一切書き込まない**(前提条件の各分岐) |
+| `TerminalOutputLimitTest` | F3 | 399,999 / 400,000 / 400,001 単位の境界; 超過時は末尾を残す; 切り出し位置がサロゲートペアの後半 → ペアを割らない; マルチバイト(日本語・絵文字)入力; 切り詰めの有無フラグ |
+| `TerminalOutputGateTest` | F3 | 3 条件の全組み合わせ(chat 無効 / terminal context 不可 / 部位が許可リスト外)で拒否、全て真のときだけ許可 |
 | `TerminalAiContextItemsTest` | F3 | `category="terminal"`, `metadata` の 6 固定値, `content` = 入力, `id` が UUID 形式で毎回異なる |
-| `ExplainTerminalOutputCommandTest` | F3 | `add` true → prompt 送信 1 回・`NewPromptRequest("explainTerminalOutput", null)`; false → 送信なし+通知; 例外 → 同; タイムアウト(短い timeout) → 同; **prompt 送信が add 完了より前に呼ばれない**(add の future を手動で完了させて順序を検証); LS null → 通知 |
-| `ExplainTerminalOutputCommandHandlerTest` | F3 | 選択なし → 通知・LS 未呼出; 二重起動 → 2 回目無視; `inFlight` が失敗経路でも戻る |
-| `GitLabLanguageServerAiContextRequestTest` | F3 | `@JsonRequest("$/gitlab/ai-context/add")` と `ServiceEndpoints.getSupportedMethods` にその名前が含まれること; 戻り値が `CompletableFuture<Boolean>`(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
+| `ExplainTerminalOutputCommandTest` | F3 | `add` true → prompt 送信 1 回・`NewPromptRequest("explainTerminalOutput", null)`; false → 送信なし+通知; 例外 → 同; タイムアウト(短い timeout)→ 送信なし+通知; **タイムアウト後に元の future が true で完了 → `remove` が同一 `item`(同じ `id` / `subType`)で 1 回、prompt は送らない**; タイムアウト後に false / 例外 → `remove` なし; **元の future が `orTimeout` で例外完了していない**(写しにだけ付いている); **prompt 送信が add 完了より前に呼ばれない**(add の future を手動で完了させて順序を検証); LS null → 通知 |
+| `ExplainTerminalOutputCommandHandlerTest` | F3 | 選択なし → 通知・LS 未呼出; 二重起動 → 2 回目無視; `inFlight` が失敗経路でも戻る; **機能無効(chat 無効 / terminal context 不可 / 部位違い)の状態で `execute` を直接呼ぶ → `add` も `newPrompt` も一度も呼ばれない** |
+| `GitLabLanguageServerAiContextRequestTest` | F3 | `@JsonRequest("$/gitlab/ai-context/add")` と `@JsonRequest("$/gitlab/ai-context/remove")` の両方が `ServiceEndpoints.getSupportedMethods` に含まれること; 戻り値が `CompletableFuture<Boolean>`; クライアント側 `GitLabLanguageServerClient` に同名メソッドがないこと(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
 | `TerminalContextStateServiceTest` | F3 | `DuoChatStateServiceTest` の写し |
 
 **手動(実機)**: メニュー表示・可視性の切替・Terminal/Console での選択取得・クリップボード復元・エディタ種別・Code Suggestions の発火(§25)。
@@ -547,23 +621,28 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | A3 | `gitlab_authenticated` が §8.1 の規則どおり 3 値を取る | 自動 |
 | A4 | チュートリアルコマンドで `GitLab Duo Tutorial/duo_tutorial.js` が作られエディタで開き、`didOpen` の `languageId` が `javascript`(LS ログで確認)で、本文中の `const multiply` 直後で Code Suggestions が出る | 実機(M3) |
 | A5 | 2 回目の実行、本文を編集後の実行、プロジェクトを閉じた後の実行のいずれでも、**本文が書き換わらない**で開く | 実機(M4)+ 自動(Planner 全行) |
+| A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)や、未知の同名フォルダがある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
 | A6 | 本文が §12.2 の翻案規則を満たす(MIT 表記あり、Quick Chat なし、実ラベル、エスケープ正しい) | 自動 |
 | A7 | チュートリアル実行後も Duo Chat / Code Suggestions が `duo-disabled-for-project` にならない | 実機(M3 で Diagnostics を確認) |
-| A8 | Terminal(新旧いずれかの世代)で範囲選択 → 右クリック → 「Explain Terminal Output with Duo」で、Duo Chat に「Explain this terminal output」が投げられ、選択内容がコンテキストとして付く | 実機(M5)。到達段(1' / 2 / 3)を記録 |
+| A8 | **新世代 Terminal**(`org.eclipse.terminal.*`、Pleiades 2025-12)で範囲選択 → 右クリック → 「Explain Terminal Output with Duo」で、Duo Chat に「Explain this terminal output」が投げられ、選択内容がコンテキストとして付く。旧世代は best-effort(✅ の条件外) | 実機(M5)。到達段(1' / 2 / 3)を記録。**不成立なら §9.3.4 に従い台帳は 🟡** |
 | A9 | Console(実行結果のプロセスコンソール)で同様 | 実機(M6) |
 | A10 | 選択なしで実行 → 通知のみ、LS 往復なし | 実機(M7)+ 自動 |
 | A11 | 第 3 段に入ったとき、実行前にクリップボードにあった文字列が実行後も残っている | 実機(M8。第 3 段に入る条件は U6)+ 自動(順序・`finally`) |
+| A11b | 実行前のクリップボードが画像のみ / ファイルのみ / 文字列 + リッチテキストのとき、第 3 段が実行されず、クリップボードの内容が実行前と同一 | 実機(M11)+ 自動(前提条件) |
 | A12 | `add` が完了する前に `newPrompt` が送られない | 自動 |
 | A13 | `add` が false / 例外 / タイムアウトで prompt が送られず通知される | 自動 |
+| A13b | タイムアウト後に `add` が遅れて成功したら、同じ項目で `remove` が 1 回送られる | 自動 |
+| A13c | 機能無効状態で(Quick Access / `executeCommand` 等から)直接実行しても、`add` / `newPrompt` が一切送られない | 自動 + 実機(M12) |
+| A13d | 400,000 単位を超える選択は末尾 400,000 単位に切り詰められ、通知が出る。境界とサロゲートペアで正しい | 自動 |
 | A14 | `chat_terminal_context` が engaged のとき、Terminal / Console のメニューに項目が出ない | 実機(M9: `include_terminal_context` 無効なインスタンス、または LS ログで engaged を確認) |
-| A15 | `GitLabLanguageServer` に `$/gitlab/ai-context/add` が宣言され、`ServiceEndpoints` が認識する | 自動 |
+| A15 | `GitLabLanguageServer` に `$/gitlab/ai-context/add` と `$/gitlab/ai-context/remove` が宣言され、`ServiceEndpoints` が認識する | 自動 |
 | A16 | ログに選択内容・クリップボード内容・パスが出ない | コードレビュー + 自動(fake ログで文字列不在) |
 | A17 | `verify.sh` が `FAILSET_IDENTICAL`、detekt がベースラインちょうど | CI 相当 |
 | A18 | `Require-Bundle` が変わらない(`build.gradle.kts` 差分ゼロ) | `git diff` |
 
 ## 25. 手動検証手順
 
-対象環境: Windows(Pleiades 2025-12)と Linux(GTK)。両方で M1〜M9 を行い、結果を PR 本文に記載する。
+対象環境: Windows(Pleiades 2025-12)と Linux(GTK)。両方で M1〜M12 を行い、結果を PR 本文に記載する。**§9.3.4 に従い M5(Terminal)を最初に行う。**
 
 | # | 手順 | 期待 |
 |---|---|---|
@@ -576,6 +655,9 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | M7 | 選択せずに右クリック → 項目 | 通知「Select text in the Terminal or Console first.」。Chat は開かない |
 | M8 | 任意の文字列をコピーしておく → M5 と同じ操作 → どこかに貼り付け | **第 3 段に入った場合**でも元の文字列が貼り付く。第 3 段に入らなかった(1'/2 で取れた)場合はその旨を記録 |
 | M9 | `include_terminal_context` が無効な GitLab インスタンス(または LS ログで `chat-include-terminal-context-unavailable` engaged の状態) | Terminal / Console の右クリックに項目が出ない |
+| M10 | 手で `GitLab Duo Tutorial` という名前のプロジェクト(中身は任意)を作る → コマンド実行 → そのプロジェクトを閉じた状態でも再実行 | どちらも拒否の通知のみ。プロジェクトにファイルが増えず、開閉状態も変わらない |
+| M11 | 画像をコピー(スクリーンショット等)/ ファイルをエクスプローラでコピー / Word 等から書式付き文字列をコピー → Terminal で第 3 段に入る操作 → 貼り付け | 第 3 段は実行されず(debug ログで確認)、元の画像 / ファイル / 書式付き文字列がそのまま貼り付く |
+| M12 | `include_terminal_context` が無効な状態(M9)で Quick Access(Ctrl+3)から「Explain Terminal Output with Duo」を実行 | 実行できない(グレーアウト)か、実行しても通知のみ。Chat にプロンプトが出ず、LS ログに `ai-context/add` がない |
 
 ## 26. 未決事項
 
@@ -589,16 +671,20 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | U6 | Terminal ビューで `org.eclipse.ui.edit.copy` がハンドルされるか(第 3 段が有効になる条件)。ソース上はハンドラ登録が見当たらない | 実機(M5/M8)。否なら第 3 段は到達不能コードになるため、**実機結果を見てから削除するか残すかを決める**(ユーザー決定 Q3=(b) の扱い) |
 | U7 | ProcessConsole の type が `org.eclipse.debug.ui.ProcessConsoleType` として `#ContextMenu` に付くか。Gradle / Maven 等の他コンソール型 | 実機(M6)。他コンソール型は必要になったら locationURI を追加 |
 | U8 | F3 のキーバインド(VSCode `ctrl+alt+t`)を Eclipse で空いているか | 後続サイクル |
+| U9 | 第 3 段の前提条件(5 種の Transfer による非テキスト判定)が、普通にテキストをコピーした状態を誤ってスキップしないか(Windows の合成形式など) | 実機(M8 / M11) |
+| U10 | 閉じたプロジェクトで `IProject.getLocationURI()` が取れ、所有判定のために開く必要がないか | 実機(M10)。取れない場合は「閉じた同名プロジェクト」を一律 `Refuse`(安全側)に倒す |
 
 ## 27. 想定されるリスク
 
 | リスク | 影響 | 緩和 |
 |---|---|---|
 | Terminal で選択テキストがどの段でも取れない(U4/U5/U6 が全て否) | F3 の Terminal 側が「選択なし」通知しか出せない | Console 側は `ITextSelection` で確実。Terminal 側は実機結果を PR に記録し、否なら次サイクルで依存追加(Q3=(a) 相当)を再提案 |
-| クリップボードの非テキスト内容の消失(第 3 段) | ユーザーの貼り付け内容が失われる | 第 1'・2 段を前に置き、第 3 段は `isHandled()` ゲート付き。制限は通知文言と PR 本文に明記 |
+| クリップボードの非テキスト内容の消失(第 3 段) | ユーザーの貼り付け内容が失われる | 第 3 段は「文字列以外の既知形式がない」ときだけ実行(§9.3 の前提条件)。残るのは 5 種の Transfer で識別できないアプリ固有形式のみ(U9)。第 1'・2 段で取れれば第 3 段に入らない |
+| 巨大な選択 | UI スレッドでのクリップボード読み出し・文字列複製のメモリ | 送信前に 400,000 単位へ切り詰め(§9.3.2)。クリップボード読み出し自体は SWT が全体を返すので上限をかけられない(残るリスク) |
+| Terminal で全段不成立 | F3 の Terminal 側が機能しない | §9.3.4 の実機ゲート。台帳は 🟡、依存追加は別サイクルで判断。取得手段は 2 クラスに局所化済み |
 | 状態メニューの可視性が追随しない(U1) | 未認証項目が出っぱなし/出ない | `update(true)` の 1 行で解消可能 |
 | `WorkspaceJob` の `rule = root` が他の Job と競合して待たされる | チュートリアルが数秒遅れる | `isUser = true` で進捗が見える。ワークスペース全体のビルド中でも正しく直列化される |
-| 同名プロジェクトがユーザーのもの | ユーザーのプロジェクトに `duo_tutorial.js` を 1 つ追加する | 分岐表に破壊的行動がない。名前は「GitLab Duo Tutorial」で衝突の蓋然性は低い |
+| 同名プロジェクト/フォルダがユーザーのもの | ユーザーの資産を変更してしまう | 所有記録(§9.2)と一致しなければ無変更で拒否。拒否時はユーザーがリネームする必要がある(UX 上の代償) |
 | lsp4j の名前衝突(§6.4) | 応答が `LinkedTreeMap` になり `ClassCastException` | クライアント側に同名がないことを確認済み。宣言テスト(A15)で固定 |
 | `plugin.xml` の並行 PR 衝突 | マージ時の手戻り | 追記のみ・末尾のみ。既存ブロックは非編集 |
 | headless で UI 配線を検証できない | メニューが出ない等が実機まで露見しない | UI 接触部を最小化し、配線と SWT 殻は `fable` が担当。M1〜M9 |
@@ -610,10 +696,21 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | # | タスク | 内容 | モデル | 理由(CLAUDE.md の表) |
 |---|---|---|---|---|
 | T1 | F1 | `AuthenticationSourceProvider` + Koin 登録 + ディスパッチ 1 行 + `ShowDuoForum` / `ShowDuoDocumentation` + `plugin.xml`(コマンド 3・ハンドラ 3・ソースプロバイダ 1・メニュー 2 ブロク)+ spec 3 本 | `opus` | 既存パターンの複製 + plugin.xml 配線。誤りは次段レビューで検出可能 |
-| T2 | F2 | `DuoTutorialContent` / `Planner` / `WorkspaceWriter` / `Handler` + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 3 本 | `fable` | `WorkspaceJob` → `asyncExec` → エディタの**スレッド境界**と `IProject` 状態の再読み取りを含む。headless で検証不能 |
-| T3 | F3 | DTO + `GitLabLanguageServer` 追加 + `TerminalContextStateService` + ディスパッチ case + `SelectionReader` / `ClipboardSelectionCapture` / `Command` / `Handler` + `plugin.xml`(コマンド 1・ハンドラ 1・ソースプロバイダ 1・メニュー 5 ブロック)+ spec 6 本 | `fable` | SWT `Clipboard`・リフレクション・lsp4j ディスパッチ・UI スレッドホップ。全て「ユーザー実機でのみ発覚」する種類 |
+| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 1 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → エディタの**スレッド境界**と `IProject` 状態の再読み取り・所有判定を含む。headless で検証不能 |
+| T3 | F3 | DTO + `GitLabLanguageServer` 追加 2 件(add / remove)+ `TerminalContextStateService` + ディスパッチ case + `Gate` / `Limit` / `SelectionReader` / `ClipboardSelectionCapture` / `Command` / `Handler` + `plugin.xml`(コマンド 1・ハンドラ 1(`enabledWhen` 付き)・ソースプロバイダ 1・メニュー 5 ブロック)+ spec 8 本 | `fable` | SWT `Clipboard`・リフレクション・lsp4j ディスパッチ・UI スレッドホップ・タイムアウト後の補償。全て「ユーザー実機でのみ発覚」する種類 |
 | R1〜R3 | 各タスクのコードレビュー | — | `fable` | 唯一の安全網。実装者と別モデル(T1)/ 別インスタンス(T2, T3) |
 | R4 | ブランチ全体レビュー + PR 本文(M1〜M9 の手順・U-item 一覧・台帳更新案) | — | `fable` | 同上 |
 | L | 台帳 #7(D3 +2、D4 +1、D1 4 行を「対象外(単一アカウント運用)」に)、#14 / #8 の `vscode.comments` 記述訂正 | — | `haiku` | 即座に目視確認できる |
 
 T3 の実装ブリーフには §9.3 の 3 段と §11.5 の LS 実値、§6.4 の lsp4j 注意、§19 のログ規約を**そのまま**埋め込む(実装者が LS map を再抽出しなくて済むように)。
+
+## 29. Codex レビュー反映履歴
+
+| 巡 | 指摘 | 判断 | 反映先 |
+|---|---|---|---|
+| 1 | P1 Terminal 選択取得の実現可能性を実装前に確定せよ | 採用。headless では確定できないため、台帳の ✅ 条件を実機ゲートに結び、全段不成立なら 🟡・依存追加は別サイクルで判断。取得手段は 2 クラスに局所化 | §1, §9.3.4, A8, M5 の順序, §27 |
+| 1 | P1 非テキストのクリップボード内容を破壊しない | 採用。第 3 段に前提条件(5 種の非テキスト Transfer / 非テキストのみ / コピー未ハンドルならスキップ)を追加。残るのはアプリ固有形式のみ(U9) | §9.3 の表, R16, A11b, M11, §27 |
+| 1 | P1 メニュー非表示を認可境界にしない | 採用。`enabledWhen` + `execute` 冒頭の純関数ゲート(feature state 2 つ + 部位の許可リスト)。無効状態の直接実行で LS 往復ゼロを試験 | §9.3.1, R18, A13c, M12, §23 |
+| 1 | P1 add タイムアウト後の遅延成功を補償 | 採用。`orTimeout` を写しに付け(#20 の既知事実)、元の future が遅れて `true` なら同一 item で `$/gitlab/ai-context/remove`(LS の契約を実ソースで確認) | §9.3.3, §11.5, §15, R20, A13b |
+| 1 | P1 入力上限 | 採用。LS 自身の `MAX_CONTENT_LENGTH = 4e5`(UTF-16 単位)に合わせて 400,000 単位・末尾保持・サロゲート保護・通知 | §9.3.2, R19, A13d, §23 |
+| 1 | P1 同名ユーザープロジェクトを所有とみなさない | 採用。作成前に所有ロケーションを非表示設定キーに記録し、一致しない同名プロジェクト/フォルダは無変更で拒否 | §9.2, R9, A5b, M10, U10 |
