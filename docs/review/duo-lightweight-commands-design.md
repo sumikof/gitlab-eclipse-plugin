@@ -179,7 +179,7 @@ Phase 6 の残余のうち、**独立したサブシステムを持たず、既�
 |---|---|---|
 | `DuoTutorialContent` | `object`。プロジェクト名 `PROJECT_NAME = "GitLab Duo Tutorial"`、ファイル名 `FILE_NAME = "duo_tutorial.js"`、本文 `TEXT`(Kotlin raw string)。 | VSCode も本文をソース内テンプレートに持つ(`duo_tutorial.ts:3-4`)。本リポジトリでも `McpConfigService.kt:45` が `DEFAULT_CONFIG_TEMPLATE` を Kotlin 定数で持つ。**リソースファイルにしない**ので `src/main/resources`(現在 `plugin.xml` / `log4j2.xml` / `icons` のみ)にもビルドにも触れない |
 | `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ディスク上のフォルダの有無・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
-| `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で行動列を実行。`rule = workspace.root`、`isUser = true`。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
+| `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で状態を再読み取りして plan を再計算し、行動列を実行する。**結果を `WriterOutcome` で返す**: `Ready(file)`(開くべき所有ファイル)/ `Refused(reason)`(Job 内の再判定で拒否)/ `Failed`(例外・補償済み)/ `Cancelled`(補償済み)。`IStatus` は Eclipse への報告用で、**エディタを開くかどうかは `WriterOutcome` だけで決める**。`rule = workspace.root`、`isUser = true`。**この Job が作ったプロジェクトを追跡**し、property 設定前の非正常終了(例外・キャンセル)ではすべて削除を試みる(§9.2)。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
 | `DuoTutorialHandler` | `AbstractHandler`。状態の読み取り → Planner → Writer の起動 → 完了時に `asyncExec` で `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
 | `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
 
@@ -216,8 +216,13 @@ execute(event)                                   ← UI スレッド
   ├ 2. plan = DuoTutorialProjectPlanner.plan(state)
   ├ 3. plan が Refuse → 通知して終了(ワークスペースは一切変更しない)
   ├ 4. Writer(WorkspaceJob, rule=root).schedule()   ← バックグラウンド
-  │      runInWorkspace: 状態を再読み取りして plan を再計算(Refuse なら何もせず終了)→ 行動列を順に実行
-  └ 5. Job 完了(JobChangeAdapter.done、OK のとき) → asyncExec { openInActiveEditor(file) }
+  │      runInWorkspace: 状態を再読み取りして plan を再計算 → Refuse なら `Refused(reason)` を返して終了(何も変更しない)
+  │                      → 行動列を順に実行(各行動の前にキャンセル確認)→ `Ready(file)` / `Failed` / `Cancelled`
+  └ 5. Job 完了(JobChangeAdapter.done)→ asyncExec {
+           Ready(file) → openInActiveEditor(file)
+           Refused(reason) → §9.2 の拒否の通知(UI 読み取り後・Job 再読み取り前に同名資産が現れた競合を含む)
+           Failed → 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」
+           Cancelled → 何もしない }
 ```
 
 **所有権の記録(Codex round 1 / round 2 / round 3 P1 反映)**: プラグインが作ったプロジェクトかどうかを**名前でもパスだけでも判定しない**。
@@ -233,7 +238,7 @@ execute(event)                                   ← UI スレッド
 非表示の設定キーを持つ前例は `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。nature やマーカーファイルは使わない(`plugin.xml` の拡張もユーザーから見えるファイルも増やさない)。キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
 
 - **閉じた同名プロジェクトは所有判定をしない**(persistent property は開いていないと読めない)。判定のためにユーザーのプロジェクトを開くことはせず、一律 `Refuse`(安全側)。
-- **記録の順序**: 設定キーへの記録(ID・ロケーション)→ `create` → `open` → persistent property の設定 → `CreateFile`。**`create` の後、`open` または property の設定が失敗したら、この Job 内で作成したプロジェクトを内容ごと削除する**(補償。この行はディスク上にフォルダが無い状態から始まるので、削除対象はこの Job が作ったものだけ)。補償の削除も失敗した場合だけプロジェクトが残り、次回は「閉じている」または「ID 不一致」で `Refuse` に倒れる(通知で削除を案内。§20)。
+- **記録の順序**: 設定キーへの記録(ID・ロケーション)→ `create` → `open` → persistent property の設定 → `CreateFile`。**`create` の後、property の設定が済む前に Job が非正常終了したら(`open` や property 設定の失敗、例外、キャンセルのいずれでも)、この Job 内で作成したプロジェクトを内容ごと削除する**(補償。この行はディスク上にフォルダが無い状態から始まるので、削除対象はこの Job が作ったものだけ)。補償の削除も失敗した場合だけプロジェクトが残り、次回は「閉じている」または「ID 不一致」で `Refuse` に倒れる(通知で削除を案内。§20)。
 - 記録は 1 組だけ(最新の作成)。設定ストアは `InstanceScope`(ワークスペース単位)なので、ワークスペースをまたいで所有を誤認しない。
 
 **分岐表(R9。`state` → 行動)**:
@@ -253,7 +258,7 @@ execute(event)                                   ← UI スレッド
 
 **非 git プロジェクトと LS のプロジェクト方針**: LS の `duo-disabled-for-project` チェックは、`enabledWithoutGitlabProject === true` なら常に非 engaged(LS map @28563384)。Eclipse の既定は `true`(`PreferenceInitializer.kt:22`、`GitLabLanguageServerConfigurationService.kt:154-156` で送信)。`false` にしていても、GitLab プロジェクトが見つからないフォルダは `DuoProjectStatus.NonGitlabProject`(@28416839)であり `DuoDisabled` ではないので engaged にならない(@28562112: `NonGitlabProject` は `hasDuoAccess` を変えない)。**チュートリアルプロジェクトは Duo を無効化しない。**
 
-**ワークスペースフォルダの通知**: 本プラグインは `workspaceFolders` を起動時の設定と `validateConfiguration` に載せる(`ProjectsWorkspaceFolder.kt:6-9`、`ConfigurationValidationService.kt:33`、`GitLabLanguageServerProcessProvider.kt:298`)が、プロジェクト追加時の `didChangeWorkspaceFolders` 送信は grep で見当たらない。新プロジェクトが LS に即時伝わらなくても上記のとおり Duo は無効化されず、Code Suggestions は `didOpen` 単位で動く。**通知の追加は本サイクルの対象外**(U3 として記録)。
+**ワークスペースフォルダの通知(Codex round 5 P2 で訂正)**: 既存の `ProjectOpenLanguageServerListener`(`lsp/listeners/ProjectOpenLanguageServerListener.kt`、Koin で `createdAtStart = true` 登録、`LanguageServerModule.kt:42-43`)が `POST_CHANGE` のプロジェクト集合の変化を検出し、**`workspaceFolders` を載せた `workspace/didChangeConfiguration` を送出ロック(`outboundLock`)の下で非同期に送る**。したがって Tutorial プロジェクトの作成は、既存の仕組みで LS のワークスペースフォルダに反映される(以前の版の U3「通知されない」は誤りだったので削除した)。順序: 作成(Job 内)→ リスナーの非同期送出 と、Job 完了 → `asyncExec` → エディタを開く → `didOpen` は**並行**で、どちらが先に届くかは決まらない。Code Suggestions は `didOpen` 単位で動き、ワークスペースフォルダに無いファイルでも前述のとおり Duo は無効化されない(`NonGitlabProject` は `hasDuoAccess` を変えない)ので、**どちらの順でも補完は損なわれない**。M3 で LS ログに新しいフォルダを含む `didChangeConfiguration` が出ることを確認する。本サイクルでリスナーは変更しない。
 
 ### 9.3 F3
 
@@ -342,11 +347,12 @@ F3 の不変条件: **同じ LS 接続の上で、F3 が追加した terminal it
 
 1. `original = proxy.addAiContextItem(item)`。**`orTimeout` は写し(`original.thenApply { it }`)にだけ付ける**(#20 の既知事実: `orTimeout` は `this` を返し元の future を例外完了させる)。写しが 10 秒でタイムアウトしたら、prompt は送らず `Dropped(ADD_TIMEOUT)` で通知「Duo Chat did not respond in time.」。**ただし解決はしない**: `original` が確定するまで待つ(確定前に `current-items` を見ても、後から追加されうるため)。`original` が永遠に確定しない場合は「未解決」(下記)。
 2. `original` が `true` かつ prompt 送出が可能(§9.3.5 手順 e)→ `newPrompt` を送る(`Sent`)。`false` / 例外 → prompt は送らず `Dropped(ADD_FAILED)`。
-3. 確認ループ(最大 10 秒、200 ms 間隔): `proxy.currentAiContextItems()` を呼び、**応答が非 null のリストで**、`id` が item と一致する要素が**無ければ解決**。**`null` 応答・例外・タイムアウトは「確認失敗」であって「空」ではない**(`orEmpty()` 等で空として扱ってはならない)。確認失敗は次の周回で再試行し、10 秒以内に成功した確認が得られなければ手順 4 の未解決に倒す(Codex round 4 P1 反映)。
+3. 確認ループ(200 ms 間隔): `proxy.currentAiContextItems()` を呼び、**応答が非 null のリストで**、`id` が item と一致する要素が**無ければ解決**。**`null` 応答・例外・タイムアウトは「確認失敗」であって「空」ではない**(`orEmpty()` 等で空として扱ってはならない。Codex round 4 P1 反映)。確認失敗は次の周回で再試行する。**個々の `current-items` / `remove` 呼び出しには、写しに付けた 2 秒のタイムアウトを付ける**(永遠に完了しない応答でもループが次の周回へ進むように。元の future には付けない)。
    - `Sent` の場合: webview がプロンプト処理時に選択中の文脈をクリアする(`handleExtensionPrompt` の `Promise.all([processNewUserRecord(record), _clearSelectedContextItems()])`、`packages/webview_duo_chat_classic/dist/index.mjs`、LS map @26258642 付近)ので、通常は数回の確認で不在になる。**5 秒経っても残っていれば** `remove(item)` を送り、確認を続ける。
    - `Sent` 以外(`ADD_TIMEOUT` / `ADD_FAILED`): 残っていれば直ちに `remove(item)` を送り、確認を続ける(`false` でも内部で追加済みの可能性を排除しない)。
    - **`remove` の戻り値は解決の根拠にしない**(`false` は「見つからない」と「失敗」を区別しない。@25794149 / @25789499)。根拠は常に `current-items` の結果。
-4. 10 秒で不在を確認できない、`current-items` 自体が失敗・タイムアウトする、または `original` が確定しない → **未解決**。run とバリアを保持し、通知「GitLab Duo Chat could not confirm that the terminal output was cleared. Restart the language server to continue.」。**安全側に倒す**: 同じ接続では F3 の再実行も他の classic prompt の送出も止まる(§9.3.5 のバリア)。「Restart Language Server」で接続が替われば解決扱いになる。
+4. **絶対期限(Codex round 5 P1 反映)**: 解決フェーズの開始時(`add` を送った時点)に、個々の future の完了とは独立した**スケジューラのタイマー**を 1 本張る。期限は `add` 送出から **20 秒**(`add` のタイムアウト 10 秒 + 確認 10 秒)。期限到達時点で未解決なら、**`resolution` の状態を CAS で `UNRESOLVED` にして通知を一度だけ出す**: 「GitLab Duo Chat could not confirm that the terminal output was cleared. Restart the language server to continue.」。run とバリアは保持する(**安全側**: 同じ接続では F3 の再実行も他の classic prompt の送出も止まる、§9.3.5)。`original` が確定しない・`current-items` が永遠に返らない場合も、このタイマーで 20 秒後に必ず通知に到達する。
+   `UNRESOLVED` は終端ではない: その後も `original` の確定や確認ループの成功で不在が確認できれば `RESOLVED` に移り、run とバリアを解放する(通知は追加で出さない)。「Restart Language Server」で接続が替われば解決扱いになる。
 
 `current-items` の契約: `CURRENT_ITEMS: '$/gitlab/ai-context/current-items'`(LS map @28600981)、型 `request: undefined; response: AIContextItem[]`(@28601281)、受け口 `onRequest(AIContextEndpoints.CURRENT_ITEMS, () => chatContextManager.getSelectedContextItems())`(@29322403)。`remove` の契約: `REMOVE`(@28600940)、受け口(@29322261)、manager は `metadata.subType` で provider を引き `removeSelectedContextItem(item.id)`(@25794149)、provider は id が無いと例外(@25789499)→ `false`。**`remove` に渡す `item` は `add` に渡したものと同一**でなければならない。
 
@@ -550,7 +556,7 @@ data class AiContextItemMetadata(
 ## 13. トランザクション境界
 
 - **F1**: なし(状態の読み取りと外部プロセス起動のみ)。
-- **F2**: `WorkspaceJob.runInWorkspace` 1 回が境界。`rule = workspace.root` で、プロジェクト作成・open・property 設定・ファイル作成が 1 つのワークスペース操作としてロックされる。**`create` 成功後に `open` か property の設定が失敗したら、この Job が作ったプロジェクトを内容ごと削除して補償する**(§9.2 記録の順序)。ファイル作成の失敗はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で作り直せる)。
+- **F2**: `WorkspaceJob.runInWorkspace` 1 回が境界。`rule = workspace.root` で、プロジェクト作成・open・property 設定・ファイル作成が 1 つのワークスペース操作としてロックされる。**`create` 成功後、property の設定が済む前に非正常終了(失敗・例外・キャンセル)したら、この Job が作ったプロジェクトを内容ごと削除して補償する**(§9.2 記録の順序)。ファイル作成の失敗はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で作り直せる)。
 - **F3**: LS 側の「コンテキスト追加」と「プロンプト送信」は 2 つの独立した操作で、原子性はない。境界を閉じる手段は 2 つ: (1) **追加を送出手順の中へ移す**(§9.3.5)ので、配送が止まる経路はすべて「追加していない」状態で終わる。(2) 追加した後は、**`current-items` で item の不在を確認できるまで**(§9.3.3)同じ接続の他の classic prompt を送らない(送出バリア)。確認できなければ安全側(バリア保持 + LS 再起動の案内)に倒す。接続が替わった場合は旧 LS プロセスごと文脈が失われるので補償不要。
 
 ## 14. エラー処理
@@ -585,7 +591,7 @@ data class AiContextItemMetadata(
 - **F3 の `add`**: 既存定数と同じ **10 秒**(`GitLabLanguageServerClient.kt:49, 77, 118`)。ただし **`orTimeout` は元の future に付けず、写し(`thenApply { it }`)に付ける**(§9.3.3。`orTimeout` は `this` を返し元の future を例外完了させるため、付けると遅延成功を観測できない)。`ExplainTerminalOutputCommand` は値を引数で受け(テストでは短く)、既定 10 秒。
 - **UI スレッドを待たせない**: `execute` は future を返した時点で戻る。継続は `whenComplete` で行い、UI に触る継続だけ `asyncExec`(`ClipboardWriter.kt:43-44`、`WorkspaceFileOpener.kt:37-38`: **`syncExec` は使わない**)。
 - **リトライしない。** ユーザーが右クリックし直せばよい。
-- **F1 / F2**: ネットワーク往復がないためタイムアウトなし。F2 の `WorkspaceJob` はキャンセル可能(`IProgressMonitor.isCanceled` を各行動の頭で確認)。
+- **F1 / F2**: ネットワーク往復がないためタイムアウトなし。F2 の `WorkspaceJob` はキャンセル可能で、**各行動の前**に `IProgressMonitor.isCanceled` を確認する。キャンセルは `Cancelled` として扱い、この Job が作ったプロジェクトが property 設定前なら削除して補償する(§9.2)。property 設定後のキャンセル(ファイル作成前)はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で回復する)。
 
 ## 16. 冪等性
 
@@ -602,7 +608,7 @@ data class AiContextItemMetadata(
 | ソース変数の更新 | `featureStateChange` は lsp4j のディスパッチスレッド(`GitLabLanguageServerClient.kt:99-103` は `runAsync`)。`fireSourceChanged` は `asyncExec` で UI へ(`DuoChatStateService.kt:25-32` と同じ)。フィールド書込は UI 転送前に行う(`ChatAvailabilityService.kt:19-21` の方針) |
 | F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。UI スレッドではワークスペースを変更しない。完了通知 → `asyncExec` → エディタ。ハンドラ内の状態読み取り(`exists` / `isOpen`)は UI スレッドで行う軽い読み取りで、Job 内で**再度**読み直して分岐する(読み取りと実行の間にユーザーがプロジェクトを消す可能性) |
 | F2 の二重起動 | Job に `rule = root` があるので 2 本は直列化される。2 本目は Job 内の再読み取りで「あり」行に落ち、開くだけ |
-| F3 のスレッド境界 | `execute`(UI): 接続の捕捉・ゲート・選択読み取り・クリップボード・run の登録・追跡付き依頼。送出手順(§9.3.5 a〜c)と `newPrompt` の送出・バリア待ちキューの送出: UI スレッド。`add` / `current-items` / `remove` の応答: lsp4j スレッド → UI へは `asyncExec`。期限タイマー: スケジューラスレッド(状態機械の CAS だけを行い、UI には触れない) |
+| F3 のスレッド境界 | `execute`(UI): 接続の捕捉・ゲート・選択読み取り・クリップボード・run の登録・追跡付き依頼。送出手順(§9.3.5 a〜c)と `newPrompt` の送出・バリア待ちキューの送出: UI スレッド。`add` / `current-items` / `remove` の応答: lsp4j スレッド → UI へは `asyncExec`。期限タイマー: スケジューラスレッド(状態機械の CAS だけを行い、UI には触れない)。解決の絶対期限タイマー: スケジューラスレッド(`resolution` の CAS と通知の依頼だけを行う) |
 | F3 の二重起動・再実行 | `AtomicReference<Run?>`(`Run` は `session` と `tracked` を持つ)。登録は `compareAndSet(null or 古い接続の run, 新 run)`、解除は `tracked.resolved` の完了時に `compareAndSet(自分, null)`。**解除は解決(§9.3.3)でだけ行い、タイムアウトや `Dropped(ADD_TIMEOUT)` では解除しない** |
 | 送出バリアと既存の classic prompt | バリアは `GitLabDuoChatWebViewClient` の内部状態(UI スレッドだけが触る)。バリア中の `notify` は FIFO で待たせ、解決後に順に送る。接続が替わったらバリアを解放(§9.3.5 f) |
 | tracked の状態機械 | `PENDING → SENDING`(送出手順 a)と `PENDING → EXPIRED / DROPPED`(期限・上書き・破棄)は CAS で排他。送出に入った tracked は期限切れにならず、期限切れになった tracked は送出されない |
@@ -627,7 +633,7 @@ data class AiContextItemMetadata(
 ## 20. 障害時の復旧方法
 
 - **F1**: 項目が出ない → `gitlab_authenticated` の値を Diagnostics(`ShowDiagnostics`)の feature state で確認(`authentication` の checks)。設定ページは従来どおりメニュー「Show Settings」から到達できる。
-- **F2**: 作成途中の失敗は Job 内の補償(作ったプロジェクトの削除)で残らない。補償の削除まで失敗して閉じた / ID 不一致のプロジェクトが残った場合は、拒否の通知に従い Project Explorer からプロジェクトを削除(内容ごと)して再実行する。ユーザーが Tutorial プロジェクトを閉じた場合は、自分で開いてから再実行する(R6)。
+- **F2**: 作成途中の失敗・キャンセルは Job 内の補償(作ったプロジェクトの削除)で残らない。補償の削除まで失敗して閉じた / ID 不一致のプロジェクトが残った場合は、拒否の通知に従い Project Explorer からプロジェクトを削除(内容ごと)して再実行する。ユーザーが Tutorial プロジェクトを閉じた場合は、自分で開いてから再実行する(R6)。
 - **F3**: item の不在を確認できず未解決になった(§9.3.3 手順 4)→ 通知どおり「Restart Language Server」で接続を替えると、F3 の再実行も他の classic prompt の送出も再開する。それでも Duo Chat の会話に古い文脈が見える場合は「/reset」(= `newConversation`、@26245433 `newConversation: "/reset"`)で新規会話にする。クリップボードが復元されなかった → 通知の文面どおり、ユーザーが再コピーする。
 
 ## 21. 既存機能への影響
@@ -642,6 +648,7 @@ data class AiContextItemMetadata(
 | `PreferenceConstants.kt` | 非表示キー `DUO_TUTORIAL_PROJECT_ID` / `DUO_TUTORIAL_PROJECT_LOCATION` を 2 件追加(UI なし・既定値なし・LS へ送らない) |
 | `AuthenticationStateService` | debounce ブロック内に `AuthenticationSourceProvider.update(featureStateChange, session)` を 1 行追加、`update` に `session` 引数を追加(呼び出し元は `GitLabLanguageServerClient.kt:107` の 1 箇所)。ポップアップの挙動は不変 |
 | `GitLabLanguageServerProcessProvider.kt` | `SecurityScanLifecycle.onServerStopped()` の 2 箇所(`:228` / `:262`)に `reset()` 呼び出しを 2 件ずつ並べる。ライフサイクルの制御は不変 |
+| `ProjectOpenLanguageServerListener` | 変更なし。Tutorial プロジェクトの作成で既存どおり `workspaceFolders` 付きの `didChangeConfiguration` が送られる(§9.2) |
 | `ShowPluginStatusMenu` | 原則変更しない。U1 が否のときだけ `menuManager.update(true)` 1 行 |
 | `ShowSettings` | 変更なし(command id が 1 つ増えるだけ) |
 | `ExplainCode` / `FixCode` / `GenerateTests` / `RefactorCode` | 変更なし(`ChatCommandHandler` は流用せず、F3 は独立クラス。`ChatCommandHandler.kt:17-18` の「アクティブなテキストエディタが必要」という前提がターミナルには当てはまらない) |
@@ -652,8 +659,16 @@ data class AiContextItemMetadata(
 
 ## 22. 移行方法 / ロールバック方法
 
-- **移行なし。** 新規の永続データはない(F2 のプロジェクトはユーザーのワークスペース内の通常プロジェクトで、プラグインは所有権を主張しない)。
-- **ロールバック**: PR の revert で完結。残留物は F2 が作った `GitLab Duo Tutorial` プロジェクトのみ(無害。ユーザーが削除できる)。LS 側に残る terminal コンテキストは LS プロセスの寿命内のみ。
+- **移行なし。** 本サイクルで新設する永続データは次の 3 つで、**いずれも残置を仕様として許容する**(Codex round 5 P2 反映):
+
+  | データ | 保存場所 | 寿命 | revert / アンインストール後 |
+  |---|---|---|---|
+  | `gitlab.duoTutorial.projectId` | `InstanceScope`(ワークスペースの `.metadata/.plugins/org.eclipse.core.runtime/.settings/` 配下の本バンドルの prefs) | ワークスペースの寿命 | 残る。読む者がいなくなるだけで無害 |
+  | `gitlab.duoTutorial.projectLocation` | 同上 | 同上 | 同上 |
+  | プロジェクトの persistent property `com.gitlab.eclipse:duoTutorialId` | ワークスペースのメタデータ(プロジェクト単位) | **プロジェクトの削除で消える** | 残る(プロジェクトが残る限り)。無害 |
+
+  **後方互換の約束**: 上記のキー名・property 名は本機能専用として予約し、**将来も同じ意味でしか使わない**(意味を変えるときは別名にする)。所有判定は「ID(property)とロケーションの両方一致」なので、古い設定値が残っていても、その ID を property に持つプロジェクトが無ければ所有にならない(誤認しない)。停止・移行時の自動削除は行わない(削除処理そのものが新たな失敗経路になるため)。
+- **ロールバック**: PR の revert で完結。残留物は F2 が作った `GitLab Duo Tutorial` プロジェクトと上表の永続データ(いずれも無害。プロジェクトはユーザーが削除できる)。LS 側に残る terminal コンテキストは LS プロセスの寿命内のみ。
 
 ## 23. テスト方針
 
@@ -666,15 +681,15 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
 | `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。所有記録が作成より前に行われる順序 |
-| `DuoTutorialHandlerTest` | F2 | `Refuse` → 通知のみ・Job 未起動; Job 完了 OK → エディタ open シームが 1 回; Job 失敗 → open されない |
-| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` で: `create` 後に `open` 失敗 → 作ったプロジェクトを内容ごと削除 1 回; property 設定失敗 → 同; 補償の削除も失敗 → 例外を Job の ERROR 状態で返す; `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何もしない |
+| `DuoTutorialHandlerTest` | F2 | UI 時点の `Refuse` → 通知のみ・Job 未起動; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクト / フォルダが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない** |
+| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` で: `create` 後に `open` 失敗 → 作ったプロジェクトを内容ごと削除 1 回・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを `create` 前 / `create` 後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら作ったプロジェクトを削除して `Cancelled`、設定後なら残して `Cancelled`** |
 | `TerminalOutputSelectionReaderTest` | F3 | `ITextSelection` → text; 空 `ITextSelection` → null; `StructuredSelection(String)` → text; `StructuredSelection(fake CTabItem-like)` でリフレクション経路(`getSelection(): String` を持つ fake の data)→ text; `getSelection` なし → null; `getSelection` が例外 → null(伝播しない) |
 | `ClipboardSelectionCaptureTest` | F3 | fake `ClipboardPort` で: 退避 → プレースホルダ → コピー → 読出 → 復元の**呼び出し順**; 読出がプレースホルダ → null; 復元は例外時も走る(`finally`); 退避 null(空)→ `clear` で復元; `SWTError` を捕捉; `dispose` が必ず 1 回; コピーコマンド未ハンドル → 一切書き込まない; **非テキストのみ(画像 / ファイル)・文字列 + RTF/HTML の複数形式 → 一切書き込まない**(前提条件の各分岐) |
 | `TerminalOutputLimitTest` | F3 | 399,999 / 400,000 / 400,001 単位の境界; 超過時は末尾を残す; 切り出し位置がサロゲートペアの後半 → ペアを割らない; マルチバイト(日本語・絵文字)入力; 切り詰めの有無フラグ |
 | `TerminalOutputGateTest` | F3 | 2 条件の全組み合わせ(捕捉した接続で terminal context 不可 / 部位が許可リスト外)で拒否、全て真のときだけ許可 |
 | `TerminalAiContextItemsTest` | F3 | `category="terminal"`, `metadata` の 6 固定値, `content` = 入力, `id` が UUID 形式で毎回異なる |
 | `ExplainTerminalOutputCommandTest` | F3 | ゲート通過・選択あり → `TrackedPrompt(NewPromptRequest("explainTerminalOutput", null), item, 捕捉した session)` の追跡付き依頼が 1 回; **依頼の時点で `add` が一度も呼ばれていない**; run の登録と解除(`resolved` 完了時のみ) |
-| `TerminalItemResolverTest` | F3 | fake proxy で: `add` true → `newPrompt` 送出 → `current-items` が item を含まなくなった時点で解決; `Sent` 後 5 秒残る → `remove` を送り、不在確認で解決; `add` false / 例外 → prompt なし、`current-items` に残っていれば `remove`、不在確認で解決; **`remove` が false / 例外 / タイムアウトでも、`current-items` に残る限り解決しない**; 10 秒で未確認 → 未解決(run・バリア保持 + 通知); `current-items` 自体が失敗 → 未解決; **`add` の写しがタイムアウト → prompt なし・`Dropped(ADD_TIMEOUT)`、元の future が確定するまで確認を始めない**; 元の future が遅れて true → 確認ループ(残っていれば remove); 元の future が `orTimeout` で例外完了していない; `newPrompt` 直前に session が変わった → 送らない; **`current-items` が `null` を返す → 解決しない(run・バリア保持、10 秒で未解決)**; **`newPrompt` の送出が同期例外 → `SEND_FAILED` で通知し、必ず確認ループへ進む(item が残っていれば remove → 不在確認)** |
+| `TerminalItemResolverTest` | F3 | fake proxy で: `add` true → `newPrompt` 送出 → `current-items` が item を含まなくなった時点で解決; `Sent` 後 5 秒残る → `remove` を送り、不在確認で解決; `add` false / 例外 → prompt なし、`current-items` に残っていれば `remove`、不在確認で解決; **`remove` が false / 例外 / タイムアウトでも、`current-items` に残る限り解決しない**; 10 秒で未確認 → 未解決(run・バリア保持 + 通知); `current-items` 自体が失敗 → 未解決; **`add` の写しがタイムアウト → prompt なし・`Dropped(ADD_TIMEOUT)`、元の future が確定するまで確認を始めない**; 元の future が遅れて true → 確認ループ(残っていれば remove); 元の future が `orTimeout` で例外完了していない; `newPrompt` 直前に session が変わった → 送らない; **`current-items` が `null` を返す → 解決しない(run・バリア保持、10 秒で未解決)**; **`newPrompt` の送出が同期例外 → `SEND_FAILED` で通知し、必ず確認ループへ進む(item が残っていれば remove → 不在確認)**; **絶対期限: `current-items` が永遠に完了しない future を返す / `original` が確定しない場合でも、fake スケジューラで 20 秒進めると通知が一度だけ出て、run・バリアは保持される**; 期限後に不在が確認できれば解放され、通知は追加で出ない |
 | `ExplainTerminalOutputCommandHandlerTest` | F3 | 選択なし → 通知・LS 未呼出; 機能無効(terminal context 不可 / 部位違い / 接続なし)の状態で `execute` を直接呼ぶ → `add` も `newPrompt` も一度も呼ばれない; **同じ接続で run が残っている間の再実行 → 拒否**; **run の接続が古い(LS 再起動済み)→ 再実行できる**; **LS 再起動前に許可・再起動後の接続で状態未着 → `add` が送られない** |
 | `GitLabLanguageServerAiContextRequestTest` | F3 | `$/gitlab/ai-context/add` / `remove` / `current-items` の 3 件が `ServiceEndpoints.getSupportedMethods` に含まれること; 戻り値の型; クライアント側 `GitLabLanguageServerClient` に同名メソッドがないこと(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
 | `TerminalContextStateServiceTest` | F3 | `DuoChatStateServiceTest` の写し + `isAvailableFor(session)`: 記録と同じ session → 値、別 session → `false`、記録なし → `false` |
@@ -745,7 +760,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 |---|---|---|
 | U1 | 一度生成された状態メニューの項目可視性が、`gitlab_authenticated` の変化に再起動なしで追随するか(`ShowPluginStatusMenu.kt:15-28` は 1 回だけ populate) | 実機(M2)。否なら `menuManager.update(true)` を `execute` に 1 行追加 |
 | U2 | `duo_tutorial.js` を `IDE.openEditor` が何のエディタで開くか(既定テキスト / Generic / Wild Web Developer)。いずれも `ITextEditor` である前提 | 実機(M3)。`ITextEditor` でないエディタが選ばれたら `IDE.openEditor(page, file, "org.eclipse.ui.DefaultTextEditor")` へ固定する |
-| U3 | プロジェクト追加時に LS へ `workspace/didChangeWorkspaceFolders` を送っていない(既存の欠落) | 本サイクルの対象外。§9.2 のとおり Duo は無効化されないため実害なし。別 issue として記録 |
+| U3 | (削除: 既存 `ProjectOpenLanguageServerListener` が通知している。§9.2 のワークスペースフォルダの通知を参照) | — |
 | U4 | Terminal の mouseUp 発火(`StructuredSelection(String)`)が `HandlerUtil.getCurrentSelection` まで届くか(§9.3 第 1' 段) | 実機(M5、到達段の記録) |
 | U5 | 旧 `org.eclipse.tm.terminal.*` 世代の `TabFolderManager` が同じ `setData(terminal)` / 文字列発火を持つか(CDT 側ソースは `plugin.xml` のみ確認) | 実機。旧世代の Eclipse が手元にあれば M5 |
 | U6 | Terminal ビューで `org.eclipse.ui.edit.copy` がハンドルされるか(第 3 段が有効になる条件)。ソース上はハンドラ登録が見当たらない | 実機(M5/M8)。否なら第 3 段は到達不能コードになるため、**実機結果を見てから削除するか残すかを決める**(ユーザー決定 Q3=(b) の扱い) |
@@ -812,3 +827,8 @@ T3 の実装ブリーフには §9.3 の 3 段と §11.5 の LS 実値、§6.4 �
 | 4 | P1 閉じた所有プロジェクトの挙動を一つに確定せよ | 採用。閉じた同名プロジェクトは所有にかかわらず開かずに拒否で統一(persistent property は閉じた状態で読めない)。R6 / A5 / M4 / §13 / §16 / §20 をそろえ、`create` 後の `open` / property 設定の失敗は Job 内で作ったプロジェクトを削除して補償 | §9.2, R6, A5, M4, §13, §16, §20, `DuoTutorialWorkspaceWriterTest` |
 | 4 | P1 null の current-items を不在確認に使うな | 採用。非 null のリストで一致なしのときだけ解決。null・例外・タイムアウトは確認失敗として再試行し、10 秒で未解決に倒す | §9.3.3 手順 3, §11.5, `TerminalItemResolverTest` |
 | 4 | P2 newPrompt の送出例外後も不在確認を | 採用。`SEND_FAILED` を追加し、`add` を送った後は結果・例外にかかわらず `finally` で解決(remove → 不在確認)へ進む | §9.3.5 手順 d / d', `TerminalItemResolverTest` |
+| 5 | P1 Job 内の再判定結果を完了通知へ返せ | 採用。Writer の結果を `WriterOutcome`(`Ready` / `Refused` / `Failed` / `Cancelled`)で返し、`Ready` のときだけエディタを開く。UI 読み取り後・Job 再読み取り前の競合を試験に追加 | §8.2, §9.2 フロー, `DuoTutorialHandlerTest` |
+| 5 | P1 current-items の待機を絶対期限で打ち切れ | 採用。個々の future とは独立したスケジューラのタイマー(`add` 送出から 20 秒)で `UNRESOLVED` と通知を一度だけ確定。個々の呼び出しにも写しに 2 秒のタイムアウト。`UNRESOLVED` 後に不在が確認できれば解放 | §9.3.3 手順 3・4, §17, `TerminalItemResolverTest` |
+| 5 | P2 キャンセル時にも作成途中のプロジェクトを補償せよ | 採用。この Job が作ったプロジェクトを追跡し、property 設定前の非正常終了(失敗・例外・キャンセル)はすべて削除。各行動間のキャンセルを試験 | §9.2, §13, §15, §20, `DuoTutorialWorkspaceWriterTest` |
+| 5 | P2 既存のワークスペース通知を設計に反映せよ | 採用(以前の記述の誤りを訂正)。`ProjectOpenLanguageServerListener` が `workspaceFolders` 付きの `didChangeConfiguration` を送ることを記載し、`didOpen` との順序がどちらでも補完を損なわないことを明記。U3 を削除 | §9.2, §21, U3, M3 |
+| 5 | P2 永続データをロールバック設計に記載せよ | 採用。3 つの永続データ(設定キー 2・persistent property 1)の保存場所・寿命・revert 後の扱いを表にし、残置を仕様として許容、キー名の予約(意味を変えない)を約束 | §22 |
