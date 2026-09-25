@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.webview
 
+import com.gitlab.eclipse.knowledgegraph.KnowledgeGraphState
 import org.eclipse.jface.resource.ImageDescriptor
 import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.IPersistableElement
@@ -57,6 +58,15 @@ class WebviewEditorInput(val key: WebviewEditorKey, private val fallbackTitle: S
     fun securityVulnDetails(): WebviewEditorInput = WebviewEditorInput(
       WebviewEditorKey(SECURITY_VULN_DETAILS_WEBVIEW_ID, emptyMap()),
       SECURITY_VULN_DETAILS_TITLE,
+    )
+
+    /**
+     * The Knowledge Graph; one shared tab. Not an LS-hosted webview: the tab is resolved through the
+     * address `KnowledgeGraphState` holds (plan §16).
+     */
+    fun knowledgeGraph(): WebviewEditorInput = WebviewEditorInput(
+      WebviewEditorKey(KnowledgeGraphState.WEBVIEW_ID, emptyMap()),
+      KnowledgeGraphState.TITLE,
     )
   }
 }

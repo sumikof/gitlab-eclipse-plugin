@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp.webview
 
+import com.gitlab.eclipse.knowledgegraph.KnowledgeGraphState
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.utils.logger
@@ -88,7 +89,14 @@ class WebviewLoadCoordinator(
       is WebviewResolution.Resolved -> show(id, resolution, queryParams)
       WebviewResolution.LanguageServerUnavailable -> Outcome.Message(MESSAGE_WAITING)
       is WebviewResolution.Failed -> failure(id, CATEGORY_UNREACHABLE, resolution.cause, MESSAGE_UNREACHABLE)
-      is WebviewResolution.NotAdvertised -> failure(id, CATEGORY_NOT_ADVERTISED, null, notProvidedMessage(id))
+      // Plan §12 / §15: the graph is never advertised, so no address means `gkg` is not running —
+      // the user's environment, not a failure. It gets its own explanation and no Error Log entry.
+      is WebviewResolution.NotAdvertised ->
+        if (id == KnowledgeGraphState.WEBVIEW_ID) {
+          Outcome.Message(KnowledgeGraphState.NOT_RUNNING_MESSAGE)
+        } else {
+          failure(id, CATEGORY_NOT_ADVERTISED, null, notProvidedMessage(id))
+        }
       is WebviewResolution.NoUri -> failure(id, CATEGORY_NO_URI, null, notProvidedMessage(id))
     }
   }
