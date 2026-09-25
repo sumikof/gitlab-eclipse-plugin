@@ -375,7 +375,7 @@ Terminal の選択取得は、第 1' / 2 / 3 段のどれが実機で機能す�
 
 | 追加 | 内容 |
 |---|---|
-| `PromptDelivery`(`chat.webview`) | `Sent` / `Dropped(reason)`。`reason` は `VIEW_UNAVAILABLE` / `NOT_SHOWN` / `SUPERSEDED` / `EXPIRED` / `DISPOSED` / `SESSION_CHANGED` / `ADD_FAILED` / `ADD_TIMEOUT` / `SEND_FAILED` |
+| `PromptDelivery`(`chat.webview`) | `Sent` / `Dropped(reason)`。`reason` は `VIEW_UNAVAILABLE` / `NOT_SHOWN` / `SUPERSEDED` / `EXPIRED` / `DISPOSED` / `SESSION_CHANGED` / `ADD_FAILED` / `ADD_TIMEOUT` / `SEND_FAILED` / `NOT_AVAILABLE` |
 | `TrackedPrompt` | `payload` / `attachment: AiContextItem` / `session` / `result: CompletableFuture<PromptDelivery>` / `resolved: CompletableFuture<Unit>`(§9.3.3 の解決)と、**状態機械 `AtomicReference<State>`(`PENDING` → `SENDING` → 終端、または `PENDING` → `EXPIRED`/`DROPPED`)**。遷移は CAS で一度だけ。期限: 作成から **30 秒**で `PENDING → EXPIRED` を試み、成功したら `Dropped(EXPIRED)`(タイマーは既存のスケジューラ。`SENDING` 以降には効かない) |
 | `openDuoChatWindowWithTrackedClassicPrompt(tracked)` | `DuoChatWindow.kt` に追加。`showDuoChatView()` が null なら `Dropped(VIEW_UNAVAILABLE)` |
 | `LanguageServerBrowserView.requestClassicPrompt(tracked)` | 既存と**同じ 1 枠**。追跡付きの依頼が枠にある間に**どちらの形の**新しい依頼が来ても、古い方を `Dropped(SUPERSEDED)`(`PENDING → DROPPED` の CAS)。route されなければ `Dropped(NOT_SHOWN)`。ビューの `dispose` で `Dropped(DISPOSED)`。枠の規則は SWT 非依存の `PendingClassicPromptSlot` に切り出す |
@@ -384,7 +384,7 @@ Terminal の選択取得は、第 1' / 2 / 3 段のどれが実機で機能す�
 **送出手順(UI スレッド、tracked 1 件につき)**:
 
 - a. `PENDING → SENDING` の CAS。失敗(期限切れ・上書き済み)→ 何もしない。
-- b. `snapshot = currentSnapshot` を 1 回読む。null または `snapshot.session !== tracked.session` → `Dropped(SESSION_CHANGED)`(`add` を送っていないので後始末なし)。
+- b. `snapshot = currentSnapshot` を 1 回読む。null または `snapshot.session !== tracked.session` → `Dropped(SESSION_CHANGED)`(`add` を送っていないので後始末なし)。**続けて `TerminalContextStateService.isAvailableFor(tracked.session)` を再評価し、偽なら `Dropped(NOT_AVAILABLE)` で通知「Explaining terminal output is not available.」**(ハンドラのゲート通過後、フォーカス待ちの間に同じ接続でログアウト・ライセンス失効・`include_terminal_context` 無効化が起きた場合に、`add` を送らない。Codex round 6 P1 反映)。
 - c. **送出バリアを張る**(バリアは `session` 付き)。バリアが張られている間、同じクライアントへの**他の `notify`(追跡なしを含む)は送出順を保ったままバリア待ちキューに積む**。
 - d. `snapshot.proxy` に対して §9.3.3 の手順 1〜2(`add` → 結果に応じて `newPrompt` を送るか `Dropped`)。`newPrompt` を送る直前にも `currentSnapshot.session === tracked.session` を確認し、違えば送らず `Dropped(SESSION_CHANGED)`。**`pluginNotification` の呼び出しが同期例外を投げたら `Dropped(SEND_FAILED)` とし、通知「The request was not delivered to Duo Chat.」を出す**(ログは例外クラス名のみ)。
 - d'. **`add` を送った後は、手順 d の結果(`Sent` / `Dropped(ADD_FAILED / ADD_TIMEOUT / SESSION_CHANGED / SEND_FAILED)`)や途中の例外にかかわらず、必ず手順 e の解決へ進む**(`try` / `finally` 構造。Codex round 4 P2 反映)。`SEND_FAILED` / `SESSION_CHANGED`(送出直前に判明)は `Sent` 以外と同じく、item が残っていれば直ちに `remove` → 不在確認。
@@ -569,7 +569,7 @@ data class AiContextItemMetadata(
 | F1 | LS の停止・再起動 | `"unknown"` に戻し、新しい接続の debounce 済みの値が届くまで Sign in 項目を出さない |
 | F2 | Planner が `Refuse`(同名のユーザープロジェクト / 未知の同名フォルダ) | §9.2 の文言で通知。ワークスペースは一切変更しない |
 | F2 | Job の `CoreException`(ワークスペースが読み取り専用、`.project` の解析失敗等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
-| F2 | `WorkspaceJob` 内の `CoreException` | Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す)。部分状態(プロジェクトだけできた等)は残してよい — 次回実行で分岐表が拾う |
+| F2 | `WorkspaceJob` 内の `CoreException` / 例外 / キャンセル | **§9.2 の補償規則と同じ**: property 設定前ならこの Job が作ったプロジェクトを内容ごと削除して `Failed` / `Cancelled`。property 設定後の `CreateFile` 失敗だけは所有済みプロジェクトを残して `Failed`(次回「ファイルなし」行で回復)。補償の削除まで失敗したときだけ Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す) |
 | F2 | エディタを開けない(`PartInitException`) | `WorkspaceFileOpener.kt:89-103` と同じ包み方。通知 + クラス名ログ。**ファイルは作られている**ので Project Explorer から開ける |
 | F3 | 選択が空 / プレースホルダ / Console でも Terminal でもない部位 | 通知「Select text in the Terminal or Console first.」(R14)。LS 往復なし |
 | F3 | LS 未接続(`languageServer == null`、`GitLabLanguageServerWrapper.kt:24-25`) | 通知「GitLab Duo Chat is not available.」 |
@@ -689,12 +689,12 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `TerminalOutputGateTest` | F3 | 2 条件の全組み合わせ(捕捉した接続で terminal context 不可 / 部位が許可リスト外)で拒否、全て真のときだけ許可 |
 | `TerminalAiContextItemsTest` | F3 | `category="terminal"`, `metadata` の 6 固定値, `content` = 入力, `id` が UUID 形式で毎回異なる |
 | `ExplainTerminalOutputCommandTest` | F3 | ゲート通過・選択あり → `TrackedPrompt(NewPromptRequest("explainTerminalOutput", null), item, 捕捉した session)` の追跡付き依頼が 1 回; **依頼の時点で `add` が一度も呼ばれていない**; run の登録と解除(`resolved` 完了時のみ) |
-| `TerminalItemResolverTest` | F3 | fake proxy で: `add` true → `newPrompt` 送出 → `current-items` が item を含まなくなった時点で解決; `Sent` 後 5 秒残る → `remove` を送り、不在確認で解決; `add` false / 例外 → prompt なし、`current-items` に残っていれば `remove`、不在確認で解決; **`remove` が false / 例外 / タイムアウトでも、`current-items` に残る限り解決しない**; 10 秒で未確認 → 未解決(run・バリア保持 + 通知); `current-items` 自体が失敗 → 未解決; **`add` の写しがタイムアウト → prompt なし・`Dropped(ADD_TIMEOUT)`、元の future が確定するまで確認を始めない**; 元の future が遅れて true → 確認ループ(残っていれば remove); 元の future が `orTimeout` で例外完了していない; `newPrompt` 直前に session が変わった → 送らない; **`current-items` が `null` を返す → 解決しない(run・バリア保持、10 秒で未解決)**; **`newPrompt` の送出が同期例外 → `SEND_FAILED` で通知し、必ず確認ループへ進む(item が残っていれば remove → 不在確認)**; **絶対期限: `current-items` が永遠に完了しない future を返す / `original` が確定しない場合でも、fake スケジューラで 20 秒進めると通知が一度だけ出て、run・バリアは保持される**; 期限後に不在が確認できれば解放され、通知は追加で出ない |
+| `TerminalItemResolverTest` | F3 | fake proxy で: `add` true → `newPrompt` 送出 → `current-items` が item を含まなくなった時点で解決; `Sent` 後 5 秒残る → `remove` を送り、不在確認で解決; `add` false / 例外 → prompt なし、`current-items` に残っていれば `remove`、不在確認で解決; **`remove` が false / 例外 / タイムアウトでも、`current-items` に残る限り解決しない**; `add` 送出から 20 秒の絶対期限までに不在を確認できない → 未解決(run・バリア保持 + 通知 1 回); `current-items` 自体が失敗 → 未解決; **`add` の写しがタイムアウト → prompt なし・`Dropped(ADD_TIMEOUT)`、元の future が確定するまで確認を始めない**; 元の future が遅れて true → 確認ループ(残っていれば remove); 元の future が `orTimeout` で例外完了していない; `newPrompt` 直前に session が変わった → 送らない; **`current-items` が `null` を返す → 解決しない(run・バリア保持、`add` 送出から 20 秒の絶対期限で未解決)**; **`newPrompt` の送出が同期例外 → `SEND_FAILED` で通知し、必ず確認ループへ進む(item が残っていれば remove → 不在確認)**; **絶対期限: `current-items` が永遠に完了しない future を返す / `original` が確定しない場合でも、fake スケジューラで 20 秒進めると通知が一度だけ出て、run・バリアは保持される**; 期限後に不在が確認できれば解放され、通知は追加で出ない; **期限は絶対期限 1 本だけ**(`add` の写しのタイムアウト 10 秒は prompt を送るかどうかの判断にだけ使い、未解決通知の時刻には影響しない) |
 | `ExplainTerminalOutputCommandHandlerTest` | F3 | 選択なし → 通知・LS 未呼出; 機能無効(terminal context 不可 / 部位違い / 接続なし)の状態で `execute` を直接呼ぶ → `add` も `newPrompt` も一度も呼ばれない; **同じ接続で run が残っている間の再実行 → 拒否**; **run の接続が古い(LS 再起動済み)→ 再実行できる**; **LS 再起動前に許可・再起動後の接続で状態未着 → `add` が送られない** |
 | `GitLabLanguageServerAiContextRequestTest` | F3 | `$/gitlab/ai-context/add` / `remove` / `current-items` の 3 件が `ServiceEndpoints.getSupportedMethods` に含まれること; 戻り値の型; クライアント側 `GitLabLanguageServerClient` に同名メソッドがないこと(`GitLabLanguageServerPluginRequestTest.kt:18-31` の写し) |
 | `TerminalContextStateServiceTest` | F3 | `DuoChatStateServiceTest` の写し + `isAvailableFor(session)`: 記録と同じ session → 値、別 session → `false`、記録なし → `false` |
 | `PendingClassicPromptSlotTest` | F3 | 追跡付きの依頼を置いた後に追跡付き / 追跡なしの依頼が来る → 古い方が `SUPERSEDED` で 1 回だけ確定; route されない解決 → `NOT_SHOWN`; route された → クライアントへ渡る; 破棄 → `DISPOSED`; 期限切れ済みの tracked は route されない; 追跡なしだけのときは従来と同じ後勝ち(既存の挙動の回帰試験) |
-| `GitLabDuoChatWebViewClientTrackedTest` | F3 | フォーカスあり・同じ session → 送出手順(`add` → `newPrompt`); session 不一致 / 接続なし → `add` を送らず `SESSION_CHANGED`; フォーカス待ち → キューに積み、フォーカス時に同じ手順; **キュー上で期限切れ → フォーカス時に送らずキューから外れる**; 期限と送出の競合(CAS)で二重確定しない; 追跡なしの `notify` は、送出手順が進行中でなければ従来どおり即時 / キュー |
+| `GitLabDuoChatWebViewClientTrackedTest` | F3 | フォーカスあり・同じ session → 送出手順(`add` → `newPrompt`); session 不一致 / 接続なし → `add` を送らず `SESSION_CHANGED`; フォーカス待ち → キューに積み、フォーカス時に同じ手順; **キュー上で期限切れ → フォーカス時に送らずキューから外れる**; 期限と送出の競合(CAS)で二重確定しない; 追跡なしの `notify` は、送出手順が進行中でなければ従来どおり即時 / キュー; **ハンドラ実行後・フォーカス取得前に同じ接続の terminal context が許可→不許可に変わる → `add` を送らず `NOT_AVAILABLE`** |
 | `ClassicOutboundBarrierTest` | F3 | バリア中の追跡なし `notify` 3 件が FIFO で保持され、解決後に同じ順で送られる; 未解決の間は送られない; 接続が替わった後の `notify` でバリアが解放され、新しい接続へ送られる; **「F3 送出中に Explain Code」→ Explain Code の `newPrompt` は F3 の item の不在確認より後に送られる**(受信順と処理完了順の逆転を fake LS で再現しても、F3 の item を含む状態で Explain Code が送られない) |
 
 **手動(実機)**: メニュー表示・可視性の切替・Terminal/Console での選択取得・クリップボード復元・エディタ種別・Code Suggestions の発火(§25)。
@@ -727,6 +727,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | A13i | F3 の送出中(`add` 〜 不在確認)に実行された他の classic コマンドの prompt は、F3 の item の不在確認の後に送られる | 自動(`ClassicOutboundBarrierTest`)+ 実機(M13) |
 | A3b | 起動直後の古い認証状態の連続通知で Sign in 項目が揺れない。LS の再起動後、新しい接続の状態が確定するまで Sign in 項目は出ない | 自動 + 実機(M2) |
 | A13h | `add` の完了と prompt 送信の間に LS が再起動したとき、prompt は新しい接続へ送られない(`SESSION_CHANGED`) | 自動 |
+| A13j | ハンドラ実行後、配送前(フォーカス待ち等)に同じ接続で terminal context が不許可になったとき、`add` が送られない | 自動 |
 | A14 | `chat_terminal_context` が engaged のとき、Terminal / Console のメニューに項目が出ない | 実機(M9: `include_terminal_context` 無効なインスタンス、または LS ログで engaged を確認) |
 | A15 | `GitLabLanguageServer` に `$/gitlab/ai-context/add` / `remove` / `current-items` が宣言され、`ServiceEndpoints` が認識する | 自動 |
 | A16 | ログに選択内容・クリップボード内容・パスが出ない | コードレビュー + 自動(fake ログで文字列不在) |
@@ -832,3 +833,6 @@ T3 の実装ブリーフには §9.3 の 3 段と §11.5 の LS 実値、§6.4 �
 | 5 | P2 キャンセル時にも作成途中のプロジェクトを補償せよ | 採用。この Job が作ったプロジェクトを追跡し、property 設定前の非正常終了(失敗・例外・キャンセル)はすべて削除。各行動間のキャンセルを試験 | §9.2, §13, §15, §20, `DuoTutorialWorkspaceWriterTest` |
 | 5 | P2 既存のワークスペース通知を設計に反映せよ | 採用(以前の記述の誤りを訂正)。`ProjectOpenLanguageServerListener` が `workspaceFolders` 付きの `didChangeConfiguration` を送ることを記載し、`didOpen` との順序がどちらでも補完を損なわないことを明記。U3 を削除 | §9.2, §21, U3, M3 |
 | 5 | P2 永続データをロールバック設計に記載せよ | 採用。3 つの永続データ(設定キー 2・persistent property 1)の保存場所・寿命・revert 後の扱いを表にし、残置を仕様として許容、キー名の予約(意味を変えない)を約束 | §22 |
+| 6 | P1 add の直前に feature state を再検証せよ | 採用。送出手順 b で session 照合に続けて `isAvailableFor(tracked.session)` を再評価し、不許可なら `Dropped(NOT_AVAILABLE)`(`add` 前) | §9.3.5 手順 b, A13j, `GitLabDuoChatWebViewClientTrackedTest` |
+| 6 | P1 CoreException 時の補償方針を統一せよ | 採用。§14 の古い「部分状態は残してよい」を削除し、§9.2 の補償規則(property 設定前は削除、設定後の `CreateFile` 失敗だけ残す)に統一 | §14 |
+| 6 | P2 未解決通知の時刻を 20 秒に統一せよ | 採用。試験定義の旧 10 秒を `add` 送出から 20 秒の絶対期限に置換し、`add` の写しのタイムアウト 10 秒は prompt 送出の判断にのみ使うと明記 | §23 `TerminalItemResolverTest` |
