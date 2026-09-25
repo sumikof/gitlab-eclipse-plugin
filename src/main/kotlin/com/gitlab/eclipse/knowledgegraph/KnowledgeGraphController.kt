@@ -25,8 +25,9 @@ class KnowledgeGraphController(
   /**
    * [payload] is `Any?` rather than a DTO so that parsing can never fail (§15): Gson turns any JSON
    * value — object, array, string, number — into an `Object`, so `PluginMessageService` never reaches
-   * the parse-failure branch that WARNs the whole payload, i.e. the address. A JSON `null` arrives as
-   * `null`. The shape is checked afterwards by [knowledgeGraphUrlOf], which yields `null` for anything
+   * the parse-failure branch that WARNs the whole payload, i.e. the address. A notification with no
+   * payload never gets this far: `PluginMessageService` drops it with a WARN that names only the
+   * route. The shape is checked afterwards by [knowledgeGraphUrlOf], which yields `null` for anything
    * but an object with a non-blank string `url`.
    */
   @PluginNotification("ready")
