@@ -450,6 +450,13 @@
                 name="Sign in to GitLab"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- Duo lightweight commands design §11.1 F2: creates the "GitLab Duo Tutorial" project and opens its file. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.DuoTutorial"
+                name="GitLab Duo Tutorial"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -1026,6 +1033,11 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.SignIn"
                 class="com.gitlab.eclipse.handlers.ShowSettings"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.DuoTutorial"
+                class="com.gitlab.eclipse.codesuggestions.tutorial.DuoTutorialHandler"
         />
     </extension>
 
@@ -1773,6 +1785,23 @@
                     label="Sign in to GitLab">
                 <visibleWhen checkEnabled="false">
                     <with variable="gitlab_sign_in_required">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+
+        <!-- Duo lightweight commands design §11.3 R10 / ledger R1: contributed after the Duo Documentation / Forum
+             block above with the same ?after=, so it lands directly after "Show Documentation", ahead of them.
+             Visible on the same condition as the Duo Chat commands (the reference extension's `gl.duoTutorial`). -->
+        <menuContribution
+                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?after=gitlab-eclipse-plugin.menus.showDocumentation">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.DuoTutorial"
+                    id="gitlab-eclipse-plugin.menus.duoTutorial"
+                    label="GitLab Duo Tutorial">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_enabled">
                         <equals value="true"/>
                     </with>
                 </visibleWhen>
