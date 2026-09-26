@@ -148,7 +148,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
 | `DuoTutorialContent` | `object`。プロジェクト名 `PROJECT_NAME = "GitLab Duo Tutorial"`、ファイル名 `FILE_NAME = "duo_tutorial.js"`、本文 `TEXT`(Kotlin raw string)。 | VSCode も本文をソース内テンプレートに持つ(`duo_tutorial.ts:3-4`)。本リポジトリでも `McpConfigService.kt:45` が `DEFAULT_CONFIG_TEMPLATE` を Kotlin 定数で持つ。**リソースファイルにしない**ので `src/main/resources`(現在 `plugin.xml` / `log4j2.xml` / `icons` のみ)にもビルドにも触れない |
 | `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で状態を再読み取りして plan を再計算し、行動列を実行する。**結果を `WriterOutcome` で返す**(**保持用の参照は `schedule` 前に `Cancelled` で初期化する**。root rule を待つ間にキャンセルされると Eclipse は `runInWorkspace` を呼ばずに `done` を `CANCEL_STATUS` で通知するため、初期値がそのまま結果になる。Codex round 10 P2 反映): `Ready(file)`(開くべき所有ファイル)/ `Refused(reason)`(Job 内の再判定で拒否)/ `Failed`(例外・補償済み)/ `Cancelled`(補償済み)。`IStatus` は Eclipse への報告用で、**エディタを開くかどうかは `WriterOutcome` だけで決める**。`rule = workspace.root`、`isUser = true`。**この Job が作ったプロジェクトを追跡**し、property 設定前の非正常終了(例外・キャンセル)ではすべて削除を試みる(§9.2)。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
-| `DuoTutorialHandler` | `AbstractHandler`。状態の読み取り → Planner → Writer の起動 → 完了時に `asyncExec` で `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
+| `DuoTutorialHandler` | `AbstractHandler`。**Writer の起動だけ**を行い、UI スレッドでは所有も拒否も判定しない(§9.2)。完了時は `WriterOutcome` に応じて、`Ready` なら `OpenJob`(`UIJob`、`rule = workspace.root`)を起動し、開く直前に所有を再検証してから `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
 | `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
 
 ### 8.3 (F3 分離により該当なし)
@@ -172,18 +172,25 @@ F3 のコンポーネント(DTO / 選択取得 / ゲート / 上限 / 追跡付�
 
 ```
 execute(event)                                   ← UI スレッド
-  ├ 1. state = 状態の読み取り(IProject.exists/isOpen/locationURI、記録済み所有ロケーション、IFile.exists)
-  ├ 2. plan = DuoTutorialProjectPlanner.plan(state)
-  ├ 3. plan が Refuse → 通知して終了(ワークスペースは一切変更しない)
-  ├ 4. Writer(WorkspaceJob, rule=root).schedule()   ← バックグラウンド
-  │      runInWorkspace: 状態を再読み取りして plan を再計算 → Refuse なら `Refused(reason)` を返して終了(何も変更しない)
-  │                      → 行動列を順に実行(各行動の前にキャンセル確認)→ `Ready(file)` / `Failed` / `Cancelled`
-  └ 5. Job 完了(JobChangeAdapter.done)→ asyncExec {
-           Ready(file) → openInActiveEditor(file)
-           Refused(reason) → §9.2 の拒否の通知(UI 読み取り後・Job 再読み取り前に同名資産が現れた競合を含む)
-           Failed → 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」
-           Cancelled → 何もしない }
+  └ 1. Writer(WorkspaceJob, rule=root).schedule() だけを行う(UI スレッドでは所有も拒否も判定しない。Codex round 18 P2 反映)
+         runInWorkspace: 状態を読み取り(IProject.exists/isOpen/locationURI・persistent property・記録済み ID とロケーション・IFile.exists)
+                         → plan = DuoTutorialProjectPlanner.plan(state)
+                         → Refuse なら `Refused(reason)` を返して終了(何も変更しない)
+                         → 行動列を順に実行(各行動の前にキャンセル確認)→ `Ready` / `Failed` / `Cancelled`
+     Job 完了(JobChangeAdapter.done):
+         Ready → OpenJob(UIJob, rule = workspace.root)を schedule(下記)
+         Refused(reason) → §9.2 の拒否の通知
+         Failed → 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」
+         Cancelled → 何もしない
+  OpenJob(UIJob, rule = workspace.root)← UI スレッド、ワークスペース変更と直列化(Codex round 18 P2 反映)
+         runInUIThread: **開く直前に所有をもう一度検証**(同名プロジェクトが開いている・persistent property が記録 ID と一致・locationURI が記録と一致・`duo_tutorial.js` が存在)
+                        → 一致 → openInActiveEditor(file)
+                        → 不一致(`Ready` の後にプロジェクトが削除・差し替えられた等)→ 開かずに §9.2 の拒否の通知
 ```
+
+**UI スレッドで判定しない理由**: 1 回目の Writer が `create` / `open` を終えて persistent property を設定する前に 2 回目を実行すると、UI 側の判定は作成途中のプロジェクトを「所有不一致」と読んで誤って拒否しうる。判定を root rule の中だけで行えば、2 回目の Job は 1 回目の完了を待ってから再判定するので、作成途中の状態を見ない。
+
+**開く処理を root rule 付きの `UIJob` にする理由**: `Ready` の確定から UI での open までの間に、待機中の別の workspace Job がプロジェクトを削除して同名のユーザープロジェクトを作ると、`IFile` ハンドルは同じ workspace path の別物を指す。root rule を持つ `UIJob` は他の workspace 変更と直列化され、その中で開く直前に所有を再検証するので、所有確認済みでないファイルを開かない。検証と open は同じ `runInUIThread` 内で、ワークスペースの変更は root rule により割り込まない。
 
 **作成先(Codex round 13 P1 反映)**: Tutorial プロジェクトは**ワークスペース直下の既定ロケーションに置かない**。プラグインの状態ディレクトリ配下の、**作成ごとにランダムな名前のディレクトリ**に置く:
 
@@ -371,8 +378,8 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 | 論点 | 方針 |
 |---|---|
 | ソース変数の更新 | `featureStateChange` は lsp4j のディスパッチスレッド(`GitLabLanguageServerClient.kt:99-103` は `runAsync`)。`fireSourceChanged` は `asyncExec` で UI へ(`DuoChatStateService.kt:25-32` と同じ)。フィールド書込は UI 転送前に行う(`ChatAvailabilityService.kt:19-21` の方針) |
-| F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。UI スレッドではワークスペースを変更しない。完了通知 → `asyncExec` → エディタ。ハンドラ内の状態読み取り(`exists` / `isOpen`)は UI スレッドで行う軽い読み取りで、Job 内で**再度**読み直して分岐する(読み取りと実行の間にユーザーがプロジェクトを消す可能性) |
-| F2 の二重起動 | Job に `rule = root` があるので 2 本は直列化される。2 本目は Job 内の再読み取りで「あり」行に落ち、開くだけ |
+| F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。**状態の読み取りと判定は Job の中だけ**で行う(UI スレッドでは判定しない)。UI スレッドではワークスペースを変更しない。エディタを開く処理は `UIJob` + `rule = root` で、他のワークスペース変更と直列化したうえで開く直前に所有を再検証する(§9.2) |
+| F2 の二重起動 | Job に `rule = root` があるので 2 本は直列化される。2 本目は 1 本目の完了を待ってから状態を読むので、作成途中(property 設定前)の状態を見ない。1 本目が成功していれば「一致・ファイルあり」行に落ちて開くだけ |
 | `AuthenticationStateService.update` 入口の `session` 照合 | lsp4j のディスパッチスレッドで `GitLabLanguageServerWrapper.currentSnapshot`(`AtomicReference`、`GitLabLanguageServerWrapper.kt:17`)を 1 回読んで比較するだけ。UI には触れず、debounce の `Job` にも触れない(照合を通った通知だけが既存の `cancel()` → `launch` に進む) |
 
 ## 18. 認証と認可
@@ -440,7 +447,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
 | `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。(順序は Writer 側の責務。`DuoTutorialWorkspaceWriterTest` で「`CreateProject` → ロケーション取得 → 所有記録の保存」の順を検証する。Codex round 9 P1 反映); **既定ロケーションのフォルダの有無は入力に含まれない(Planner の状態型にその項目が無い)** |
-| `DuoTutorialHandlerTest` | F2 | UI 時点の `Refuse` → 通知のみ・Job 未起動; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクトが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない**; **既定ロケーションに同名の(プロジェクトでない)フォルダだけがある → `Ready` になり、そのフォルダには触れない(ファイルシステムの fake で読み書きが 0 回)**; **root rule を持つ別 Job の後ろで待機中にキャンセル(`runInWorkspace` 未実行)→ outcome は初期値の `Cancelled` で、通知もエディタも出ない** |
+| `DuoTutorialHandlerTest` | F2 | **`execute` は状態を読まず Writer を schedule するだけ(ハンドラから所有判定のシームが呼ばれない)**; **1 本目の Writer が property 設定前の状態で 2 回目を実行 → 2 本目は 1 本目の完了後に「一致」と判定して開く(誤った拒否を出さない)**; **`Ready` の確定後、`OpenJob` の実行前に同名プロジェクトを削除して別のユーザープロジェクト(同じ名前・ID なし)を作る → `OpenJob` の再検証で不一致となり、開かずに拒否の通知**; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクトが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない**; **既定ロケーションに同名の(プロジェクトでない)フォルダだけがある → `Ready` になり、そのフォルダには触れない(ファイルシステムの fake で読み書きが 0 回)**; **root rule を持つ別 Job の後ろで待機中にキャンセル(`runInWorkspace` 未実行)→ outcome は初期値の `Cancelled` で、通知もエディタも出ない** |
 | `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストア / ファイルシステムで: **ロケーションが `<state>/duo-tutorial/<UUID>` で `setLocationURI` に渡され、既定ロケーションには一切触れない**; **`createDirectory` が失敗(既存)→ 何も作らず `Failed`**; **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **`create` の途中(登録後・記述の書き込み前など、`create` 内の各副作用の後)で例外 / キャンセルを発生させる fake → 登録が外れ、予約したディレクトリが削除され、`Failed` / `Cancelled`**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、補償、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `open` 失敗 → 補償・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを予約前 / 予約後 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら補償して `Cancelled`、設定後なら残して `Cancelled`**; **補償の削除は、キャンセル済みの monitor を受け取ると `OperationCanceledException` を投げる fake に対しても完了する(`NullProgressMonitor`)** |
 
 **手動(実機)**: メニュー表示・可視性の切替・エディタ種別・Code Suggestions の発火(§25)。
@@ -660,3 +667,5 @@ T1 / T2 の実装ブリーフには §8.1 / §9.1 の session 照合規則、§9
 | 15 | P2 Provider API へ確定済みの世代を渡せ | 採用。`update(change, session, generation)` / `reset(session, generation)` に統一し、プロバイダは世代を生成も読み直しもせず、Service がロック内で確定した値を墓標と CAS にそのまま使う。契約の試験を追加 | §8.1, §9.1, §12.1, §21, `AuthenticationSourceProviderTest` |
 | 16 | P2 §8.1 の Provider 契約にも generation を反映せよ | 採用。round 15 の編集時の当方の手順ミス(シェル展開で置換が一部失敗し、§8.1 の語句が欠落)を `d3b5e05` で修復済みで、さらに残っていた `SessionAuthState(session, state)` と引数なしの `reset()` の表記をすべて `SessionAuthState(session, generation, state)` / `reset(session, generation)` に統一。§8.1 に「呼び出し契約の正本は §12.1」を明記 | §8.1, §12.1, §23 |
 | 17 | P1 同名フォルダ時の動作を拒否か作成かに統一せよ | 採用。round 13 の意図どおり「既定ロケーションの(プロジェクトでない)同名フォルダは判定に使わず、読みも書きもせずに作成」に統一し、R9・A5b・§27 と Planner / Handler の試験を修正(M10 (3) と §9.2 は既にこの動作) | R9, A5b, §23, §27 |
+| 18 | P2 作成中のプロジェクトを UI 側で未所有と判定するな | 採用。UI スレッドでの判定を廃止し、ハンドラは Writer を schedule するだけにした。判定は root rule の中だけで行うので、2 本目は 1 本目の完了後に判定する。「property 設定前の再実行」を試験に追加 | §9.2 フロー, §8.2, §17, `DuoTutorialHandlerTest` |
+| 18 | P2 エディタを開く直前まで所有権を保護せよ | 採用。エディタを開く処理を `UIJob`(`rule = workspace.root`)にし、開く直前に ID・ロケーション・ファイルの所有を再検証。`Ready` 後・open 前に同名プロジェクトを差し替える試験を追加 | §9.2 フロー, §8.2, §17, `DuoTutorialHandlerTest` |
