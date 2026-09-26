@@ -6,6 +6,8 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.preferences.openGitLabPreferences
 import com.gitlab.eclipse.utils.currentDisplay
+import com.gitlab.eclipse.utils.logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -39,6 +41,10 @@ import java.util.concurrent.atomic.AtomicLong
  *   live connection's debounce.
  * - The popup runnable carries `(session, settledVersion)` and re-checks, under the same lock and on
  *   the UI thread, that both are still current and the state is still unauthenticated.
+ * - The debounce runs on the plugin's shared [scope], whose root is a plain `Job`: one escaping
+ *   exception would cancel every other coroutine in the plugin. [commit] can throw — the lazy
+ *   provider resolution goes through the workbench, and the UI dispatch throws at teardown — so the
+ *   launch body contains everything but cancellation and logs the class name.
  *
  * Everything real-machine dependent is a constructor seam with a production default, so the races
  * above can be pinned down in headless tests.
@@ -63,6 +69,7 @@ class AuthenticationStateService(
   private val showPopup: () -> Unit = ::showAuthenticationRequiredPopup,
 ) {
   private val provider: AuthenticationSourceProvider by lazy(sourceProvider)
+  private val logger by lazy { logger<AuthenticationStateService>() }
 
   /** Guards [isAuthenticated], [showAuthNotifJob] and every generation check-and-commit. */
   private val lock = Any()
@@ -100,7 +107,11 @@ class AuthenticationStateService(
 
         // Second connection check, outside the lock: the connection may have changed while waiting.
         if (session !== currentSession()) return@launch
-        commit(featureStateChange, session, jobGeneration)
+        runCatching { commit(featureStateChange, session, jobGeneration) }
+          .onFailure { e ->
+            if (e is CancellationException) throw e
+            logger.warn("Authentication state commit skipped: ${e.javaClass.name}")
+          }
       }
     }
   }
