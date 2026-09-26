@@ -11,6 +11,7 @@ import org.eclipse.core.resources.IFile
 import org.eclipse.core.runtime.jobs.ISchedulingRule
 import org.eclipse.jface.operation.IRunnableWithProgress
 import org.eclipse.ui.IWorkbenchWindow
+import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.lang.reflect.InvocationTargetException
 
@@ -31,9 +32,13 @@ import java.lang.reflect.InvocationTargetException
  *
  * Every UI and platform touch is a constructor seam with a production default; the class itself is
  * thread-agnostic and headless-testable.
+ *
+ * @param fallbackWindow the workbench's active window, consulted on the UI thread only when the
+ *   handler's event carried none (the command was invoked from a context without a window).
  */
 class DuoTutorialEditorOpener(
   private val onUiThread: (Runnable) -> Unit = { currentDisplay.asyncExec(it) },
+  private val fallbackWindow: () -> IWorkbenchWindow? = { PlatformUI.getWorkbench().activeWorkbenchWindow },
   private val runInUI: (IWorkbenchWindow, IRunnableWithProgress, ISchedulingRule) -> Unit =
     ::runInUIWithProgressService,
   private val ownership: DuoTutorialOwnership = DuoTutorialOwnership(),
@@ -62,16 +67,18 @@ class DuoTutorialEditorOpener(
    * UI thread. The whole `runInUI` call is contained (round 22 P2): [InterruptedException] is the
    * user cancelling the rule wait — the Tutorial exists, a re-run opens it, so no notice — and
    * anything else, [InvocationTargetException] wrapping what the runnable threw included, is a
-   * failure notice plus the class name. Nothing escapes into the event loop.
+   * failure notice plus the class name. Nothing escapes into the event loop — the [fallbackWindow]
+   * read is inside the same try, since `PlatformUI.getWorkbench()` throws once the workbench is gone.
    */
   private fun openOnUiThread(window: IWorkbenchWindow?, file: IFile) {
-    if (window == null) {
-      logger.error("$LOG_PREFIX no workbench window to open in")
-      notify(DuoTutorialMessages.OPEN_FAILED)
-      return
-    }
     try {
-      runInUI(window, IRunnableWithProgress { verifyAndOpen(file) }, file.workspace.root)
+      val target = window ?: fallbackWindow()
+      if (target == null) {
+        logger.error("$LOG_PREFIX no workbench window to open in")
+        notify(DuoTutorialMessages.OPEN_FAILED)
+        return
+      }
+      runInUI(target, IRunnableWithProgress { verifyAndOpen(file) }, file.workspace.root)
     } catch (e: InterruptedException) {
       logger.info("$LOG_PREFIX cancelled while waiting for the workspace: ${e.javaClass.name}")
     } catch (e: Exception) {

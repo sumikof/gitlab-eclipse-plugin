@@ -92,6 +92,9 @@ private class HandlerFixture {
     DuoTutorialWorkspaceWriter(ws.workspace, ownership, { STATE_DIRECTORY }, ws.fileSystem) { "id-1" }
   }
   val window: IWorkbenchWindow = mockk()
+  var activeWindow: IWorkbenchWindow? = window
+  var fallbackWindow: () -> IWorkbenchWindow? = { null }
+  val runInUIWindows = mutableListOf<IWorkbenchWindow>()
   val event: ExecutionEvent = mockk()
 
   init {
@@ -103,7 +106,9 @@ private class HandlerFixture {
       ruleHeldAtPost = Job.getJobManager().currentRule()
       uiQueue += it
     },
-    runInUI = { _, runnable, rule ->
+    fallbackWindow = { fallbackWindow() },
+    runInUI = { target, runnable, rule ->
+      runInUIWindows += target
       runInUICalls += runnable to rule
       runInUI(runnable, rule)
     },
@@ -116,7 +121,7 @@ private class HandlerFixture {
 
   val handler = DuoTutorialHandler(
     preferences = { ws.store },
-    activeWindow = { window },
+    activeWindow = { activeWindow },
     askToOpenPreferences = {
       dialogCount++
       dialogAnswer
@@ -638,6 +643,74 @@ class DuoTutorialHandlerTest : DescribeSpec({
     }
   }
 
+  describe("workbench window resolution") {
+    it("the event's window is used when it has one; the fallback is never consulted") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      var fallbackReads = 0
+      f.fallbackWindow = {
+        fallbackReads++
+        mockk()
+      }
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.runInUIWindows shouldContainExactly listOf(f.window)
+      fallbackReads shouldBe 0
+      f.opened.size shouldBe 1
+    }
+
+    it("no window on the event: the workbench's active window is used and the tutorial opens") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.activeWindow = null
+      val fallback: IWorkbenchWindow = mockk()
+      f.fallbackWindow = { fallback }
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.runInUIWindows shouldContainExactly listOf(fallback)
+      f.opened.size shouldBe 1
+      f.notices.shouldBeEmpty()
+    }
+
+    it("no window anywhere: a failure notice, nothing opened") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.activeWindow = null
+      f.fallbackWindow = { null }
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.runInUIWindows.shouldBeEmpty()
+      f.opened.shouldBeEmpty()
+      f.notices shouldContainExactly listOf(OPEN_FAILED_TEXT)
+    }
+
+    it("the fallback read throwing (workbench closed) is contained: a failure notice, class name only") {
+      val logged = captureLog()
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.activeWindow = null
+      f.fallbackWindow = { throw IllegalStateException("Workbench has not been created yet.") }
+
+      f.execute()
+      f.runScheduled()
+      shouldNotThrowAny { f.drainUi() }
+
+      f.opened.shouldBeEmpty()
+      f.notices shouldContainExactly listOf(OPEN_FAILED_TEXT)
+      logged.any { it.contains(IllegalStateException::class.java.name) } shouldBe true
+      logged.forEach { it shouldNotContain "Workbench has not been created yet." }
+    }
+  }
+
   describe("messages") {
     it("the preference dialog names the preference page label exactly") {
       DuoTutorialMessages.PREFERENCES_QUESTION shouldContain
@@ -645,14 +718,17 @@ class DuoTutorialHandlerTest : DescribeSpec({
       DuoTutorialMessages.DIALOG_TITLE shouldBe "GitLab Duo Tutorial"
     }
 
-    it("codeSuggestionsNotice ignores exactly the three document-scoped check ids") {
+    it("codeSuggestionsNotice ignores exactly the four document-scoped check ids") {
       DuoTutorialMessages.DOCUMENT_SCOPED_CHECK_IDS shouldBe setOf(
         "code-suggestions-document-unsupported-language",
         "code-suggestions-document-disabled-language",
         "code-suggestions-file-excluded",
+        "duo-disabled-for-project",
       )
       DuoTutorialMessages.codeSuggestionsNotice(true, emptyList()).shouldBeNull()
       DuoTutorialMessages.codeSuggestionsNotice(true, listOf("code-suggestions-file-excluded")).shouldBeNull()
+      // Evaluated per document in the language server: at open time it describes the previous file's project.
+      DuoTutorialMessages.codeSuggestionsNotice(true, listOf("duo-disabled-for-project")).shouldBeNull()
       DuoTutorialMessages.codeSuggestionsNotice(
         true,
         listOf("code-suggestions-document-disabled-language", "code-suggestions-no-license"),

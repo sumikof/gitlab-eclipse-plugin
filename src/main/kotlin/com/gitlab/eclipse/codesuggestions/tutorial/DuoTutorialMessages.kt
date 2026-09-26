@@ -38,16 +38,19 @@ object DuoTutorialMessages {
    * `code_suggestions` checks that describe one document rather than the environment (ruling R5).
    *
    * The language checks are one check object in the language server whose id flips between the two
-   * language ids; the exclusion check is per file too. All three are evaluated on `didOpen` / set
-   * active, so at the moment the Tutorial editor opens they still describe the *previously* active
-   * document (or, right after start, no document at all) — and Eclipse's `didOpen` is asynchronous
-   * besides. Naming one of them here would tell the user completion is unavailable in a file where
-   * it is about to work. Diagnostics hides the language check for the same reason.
+   * language ids; the exclusion check is per file too; and the project Duo-access check is
+   * evaluated for the active document's project (`checkIfProjectHasDuoAccess`). All four are
+   * evaluated on `didOpen` / set active, so at the moment the Tutorial editor opens they still
+   * describe the *previously* active document (or, right after start, no document at all) — and
+   * Eclipse's `didOpen` is asynchronous besides. Naming one of them here would tell the user
+   * completion is unavailable in a file where it is about to work. Diagnostics hides the language
+   * check for the same reason. Ruling R7 added the project check.
    */
   val DOCUMENT_SCOPED_CHECK_IDS: Set<String> = setOf(
     "code-suggestions-document-unsupported-language",
     "code-suggestions-document-disabled-language",
     "code-suggestions-file-excluded",
+    "duo-disabled-for-project",
   )
 
   /**

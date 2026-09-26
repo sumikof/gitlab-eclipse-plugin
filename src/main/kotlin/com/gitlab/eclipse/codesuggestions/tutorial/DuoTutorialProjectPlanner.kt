@@ -18,11 +18,12 @@ sealed interface DuoTutorialState {
   /**
    * A same-named project exists and is open.
    *
-   * @param owned whether the ID (persistent property) and the location both match the record
-   *   (§9.2). Meaningless-but-ignored when this is not owned, [fileExists] is still accepted so a
-   *   caller does not need a separate shape for that combination.
+   * @param owned whether the project's ID (persistent property) and its location both match the
+   *   ownership record this feature wrote (§9.2, `DuoTutorialOwnership.isOwned`).
    * @param fileExists whether [DuoTutorialContent.FILE_NAME] already exists directly under the
-   *   project. True for an empty file too — `IFile.exists()` does not look at content.
+   *   project. True for an empty file too — `IFile.exists()` does not look at content. Ignored by
+   *   the planner when [owned] is false, but still accepted so a caller does not need a separate
+   *   shape for that combination.
    */
   data class ProjectOpen(val owned: Boolean, val fileExists: Boolean) : DuoTutorialState
 }
@@ -36,7 +37,7 @@ enum class RefuseReason {
   NOT_OWNED,
 }
 
-/** One step [DuoTutorialWorkspaceWriter] (a later task) executes, in the order planned. */
+/** One step [DuoTutorialWorkspaceWriter] executes, in the order planned. */
 sealed interface DuoTutorialAction {
   /** Reserve the state-directory location, create the project there, and record ownership. */
   data object CreateProject : DuoTutorialAction
