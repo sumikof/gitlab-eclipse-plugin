@@ -146,7 +146,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
 | コンポーネント | 責務 | 根拠・既存パターン |
 |---|---|---|
 | `DuoTutorialContent` | `object`。プロジェクト名 `PROJECT_NAME = "GitLab Duo Tutorial"`、ファイル名 `FILE_NAME = "duo_tutorial.js"`、本文 `TEXT`(Kotlin raw string)。 | VSCode も本文をソース内テンプレートに持つ(`duo_tutorial.ts:3-4`)。本リポジトリでも `McpConfigService.kt:45` が `DEFAULT_CONFIG_TEMPLATE` を Kotlin 定数で持つ。**リソースファイルにしない**ので `src/main/resources`(現在 `plugin.xml` / `log4j2.xml` / `icons` のみ)にもビルドにも触れない |
-| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ディスク上のフォルダの有無・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
+| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で状態を再読み取りして plan を再計算し、行動列を実行する。**結果を `WriterOutcome` で返す**(**保持用の参照は `schedule` 前に `Cancelled` で初期化する**。root rule を待つ間にキャンセルされると Eclipse は `runInWorkspace` を呼ばずに `done` を `CANCEL_STATUS` で通知するため、初期値がそのまま結果になる。Codex round 10 P2 反映): `Ready(file)`(開くべき所有ファイル)/ `Refused(reason)`(Job 内の再判定で拒否)/ `Failed`(例外・補償済み)/ `Cancelled`(補償済み)。`IStatus` は Eclipse への報告用で、**エディタを開くかどうかは `WriterOutcome` だけで決める**。`rule = workspace.root`、`isUser = true`。**この Job が作ったプロジェクトを追跡**し、property 設定前の非正常終了(例外・キャンセル)ではすべて削除を試みる(§9.2)。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
 | `DuoTutorialHandler` | `AbstractHandler`。状態の読み取り → Planner → Writer の起動 → 完了時に `asyncExec` で `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
 | `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
@@ -162,7 +162,7 @@ F3 のコンポーネント(DTO / 選択取得 / ゲート / 上限 / 追跡付�
 1. LS が `$/gitlab/featureStateChange` を送る → 既存どおり `GitLabLanguageServerClient.kt:107` の `"authentication"` case が `AuthenticationStateService.update(change, session)` を呼ぶ(`update` に `session` 引数を足し、クライアントは自分の `session`(`GitLabLanguageServerClient.kt:58`)を渡す)。**`update` の入口照合・既存 Job の取消・新 Job の投入は、`AuthenticationStateService` 内の 1 つのロック(`synchronized(lock)`)の中で一続きに行う**(Codex round 9 P1 反映: 照合と取消が別操作だと、旧接続の呼び出しが照合を通過した直後に接続が替わり、新接続の Job が投入された後で旧呼び出しが再開して新 Job を取り消しうる)。ロックの中では、**`session` が現在の接続(`GitLabLanguageServerWrapper.currentSnapshot?.session`、`GitLabLanguageServerWrapper.kt:21-22`)と同一参照でなければ、既存の debounce Job を取り消す前(`AuthenticationStateService.kt:29` の `showAuthNotifJob?.cancel()` より前)に通知を捨てて return する**(Codex round 7 P2 反映: 旧クライアントの遅れた通知が新しい接続の debounce を取り消し、`gitlab_sign_in_required` が `unknown` のまま残るのを防ぐ)。通過した通知は既存どおり debounce ブロック(`:33-46`)に入る。**debounce ブロックは `delay(notifDelay)` の直後に、もう一度 `session` が現在の接続と同一参照かを確かめ、違えば何もせず終わる**(ロックを抜けた後に接続が替わった場合の第 2 の照合。旧接続の Job がポップアップを出したりプロバイダを更新したりしない)。**プロバイダへの通知は `delay(notifDelay)` の直後、既存のすべての早期 return(`:36-39` の `find { ... } ?: return@launch` と `:42` の `if (isAuthenticated == newAuthenticationState) return@launch`)より前に置く**(Codex round 8 P1 反映: LS 再起動でプロバイダだけが `unknown` に戻り、既存の `isAuthenticated` は以前の値を保つため、新しい接続が同じ認証値を返すと後者の早期 return に止められてプロバイダが更新されない)。ポップアップの判定・表示は既存の早期 return のまま不変(旧接続の遅れた通知を無視する点を除く)。プロバイダ側の公開時照合(§8.1)は第 2 の防御として残す。
 1'. LS の停止・終了: `GitLabLanguageServerProcessProvider` が既に `SecurityScanLifecycle.onServerStopped()` を呼んでいる 2 箇所(`:228` 終了コールバック / `:262` 停止経路)に並べて `AuthenticationSourceProvider.reset()` を呼ぶ(内部状態を未確定に戻し、公開値 `gitlab_sign_in_required` を `false` にする)。
 1''. **認証設定の保存**(Codex round 11 P2 反映): 既存の `GitLabPreferencePage.performOk()` は設定送信後に `authenticationStateService.resetAuthenticatedState()` を呼ぶ(`GitLabPreferencePage.kt:322-323`)。`resetAuthenticatedState()` の中で**世代を進め(進行中の debounce をすべて無効化)、`AuthenticationSourceProvider.reset()` を呼ぶ**ようにする。同じ接続のまま未認証 → 有効なトークンを保存した場合、新しい feature state が届くまで Sign in 項目は出ない(未確定)。
-1'''. **世代(Codex round 11 P2 反映)**: `AuthenticationStateService` は `AtomicLong generation` を持ち、入口で受理した通知ごと(§9.1 手順 1 のロック内)と `resetAuthenticatedState()` で 1 つ進める。debounce Job は投入時の世代を持ち、`delay` 後の確定処理(プロバイダ更新・`isAuthenticated` 更新・ポップアップ判定)の直前に、**ロック内で「自分の世代 == 現在の世代」**を確かめ、違えば何もしない。さらにプロバイダは `SessionAuthState` に世代を持ち、CAS で**同じ接続でも古い世代の書き込みを拒否**する(確認と書き込みの間に新しい Job が確定した場合の第 2 の照合)。`Job.cancel()` は再照合を通過した後の処理を止めないため、世代による破棄を正本とする。
+1'''. **世代(Codex round 11 P2 反映)**: `AuthenticationStateService` は `AtomicLong generation` を持ち、入口で受理した通知ごと(§9.1 手順 1 のロック内)と `resetAuthenticatedState()` で 1 つ進める。debounce Job は投入時の世代を持ち、`delay` 後、**世代の照合と 3 つの確定処理(プロバイダ更新・`isAuthenticated` 更新・ポップアップを出すかの判定)を、入口と同じロックを保持したまま一続きに行う**(Codex round 13 P2 反映: 照合の後にロックを離すと、その間に `resetAuthenticatedState()` が世代を進めても、古い Job が `isAuthenticated` の書き込みやポップアップの判定を続けてしまう)。照合で「自分の世代 != 現在の世代」なら何もしない。`resetAuthenticatedState()` も同じロックの中で世代を進め、`isAuthenticated` を未確定に戻し、プロバイダを reset する。ポップアップの表示そのものは従来どおり `asyncExec`(ロックの外。判定だけをロック内で確定させる)。さらにプロバイダは `SessionAuthState` に世代を持ち、CAS で**同じ接続でも古い世代の書き込みを拒否**する(確認と書き込みの間に新しい Job が確定した場合の第 2 の照合)。`Job.cancel()` は再照合を通過した後の処理を止めないため、世代による破棄を正本とする。
 2. プロバイダが `gitlab_sign_in_required` を発火 → メニューの `visibleWhen` が再評価される。
 3. 項目の動作: Forum / Duo Documentation は外部ブラウザ、Sign in は設定ダイアログ。いずれも同期・即時・LS 往復なし。
 
@@ -172,7 +172,7 @@ F3 のコンポーネント(DTO / 選択取得 / ゲート / 上限 / 追跡付�
 
 ```
 execute(event)                                   ← UI スレッド
-  ├ 1. state = 状態の読み取り(IProject.exists/isOpen/locationURI、ディスク上のフォルダ、記録済み所有ロケーション、IFile.exists)
+  ├ 1. state = 状態の読み取り(IProject.exists/isOpen/locationURI、記録済み所有ロケーション、IFile.exists)
   ├ 2. plan = DuoTutorialProjectPlanner.plan(state)
   ├ 3. plan が Refuse → 通知して終了(ワークスペースは一切変更しない)
   ├ 4. Writer(WorkspaceJob, rule=root).schedule()   ← バックグラウンド
@@ -185,35 +185,42 @@ execute(event)                                   ← UI スレッド
            Cancelled → 何もしない }
 ```
 
-**所有権の記録(Codex round 1 / round 2 / round 3 P1 反映)**: プラグインが作ったプロジェクトかどうかを**名前でもパスだけでも判定しない**。
-新規作成時に次の 2 つを記録し、**両方が一致するときだけ**所有とみなす。
+**作成先(Codex round 13 P1 反映)**: Tutorial プロジェクトは**ワークスペース直下の既定ロケーションに置かない**。プラグインの状態ディレクトリ配下の、**作成ごとにランダムな名前のディレクトリ**に置く:
 
-1. **ランダム ID**: 作成ごとに `UUID.randomUUID()` を生成し、(a) 作成したプロジェクトの **persistent property**
-   `QualifiedName("com.gitlab.eclipse", "duoTutorialId")` と、(b) 非表示の設定キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_ID = "gitlab.duoTutorial.projectId"` の両方に書く。
-   persistent property はワークスペースのメタデータに保存され、**プロジェクトを削除すると消える**(同じフォルダを再 import しても復活しない)。
-   これで「削除 → 同じパスにユーザーが無関係なフォルダを作成 → import」を識別できる。
-2. **ロケーション URI**: **`create` の後に** `IProject.getLocationURI().toString()` を取得して非表示キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION = "gitlab.duoTutorial.projectLocation"` に書く(プロジェクト記述を差し替えて別の場所を指させた場合の検出)。
+```
+<Platform.getStateLocation(bundle)>/duo-tutorial/<UUID>/      ← IProjectDescription.setLocationURI で指定
+```
+
+- `Platform.getStateLocation(bundle)` は `<workspace>/.metadata/.plugins/<bundle>/`(既存の用途: `GitLabEclipseStartup.kt:50`、`GitLabLanguageServerProcessProvider.kt:50-54`)。ワークスペース単位なので所有記録(`InstanceScope`)と寿命がそろう。
+- **このロケーションは Eclipse に受理される**: `LocationValidator.validateProjectLocationURI`(eclipse.platform `master` `resources/bundles/org.eclipse.core.resources/src/org/eclipse/core/internal/resources/LocationValidator.java`)が拒否するのは、(1) `<workspace>/.metadata` そのもの、(2) ワークスペースのルートを内包する場所、(3) 親がワークスペースのルートで既定ロケーション以外の場所、(4) 既存プロジェクトと同じ場所、だけである。上のパスは親がルートではない深い場所なので (1)〜(3) に当たらず、UUID により (4) にも当たらない。実機での確認は U13。
+- **外部プロセスとの競合を前提から外す**: パスは推測できない UUID を含み、`Files.createDirectory` で**新規に**作る(既に存在すれば失敗)。round 11〜13 で指摘された「既定ロケーションに同期ツール等が同名フォルダや `.project` を置く」競合は、この場所では成立しない(既定ロケーションの事前検査・同一性照合・検査と作成の間の窓は不要になり、削除した)。
+- プロジェクト名は `GitLab Duo Tutorial` のまま(ユーザーに見える名前)。既定ロケーション(`<workspace>/GitLab Duo Tutorial`)にユーザーのフォルダがあっても、本機能はそれを読みも書きもしない。
+
+**所有権の記録(Codex round 1〜3 / 8 / 13 反映)**: プラグインが作ったプロジェクトかどうかを**名前でもパスだけでも判定しない**。新規作成時に次の 2 つを記録し、**両方が一致するときだけ**所有とみなす。
+
+1. **ランダム ID**: 作成ごとに `UUID.randomUUID()` を生成し(ディレクトリ名と同じ値でよい)、(a) 作成したプロジェクトの **persistent property** `QualifiedName("com.gitlab.eclipse", "duoTutorialId")` と、(b) 非表示の設定キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_ID = "gitlab.duoTutorial.projectId"` の両方に書く。persistent property はワークスペースのメタデータに保存され、**プロジェクトを削除すると消える**(同じフォルダを再 import しても復活しない)。
+2. **ロケーション URI**: **`create` の後に** `IProject.getLocationURI().toString()` を取得して非表示キー `PreferenceConstants.DUO_TUTORIAL_PROJECT_LOCATION = "gitlab.duoTutorial.projectLocation"` に書く(未作成のハンドルでは `null` になりうるため。プロジェクト記述を差し替えて別の場所を指させた場合の検出)。
 
 **所有 = 同名プロジェクトが存在し、開いており、`getPersistentProperty(duoTutorialId)` が記録 ID と一致し、かつ `locationURI` が記録ロケーションと一致する。**
-非表示の設定キーを持つ前例は `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。nature やマーカーファイルは使わない(`plugin.xml` の拡張もユーザーから見えるファイルも増やさない)。キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
+非表示の設定キーを持つ前例は `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22` / `LanguageServerBrowserView.kt:154`)。nature やマーカーファイルは使わない。キー名は `SecretRedactionConventionTest.kt:16-17` の検出語を含まない。
 
 - **閉じた同名プロジェクトは所有判定をしない**(persistent property は開いていないと読めない)。判定のためにユーザーのプロジェクトを開くことはせず、一律 `Refuse`(安全側)。
-- **記録の順序(Codex round 8 P1 反映)**: ① ID(`UUID.randomUUID()`)を生成(メモリ上のみ)→ ②a **作成先の予約**: 既定ロケーションのディレクトリを `java.nio.file.Files.createDirectory(path)` で作る(既に存在すれば `FileAlreadyExistsException` で失敗する原子的な作成。失敗したら何も変更せず `Refused`(フォルダあり行と同じ通知)。Codex round 11 P1 反映: Job 内の再読み取りだけでは、ワークスペースの root rule に従わない外部プロセスとの排他にならない)→ ②a' 予約したディレクトリの**同一性**(`Files.readAttributes(path, BasicFileAttributes::class.java).fileKey()`。`null` を返すプラットフォームでは `creationTime` と組み合わせる)を記録 → ②b **`create` の直前に**、同じパスのディレクトリが予約時と同一で**空**(`.project` を含め何も無い)であることを検証し、違えば**何も削除せず** `Refused`(Codex round 12 P1 反映)→ ②c `create`(既定ロケーション = 予約したディレクトリ)→ ②d `create` 直後に `.project` の内容(バイト列)を読んで保持する(補償でこのファイルを消してよいかの根拠)→ ③ **`create` の後に** `project.locationURI` を取得(未作成のプロジェクトのハンドルでは `null` になりうるため、作成前には読まない)→ ④ 設定キー 2 つ(ID・ロケーション)を `setValue` し、**`ScopedPreferenceStore.save()` で明示的に永続化**(前例: `PublishRecordStore.kt:42-54` の「`setValue` → `save()`、失敗時は直前の値へ戻して `false`」)→ ⑤ `open` → ⑥ persistent property の設定 → ⑦ `CreateFile`。
-  - **④ の保存が失敗したら**(例外)、設定キーを直前の値へ戻し、下記の補償を行って `Failed`。保存できたときだけ ⑤ へ進む。これで「プロジェクトの property だけが残り、設定側に記録が無い」状態は作られない。
-  - **② の後、⑥ が済む前に Job が非正常終了したら**(③〜⑥ の失敗・例外・キャンセルのいずれでも)、この Job が作ったものだけを取り除く(補償)。**プロジェクトの登録は `delete(IResource.NEVER_DELETE_PROJECT_CONTENT, …)` で外し、ディスク上は、**ディレクトリの同一性が予約時と一致し、かつ内容が ②d で保持したバイト列と一致する `.project`**(と、作っていれば、書いた内容と一致する `duo_tutorial.js`)だけを消し、同一性や内容が一致しなければ**何も消さない**(自分が書いたと証明できないものは消さない)。予約したディレクトリは空のときだけ `Files.deleteIfExists` で消す**(空でなければ残す。予約後に外部プロセスが置いたファイルを巻き込まない。Codex round 11 P1 反映)。(補償の詳細: **削除には Job の monitor を渡さず `NullProgressMonitor` を使う**(Codex round 9 P2 反映: キャンセル済みの Job の monitor を渡すと削除自体が直ちにキャンセルされ、補償されない)。削除対象はこの Job が作ったものだけ)。予約(②a)に失敗した場合は何も作っていないので補償しない。補償の削除も失敗した場合だけプロジェクトが残り、次回は「閉じている」または「ID 不一致」で `Refuse` に倒れる(通知で削除を案内。§20)。
-  - ②〜④ の間でプロセスが異常終了(強制終了・クラッシュ)した場合は補償が走らず、記録の無いプロジェクトが残りうる。次回は「閉じている」または「ID 不一致」で `Refuse`(安全側)になり、通知に従ってユーザーが削除する(残るリスクとして §27)。
+- **作成の順序**: ① UUID を生成 → ② **予約**: `Files.createDirectory(<state>/duo-tutorial/<UUID>)`(親の `duo-tutorial` は `createDirectories`)。**予約に成功した時点から補償が有効** → ③ `IProjectDescription` を作り `setLocationURI(予約したディレクトリ)` → `create(description, monitor)` → ④ `project.locationURI` を取得 → ⑤ 設定キー 2 つ(ID・ロケーション)を `setValue` し **`ScopedPreferenceStore.save()` で明示的に永続化**(前例: `PublishRecordStore.kt:42-54`。失敗時は直前の値へ戻す)→ ⑥ `open` → ⑦ persistent property の設定 → ⑧ `CreateFile`。
+- **補償(Codex round 9 / 13 P2 反映)**: 予約(②)に成功した後、⑦ が済む前に Job が非正常終了したら(`create` の途中を含む ③〜⑦ の失敗・例外・キャンセルのいずれでも)、(a) プロジェクトが登録されていれば `delete(IResource.NEVER_DELETE_PROJECT_CONTENT, NullProgressMonitor())` で登録だけ外し、(b) **予約したディレクトリを中身ごと再帰的に削除**する(このディレクトリは Job が新規に作った UUID 名の専用ディレクトリで、Job 以外が書く前提が無い)。削除にはキャンセル済みの Job の monitor を渡さず `NullProgressMonitor` を使う。⑤ の保存失敗もこの補償の対象(`Failed`)。予約に失敗した場合は何も作っていないので補償しない。
+- **補償の失敗・異常終了**: 補償の削除も失敗した場合、または ②〜⑤ の間でプロセスが異常終了(強制終了・クラッシュ)した場合は、登録済みのプロジェクトや状態ディレクトリ配下の UUID ディレクトリが残りうる。次回は「閉じている」または「ID 不一致」で `Refuse`(安全側)になり、通知に従ってユーザーがプロジェクトを削除する。状態ディレクトリ配下に残った UUID ディレクトリは無害(ユーザーのファイルではない)で、本機能は掃除しない(§22)。
 - 記録は 1 組だけ(最新の作成)。設定ストアは `InstanceScope`(ワークスペース単位)なので、ワークスペースをまたいで所有を誤認しない。
 
 **分岐表(R9。`state` → 行動)**:
 
-| プロジェクト `GitLab Duo Tutorial` | 所有(ID とロケーションの両方一致) | ディスク上のフォルダ | `duo_tutorial.js` | 行動 |
-|---|---|---|---|---|
-| なし | — | なし | — | `CreateProject`(既定ロケーション = ワークスペース直下)→ `locationURI` 取得 → ID とロケーションを記録して保存 → `OpenProject` → property 設定 → `CreateFile` → `OpenEditor`(順序と失敗時の補償は上記「記録の順序」) |
-| なし | **問わない** | あり | — | **`Refuse`**。プロジェクトの無い既存フォルダは一切取り込まない(パスは再利用されうるため、記録だけでは由来を証明できない)。通知「A folder named 'GitLab Duo Tutorial' already exists in the workspace location. Rename or remove it to use the tutorial.」 |
-| あり・閉じている | **判定しない** | — | — | **`Refuse`**。プロジェクトを開かない。通知「A project named 'GitLab Duo Tutorial' exists but is closed. Open it and run the command again, or rename it.」 |
-| あり・開いている | **不一致 / 未記録**(ユーザー自身の同名プロジェクト、削除後に再 import されたもの等) | — | — | **`Refuse`**。**ファイルを追加しない。** 通知「A project named 'GitLab Duo Tutorial' already exists and was not created by GitLab. Rename it to use the tutorial.」 |
-| あり・開いている | 一致 | — | なし | `CreateFile` → `OpenEditor` |
-| あり・開いている | 一致 | — | あり | **`OpenEditor` のみ**(内容は一切触らない) |
+| プロジェクト `GitLab Duo Tutorial` | 所有(ID とロケーションの両方一致) | `duo_tutorial.js` | 行動 |
+|---|---|---|---|
+| なし | — | — | 上記「作成の順序」②〜⑧ → `OpenEditor` |
+| あり・閉じている | **判定しない** | — | **`Refuse`**。プロジェクトを開かない。通知「A project named 'GitLab Duo Tutorial' exists but is closed. Open it and run the command again, or rename it.」 |
+| あり・開いている | **不一致 / 未記録**(ユーザー自身の同名プロジェクト、削除後に再 import されたもの等) | — | **`Refuse`**。**ファイルを追加しない。** 通知「A project named 'GitLab Duo Tutorial' already exists and was not created by GitLab. Rename it to use the tutorial.」 |
+| あり・開いている | 一致 | なし | `CreateFile` → `OpenEditor` |
+| あり・開いている | 一致 | あり | **`OpenEditor` のみ**(内容は一切触らない) |
+
+既定ロケーション(`<workspace>/GitLab Duo Tutorial`)にフォルダがあるかどうかは、**判定にも行動にも使わない**(round 2 の「未知の同名フォルダを取り込まない」は、既定ロケーションを使わないことで構造的に満たされる)。
 
 **ファイル作成は `IFile.create(InputStream, false, monitor)`**(`force = false`)。ディスク上に同名ファイルがあり Eclipse が未同期なら `CoreException` になり、その場合は `refreshLocal` してから「あり」行に落とす(上書きしない)。
 
@@ -327,7 +334,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 ## 13. トランザクション境界
 
 - **F1**: なし(状態の読み取りと外部プロセス起動のみ)。
-- **F2**: `WorkspaceJob.runInWorkspace` 1 回が境界。`rule = workspace.root` で、プロジェクト作成・open・property 設定・ファイル作成が 1 つのワークスペース操作としてロックされる。**`create` 成功後、property の設定が済む前に非正常終了(失敗・例外・キャンセル)したら、この Job が作ったものだけを取り除いて補償する(登録解除 + Job が書いたファイルの削除 + 空なら予約ディレクトリの削除。§9.2)**(§9.2 記録の順序)。ファイル作成の失敗はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で作り直せる)。
+- **F2**: `WorkspaceJob.runInWorkspace` 1 回が境界。`rule = workspace.root` で、プロジェクト作成・open・property 設定・ファイル作成が 1 つのワークスペース操作としてロックされる。**作成先ディレクトリの予約に成功した後、property の設定が済む前に非正常終了(`create` の途中を含む失敗・例外・キャンセル)したら、登録を外し、Job が新規に作った UUID 名の専用ディレクトリを中身ごと削除して補償する**(§9.2 作成の順序・補償)。ファイル作成の失敗はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で作り直せる)。
 
 ## 14. エラー処理
 
@@ -338,9 +345,9 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 | F1 | 起動直後の古い認証状態の連続通知 | debounce 後の最後の値だけを反映(既存ポップアップと同じ規則) |
 | F1 | LS の停止・再起動 | 内部状態を未確定に戻し(公開値 `false`)、新しい接続の debounce 済みの値が届くまで Sign in 項目を出さない |
 | F1 | 旧接続(停止済み / 再起動前)の遅れた `authentication` 通知 | `AuthenticationStateService.update` の入口で捨てる(§9.1 手順 1)。新しい接続の debounce は取り消されず、`gitlab_sign_in_required` が `unknown` のまま残らない |
-| F2 | Planner が `Refuse`(同名のユーザープロジェクト / 未知の同名フォルダ) | §9.2 の文言で通知。ワークスペースは一切変更しない |
+| F2 | Planner が `Refuse`(同名のユーザープロジェクト / 閉じた同名プロジェクト) | §9.2 の文言で通知。ワークスペースは一切変更しない |
 | F2 | Job の `CoreException`(ワークスペースが読み取り専用、`.project` の解析失敗等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
-| F2 | `WorkspaceJob` 内の `CoreException` / 例外 / キャンセル | **§9.2 の補償規則と同じ**: property 設定前ならこの Job が作ったものだけを取り除いて(§9.2 の補償) `Failed` / `Cancelled`。property 設定後の `CreateFile` 失敗だけは所有済みプロジェクトを残して `Failed`(次回「ファイルなし」行で回復)。補償の削除まで失敗したときだけ Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す) |
+| F2 | `WorkspaceJob` 内の `CoreException` / 例外 / キャンセル | **§9.2 の補償規則と同じ**: 予約成功後・property 設定前なら登録を外し、Job の専用ディレクトリを削除して(§9.2 の補償) `Failed` / `Cancelled`。property 設定後の `CreateFile` 失敗だけは所有済みプロジェクトを残して `Failed`(次回「ファイルなし」行で回復)。補償の削除まで失敗したときだけ Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す) |
 | F2 | エディタを開けない(`PartInitException`) | `WorkspaceFileOpener.kt:89-103` と同じ包み方。通知 + クラス名ログ。**ファイルは作られている**ので Project Explorer から開ける |
 
 通知は全て `NotificationUtils.show`(`NotificationUtils.kt:29-50`、任意スレッドから安全)。
@@ -384,7 +391,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 ## 20. 障害時の復旧方法
 
 - **F1**: 項目が出ない → `gitlab_sign_in_required` の値を Diagnostics(`ShowDiagnostics`)の feature state で確認(`authentication` の checks)。設定ページは従来どおりメニュー「Show Settings」から到達できる。
-- **F2**: 作成途中の失敗・キャンセルは Job 内の補償(§9.2: 登録解除と、Job が書いたファイル・空の予約ディレクトリだけの削除)で残らない。補償の削除まで失敗して閉じた / ID 不一致のプロジェクトが残った場合は、拒否の通知に従い Project Explorer からプロジェクトを削除(内容ごと)して再実行する。ユーザーが Tutorial プロジェクトを閉じた場合は、自分で開いてから再実行する(R6)。
+- **F2**: 作成途中の失敗・キャンセルは Job 内の補償(§9.2: 登録解除と、Job の UUID 名の専用ディレクトリの削除)で残らない。補償の削除まで失敗して閉じた / ID 不一致のプロジェクトが残った場合は、拒否の通知に従い Project Explorer からプロジェクトを削除(内容ごと)して再実行する。ユーザーが Tutorial プロジェクトを閉じた場合は、自分で開いてから再実行する(R6)。
 
 ## 21. 既存機能への影響
 
@@ -416,6 +423,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
   | `gitlab.duoTutorial.projectId` | `InstanceScope`(ワークスペースの `.metadata/.plugins/org.eclipse.core.runtime/.settings/` 配下の本バンドルの prefs) | ワークスペースの寿命 | 残る。読む者がいなくなるだけで無害 |
   | `gitlab.duoTutorial.projectLocation` | 同上 | 同上 | 同上 |
   | プロジェクトの persistent property `com.gitlab.eclipse:duoTutorialId` | ワークスペースのメタデータ(プロジェクト単位) | **プロジェクトの削除で消える** | 残る(プロジェクトが残る限り)。無害 |
+  | Tutorial プロジェクトの実体 `<state>/duo-tutorial/<UUID>/` | 本バンドルの状態ディレクトリ(ワークスペースの `.metadata/.plugins/<bundle>/` 配下) | プロジェクトを「内容ごと」削除すれば消える。「内容を残して」削除した場合や補償に失敗した場合は残る | 残る。ユーザーのファイルではなく無害。本機能は掃除しない |
 
   **後方互換の約束**: 上記のキー名・property 名は本機能専用として予約し、**将来も同じ意味でしか使わない**(意味を変えるときは別名にする)。所有判定は「ID(property)とロケーションの両方一致」なので、古い設定値が残っていても、その ID を property に持つプロジェクトが無ければ所有にならない(誤認しない)。停止・移行時の自動削除は行わない(削除処理そのものが新たな失敗経路になるため)。
 - **ロールバック**: PR の revert で完結。残留物は F2 が作った `GitLab Duo Tutorial` プロジェクトと上表の永続データ(いずれも無害。プロジェクトはユーザーが削除できる)。
@@ -427,12 +435,12 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | Spec | 対象 | 主な検証 |
 |---|---|---|
 | `AuthenticationSourceProviderTest` | F1 | 初期: 内部は未確定・公開値 `false`; `authentication-required` engaged → 未認証・公開値 `true`; `invalid-token` のみ engaged → 未認証・公開値 `true`; 関連する check(`authentication-required` / `invalid-token`)がどれも engaged でない → 認証済み・公開値 `false`(それまで未認証だった場合も `false` へ戻る); `allChecks == null` → 内部状態を変えない; **現在と異なる `session` で保存された値は公開されない(`false`)**; **`reset()` → 未確定・公開値 `false`**; **決定的な競合: 旧 session の更新が照合を通過した直後・書き込み前に `reset()` と接続の切り替えを挟む(fake の接続参照で順序を制御)→ 書き込み後も公開値は `false`**; **公開値の型が `Boolean` であり、plugin.xml と同じ `<with variable="gitlab_sign_in_required"><equals value="true"/></with>` を `ExpressionConverter.getDefault().perform(Element)` で式にして `EvaluationContext` で評価すると、未認証で `EvaluationResult.TRUE`・それ以外で `FALSE`**。`getProvidedSourceNames`。UI 転送はシームで捕捉; **決定的な競合: 新 session の値が書かれた後に、照合を通過して止まっていた旧 session の更新が再開する → 旧更新は捨てられ、新 session の値(例: 未認証で公開値 `true`)が保たれる**; **`getCurrentState()` の値が `String` ではなく `Boolean` である**; **決定的な競合: 同じ接続で、世代照合を通過した古い `update` の CAS の前に `reset()`(世代を進めて墓標を書く)を挟む → 古い `update` は拒否され、公開値は `false`(未確定)のまま** |
-| `AuthenticationStateServiceProviderFeedTest` | F1 | 既存 debounce を短縮した構成で「stale(未認証)→ 最新(認証済み)」を連続投入 → プロバイダには最新値だけが 1 回届く; **新 session の通知が debounce 中に旧 session の通知が遅れて届く → 旧通知は debounce を取り消さず捨てられ、新 session の値が反映される**(§9.1 手順 1); **LS 再起動の前後で同じ認証値(例: 未認証 → 再起動 → 未認証)が届く → 既存の `isAuthenticated` が同値でもプロバイダは新しい接続の値で更新される(Sign in が `unknown` のまま消えない)**; プロバイダへ渡す通知は `allChecks` の内容にかかわらず(`authentication-required` が無くても)debounce 後に 1 回渡される(判定の規則は `AuthenticationSourceProviderTest` 側。§8.1 と同じ期待値: null / `invalid-token` のみ / 関連 check なしの 3 ケースを区別); **決定的な競合: 旧 session の呼び出しが入口の照合を通過した直後・取消の前に、新 session の通知を挟む(ロックと fake の接続参照で順序を制御)→ 新 session の Job は取り消されず、新しい値がプロバイダとポップアップ判定に届く; 旧 session の Job は debounce 後の再照合で何もしない**; 既存ポップアップの判定は不変(既存 spec の回帰); **同じ接続で、旧通知の Job が世代照合の直前で止まり、新通知の Job が確定した後に旧 Job が再開 → 旧 Job は何も書かず、プロバイダ・`isAuthenticated`・ポップアップ判定は新通知の値のまま**; **同じ接続で未認証 → `resetAuthenticatedState()`(設定保存相当)→ プロバイダの公開値は即座に `false`(未確定)、進行中の debounce は確定しない、次の通知で新しい値になる** |
+| `AuthenticationStateServiceProviderFeedTest` | F1 | 既存 debounce を短縮した構成で「stale(未認証)→ 最新(認証済み)」を連続投入 → プロバイダには最新値だけが 1 回届く; **新 session の通知が debounce 中に旧 session の通知が遅れて届く → 旧通知は debounce を取り消さず捨てられ、新 session の値が反映される**(§9.1 手順 1); **LS 再起動の前後で同じ認証値(例: 未認証 → 再起動 → 未認証)が届く → 既存の `isAuthenticated` が同値でもプロバイダは新しい接続の値で更新される(Sign in が `unknown` のまま消えない)**; プロバイダへ渡す通知は `allChecks` の内容にかかわらず(`authentication-required` が無くても)debounce 後に 1 回渡される(判定の規則は `AuthenticationSourceProviderTest` 側。§8.1 と同じ期待値: null / `invalid-token` のみ / 関連 check なしの 3 ケースを区別); **決定的な競合: 旧 session の呼び出しが入口の照合を通過した直後・取消の前に、新 session の通知を挟む(ロックと fake の接続参照で順序を制御)→ 新 session の Job は取り消されず、新しい値がプロバイダとポップアップ判定に届く; 旧 session の Job は debounce 後の再照合で何もしない**; 既存ポップアップの判定は不変(既存 spec の回帰); **同じ接続で、旧通知の Job が世代照合の直前で止まり、新通知の Job が確定した後に旧 Job が再開 → 旧 Job は何も書かず、プロバイダ・`isAuthenticated`・ポップアップ判定は新通知の値のまま**; **同じ接続で未認証 → `resetAuthenticatedState()`(設定保存相当)→ プロバイダの公開値は即座に `false`(未確定)、進行中の debounce は確定しない、次の通知で新しい値になる**; **決定的な競合: 同じ接続で、古い Job が世代照合を通過した直後(確定処理の途中)に `resetAuthenticatedState()` を呼ぶ → ロックにより reset は確定処理の完了後に実行され、結果は「reset 後の未確定」(`isAuthenticated` 未確定・プロバイダ公開値 `false`)。reset が先に取れた順序では、古い Job は照合で止まり、`isAuthenticated` もポップアップ判定も変えない** |
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
 | `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。(順序は Writer 側の責務。`DuoTutorialWorkspaceWriterTest` で「`CreateProject` → ロケーション取得 → 所有記録の保存」の順を検証する。Codex round 9 P1 反映) |
 | `DuoTutorialHandlerTest` | F2 | UI 時点の `Refuse` → 通知のみ・Job 未起動; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクト / フォルダが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない**; **root rule を持つ別 Job の後ろで待機中にキャンセル(`runInWorkspace` 未実行)→ outcome は初期値の `Cancelled` で、通知もエディタも出ない** |
-| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストアで: **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、作ったプロジェクトを削除、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `create` 後に `open` 失敗 → 補償(登録解除 + `.project` の削除 + 空の予約ディレクトリの削除)1 回・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを `create` 前 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら作ったプロジェクトを削除して `Cancelled`、設定後なら残して `Cancelled`**; **補償の削除は、キャンセル済みの monitor を受け取ると `OperationCanceledException` を投げる fake に対しても完了する(`NullProgressMonitor` で呼ばれている)**; **不在確認と予約の間に同名フォルダが現れる(fake のファイルシステムで `createDirectory` が `FileAlreadyExistsException`)→ 何も作らず `Refused`**; **予約後・property 設定前に失敗し、その間に外部のファイルがディレクトリに置かれた → 補償は `.project` だけを消し、ディレクトリと外部のファイルは残る**; **予約後・`create` 前に `.project` が現れる / ディレクトリが別物に差し替わる(fake のファイルシステムで `fileKey` を変える)→ `create` を呼ばず、何も削除せず `Refused`**; **`create` 後に `.project` の内容が保持したバイト列と違う状態で補償 → `.project` を消さない** |
+| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストア / ファイルシステムで: **ロケーションが `<state>/duo-tutorial/<UUID>` で `setLocationURI` に渡され、既定ロケーションには一切触れない**; **`createDirectory` が失敗(既存)→ 何も作らず `Failed`**; **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **`create` の途中(登録後・記述の書き込み前など、`create` 内の各副作用の後)で例外 / キャンセルを発生させる fake → 登録が外れ、予約したディレクトリが削除され、`Failed` / `Cancelled`**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、補償、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `open` 失敗 → 補償・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを予約前 / 予約後 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら補償して `Cancelled`、設定後なら残して `Cancelled`**; **補償の削除は、キャンセル済みの monitor を受け取ると `OperationCanceledException` を投げる fake に対しても完了する(`NullProgressMonitor`)** |
 
 **手動(実機)**: メニュー表示・可視性の切替・エディタ種別・Code Suggestions の発火(§25)。
 
@@ -445,7 +453,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | A3 | 内部状態が §8.1 の規則どおり 3 値を取り、公開値 `gitlab_sign_in_required` は「現在の接続で未認証と確定」のときだけ `Boolean.TRUE`。**plugin.xml と同じ `<with><equals value="true"/></with>` を core expression として評価し、未認証で真・それ以外で偽になる** | 自動 |
 | A4 | チュートリアルコマンドで `GitLab Duo Tutorial/duo_tutorial.js` が作られエディタで開き、`didOpen` の `languageId` が `javascript`(LS ログで確認)で、本文中の `const multiply` 直後で Code Suggestions が出る | 実機(M3) |
 | A5 | 2 回目の実行、本文を編集後の実行のいずれでも、**本文が書き換わらない**で開く。**Tutorial プロジェクトを閉じた状態で実行すると、開かずに拒否の通知が出る。ユーザーが開いてから再実行すると、編集済みの本文のまま開く** | 実機(M4)+ 自動(Planner 全行) |
-| A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)、未知の同名フォルダ、**過去の Tutorial を削除した後に同じパスへ作って import したプロジェクト**がある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
+| A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)、既定ロケーション(`<workspace>/GitLab Duo Tutorial`)の同名フォルダ、**過去の Tutorial を削除した後に同じパスへ作って import したプロジェクト**がある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(既定ロケーションのフォルダは読みも書きもしない)(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
 | A6 | 本文が §12.2 の翻案規則を満たす(MIT 表記あり、Quick Chat なし、実ラベル、エスケープ正しい) | 自動 |
 | A7 | チュートリアル実行後も Duo Chat / Code Suggestions が `duo-disabled-for-project` にならない | 実機(M3 で Diagnostics を確認) |
 | A3b | 起動直後の古い認証状態の連続通知で Sign in 項目が揺れない。LS の再起動後、新しい接続の状態が確定するまで Sign in 項目は出ない。**旧接続の遅れた通知が新しい接続の debounce を取り消さず、`gitlab_sign_in_required` が `unknown` のまま残らない**(§9.1 手順 1)。**再起動の前後で同じ認証値が届いても、新しい接続の値で Sign in 項目が表示・非表示される** | 自動(`AuthenticationStateServiceProviderFeedTest` / `AuthenticationSourceProviderTest`)+ 実機(M2) |
@@ -465,7 +473,7 @@ A8–A15 および A13b–A13j は F3 用だったため削除(付録 A)。
 | M2 | 設定でトークンを空にして LS を再起動(「Restart Language Server」)→ メニューを開く → トークンを設定して保存 → メニューを開き直す | 前者で「Sign in to GitLab」が `Duo Chat:` / `Code Suggestions:` の下に出て、クリックで設定ページ。後者で消えている(**再起動なし**で消えれば U1 = 追随する) |
 | M3 | 「GitLab Duo Tutorial」をクリック | プロジェクトと `duo_tutorial.js` が作られエディタで開く。開いたエディタの種類(既定テキスト / Generic / JS エディタ)を記録(U2)。`const multiply` 直後で Space → 候補が出る。`language_server.log` の `didOpen` に `javascript`。Diagnostics で `duo-disabled-for-project` が engaged でない |
 | M4 | 本文を 1 行編集して保存 → 再度コマンド → プロジェクトを閉じて再度コマンド → Project Explorer で開いて再度コマンド | 1 回目: 編集が残ったまま開く。2 回目(閉じた状態): 開かれず「...exists but is closed. Open it and run the command again, or rename it.」の通知のみ。3 回目: 編集が残ったまま開く |
-| M10 | (1) 手で `GitLab Duo Tutorial` という名前のプロジェクトを作る → コマンド実行 → 閉じて再実行。(2) それを削除し、コマンドで Tutorial を作る → 内容ごと削除 → 同じパスにフォルダを作って import → コマンド実行 | どれも拒否の通知のみ。プロジェクトにファイルが増えず、開閉状態も変わらない |
+| M10 | (1) 手で `GitLab Duo Tutorial` という名前のプロジェクトを作る → コマンド実行 → 閉じて再実行。(2) それを削除し、コマンドで Tutorial を作る → 「内容を残して」削除 → 残った `<workspace>/.metadata/.plugins/<bundle>/duo-tutorial/<UUID>` を Import → コマンド実行。(3) ワークスペース直下に `GitLab Duo Tutorial` フォルダ(プロジェクトではない)を置いてコマンド実行 | (1)(2) は拒否の通知のみ。(3) は Tutorial が作られるが、直下のフォルダは読み書きされない(作られたプロジェクトのロケーションが状態ディレクトリ配下であることを Properties → Resource で確認)。プロジェクトにファイルが増えず、開閉状態も変わらない |
 
 ## 26. 未決事項
 
@@ -475,6 +483,7 @@ A8–A15 および A13b–A13j は F3 用だったため削除(付録 A)。
 | U2 | `duo_tutorial.js` を `IDE.openEditor` が何のエディタで開くか(既定テキスト / Generic / Wild Web Developer)。いずれも `ITextEditor` である前提 | 実機(M3)。`ITextEditor` でないエディタが選ばれたら `IDE.openEditor(page, file, "org.eclipse.ui.DefaultTextEditor")` へ固定する |
 | U3 | (削除: 既存 `ProjectOpenLanguageServerListener` が通知している。§9.2 のワークスペースフォルダの通知を参照) | — |
 | U10 | 所有判定のための persistent property(`duoTutorialId`)が、Eclipse の再起動後も保持され、プロジェクト削除で消えること | 実機(M10 の後に再起動 / 削除 → 同じパスで再 import) |
+| U13 | Tutorial プロジェクトのロケーション `<workspace>/.metadata/.plugins/<bundle>/duo-tutorial/<UUID>` が、実機の Eclipse(Pleiades 2025-12)で `IProject.create` に受理され、Project Explorer で通常どおり扱えるか(`LocationValidator` のソース上は受理) | 実機(M3 / M10) |
 
 U4–U9・U11・U12 は F3 用だったため削除(付録 A)。
 
@@ -485,8 +494,7 @@ U4–U9・U11・U12 は F3 用だったため削除(付録 A)。
 | 状態メニューの可視性が追随しない(U1) | 未認証項目が出っぱなし/出ない | `update(true)` の 1 行で解消可能 |
 | `WorkspaceJob` の `rule = root` が他の Job と競合して待たされる | チュートリアルが数秒遅れる | `isUser = true` で進捗が見える。ワークスペース全体のビルド中でも正しく直列化される |
 | 同名プロジェクト/フォルダがユーザーのもの | ユーザーの資産を変更してしまう | 所有記録(§9.2)と一致しなければ無変更で拒否。拒否時はユーザーがリネームする必要がある(UX 上の代償) |
-| Tutorial 作成の途中(`create` 〜 設定の保存)でプロセスが異常終了 | 記録の無いプロジェクトが残り、以後の実行が拒否される | 補償は Job 内の失敗・キャンセルにだけ効く。残った場合は拒否の通知に従いユーザーが削除する(安全側。§9.2 記録の順序) |
-| 予約したディレクトリへの外部プロセスの介入(同期ツールが `.project` を置く、ディレクトリを作り直す等) | ユーザー側のプロジェクトを Tutorial として登録してしまう | `create` の直前に同一性と空であることを検証して拒否(§9.2 ②b)。補償は同一性と内容が一致するファイルだけを消す。**検証と `create` の間のごく短い窓は、ファイルシステムに排他のトランザクションが無いため残る**(その場合も補償が他者のファイルを消すことはない。起こりうるのは所有 property / Tutorial ファイルの追加のみ) |
+| Tutorial 作成の途中(予約 〜 設定の保存)でプロセスが異常終了 | 記録の無いプロジェクトが残り、以後の実行が拒否される。状態ディレクトリ配下に UUID ディレクトリが残る | 補償は Job 内の失敗・キャンセルにだけ効く。残ったプロジェクトは拒否の通知に従いユーザーが削除する(安全側)。UUID ディレクトリはユーザーのファイルではなく無害(§22) |
 | `plugin.xml` の並行 PR 衝突 | マージ時の手戻り | 追記のみ・末尾のみ。既存ブロックは非編集 |
 | headless で UI 配線を検証できない | メニューが出ない等が実機まで露見しない | UI 接触部を最小化し、配線と SWT 殻は `fable` が担当。M1〜M4・M10 |
 
@@ -643,3 +651,6 @@ T1 / T2 の実装ブリーフには §8.1 / §9.1 の session 照合規則、§9
 | 11 | P2 認証設定の変更時にもソース状態を未確定へ戻せ | 採用。既存の `resetAuthenticatedState()`(`GitLabPreferencePage.kt:323` から呼ばれる)で世代を進め、`AuthenticationSourceProvider.reset()` も呼ぶ。同じ接続で未認証 → 保存の試験を追加 | §9.1 手順 1'', §21, `AuthenticationStateServiceProviderFeedTest` |
 | 12 | P1 予約後に現れた .project を所有扱いするな | 採用。予約時にディレクトリの同一性(`fileKey`)を記録し、`create` の直前に同一性と空であることを検証して違えば何も消さず `Refused`。補償は同一性と内容(`create` 直後に保持したバイト列)が一致する `.project` / `duo_tutorial.js` だけを消す。検証と `create` の間の短い窓はファイルシステムの制約として §27 に明記(補償が他者のファイルを消すことはない) | §9.2 ②a'〜②d・補償, §27, `DuoTutorialWorkspaceWriterTest` |
 | 12 | P2 reset 後も拒否用の世代下限を保持せよ | 採用。`reset()` は `null` ではなく墓標 `(現在の接続, reset 時の世代, UNKNOWN)` を書き、世代の下限として残す。世代照合後・CAS 前に `reset()` を挟む決定的な試験を追加 | §8.1, §12.1, `AuthenticationSourceProviderTest` |
+| 13 | P1 作成先を検査と一体で原子的に公開せよ | 採用(方式を変更)。既定ロケーションでの検査を重ねても検査と作成の間の窓が残るため、Tutorial プロジェクトを**状態ディレクトリ配下の UUID 名の専用ディレクトリ**(`<state>/duo-tutorial/<UUID>`、`setLocationURI`)に置き、`Files.createDirectory` で新規に作る。外部プロセスが介入する前提が成り立たないので、既定ロケーションの事前検査・同一性照合・窓のリスクを削除。`LocationValidator` がこの場所を受理することを実ソースで確認(実機は U13) | §9.2 作成先・作成の順序・分岐表, §27, A5b, M10, U13 |
+| 13 | P2 IProject.create 中の失敗も補償対象に | 採用。補償を予約成功の時点から有効にし、`create` の途中の失敗・キャンセルも含めて登録解除 + 専用ディレクトリの削除。`create` 内の各副作用の後で失敗する fake で試験 | §9.2 補償, §13, §14, `DuoTutorialWorkspaceWriterTest` |
+| 13 | P2 世代確認から認証処理の確定までを直列化せよ | 採用。世代の照合と 3 つの確定処理(プロバイダ更新・`isAuthenticated` 更新・ポップアップ判定)を同じロック内で一続きに行い、`resetAuthenticatedState()` も同じロックを取る。確定処理の途中に reset を挟む決定的な試験を追加 | §9.1 手順 1''', `AuthenticationStateServiceProviderFeedTest` |
