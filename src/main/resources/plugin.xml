@@ -431,6 +431,32 @@
                 name="Show GitLab Knowledge Graph"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- Duo lightweight commands design §11.1: the status menu's Forum / Duo Documentation / Sign in items. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowDuoForum"
+                name="GitLab Forum"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.ShowDuoDocumentation"
+                name="GitLab Duo Documentation"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.SignIn"
+                name="Sign in to GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <!-- Duo lightweight commands design §11.1 F2: creates the "GitLab Duo Tutorial" project and opens its file. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.DuoTutorial"
+                name="GitLab Duo Tutorial"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -518,6 +544,10 @@
 
         <sourceProvider provider="com.gitlab.eclipse.utils.system.SystemSourceProvider">
             <variable name="os" priorityLevel="workbench"/>
+        </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.authentication.AuthenticationSourceProvider">
+            <variable name="gitlab_sign_in_required" priorityLevel="workbench"/>
         </sourceProvider>
     </extension>
 
@@ -987,6 +1017,27 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.ShowKnowledgeGraph"
                 class="com.gitlab.eclipse.views.webview.actions.ShowKnowledgeGraphHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowDuoForum"
+                class="com.gitlab.eclipse.handlers.ShowDuoForum"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ShowDuoDocumentation"
+                class="com.gitlab.eclipse.handlers.ShowDuoDocumentation"
+        />
+
+        <!-- One handler class, two command ids: SignIn reuses ShowSettings (design §5.1 R3). -->
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.SignIn"
+                class="com.gitlab.eclipse.handlers.ShowSettings"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.DuoTutorial"
+                class="com.gitlab.eclipse.codesuggestions.tutorial.DuoTutorialHandler"
         />
     </extension>
 
@@ -1707,6 +1758,54 @@
                     commandId="gitlab-eclipse-plugin.commands.ExportDiagnostics"
                     label="Export Diagnostics"
                     tooltip="Save a sanitized ZIP of diagnostics and logs"/>
+        </menuContribution>
+
+        <!-- Duo lightweight commands design §11.3 / §10 #9, #10: right after "Show Documentation", which stays. -->
+        <menuContribution
+                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?after=gitlab-eclipse-plugin.menus.showDocumentation">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowDuoDocumentation"
+                    id="gitlab-eclipse-plugin.menus.showDuoDocumentation"
+                    label="GitLab Duo Documentation">
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowDuoForum"
+                    id="gitlab-eclipse-plugin.menus.showDuoForum"
+                    label="GitLab Forum (Help and feedback)">
+            </command>
+        </menuContribution>
+
+        <!-- Duo lightweight commands design §5.1 R3/R4, §11.3: shown only while signed out. -->
+        <menuContribution
+                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?before=StatusActions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.SignIn"
+                    id="gitlab-eclipse-plugin.menus.signIn"
+                    label="Sign in to GitLab">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab_sign_in_required">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+
+        <!-- Duo lightweight commands design §11.3 R10 / ledger R1: contributed after the Duo Documentation / Forum
+             block above with the same ?after=, so it lands directly after "Show Documentation", ahead of them.
+             Visible on the same condition as the Duo Chat commands (the reference extension's `gl.duoTutorial`). -->
+        <menuContribution
+                locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?after=gitlab-eclipse-plugin.menus.showDocumentation">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.DuoTutorial"
+                    id="gitlab-eclipse-plugin.menus.duoTutorial"
+                    label="GitLab Duo Tutorial">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
         </menuContribution>
     </extension>
 
