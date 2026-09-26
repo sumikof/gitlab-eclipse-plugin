@@ -123,7 +123,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
         │                        ▼
         │               DuoTutorialWorkspaceWriter(WorkspaceJob, rule = root)
         │                        │ done
-        ▼                        ▼ Ready → asyncExec → UI スレッドで workspace.run(root rule)内に所有を再検証して開く
+        ▼                        ▼ Ready → asyncExec → asyncExec → UI スレッドで runInUI(root rule、待機中もイベントループを回す)内に所有を再検証して開く
    DuoTutorialContent    openInActiveEditor(IFile)  ──▶ didOpen / CodeSuggestionsManager(既存)
 ```
 
@@ -146,9 +146,9 @@ R11–R20 は F3 用だったため削除(付録 A)。
 | コンポーネント | 責務 | 根拠・既存パターン |
 |---|---|---|
 | `DuoTutorialContent` | `object`。プロジェクト名 `PROJECT_NAME = "GitLab Duo Tutorial"`、ファイル名 `FILE_NAME = "duo_tutorial.js"`、本文 `TEXT`(Kotlin raw string)。 | VSCode も本文をソース内テンプレートに持つ(`duo_tutorial.ts:3-4`)。本リポジトリでも `McpConfigService.kt:45` が `DEFAULT_CONFIG_TEMPLATE` を Kotlin 定数で持つ。**リソースファイルにしない**ので `src/main/resources`(現在 `plugin.xml` / `log4j2.xml` / `icons` のみ)にもビルドにも触れない |
-| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。**`OpenEditor` は Writer が実行しない**: Writer は行動列のうち `OpenEditor` の手前までを実行し、`OpenEditor` を `WriterOutcome.Ready(file)` に変換して返す。エディタを開くのは UI スレッドの `IWorkspace.run`(root rule)の中だけ(Codex round 19 P1 反映)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
+| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。**`OpenEditor` は Writer が実行しない**: Writer は行動列のうち `OpenEditor` の手前までを実行し、`OpenEditor` を `WriterOutcome.Ready(file)` に変換して返す。エディタを開くのは UI スレッドの `IProgressService.runInUI(window, runnable, root)` の中だけ(Codex round 19 P1 反映)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で状態を再読み取りして plan を再計算し、行動列を実行する。**結果を `WriterOutcome` で返す**(**保持用の参照は `schedule` 前に `Cancelled` で初期化する**。root rule を待つ間にキャンセルされると Eclipse は `runInWorkspace` を呼ばずに `done` を `CANCEL_STATUS` で通知するため、初期値がそのまま結果になる。Codex round 10 P2 反映): `Ready(file)`(開くべき所有ファイル)/ `Refused(reason)`(Job 内の再判定で拒否)/ `Failed`(例外・補償済み)/ `Cancelled`(補償済み)。`IStatus` は Eclipse への報告用で、**エディタを開くかどうかは `WriterOutcome` だけで決める**。`rule = workspace.root`、`isUser = true`。**この Job が作ったプロジェクトを追跡**し、property 設定前の非正常終了(例外・キャンセル)ではすべて削除を試みる(§9.2)。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
-| `DuoTutorialHandler` | `AbstractHandler`。**Writer の起動だけ**を行い、UI スレッドでは所有も拒否も判定しない(§9.2)。完了時は `WriterOutcome` に応じて、`Ready` なら `asyncExec` で UI スレッドに移り、`IWorkspace.run`(root rule)の中で開く直前に所有を再検証してから `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
+| `DuoTutorialHandler` | `AbstractHandler`。**Writer の起動だけ**を行い、UI スレッドでは所有も拒否も判定しない(§9.2)。完了時は `WriterOutcome` に応じて、`Ready` なら `asyncExec` で UI スレッドに移り、`IProgressService.runInUI(window, runnable, root)` の中で開く直前に所有を再検証してから `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
 | `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
 
 ### 8.3 (F3 分離により該当なし)
@@ -182,15 +182,15 @@ execute(event)                                   ← UI スレッド
          Refused(reason) → §9.2 の拒否の通知
          Failed → 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」
          Cancelled → 何もしない
-  OpenOnUi(UI スレッドで開始してから、`ResourcesPlugin.getWorkspace().run(runnable, root, IWorkspace.AVOID_UPDATE, NullProgressMonitor())` で root rule を取得・解放。Codex round 18 P2 / round 20 P1 反映)
-         workspace.run の中: **開く直前に所有をもう一度検証**(同名プロジェクトが開いている・persistent property が記録 ID と一致・locationURI が記録と一致・`duo_tutorial.js` が存在)
+  OpenOnUi(UI スレッドで `IProgressService.runInUI(window, runnable, root)` を呼び、root rule を**イベントループを回しながら**待って取得・解放する。Codex round 18 P2 / round 20・21 P1 反映)
+         runInUI の runnable 内: **開く直前に所有をもう一度検証**(同名プロジェクトが開いている・persistent property が記録 ID と一致・locationURI が記録と一致・`duo_tutorial.js` が存在)
                         → 一致 → openInActiveEditor(file)
                         → 不一致(`Ready` の後にプロジェクトが削除・差し替えられた等)→ 開かずに §9.2 の拒否の通知
 ```
 
 **UI スレッドで判定しない理由**: 1 回目の Writer が `create` / `open` を終えて persistent property を設定する前に 2 回目を実行すると、UI 側の判定は作成途中のプロジェクトを「所有不一致」と読んで誤って拒否しうる。判定を root rule の中だけで行えば、2 回目の Job は 1 回目の完了を待ってから再判定するので、作成途中の状態を見ない。
 
-**開く処理を「UI スレッドで開始してから root rule を取る」形にする理由**: `Ready` の確定から UI での open までの間に、待機中の別の workspace Job がプロジェクトを削除して同名のユーザープロジェクトを作ると、`IFile` ハンドルは同じ workspace path の別物を指す。そこで、再検証から `openInActiveEditor` までを root rule の中で行い、他の workspace 変更と直列化する。**ただし `UIJob` に rule を付けてはならない**(round 20 P1): `UIJob` はワーカースレッドで rule を取得してから UI へ runnable を投入し、その完了まで rule を保持するため、その間に UI スレッド上の操作(プロジェクトの閉鎖・削除など)が root rule を要求すると、UI は rule の解放を、`UIJob` は UI の runnable を互いに待ってデッドロックする。**rule を持たない `asyncExec` で UI スレッドに移り、UI スレッド自身が `IWorkspace.run` で rule を取得・解放する**なら、UI を待ちながら rule を保持するスレッドが存在しないので、この形のデッドロックは起きない。競合時は UI スレッドが rule を待つ(プラットフォーム標準のブロック表示)。保持時間は再検証とエディタのオープンだけ。実機での応答性は U14。
+**開く処理に `IProgressService.runInUI` を使う理由**: `Ready` の確定から UI での open までの間に、待機中の別の workspace Job がプロジェクトを削除して同名のユーザープロジェクトを作ると、`IFile` ハンドルは同じ workspace path の別物を指す。そこで、再検証から `openInActiveEditor` までを root rule の中で行い、他の workspace 変更と直列化する。ただし rule の取り方に 2 つの落とし穴がある。(1) **rule 付きの `UIJob`**(round 20 P1): ワーカースレッドで rule を保持したまま UI の runnable を待つので、UI スレッド上の root rule 要求とデッドロックする。(2) **UI スレッドでの `IWorkspace.run` / `beginRule` の直接呼び出し**(round 21 P1): 別の Job が root rule を保持したまま `syncExec` で UI を待っていると、UI はその rule を、Job は UI を待って循環する。**`IProgressService.runInUI(context, runnable, rule)` はこの両方を避ける**: 実装(eclipse.platform.ui `master` `bundles/org.eclipse.ui.workbench/eclipseui/org/eclipse/ui/internal/progress/ProgressManager.java` の `runInUI` → `RunnableWithStatus.run`)は UI スレッドで `Job.getJobManager().beginRule(rule, getEventLoopMonitor())` を呼び、渡す `EventLoopProgressMonitor`(`.../internal/dialogs/EventLoopProgressMonitor.java` の `runEventLoop()` → `Display.readAndDispatch()`)が**rule を待つ間も UI のイベントを処理し続ける**ので、rule を持つ Job からの `syncExec` も実行され、循環待ちにならない。競合時は標準の「ブロック中」ダイアログが出る。`context` はアクティブなワークベンチウィンドウ(`IRunnableContext`、`run(fork = false, …)` で UI スレッドのまま実行)。実機での応答性は U14。
 
 **作成先(Codex round 13 P1 反映)**: Tutorial プロジェクトは**ワークスペース直下の既定ロケーションに置かない**。プラグインの状態ディレクトリ配下の、**作成ごとにランダムな名前のディレクトリ**に置く:
 
@@ -235,7 +235,7 @@ execute(event)                                   ← UI スレッド
 
 **非 git プロジェクトと LS のプロジェクト方針**: LS の `duo-disabled-for-project` チェックは、`enabledWithoutGitlabProject === true` なら常に非 engaged(LS map @28563384)。Eclipse の既定は `true`(`PreferenceInitializer.kt:22`、`GitLabLanguageServerConfigurationService.kt:154-156` で送信)。`false` にしていても、GitLab プロジェクトが見つからないフォルダは `DuoProjectStatus.NonGitlabProject`(@28416839)であり `DuoDisabled` ではないので engaged にならない(@28562112: `NonGitlabProject` は `hasDuoAccess` を変えない)。**チュートリアルプロジェクトは Duo を無効化しない。**
 
-**ワークスペースフォルダの通知(Codex round 5 P2 で訂正)**: 既存の `ProjectOpenLanguageServerListener`(`lsp/listeners/ProjectOpenLanguageServerListener.kt`、Koin で `createdAtStart = true` 登録、`LanguageServerModule.kt:42-43`)が `POST_CHANGE` のプロジェクト集合の変化を検出し、**`workspaceFolders` を載せた `workspace/didChangeConfiguration` を送出ロック(`outboundLock`)の下で非同期に送る**。したがって Tutorial プロジェクトの作成は、既存の仕組みで LS のワークスペースフォルダに反映される(以前の版の U3「通知されない」は誤りだったので削除した)。順序: 作成(Job 内)→ リスナーの非同期送出 と、Job 完了 → `asyncExec` → UI スレッドの `IWorkspace.run`(root rule)→ エディタを開く → `didOpen` は**並行**で、どちらが先に届くかは決まらない。Code Suggestions は `didOpen` 単位で動き、ワークスペースフォルダに無いファイルでも前述のとおり Duo は無効化されない(`NonGitlabProject` は `hasDuoAccess` を変えない)ので、**どちらの順でも補完は損なわれない**。M3 で LS ログに新しいフォルダを含む `didChangeConfiguration` が出ることを確認する。本サイクルでリスナーは変更しない。
+**ワークスペースフォルダの通知(Codex round 5 P2 で訂正)**: 既存の `ProjectOpenLanguageServerListener`(`lsp/listeners/ProjectOpenLanguageServerListener.kt`、Koin で `createdAtStart = true` 登録、`LanguageServerModule.kt:42-43`)が `POST_CHANGE` のプロジェクト集合の変化を検出し、**`workspaceFolders` を載せた `workspace/didChangeConfiguration` を送出ロック(`outboundLock`)の下で非同期に送る**。したがって Tutorial プロジェクトの作成は、既存の仕組みで LS のワークスペースフォルダに反映される(以前の版の U3「通知されない」は誤りだったので削除した)。順序: 作成(Job 内)→ リスナーの非同期送出 と、Job 完了 → `asyncExec` → UI スレッドの `IProgressService.runInUI(window, runnable, root)` → エディタを開く → `didOpen` は**並行**で、どちらが先に届くかは決まらない。Code Suggestions は `didOpen` 単位で動き、ワークスペースフォルダに無いファイルでも前述のとおり Duo は無効化されない(`NonGitlabProject` は `hasDuoAccess` を変えない)ので、**どちらの順でも補完は損なわれない**。M3 で LS ログに新しいフォルダを含む `didChangeConfiguration` が出ることを確認する。本サイクルでリスナーは変更しない。
 
 ### 9.3 (F3 分離により該当なし)
 
@@ -364,7 +364,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 
 - **F1 / F2**: ネットワーク往復がないためタイムアウトなし。F2 の `WorkspaceJob` はキャンセル可能で、**各行動の前**に `IProgressMonitor.isCanceled` を確認する。キャンセルは `Cancelled` として扱い、この Job が作ったプロジェクトが property 設定前なら削除して補償する(§9.2)。property 設定後のキャンセル(ファイル作成前)はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で回復する)。
 - **リトライしない。** F2 は失敗の通知後にユーザーがコマンドを再実行すれば、§9.2 の分岐表で続きから回復する。
-- **UI スレッドを待たせない**: F2 のワークスペース操作は `WorkspaceJob`。完了後にエディタを開く継続は **rule を持たない `asyncExec` で UI スレッドに移り、UI スレッドで `IWorkspace.run`(root rule)を取得して、その中で開く直前に所有を再検証して開く**(§9.2。`UIJob` に rule を付けない。Codex round 19 P1 / round 20 P1 反映)。**`syncExec` も使わない**(`WorkspaceFileOpener.kt:37-38` の方針)。
+- **UI スレッドを待たせない**: F2 のワークスペース操作は `WorkspaceJob`。完了後にエディタを開く継続は **rule を持たない `asyncExec` で UI スレッドに移り、UI スレッドで `IProgressService.runInUI(window, runnable, root)` を呼び、その中で開く直前に所有を再検証して開く**(§9.2。`UIJob` に rule を付けない・UI スレッドで rule を直接待たない。Codex round 19〜21 P1 反映)。**`syncExec` も使わない**(`WorkspaceFileOpener.kt:37-38` の方針)。
 
 ## 16. 冪等性
 
@@ -378,7 +378,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 | 論点 | 方針 |
 |---|---|
 | ソース変数の更新 | `featureStateChange` は lsp4j のディスパッチスレッド(`GitLabLanguageServerClient.kt:99-103` は `runAsync`)。`fireSourceChanged` は `asyncExec` で UI へ(`DuoChatStateService.kt:25-32` と同じ)。フィールド書込は UI 転送前に行う(`ChatAvailabilityService.kt:19-21` の方針) |
-| F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。**状態の読み取りと判定は Job の中だけ**で行う(UI スレッドでは判定しない)。UI スレッドではワークスペースを変更しない。エディタを開く処理は rule なしの `asyncExec` で UI スレッドに移ってから `IWorkspace.run`(root rule)で他のワークスペース変更と直列化し、開く直前に所有を再検証する(`UIJob` に rule を付けるとデッドロックしうる)(§9.2) |
+| F2 のワークスペース操作 | `WorkspaceJob` + `rule = root`。**状態の読み取りと判定は Job の中だけ**で行う(UI スレッドでは判定しない)。UI スレッドではワークスペースを変更しない。エディタを開く処理は rule なしの `asyncExec` で UI スレッドに移ってから `IProgressService.runInUI(window, runnable, root)` で他のワークスペース変更と直列化し(rule 待機中もイベントループを回す)、開く直前に所有を再検証する(rule 付き `UIJob` や UI スレッドでの `IWorkspace.run` の直接呼び出しはデッドロックしうる)(§9.2) |
 | F2 の二重起動 | Job に `rule = root` があるので 2 本は直列化される。2 本目は 1 本目の完了を待ってから状態を読むので、作成途中(property 設定前)の状態を見ない。1 本目が成功していれば「一致・ファイルあり」行に落ちて開くだけ |
 | `AuthenticationStateService.update` 入口の `session` 照合 | lsp4j のディスパッチスレッドで `GitLabLanguageServerWrapper.currentSnapshot`(`AtomicReference`、`GitLabLanguageServerWrapper.kt:17`)を 1 回読んで比較するだけ。UI には触れず、debounce の `Job` にも触れない(照合を通った通知だけが既存の `cancel()` → `launch` に進む) |
 
@@ -447,7 +447,7 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
 | `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。(順序は Writer 側の責務。`DuoTutorialWorkspaceWriterTest` で「`CreateProject` → ロケーション取得 → 所有記録の保存」の順を検証する。Codex round 9 P1 反映); **既定ロケーションのフォルダの有無は入力に含まれない(Planner の状態型にその項目が無い)** |
-| `DuoTutorialHandlerTest` | F2 | **`execute` は状態を読まず Writer を schedule するだけ(ハンドラから所有判定のシームが呼ばれない)**; **1 本目の Writer が property 設定前の状態で 2 回目を実行 → 2 本目は 1 本目の完了後に「一致」と判定して開く(誤った拒否を出さない)**; **`Ready` の確定後、UI の runnable の実行前に同名プロジェクトを削除して別のユーザープロジェクト(同じ名前・ID なし)を作る → UI スレッドの `IWorkspace.run` 内の再検証で不一致となり、開かずに拒否の通知**; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクトが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない**; **既定ロケーションに同名の(プロジェクトでない)フォルダだけがある → `Ready` になり、そのフォルダには触れない(ファイルシステムの fake で読み書きが 0 回)**; **root rule を持つ別 Job の後ろで待機中にキャンセル(`runInWorkspace` 未実行)→ outcome は初期値の `Cancelled` で、通知もエディタも出ない**; **デッドロックしない形の試験: 開く処理が「rule を持たずに UI へ投入され、UI スレッドで `IWorkspace.run(…, root, …)` を呼ぶ」ことを、workspace と UI 投入のシームで検証(rule 付きの `UIJob` を使っていない)。UI runnable の投入後・実行前に、UI スレッド側の workspace 操作(root rule を要求するもの)を先に完了させる順序でも、runnable がその後に rule を取得して開く** |
+| `DuoTutorialHandlerTest` | F2 | **`execute` は状態を読まず Writer を schedule するだけ(ハンドラから所有判定のシームが呼ばれない)**; **1 本目の Writer が property 設定前の状態で 2 回目を実行 → 2 本目は 1 本目の完了後に「一致」と判定して開く(誤った拒否を出さない)**; **`Ready` の確定後、UI の runnable の実行前に同名プロジェクトを削除して別のユーザープロジェクト(同じ名前・ID なし)を作る → UI スレッドの runInUI 内の再検証で不一致となり、開かずに拒否の通知**; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクトが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない**; **既定ロケーションに同名の(プロジェクトでない)フォルダだけがある → `Ready` になり、そのフォルダには触れない(ファイルシステムの fake で読み書きが 0 回)**; **root rule を持つ別 Job の後ろで待機中にキャンセル(`runInWorkspace` 未実行)→ outcome は初期値の `Cancelled` で、通知もエディタも出ない**; **デッドロックしない形の試験: 開く処理が「rule を持たずに UI へ投入され、UI スレッドで `IProgressService.runInUI(…, root)` を呼ぶ」ことを、進捗サービスと UI 投入のシームで検証(rule 付きの `UIJob` も、UI スレッドでの `IWorkspace.run` / `beginRule` の直接呼び出しも使っていない)。**root rule を保持した fake Job が `syncExec` で UI を待つ順序**を作り、runInUI に渡る monitor が待機中にイベントループを回す(fake の `readAndDispatch` が呼ばれ、Job の `syncExec` が完了して rule が解放される)ことを検証** |
 | `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストア / ファイルシステムで: **ロケーションが `<state>/duo-tutorial/<UUID>` で `setLocationURI` に渡され、既定ロケーションには一切触れない**; **`createDirectory` が失敗(既存)→ 何も作らず `Failed`**; **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **`create` の途中(登録後・記述の書き込み前など、`create` 内の各副作用の後)で例外 / キャンセルを発生させる fake → 登録が外れ、予約したディレクトリが削除され、`Failed` / `Cancelled`**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、補償、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `open` 失敗 → 補償・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを予約前 / 予約後 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら補償して `Cancelled`、設定後なら残して `Cancelled`**; **補償の削除は、キャンセル済みの monitor を受け取ると `OperationCanceledException` を投げる fake に対しても完了する(`NullProgressMonitor`)** |
 
 **手動(実機)**: メニュー表示・可視性の切替・エディタ種別・Code Suggestions の発火(§25)。
@@ -492,7 +492,7 @@ A8–A15 および A13b–A13j は F3 用だったため削除(付録 A)。
 | U3 | (削除: 既存 `ProjectOpenLanguageServerListener` が通知している。§9.2 のワークスペースフォルダの通知を参照) | — |
 | U10 | 所有判定のための persistent property(`duoTutorialId`)が、Eclipse の再起動後も保持され、プロジェクト削除で消えること | 実機(M10 の後に再起動 / 削除 → 同じパスで再 import) |
 | U13 | Tutorial プロジェクトのロケーション `<workspace>/.metadata/.plugins/<bundle>/duo-tutorial/<UUID>` が、実機の Eclipse(Pleiades 2025-12)で `IProject.create` に受理され、Project Explorer で通常どおり扱えるか(`LocationValidator` のソース上は受理) | 実機(M3 / M10) |
-| U14 | エディタを開く UI runnable が `IWorkspace.run`(root rule)を UI スレッドで取得するとき、ビルド等の長い workspace Job と競合した場合の UI の待ち方(プラットフォーム標準のブロック表示が出るか、待ち時間が実用範囲か) | 実機(M3 をビルド中に実行) |
+| U14 | エディタを開く UI runnable が `IProgressService.runInUI`(root rule)で rule を待つとき、ビルド等の長い workspace Job と競合した場合の UI の待ち方(プラットフォーム標準のブロック表示が出るか、待ち時間が実用範囲か) | 実機(M3 をビルド中に実行) |
 
 U4–U9・U11・U12 は F3 用だったため削除(付録 A)。
 
@@ -514,7 +514,7 @@ U4–U9・U11・U12 は F3 用だったため削除(付録 A)。
 | # | タスク | 内容 | モデル | 理由(CLAUDE.md の表) |
 |---|---|---|---|---|
 | T1 | F1 | `AuthenticationSourceProvider` + Koin 登録 + ディスパッチ 1 行 + `AuthenticationStateService` の `session` 引数と入口照合(§9.1 手順 1)+ `ShowDuoForum` / `ShowDuoDocumentation` + `plugin.xml`(コマンド 3・ハンドラ 3・ソースプロバイダ 1・メニュー 2 ブロク)+ spec 3 本 | `fable` | 大半は既存パターンの複製 + plugin.xml 配線だが、`AuthenticationStateService` の入口照合(lsp4j スレッドでの接続照合と debounce の取消順序)とソース変数の UI スレッド転送を含むため、CLAUDE.md の「並行処理・lsp4j ディスパッチ」行に従う |
-| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 2 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → UI スレッドの `IWorkspace.run`(root rule、開く直前の所有再検証)→ エディタの**スレッド境界**(`UIJob` に rule を付けない)と `IProject` 状態の再読み取り・所有判定(persistent property)を含む。headless で検証不能 |
+| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 2 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → UI スレッドの `IProgressService.runInUI(window, runnable, root)`(開く直前の所有再検証)→ エディタの**スレッド境界**(rule 付き `UIJob` や UI スレッドでの直接の rule 待ちは使わない)と `IProject` 状態の再読み取り・所有判定(persistent property)を含む。headless で検証不能 |
 | R1〜R2 | 各タスクのコードレビュー | — | `fable` | 唯一の安全網。実装者とは別インスタンスで行う |
 | R3 | ブランチ全体レビュー + PR 本文(M1〜M4・M10 の手順・U-item 一覧・台帳更新案) | — | `fable` | 同上 |
 | L | 台帳 #7(D3 +1、D4 +1、D1 4 行を「対象外(単一アカウント運用)」に、D3「ターミナル出力を説明」は別サイクルへ)、#14 / #8 の `vscode.comments` 記述訂正 | — | `haiku` | 即座に目視確認できる |
@@ -672,3 +672,4 @@ T1 / T2 の実装ブリーフには §8.1 / §9.1 の session 照合規則、§9
 | 18 | P2 エディタを開く直前まで所有権を保護せよ | 採用。エディタを開く処理を `UIJob`(`rule = workspace.root`)にし、開く直前に ID・ロケーション・ファイルの所有を再検証。`Ready` 後・open 前に同名プロジェクトを差し替える試験を追加 | §9.2 フロー, §8.2, §17, `DuoTutorialHandlerTest` |
 | 19 | P1 エディタ起動経路を root-rule UIJob に統一せよ | 採用。§7 の構成図・§9.2 のワークスペース通知・§15・§28 の T2 に残っていた `asyncExec` の旧経路を `OpenJob`(`UIJob`、`rule = workspace.root`、開く直前の所有再検証)に統一。Planner の `OpenEditor` は Writer が実行せず `Ready(file)` に変換すると明記 | §7, §8.2, §9.2, §15, §28 |
 | 20 | P1 UI スレッドへ移ってから root rule を取得せよ | 採用(round 18 / 19 の反映を訂正)。rule 付きの `UIJob` はワーカースレッドで rule を保持したまま UI の runnable を待つため、UI スレッド上の root rule 要求とデッドロックしうる。rule なしの `asyncExec` で UI スレッドに移り、UI スレッド自身が `IWorkspace.run(…, root, AVOID_UPDATE, …)` で rule を取得・解放し、その中で再検証とオープンを行う形に変更。試験と U14 を追加 | §7, §8.2, §9.2, §15, §17, §28, U14, `DuoTutorialHandlerTest` |
+| 21 | P1 UI スレッドで root rule を直接待つな | 採用(round 20 の反映を訂正)。UI スレッドでの `IWorkspace.run` の直接呼び出しは、root rule を持つ Job が `syncExec` で UI を待つと循環待ちになる。`IProgressService.runInUI(window, runnable, root)` に変更(上流実装を確認: `ProgressManager.runInUI` → `beginRule(rule, EventLoopProgressMonitor)` が待機中も `Display.readAndDispatch` を回す)。rule 保持 Job が `syncExec` で UI を待つ順序の試験を追加 | §9.2, §15, §17, §28, U14, `DuoTutorialHandlerTest` |
