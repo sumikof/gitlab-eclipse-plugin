@@ -35,17 +35,33 @@ object DuoTutorialMessages {
   }
 
   /**
+   * `code_suggestions` checks that describe one document rather than the environment (ruling R5).
+   *
+   * The language checks are one check object in the language server whose id flips between the two
+   * language ids; the exclusion check is per file too. All three are evaluated on `didOpen` / set
+   * active, so at the moment the Tutorial editor opens they still describe the *previously* active
+   * document (or, right after start, no document at all) — and Eclipse's `didOpen` is asynchronous
+   * besides. Naming one of them here would tell the user completion is unavailable in a file where
+   * it is about to work. Diagnostics hides the language check for the same reason.
+   */
+  val DOCUMENT_SCOPED_CHECK_IDS: Set<String> = setOf(
+    "code-suggestions-document-unsupported-language",
+    "code-suggestions-document-disabled-language",
+    "code-suggestions-file-excluded",
+  )
+
+  /**
    * R7's notice when Code Suggestions will not run in the editor just opened, or null when it will.
    *
    * The local setting wins when both apply (Codex round 23 P1): it is the one the user can fix from
-   * the status menu. An engaged check is named through [FeatureStateLabels] and sent to
-   * diagnostics, never to the toggle, which would not fix it.
+   * the status menu. Otherwise the first engaged check that is not document-scoped
+   * ([DOCUMENT_SCOPED_CHECK_IDS]) is named through [FeatureStateLabels] and sent to diagnostics,
+   * never to the toggle, which would not fix it. Only document-scoped checks engaged ⇒ no notice.
    */
-  fun codeSuggestionsNotice(localEnabled: Boolean, firstEngagedCheckId: String?): String? = when {
-    !localEnabled -> CODE_SUGGESTIONS_OFF
-    firstEngagedCheckId != null ->
-      "Code Suggestions is unavailable: ${FeatureStateLabels.labelFor(firstEngagedCheckId)}. " +
-        "Open GitLab Duo diagnostics for details."
-    else -> null
+  fun codeSuggestionsNotice(localEnabled: Boolean, engagedCheckIds: List<String>): String? {
+    if (!localEnabled) return CODE_SUGGESTIONS_OFF
+    val checkId = engagedCheckIds.firstOrNull { it !in DOCUMENT_SCOPED_CHECK_IDS } ?: return null
+    return "Code Suggestions is unavailable: ${FeatureStateLabels.labelFor(checkId)}. " +
+      "Open GitLab Duo diagnostics for details."
   }
 }

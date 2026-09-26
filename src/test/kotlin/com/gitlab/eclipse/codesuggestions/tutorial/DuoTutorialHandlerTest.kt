@@ -81,7 +81,7 @@ private class HandlerFixture {
   }
   val notices = mutableListOf<String>()
   var localEnabled = true
-  var engagedCheck: String? = null
+  var engagedChecks: List<String> = emptyList()
   var duoWithoutProject = true
   var dialogAnswer = false
   var dialogCount = 0
@@ -110,7 +110,7 @@ private class HandlerFixture {
     ownership = ownership,
     openEditor = { openEditor(it) },
     localCodeSuggestionsEnabled = { localEnabled },
-    firstEngagedCheckId = { engagedCheck },
+    engagedCheckIds = { engagedChecks },
     notify = { notices += it },
   )
 
@@ -484,11 +484,11 @@ class DuoTutorialHandlerTest : DescribeSpec({
     it("feature state: clear at command time, a check engaged before the open: one notice") {
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
-      f.engagedCheck = null
+      f.engagedChecks = emptyList()
 
       f.execute()
       f.runScheduled()
-      f.engagedCheck = "code-suggestions-no-license"
+      f.engagedChecks = listOf("code-suggestions-no-license")
       f.drainUi()
 
       f.notices shouldContainExactly listOf(NO_LICENSE_TEXT)
@@ -497,11 +497,11 @@ class DuoTutorialHandlerTest : DescribeSpec({
     it("feature state: engaged at command time, cleared before the open: no notice") {
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
-      f.engagedCheck = "code-suggestions-no-license"
+      f.engagedChecks = listOf("code-suggestions-no-license")
 
       f.execute()
       f.runScheduled()
-      f.engagedCheck = null
+      f.engagedChecks = emptyList()
       f.drainUi()
 
       f.notices.shouldBeEmpty()
@@ -511,7 +511,7 @@ class DuoTutorialHandlerTest : DescribeSpec({
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
       f.localEnabled = true
-      f.engagedCheck = "code-suggestions-no-license"
+      f.engagedChecks = listOf("code-suggestions-no-license")
 
       f.execute()
       f.runScheduled()
@@ -527,7 +527,51 @@ class DuoTutorialHandlerTest : DescribeSpec({
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
       f.localEnabled = false
-      f.engagedCheck = "code-suggestions-no-license"
+      f.engagedChecks = listOf("code-suggestions-no-license")
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.notices shouldContainExactly listOf(TOGGLE_TEXT)
+    }
+
+    it("only document-scoped checks engaged (the previously active file's) is no reason: no notice (ruling R5)") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.localEnabled = true
+      f.engagedChecks = listOf(
+        "code-suggestions-document-unsupported-language",
+        "code-suggestions-document-disabled-language",
+        "code-suggestions-file-excluded",
+      )
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.opened.size shouldBe 1
+      f.notices.shouldBeEmpty()
+    }
+
+    it("a document-scoped check ahead of an environment check: the environment check is named") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.localEnabled = true
+      f.engagedChecks = listOf("code-suggestions-document-unsupported-language", "code-suggestions-no-license")
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.notices shouldContainExactly listOf(NO_LICENSE_TEXT)
+    }
+
+    it("local setting off still wins over a document-scoped check") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.localEnabled = false
+      f.engagedChecks = listOf("code-suggestions-file-excluded")
 
       f.execute()
       f.runScheduled()
@@ -599,6 +643,24 @@ class DuoTutorialHandlerTest : DescribeSpec({
       DuoTutorialMessages.PREFERENCES_QUESTION shouldContain
         "\"Enable Duo features when no GitLab project is detected\""
       DuoTutorialMessages.DIALOG_TITLE shouldBe "GitLab Duo Tutorial"
+    }
+
+    it("codeSuggestionsNotice ignores exactly the three document-scoped check ids") {
+      DuoTutorialMessages.DOCUMENT_SCOPED_CHECK_IDS shouldBe setOf(
+        "code-suggestions-document-unsupported-language",
+        "code-suggestions-document-disabled-language",
+        "code-suggestions-file-excluded",
+      )
+      DuoTutorialMessages.codeSuggestionsNotice(true, emptyList()).shouldBeNull()
+      DuoTutorialMessages.codeSuggestionsNotice(true, listOf("code-suggestions-file-excluded")).shouldBeNull()
+      DuoTutorialMessages.codeSuggestionsNotice(
+        true,
+        listOf("code-suggestions-document-disabled-language", "code-suggestions-no-license"),
+      ) shouldBe NO_LICENSE_TEXT
+      DuoTutorialMessages.codeSuggestionsNotice(false, listOf("code-suggestions-no-license")) shouldBe TOGGLE_TEXT
+      // An id the label table does not know is still named, as diagnostics does.
+      DuoTutorialMessages.codeSuggestionsNotice(true, listOf("brand-new-check")) shouldBe
+        "Code Suggestions is unavailable: brand-new-check. Open GitLab Duo diagnostics for details."
     }
   }
 })

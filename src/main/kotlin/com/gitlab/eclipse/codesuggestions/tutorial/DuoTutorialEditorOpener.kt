@@ -41,8 +41,8 @@ class DuoTutorialEditorOpener(
   private val localCodeSuggestionsEnabled: () -> Boolean = {
     service<ScopedPreferenceStore>().getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)
   },
-  private val firstEngagedCheckId: () -> String? = {
-    service<CodeSuggestionsStateService>().getFirstEngagedCheck()?.checkId
+  private val engagedCheckIds: () -> List<String> = {
+    service<CodeSuggestionsStateService>().engagedCheckIds()
   },
   private val notify: (String) -> Unit = { NotificationUtils.show(it) },
 ) {
@@ -101,7 +101,7 @@ class DuoTutorialEditorOpener(
       notify(DuoTutorialMessages.OPEN_FAILED)
       return
     }
-    DuoTutorialMessages.codeSuggestionsNotice(localCodeSuggestionsEnabled(), firstEngagedCheckId())?.let(notify)
+    DuoTutorialMessages.codeSuggestionsNotice(localCodeSuggestionsEnabled(), engagedCheckIds())?.let(notify)
   }
 
   private companion object {
