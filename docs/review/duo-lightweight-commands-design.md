@@ -123,7 +123,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
         │                        ▼
         │               DuoTutorialWorkspaceWriter(WorkspaceJob, rule = root)
         │                        │ done
-        ▼                        ▼ asyncExec
+        ▼                        ▼ Ready → OpenJob(UIJob, rule = root、開く直前に所有を再検証)
    DuoTutorialContent    openInActiveEditor(IFile)  ──▶ didOpen / CodeSuggestionsManager(既存)
 ```
 
@@ -146,7 +146,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
 | コンポーネント | 責務 | 根拠・既存パターン |
 |---|---|---|
 | `DuoTutorialContent` | `object`。プロジェクト名 `PROJECT_NAME = "GitLab Duo Tutorial"`、ファイル名 `FILE_NAME = "duo_tutorial.js"`、本文 `TEXT`(Kotlin raw string)。 | VSCode も本文をソース内テンプレートに持つ(`duo_tutorial.ts:3-4`)。本リポジトリでも `McpConfigService.kt:45` が `DEFAULT_CONFIG_TEMPLATE` を Kotlin 定数で持つ。**リソースファイルにしない**ので `src/main/resources`(現在 `plugin.xml` / `log4j2.xml` / `icons` のみ)にもビルドにも触れない |
-| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
+| `DuoTutorialProjectPlanner` | 純ロジック。「プロジェクトの有無・開閉・所有・ファイルの有無」を入力に、実行すべき行動列(`CreateProject` / `OpenProject` / `CreateFile` / `OpenEditor` / `Refuse(reason)`)を返す(§9.2 の分岐表)。**`OpenEditor` は Writer が実行しない**: Writer は行動列のうち `OpenEditor` の手前までを実行し、`OpenEditor` を `WriterOutcome.Ready(file)` に変換して返す。エディタを開くのは `OpenJob`(`UIJob`、`rule = workspace.root`)だけ(Codex round 19 P1 反映)。`IProject` に触らず、状態を `data class` で受ける。 | `ChatIntentRouter.kt:26-32`(決定だけを切り出す)と同じ動機 |
 | `DuoTutorialWorkspaceWriter` | `WorkspaceJob`。`runInWorkspace` で状態を再読み取りして plan を再計算し、行動列を実行する。**結果を `WriterOutcome` で返す**(**保持用の参照は `schedule` 前に `Cancelled` で初期化する**。root rule を待つ間にキャンセルされると Eclipse は `runInWorkspace` を呼ばずに `done` を `CANCEL_STATUS` で通知するため、初期値がそのまま結果になる。Codex round 10 P2 反映): `Ready(file)`(開くべき所有ファイル)/ `Refused(reason)`(Job 内の再判定で拒否)/ `Failed`(例外・補償済み)/ `Cancelled`(補償済み)。`IStatus` は Eclipse への報告用で、**エディタを開くかどうかは `WriterOutcome` だけで決める**。`rule = workspace.root`、`isUser = true`。**この Job が作ったプロジェクトを追跡**し、property 設定前の非正常終了(例外・キャンセル)ではすべて削除を試みる(§9.2)。 | `DiagnosticMarkerService.kt:96-107`(`WorkspaceJob` + `rule` + `schedule`)、`ClonedProjectImporter.kt:176-200`(`create` → `open` と補償) |
 | `DuoTutorialHandler` | `AbstractHandler`。**Writer の起動だけ**を行い、UI スレッドでは所有も拒否も判定しない(§9.2)。完了時は `WriterOutcome` に応じて、`Ready` なら `OpenJob`(`UIJob`、`rule = workspace.root`)を起動し、開く直前に所有を再検証してから `openInActiveEditor`(`utils/EditorOpening.kt:34-47`)。 | — |
 | `DuoTutorialOwnership` | 所有記録の読み書き(§9.2)。`record(id, locationUri)` / `isOwned(project)`(開いている・persistent property `duoTutorialId` が記録 ID と一致・`locationURI` が記録と一致)。設定ストアとプロジェクトへのアクセスは注入(テストで fake) | 非表示キーの前例 `DUO_CHAT_SELECTED_WEBVIEW`(`PreferenceConstants.kt:22`) |
@@ -235,7 +235,7 @@ execute(event)                                   ← UI スレッド
 
 **非 git プロジェクトと LS のプロジェクト方針**: LS の `duo-disabled-for-project` チェックは、`enabledWithoutGitlabProject === true` なら常に非 engaged(LS map @28563384)。Eclipse の既定は `true`(`PreferenceInitializer.kt:22`、`GitLabLanguageServerConfigurationService.kt:154-156` で送信)。`false` にしていても、GitLab プロジェクトが見つからないフォルダは `DuoProjectStatus.NonGitlabProject`(@28416839)であり `DuoDisabled` ではないので engaged にならない(@28562112: `NonGitlabProject` は `hasDuoAccess` を変えない)。**チュートリアルプロジェクトは Duo を無効化しない。**
 
-**ワークスペースフォルダの通知(Codex round 5 P2 で訂正)**: 既存の `ProjectOpenLanguageServerListener`(`lsp/listeners/ProjectOpenLanguageServerListener.kt`、Koin で `createdAtStart = true` 登録、`LanguageServerModule.kt:42-43`)が `POST_CHANGE` のプロジェクト集合の変化を検出し、**`workspaceFolders` を載せた `workspace/didChangeConfiguration` を送出ロック(`outboundLock`)の下で非同期に送る**。したがって Tutorial プロジェクトの作成は、既存の仕組みで LS のワークスペースフォルダに反映される(以前の版の U3「通知されない」は誤りだったので削除した)。順序: 作成(Job 内)→ リスナーの非同期送出 と、Job 完了 → `asyncExec` → エディタを開く → `didOpen` は**並行**で、どちらが先に届くかは決まらない。Code Suggestions は `didOpen` 単位で動き、ワークスペースフォルダに無いファイルでも前述のとおり Duo は無効化されない(`NonGitlabProject` は `hasDuoAccess` を変えない)ので、**どちらの順でも補完は損なわれない**。M3 で LS ログに新しいフォルダを含む `didChangeConfiguration` が出ることを確認する。本サイクルでリスナーは変更しない。
+**ワークスペースフォルダの通知(Codex round 5 P2 で訂正)**: 既存の `ProjectOpenLanguageServerListener`(`lsp/listeners/ProjectOpenLanguageServerListener.kt`、Koin で `createdAtStart = true` 登録、`LanguageServerModule.kt:42-43`)が `POST_CHANGE` のプロジェクト集合の変化を検出し、**`workspaceFolders` を載せた `workspace/didChangeConfiguration` を送出ロック(`outboundLock`)の下で非同期に送る**。したがって Tutorial プロジェクトの作成は、既存の仕組みで LS のワークスペースフォルダに反映される(以前の版の U3「通知されない」は誤りだったので削除した)。順序: 作成(Job 内)→ リスナーの非同期送出 と、Job 完了 → `OpenJob`(`UIJob`、root rule)→ エディタを開く → `didOpen` は**並行**で、どちらが先に届くかは決まらない。Code Suggestions は `didOpen` 単位で動き、ワークスペースフォルダに無いファイルでも前述のとおり Duo は無効化されない(`NonGitlabProject` は `hasDuoAccess` を変えない)ので、**どちらの順でも補完は損なわれない**。M3 で LS ログに新しいフォルダを含む `didChangeConfiguration` が出ることを確認する。本サイクルでリスナーは変更しない。
 
 ### 9.3 (F3 分離により該当なし)
 
@@ -364,7 +364,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 
 - **F1 / F2**: ネットワーク往復がないためタイムアウトなし。F2 の `WorkspaceJob` はキャンセル可能で、**各行動の前**に `IProgressMonitor.isCanceled` を確認する。キャンセルは `Cancelled` として扱い、この Job が作ったプロジェクトが property 設定前なら削除して補償する(§9.2)。property 設定後のキャンセル(ファイル作成前)はプロジェクトを残す(所有一致の開いたプロジェクトなので、次回は「ファイルなし」行で回復する)。
 - **リトライしない。** F2 は失敗の通知後にユーザーがコマンドを再実行すれば、§9.2 の分岐表で続きから回復する。
-- **UI スレッドを待たせない**: F2 のワークスペース操作は `WorkspaceJob`、完了通知からエディタを開く継続は `asyncExec`(`WorkspaceFileOpener.kt:37-38`: **`syncExec` は使わない**)。
+- **UI スレッドを待たせない**: F2 のワークスペース操作は `WorkspaceJob`。完了後にエディタを開く継続は **`OpenJob`(`UIJob`、`rule = workspace.root`)** で、root rule を保持したまま開く直前に所有を再検証して開く(§9.2。`asyncExec` は使わない。Codex round 19 P1 反映)。**`syncExec` も使わない**(`WorkspaceFileOpener.kt:37-38` の方針)。
 
 ## 16. 冪等性
 
@@ -513,7 +513,7 @@ U4–U9・U11・U12 は F3 用だったため削除(付録 A)。
 | # | タスク | 内容 | モデル | 理由(CLAUDE.md の表) |
 |---|---|---|---|---|
 | T1 | F1 | `AuthenticationSourceProvider` + Koin 登録 + ディスパッチ 1 行 + `AuthenticationStateService` の `session` 引数と入口照合(§9.1 手順 1)+ `ShowDuoForum` / `ShowDuoDocumentation` + `plugin.xml`(コマンド 3・ハンドラ 3・ソースプロバイダ 1・メニュー 2 ブロク)+ spec 3 本 | `fable` | 大半は既存パターンの複製 + plugin.xml 配線だが、`AuthenticationStateService` の入口照合(lsp4j スレッドでの接続照合と debounce の取消順序)とソース変数の UI スレッド転送を含むため、CLAUDE.md の「並行処理・lsp4j ディスパッチ」行に従う |
-| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 2 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `asyncExec` → エディタの**スレッド境界**と `IProject` 状態の再読み取り・所有判定(persistent property)を含む。headless で検証不能 |
+| T2 | F2 | `DuoTutorialContent` / `Ownership` / `Planner` / `WorkspaceWriter` / `Handler` + `PreferenceConstants` 2 件 + `plugin.xml`(コマンド 1・ハンドラ 1・メニュー項目)+ spec 4 本 | `fable` | `WorkspaceJob` → `OpenJob`(`UIJob`、root rule、開く直前の所有再検証)→ エディタの**スレッド境界**と `IProject` 状態の再読み取り・所有判定(persistent property)を含む。headless で検証不能 |
 | R1〜R2 | 各タスクのコードレビュー | — | `fable` | 唯一の安全網。実装者とは別インスタンスで行う |
 | R3 | ブランチ全体レビュー + PR 本文(M1〜M4・M10 の手順・U-item 一覧・台帳更新案) | — | `fable` | 同上 |
 | L | 台帳 #7(D3 +1、D4 +1、D1 4 行を「対象外(単一アカウント運用)」に、D3「ターミナル出力を説明」は別サイクルへ)、#14 / #8 の `vscode.comments` 記述訂正 | — | `haiku` | 即座に目視確認できる |
@@ -669,3 +669,4 @@ T1 / T2 の実装ブリーフには §8.1 / §9.1 の session 照合規則、§9
 | 17 | P1 同名フォルダ時の動作を拒否か作成かに統一せよ | 採用。round 13 の意図どおり「既定ロケーションの(プロジェクトでない)同名フォルダは判定に使わず、読みも書きもせずに作成」に統一し、R9・A5b・§27 と Planner / Handler の試験を修正(M10 (3) と §9.2 は既にこの動作) | R9, A5b, §23, §27 |
 | 18 | P2 作成中のプロジェクトを UI 側で未所有と判定するな | 採用。UI スレッドでの判定を廃止し、ハンドラは Writer を schedule するだけにした。判定は root rule の中だけで行うので、2 本目は 1 本目の完了後に判定する。「property 設定前の再実行」を試験に追加 | §9.2 フロー, §8.2, §17, `DuoTutorialHandlerTest` |
 | 18 | P2 エディタを開く直前まで所有権を保護せよ | 採用。エディタを開く処理を `UIJob`(`rule = workspace.root`)にし、開く直前に ID・ロケーション・ファイルの所有を再検証。`Ready` 後・open 前に同名プロジェクトを差し替える試験を追加 | §9.2 フロー, §8.2, §17, `DuoTutorialHandlerTest` |
+| 19 | P1 エディタ起動経路を root-rule UIJob に統一せよ | 採用。§7 の構成図・§9.2 のワークスペース通知・§15・§28 の T2 に残っていた `asyncExec` の旧経路を `OpenJob`(`UIJob`、`rule = workspace.root`、開く直前の所有再検証)に統一。Planner の `OpenEditor` は Writer が実行せず `Ready(file)` に変換すると明記 | §7, §8.2, §9.2, §15, §28 |
