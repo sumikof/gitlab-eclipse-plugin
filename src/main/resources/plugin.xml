@@ -538,6 +538,10 @@
         <sourceProvider provider="com.gitlab.eclipse.utils.system.SystemSourceProvider">
             <variable name="os" priorityLevel="workbench"/>
         </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.authentication.AuthenticationSourceProvider">
+            <variable name="gitlab_sign_in_required" priorityLevel="workbench"/>
+        </sourceProvider>
     </extension>
 
     <extension point="org.eclipse.ui.preferencePages">

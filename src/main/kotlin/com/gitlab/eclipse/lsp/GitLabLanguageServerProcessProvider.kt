@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
+import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
 import com.gitlab.eclipse.diagnostics.LanguageServerVersionState
 import com.gitlab.eclipse.inject.service
@@ -13,6 +14,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLifecycle
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
 import org.eclipse.lsp4j.jsonrpc.Launcher
@@ -226,6 +228,7 @@ class GitLabLanguageServerProcessProvider(
           // so they cannot break this notification chain.
           handleRef.get()?.let { languageServerWrapper.unregisterLanguageServer(it) }
           SecurityScanLifecycle.onServerStopped()
+          resetAuthenticationState(logger)
         }
       }
     }
@@ -260,6 +263,7 @@ class GitLabLanguageServerProcessProvider(
       // Called from here as well as from onExit(): an explicit stop clears `process` under this same
       // lock, so the exit notification that follows fails its identity guard and never runs.
       SecurityScanLifecycle.onServerStopped()
+      resetAuthenticationState(logger)
     }
   }
 
@@ -358,4 +362,18 @@ class GitLabLanguageServerProcessProvider(
       }
     }
   }
+}
+
+/**
+ * The connection is gone, so nothing is known about the next one's authentication state: the
+ * "Sign in" menu item goes back to undetermined until the new connection's state settles.
+ *
+ * Contained, because it sits on the two "never throws" paths of the provider (the `finally` of the
+ * stop path and the exit notification chain): the service resolves the workbench's source provider,
+ * which is not there any more while the workbench itself is shutting down. Only the exception's
+ * class name is logged.
+ */
+private fun resetAuthenticationState(logger: ILog) {
+  runCatching { service<AuthenticationStateService>().resetForConnectionChange() }
+    .onFailure { logger.warn("Skipped the authentication state reset: ${it.javaClass.simpleName}") }
 }

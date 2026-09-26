@@ -104,7 +104,7 @@ class GitLabLanguageServerClient(
       // the server talks about, including the ones this `when` has no case for.
       FeatureStateStore.record(change)
       when (change.featureId) {
-        "authentication" -> service<AuthenticationStateService>().update(change)
+        "authentication" -> service<AuthenticationStateService>().update(change, session)
         "chat" -> {
           service<DuoChatStateService>().update(change)
           service<ChatAvailabilityService>().updateClassic(change)
