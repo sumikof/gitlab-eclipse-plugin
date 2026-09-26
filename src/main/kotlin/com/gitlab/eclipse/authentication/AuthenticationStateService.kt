@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicLong
  * - A notification whose session is not the current connection is dropped at the entrance, before
  *   the pending job is cancelled, so a late notification from a dead connection cannot cancel the
  *   live connection's debounce.
- * - The popup runnable carries `(session, generation)` and re-checks, under the same lock and on
+ * - The popup runnable carries `(session, settledVersion)` and re-checks, under the same lock and on
  *   the UI thread, that both are still current and the state is still unauthenticated.
  *
  * Everything real-machine dependent is a constructor seam with a production default, so the races
@@ -67,6 +67,14 @@ class AuthenticationStateService(
   /** Guards [isAuthenticated], [showAuthNotifJob] and every generation check-and-commit. */
   private val lock = Any()
   private val generation = AtomicLong(0)
+
+  /**
+   * Advances only when [isAuthenticated] is written (a commit or a reset), unlike [generation], which
+   * advances at every accepted notification. The popup runnable compares against this one: a
+   * same-value notification accepted while the runnable waits for the UI thread must not lose the
+   * popup, because its own commit stops at the unchanged-state early return and never queues another.
+   */
+  private var settledVersion = 0L
 
   private var isAuthenticated: Boolean? = null
   private var showAuthNotifJob: Job? = null
@@ -111,6 +119,7 @@ class AuthenticationStateService(
     synchronized(lock) {
       val resetGeneration = generation.incrementAndGet()
       isAuthenticated = null
+      settledVersion++
       provider.reset(currentSession(), resetGeneration)
     }
   }
@@ -133,16 +142,18 @@ class AuthenticationStateService(
       if (isAuthenticated == newAuthenticationState) return
 
       isAuthenticated = newAuthenticationState
+      settledVersion++
       if (!newAuthenticationState) {
-        uiDispatch { showIfStillUnauthenticated(session, jobGeneration) }
+        val settled = settledVersion
+        uiDispatch { showIfStillUnauthenticated(session, settled) }
       }
     }
   }
 
   /** On the UI thread: the popup is shown only if nothing settled in between. */
-  private fun showIfStillUnauthenticated(session: LanguageServerSession, jobGeneration: Long) {
+  private fun showIfStillUnauthenticated(session: LanguageServerSession, settled: Long) {
     val stillCurrent = synchronized(lock) {
-      jobGeneration == generation.get() && session === currentSession() && isAuthenticated == false
+      settled == settledVersion && session === currentSession() && isAuthenticated == false
     }
     if (stillCurrent) showPopup()
   }

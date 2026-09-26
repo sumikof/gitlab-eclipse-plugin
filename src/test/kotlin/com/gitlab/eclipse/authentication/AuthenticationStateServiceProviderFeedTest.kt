@@ -463,14 +463,18 @@ class AuthenticationStateServiceProviderFeedTest : DescribeSpec({
       h.popups.get() shouldBe 0
     }
 
-    // Literal §9.1 1''' rule: the generation moves at the entrance of every accepted notification,
-    // so a newer notification accepted before the UI thread ran the runnable suppresses the popup
-    // even when it carries the same (unauthenticated) value. Pinned here so the behaviour is visible.
-    it("does not show once a newer notification was accepted, even with the same value") {
+    // Ruling R3: the popup follows the settled state, not the entrance generation. A same-value
+    // notification accepted while the runnable waits for the UI thread must not lose the popup: its
+    // own commit stops at the unchanged-state early return and would never queue another one.
+    it("still shows once when a same-value notification was accepted before the UI ran") {
       val h = queuedPopup()
       h.service.update(unauthenticated, h.session)
       h.drainUi()
-      h.popups.get() shouldBe 0
+      h.popups.get() shouldBe 1
+
+      h.debounce.release(1)
+      h.drainUi()
+      h.popups.get() shouldBe 1
     }
   }
 })
