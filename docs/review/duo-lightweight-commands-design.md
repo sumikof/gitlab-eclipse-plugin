@@ -112,7 +112,7 @@ R11–R20 は F3 用だったため削除(付録 A)。
    $/gitlab/featureStateChange ("authentication")
         │ GitLabLanguageServerClient.kt:107 の case に 1 行追加
         ▼
-   AuthenticationSourceProvider ── gitlab_authenticated ──▶ plugin.xml visibleWhen
+   AuthenticationSourceProvider ── gitlab_sign_in_required ──▶ plugin.xml visibleWhen
    (AbstractSourceProvider)                                  (Sign in 項目)
    ShowDuoForum / ShowDuoDocumentation ──▶ BrowserLauncher(既存)
    SignIn ──▶ ShowSettings(既存クラスを別 command id に再割当)
@@ -133,13 +133,13 @@ R11–R20 は F3 用だったため削除(付録 A)。
 
 | コンポーネント | 責務 | 根拠・既存パターン |
 |---|---|---|
-| `AuthenticationSourceProvider` | `AbstractSourceProvider`。変数 `gitlab_authenticated` を `"unknown"` / `"true"` / `"false"` の 3 値で提供。**値は既存 `AuthenticationStateService` の 2 秒デバウンスを通った後にだけ更新する**(Codex round 3 P2 反映。`AuthenticationStateService.kt:31-33` が「LS 起動直後の連続通知は古い認証状態を含みうる」として debounce を必須にしているため)。`update(change, session)` は debounce 後の同じ `featureStateChange` を受け、`checkId` が `authentication-required` または `invalid-token` で `engaged == true` のものがあれば `"false"`、なければ `"true"`(`allChecks == null` なら更新しない)。**状態は `AtomicReference<Pair<LanguageServerSession, Boolean>?>` の 1 値で持ち、`update` はその組を書き、`reset()` は `null` を書く。公開値は「保存された組の `session` が現在の接続(`currentSnapshot?.session`)と同一参照ならその値、そうでなければ `"unknown"`」で、`getCurrentState` と `fireSourceChanged` のたびにこの規則で計算する**(Codex round 8 P2 反映: 旧接続の debounce が照合を通過した直後に停止・`reset()` が挟まり、その後に旧値が書き込まれても、公開時の照合で `unknown` になる。比較と書き込みを原子的にする代わりに、**公開を接続に結び付ける**)。第 1 の防御は `AuthenticationStateService.update` の入口での拒否(§9.1 手順 1)。**LS の停止・終了で `reset()`**(§9.1)。`fireSourceChanged` は UI スレッド(`asyncExec`)。 | check id は LS map @23528968(`AUTHENTICATION_REQUIRED = "authentication-required"`, `INVALID_TOKEN = "invalid-token"`)。既存 `AuthenticationStateService.kt:38` も `authentication-required` を見る。プロバイダの形は `DuoChatStateService.kt:10-53` の複製 |
+| `AuthenticationSourceProvider` | `AbstractSourceProvider`。**内部状態は 3 値**(未確定 / 認証済み / 未認証)。**公開するソース変数は `Boolean` の `gitlab_sign_in_required`**: 現在の接続で「未認証」と確定しているときだけ `Boolean.TRUE`、未確定・認証済み・接続不一致はすべて `Boolean.FALSE`(Codex round 9 P1 反映: core expression の `<equals value="..."/>` は引用符なしの `true` / `false` を `Boolean` に変換して比較する(`Expressions.convertArgument`、eclipse.platform `master` `runtime/bundles/org.eclipse.core.expressions/src/org/eclipse/core/internal/expressions/Expressions.java`)ため、文字列を公開すると一致しない。既存の `duo_chat_enabled` も `Boolean` を公開し `value="true"` で比較している、`DuoChatStateService.kt:39-41` / `plugin.xml:1097-1098`)。**値は既存 `AuthenticationStateService` の 2 秒デバウンスを通った後にだけ更新する**(Codex round 3 P2 反映。`AuthenticationStateService.kt:31-33` が「LS 起動直後の連続通知は古い認証状態を含みうる」として debounce を必須にしているため)。`update(change, session)` は debounce 後の同じ `featureStateChange` を受け、`checkId` が `authentication-required` または `invalid-token` で `engaged == true` のものがあれば `"false"`、なければ `"true"`(`allChecks == null` なら更新しない)。**状態は `AtomicReference<Pair<LanguageServerSession, Boolean>?>` の 1 値で持ち、`update` はその組を書き、`reset()` は `null` を書く。公開値は「保存された組の `session` が現在の接続(`currentSnapshot?.session`)と同一参照で、かつ値が未認証なら `true`、それ以外(未確定・認証済み・接続不一致)は `false`」で、`getCurrentState` と `fireSourceChanged` のたびにこの規則で計算する**(Codex round 8 P2 反映: 旧接続の debounce が照合を通過した直後に停止・`reset()` が挟まり、その後に旧値が書き込まれても、公開時の照合で `false`(= 未確定扱い)になる。比較と書き込みを原子的にする代わりに、**公開を接続に結び付ける**)。第 1 の防御は `AuthenticationStateService.update` の入口での拒否(§9.1 手順 1)。**LS の停止・終了で `reset()`**(§9.1)。`fireSourceChanged` は UI スレッド(`asyncExec`)。 | check id は LS map @23528968(`AUTHENTICATION_REQUIRED = "authentication-required"`, `INVALID_TOKEN = "invalid-token"`)。既存 `AuthenticationStateService.kt:38` も `authentication-required` を見る。プロバイダの形は `DuoChatStateService.kt:10-53` の複製 |
 | `ShowDuoForum` / `ShowDuoDocumentation` | `AbstractHandler`。固定 URL を `BrowserLauncher.open`(`navigation/BrowserLauncher.kt:12-20`)で開く。 | `ShowDocumentation.kt:14-21` と同型。URL は定数として `companion object` に置き、テストで文字列一致を固定する |
 | `SignIn`(command id のみ) | ハンドラクラスは **既存 `ShowSettings`**(`ShowSettings.kt:10-19`)を別 command id に割り当てる。 | 「同一クラス・複数 command id」は `ShowDiagnostics` / `ShowDiagnosticsFromSidePanel` で既に採用(`plugin.xml:902-910`) |
 
-**3 値にする理由**: `Boolean` にすると「まだ届いていない」と「認証済み」が区別できず、起動直後に Sign in 項目が一瞬出る/出ないの揺れが起きる(R4)。既存 `AuthenticationStateService.kt:25` も `Boolean?` で「未知」を持つ。
+**内部を 3 値にする理由**: 2 値だと「まだ届いていない」と「認証済み」が区別できず、起動直後に Sign in 項目が一瞬出る/出ないの揺れが起きる(R4)。既存 `AuthenticationStateService.kt:25` も `Boolean?` で「未知」を持つ。公開値は「未認証と確定」だけを `true` にする Boolean に畳むので、未確定の間は表示されない。
 
-**Koin 登録**: `AuthModule.kt:6` に `single<AuthenticationSourceProvider>` を追加し、`ChatModule.kt:18-32` と同じく `ISourceProviderService.getSourceProvider("gitlab_authenticated")` で **ワークベンチが生成したインスタンスを解決**する(2 インスタンス化すると `fireSourceChanged` が届かない。`ChatModule.kt:25-26` の P1-K コメントが同じ事故の記録)。
+**Koin 登録**: `AuthModule.kt:6` に `single<AuthenticationSourceProvider>` を追加し、`ChatModule.kt:18-32` と同じく `ISourceProviderService.getSourceProvider("gitlab_sign_in_required")` で **ワークベンチが生成したインスタンスを解決**する(2 インスタンス化すると `fireSourceChanged` が届かない。`ChatModule.kt:25-26` の P1-K コメントが同じ事故の記録)。
 
 ### 8.2 F2(パッケージ `com.gitlab.eclipse.codesuggestions.tutorial`)
 
@@ -159,9 +159,9 @@ F3 のコンポーネント(DTO / 選択取得 / ゲート / 上限 / 追跡付�
 
 ### 9.1 F1
 
-1. LS が `$/gitlab/featureStateChange` を送る → 既存どおり `GitLabLanguageServerClient.kt:107` の `"authentication"` case が `AuthenticationStateService.update(change, session)` を呼ぶ(`update` に `session` 引数を足し、クライアントは自分の `session`(`GitLabLanguageServerClient.kt:58`)を渡す)。**`update` は入口で、`session` が現在の接続(`GitLabLanguageServerWrapper.currentSnapshot?.session`、`GitLabLanguageServerWrapper.kt:21-22`)と同一参照でなければ、既存の debounce Job を取り消す前(`AuthenticationStateService.kt:29` の `showAuthNotifJob?.cancel()` より前)に通知を捨てて return する**(Codex round 7 P2 反映: 旧クライアントの遅れた通知が新しい接続の debounce を取り消し、`gitlab_authenticated` が `unknown` のまま残るのを防ぐ)。通過した通知は既存どおり debounce ブロック(`:33-46`)に入る。**プロバイダへの通知は `delay(notifDelay)` の直後、既存のすべての早期 return(`:36-39` の `find { ... } ?: return@launch` と `:42` の `if (isAuthenticated == newAuthenticationState) return@launch`)より前に置く**(Codex round 8 P1 反映: LS 再起動でプロバイダだけが `unknown` に戻り、既存の `isAuthenticated` は以前の値を保つため、新しい接続が同じ認証値を返すと後者の早期 return に止められてプロバイダが更新されない)。ポップアップの判定・表示は既存の早期 return のまま不変(旧接続の遅れた通知を無視する点を除く)。プロバイダ側の公開時照合(§8.1)は第 2 の防御として残す。
-1'. LS の停止・終了: `GitLabLanguageServerProcessProvider` が既に `SecurityScanLifecycle.onServerStopped()` を呼んでいる 2 箇所(`:228` 終了コールバック / `:262` 停止経路)に並べて `AuthenticationSourceProvider.reset()` を呼ぶ(表示用の変数を `unknown` に戻す)。
-2. プロバイダが `gitlab_authenticated` を発火 → メニューの `visibleWhen` が再評価される。
+1. LS が `$/gitlab/featureStateChange` を送る → 既存どおり `GitLabLanguageServerClient.kt:107` の `"authentication"` case が `AuthenticationStateService.update(change, session)` を呼ぶ(`update` に `session` 引数を足し、クライアントは自分の `session`(`GitLabLanguageServerClient.kt:58`)を渡す)。**`update` の入口照合・既存 Job の取消・新 Job の投入は、`AuthenticationStateService` 内の 1 つのロック(`synchronized(lock)`)の中で一続きに行う**(Codex round 9 P1 反映: 照合と取消が別操作だと、旧接続の呼び出しが照合を通過した直後に接続が替わり、新接続の Job が投入された後で旧呼び出しが再開して新 Job を取り消しうる)。ロックの中では、**`session` が現在の接続(`GitLabLanguageServerWrapper.currentSnapshot?.session`、`GitLabLanguageServerWrapper.kt:21-22`)と同一参照でなければ、既存の debounce Job を取り消す前(`AuthenticationStateService.kt:29` の `showAuthNotifJob?.cancel()` より前)に通知を捨てて return する**(Codex round 7 P2 反映: 旧クライアントの遅れた通知が新しい接続の debounce を取り消し、`gitlab_sign_in_required` が `unknown` のまま残るのを防ぐ)。通過した通知は既存どおり debounce ブロック(`:33-46`)に入る。**debounce ブロックは `delay(notifDelay)` の直後に、もう一度 `session` が現在の接続と同一参照かを確かめ、違えば何もせず終わる**(ロックを抜けた後に接続が替わった場合の第 2 の照合。旧接続の Job がポップアップを出したりプロバイダを更新したりしない)。**プロバイダへの通知は `delay(notifDelay)` の直後、既存のすべての早期 return(`:36-39` の `find { ... } ?: return@launch` と `:42` の `if (isAuthenticated == newAuthenticationState) return@launch`)より前に置く**(Codex round 8 P1 反映: LS 再起動でプロバイダだけが `unknown` に戻り、既存の `isAuthenticated` は以前の値を保つため、新しい接続が同じ認証値を返すと後者の早期 return に止められてプロバイダが更新されない)。ポップアップの判定・表示は既存の早期 return のまま不変(旧接続の遅れた通知を無視する点を除く)。プロバイダ側の公開時照合(§8.1)は第 2 の防御として残す。
+1'. LS の停止・終了: `GitLabLanguageServerProcessProvider` が既に `SecurityScanLifecycle.onServerStopped()` を呼んでいる 2 箇所(`:228` 終了コールバック / `:262` 停止経路)に並べて `AuthenticationSourceProvider.reset()` を呼ぶ(内部状態を未確定に戻し、公開値 `gitlab_sign_in_required` を `false` にする)。
+2. プロバイダが `gitlab_sign_in_required` を発火 → メニューの `visibleWhen` が再評価される。
 3. 項目の動作: Forum / Duo Documentation は外部ブラウザ、Sign in は設定ダイアログ。いずれも同期・即時・LS 往復なし。
 
 **メニューは一度だけ生成される**(`ShowPluginStatusMenu.kt:15-28`: `menu == null` のときだけ `populateContributionManager`)。`visibleWhen` を持つ寄与項目の可視性が、生成後の変数変化に追随するかは **U1(実機確認)**。追随しない場合の代替は `ICommandService.refreshElements`(`ChatAvailabilityService.kt:93-98` が `chatStatus` に使っている)ではなく、`ShowPluginStatusMenu` で毎回 `menuManager.update(true)` を呼ぶ 1 行の追加になる(§21 に影響として記載)。
@@ -198,7 +198,7 @@ execute(event)                                   ← UI スレッド
 - **閉じた同名プロジェクトは所有判定をしない**(persistent property は開いていないと読めない)。判定のためにユーザーのプロジェクトを開くことはせず、一律 `Refuse`(安全側)。
 - **記録の順序(Codex round 8 P1 反映)**: ① ID(`UUID.randomUUID()`)を生成(メモリ上のみ)→ ② `create`(既定ロケーション。この行はディスク上にフォルダが無いことを Job 内の再読み取りで確認済み)→ ③ **`create` の後に** `project.locationURI` を取得(未作成のプロジェクトのハンドルでは `null` になりうるため、作成前には読まない)→ ④ 設定キー 2 つ(ID・ロケーション)を `setValue` し、**`ScopedPreferenceStore.save()` で明示的に永続化**(前例: `PublishRecordStore.kt:42-54` の「`setValue` → `save()`、失敗時は直前の値へ戻して `false`」)→ ⑤ `open` → ⑥ persistent property の設定 → ⑦ `CreateFile`。
   - **④ の保存が失敗したら**(例外)、設定キーを直前の値へ戻し、② で作ったプロジェクトを補償削除して `Failed`。保存できたときだけ ⑤ へ進む。これで「プロジェクトの property だけが残り、設定側に記録が無い」状態は作られない。
-  - **② の後、⑥ が済む前に Job が非正常終了したら**(③〜⑥ の失敗・例外・キャンセルのいずれでも)、この Job 内で作成したプロジェクトを内容ごと削除する(補償。削除対象はこの Job が作ったものだけ)。補償の削除も失敗した場合だけプロジェクトが残り、次回は「閉じている」または「ID 不一致」で `Refuse` に倒れる(通知で削除を案内。§20)。
+  - **② の後、⑥ が済む前に Job が非正常終了したら**(③〜⑥ の失敗・例外・キャンセルのいずれでも)、この Job 内で作成したプロジェクトを内容ごと削除する(補償。**削除には Job の monitor を渡さず `NullProgressMonitor` を使う**(Codex round 9 P2 反映: キャンセル済みの Job の monitor を渡すと削除自体が直ちにキャンセルされ、補償されない)。削除対象はこの Job が作ったものだけ)。補償の削除も失敗した場合だけプロジェクトが残り、次回は「閉じている」または「ID 不一致」で `Refuse` に倒れる(通知で削除を案内。§20)。
   - ②〜④ の間でプロセスが異常終了(強制終了・クラッシュ)した場合は補償が走らず、記録の無いプロジェクトが残りうる。次回は「閉じている」または「ID 不一致」で `Refuse`(安全側)になり、通知に従ってユーザーが削除する(残るリスクとして §27)。
 - 記録は 1 組だけ(最新の作成)。設定ストアは `InstanceScope`(ワークスペース単位)なので、ワークスペースをまたいで所有を誤認しない。
 
@@ -259,7 +259,7 @@ F3 の処理フロー(選択取得 3 段・実行時ゲート・入力上限・�
 
 | 変数 | プロバイダ | 値 |
 |---|---|---|
-| `gitlab_authenticated` | `com.gitlab.eclipse.authentication.AuthenticationSourceProvider` | `"unknown"` / `"true"` / `"false"` |
+| `gitlab_sign_in_required` | `com.gitlab.eclipse.authentication.AuthenticationSourceProvider` | `Boolean`(現在の接続で未認証と確定しているときだけ `true`) |
 
 `GitLabLanguageServerClient.kt:106-115` のディスパッチは、`"authentication"` case の呼び出しに `session` 引数を渡す 1 行の変更のみ(§9.1)。`FeatureStateStore.record`(`:105`)は変更しない。
 
@@ -269,7 +269,7 @@ F3 の処理フロー(選択取得 3 段・実行時ゲート・入力上限・�
 
 | 項目 | locationURI | visibleWhen |
 |---|---|---|
-| Sign in to GitLab | `menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?before=StatusActions`(separator 名は `:1624`) | `<with variable="gitlab_authenticated"><equals value="false"/></with>` |
+| Sign in to GitLab | `menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?before=StatusActions`(separator 名は `:1624`) | `<with variable="gitlab_sign_in_required"><equals value="true"/></with>`(`true` は core expression で `Boolean.TRUE` に変換される)  |
 | GitLab Duo Tutorial | `menu:gitlab-eclipse-plugin.menus.statusWidgetMenu?after=gitlab-eclipse-plugin.menus.showDocumentation`(項目 id は `:1642`) | `<with variable="duo_chat_enabled"><equals value="true"/></with>` |
 | GitLab Duo Documentation | 同上 | なし |
 | GitLab Forum (Help and feedback) | 同上 | なし |
@@ -319,10 +319,10 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 | 機能 | 失敗 | 扱い |
 |---|---|---|
 | F1 | 外部ブラウザ起動失敗 | `BrowserLauncher.open` が捕捉してログ(`BrowserLauncher.kt:14-18`)。追加処理なし |
-| F1 | `authentication` の `allChecks` が null | `"unknown"` のまま(表示しない) |
+| F1 | `authentication` の `allChecks` が null | 内部状態を変えない(未確定なら未確定のまま。公開値は `false` = 表示しない) |
 | F1 | 起動直後の古い認証状態の連続通知 | debounce 後の最後の値だけを反映(既存ポップアップと同じ規則) |
-| F1 | LS の停止・再起動 | `"unknown"` に戻し、新しい接続の debounce 済みの値が届くまで Sign in 項目を出さない |
-| F1 | 旧接続(停止済み / 再起動前)の遅れた `authentication` 通知 | `AuthenticationStateService.update` の入口で捨てる(§9.1 手順 1)。新しい接続の debounce は取り消されず、`gitlab_authenticated` が `unknown` のまま残らない |
+| F1 | LS の停止・再起動 | 内部状態を未確定に戻し(公開値 `false`)、新しい接続の debounce 済みの値が届くまで Sign in 項目を出さない |
+| F1 | 旧接続(停止済み / 再起動前)の遅れた `authentication` 通知 | `AuthenticationStateService.update` の入口で捨てる(§9.1 手順 1)。新しい接続の debounce は取り消されず、`gitlab_sign_in_required` が `unknown` のまま残らない |
 | F2 | Planner が `Refuse`(同名のユーザープロジェクト / 未知の同名フォルダ) | §9.2 の文言で通知。ワークスペースは一切変更しない |
 | F2 | Job の `CoreException`(ワークスペースが読み取り専用、`.project` の解析失敗等) | 通知「Could not create the GitLab Duo Tutorial project. See the Error Log.」+ ログは**例外クラス名のみ** |
 | F2 | `WorkspaceJob` 内の `CoreException` / 例外 / キャンセル | **§9.2 の補償規則と同じ**: property 設定前ならこの Job が作ったプロジェクトを内容ごと削除して `Failed` / `Cancelled`。property 設定後の `CreateFile` 失敗だけは所有済みプロジェクトを残して `Failed`(次回「ファイルなし」行で回復)。補償の削除まで失敗したときだけ Job の `IStatus` を ERROR で返す(Eclipse が Job のエラーダイアログを出す) |
@@ -355,7 +355,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 ## 18. 認証と認可
 
 - 新たな認証経路はない。F1 の Sign in は既存の設定ページを開くだけ。
-- `gitlab_authenticated` は **真偽/未知の 3 値だけ**を持ち、トークン等は一切通らない。
+- `AuthenticationSourceProvider` は **認証の真偽/未知の 3 値と接続の識別子だけ**を持ち(公開は `Boolean` 1 つ)、トークン等は一切通らない。
 
 ## 19. ログ、監視、監査
 
@@ -368,7 +368,7 @@ Kotlin raw string 上の注意: 本文の正規表現 `[^\\s@]+$` は TS テン�
 
 ## 20. 障害時の復旧方法
 
-- **F1**: 項目が出ない → `gitlab_authenticated` の値を Diagnostics(`ShowDiagnostics`)の feature state で確認(`authentication` の checks)。設定ページは従来どおりメニュー「Show Settings」から到達できる。
+- **F1**: 項目が出ない → `gitlab_sign_in_required` の値を Diagnostics(`ShowDiagnostics`)の feature state で確認(`authentication` の checks)。設定ページは従来どおりメニュー「Show Settings」から到達できる。
 - **F2**: 作成途中の失敗・キャンセルは Job 内の補償(作ったプロジェクトの削除)で残らない。補償の削除まで失敗して閉じた / ID 不一致のプロジェクトが残った場合は、拒否の通知に従い Project Explorer からプロジェクトを削除(内容ごと)して再実行する。ユーザーが Tutorial プロジェクトを閉じた場合は、自分で開いてから再実行する(R6)。
 
 ## 21. 既存機能への影響
@@ -410,13 +410,13 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 
 | Spec | 対象 | 主な検証 |
 |---|---|---|
-| `AuthenticationSourceProviderTest` | F1 | 初期 `"unknown"`; `authentication-required` engaged → `"false"`; `invalid-token` engaged → `"false"`; 全て非 engaged → `"true"`; `allChecks == null` → 変化なし; **現在と異なる `session` で保存された値は公開されない(`"unknown"`)**; **`reset()` → `"unknown"`**; **決定的な競合: 旧 session の更新が照合を通過した直後・書き込み前に `reset()` と接続の切り替えを挟む(fake の接続参照で順序を制御)→ 書き込み後も公開値は `"unknown"`**。`getProvidedSourceNames`。UI 転送はシームで捕捉 |
-| `AuthenticationStateServiceProviderFeedTest` | F1 | 既存 debounce を短縮した構成で「stale(未認証)→ 最新(認証済み)」を連続投入 → プロバイダには最新値だけが 1 回届く; **新 session の通知が debounce 中に旧 session の通知が遅れて届く → 旧通知は debounce を取り消さず捨てられ、新 session の値が反映される**(§9.1 手順 1); **LS 再起動の前後で同じ認証値(例: 未認証 → 再起動 → 未認証)が届く → 既存の `isAuthenticated` が同値でもプロバイダは新しい接続の値で更新される(Sign in が `unknown` のまま消えない)**; `allChecks` に `authentication-required` が無い通知 → プロバイダは変化なし; 既存ポップアップの判定は不変(既存 spec の回帰) |
+| `AuthenticationSourceProviderTest` | F1 | 初期: 内部は未確定・公開値 `false`; `authentication-required` engaged → 未認証・公開値 `true`; `invalid-token` のみ engaged → 未認証・公開値 `true`; 関連する check(`authentication-required` / `invalid-token`)がどれも engaged でない → 認証済み・公開値 `false`(それまで未認証だった場合も `false` へ戻る); `allChecks == null` → 内部状態を変えない; **現在と異なる `session` で保存された値は公開されない(`false`)**; **`reset()` → 未確定・公開値 `false`**; **決定的な競合: 旧 session の更新が照合を通過した直後・書き込み前に `reset()` と接続の切り替えを挟む(fake の接続参照で順序を制御)→ 書き込み後も公開値は `false`**; **公開値の型が `Boolean` であり、plugin.xml と同じ `<with variable="gitlab_sign_in_required"><equals value="true"/></with>` を `ExpressionConverter.getDefault().perform(Element)` で式にして `EvaluationContext` で評価すると、未認証で `EvaluationResult.TRUE`・それ以外で `FALSE`**。`getProvidedSourceNames`。UI 転送はシームで捕捉 |
+| `AuthenticationStateServiceProviderFeedTest` | F1 | 既存 debounce を短縮した構成で「stale(未認証)→ 最新(認証済み)」を連続投入 → プロバイダには最新値だけが 1 回届く; **新 session の通知が debounce 中に旧 session の通知が遅れて届く → 旧通知は debounce を取り消さず捨てられ、新 session の値が反映される**(§9.1 手順 1); **LS 再起動の前後で同じ認証値(例: 未認証 → 再起動 → 未認証)が届く → 既存の `isAuthenticated` が同値でもプロバイダは新しい接続の値で更新される(Sign in が `unknown` のまま消えない)**; プロバイダへ渡す通知は `allChecks` の内容にかかわらず(`authentication-required` が無くても)debounce 後に 1 回渡される(判定の規則は `AuthenticationSourceProviderTest` 側。§8.1 と同じ期待値: null / `invalid-token` のみ / 関連 check なしの 3 ケースを区別); **決定的な競合: 旧 session の呼び出しが入口の照合を通過した直後・取消の前に、新 session の通知を挟む(ロックと fake の接続参照で順序を制御)→ 新 session の Job は取り消されず、新しい値がプロバイダとポップアップ判定に届く; 旧 session の Job は debounce 後の再照合で何もしない**; 既存ポップアップの判定は不変(既存 spec の回帰) |
 | `ShowDuoForumTest` / `ShowDuoDocumentationTest` | F1 | URL 定数が `constants.ts:17-18` の文字列と一致; `BrowserLauncher` シームが 1 回呼ばれる |
 | `DuoTutorialContentTest` | F2 | `PROJECT_NAME` / `FILE_NAME`; 本文に MIT 表記・`Alt + D`・`Explain Code`・`Generate Tests`・`Refactor Code` を含む; `Quick Chat` / `fibonacci` / `Alt> + C` / `Alt> + T` / `Alt> + R` を**含まない**; `\\s` を含まず `$/` を含む(§12.2) |
-| `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。所有記録が作成より前に行われる順序 |
+| `DuoTutorialProjectPlannerTest` | F2 | §9.2 の分岐表の**全行**を 1 例ずつ。「ファイルあり」の全行で `CreateFile` が出ないこと(R9)。**所有不一致 / 未記録の全行で行動列が `Refuse` のみ**(プロジェクトを開かない・ファイルを作らない)。(順序は Writer 側の責務。`DuoTutorialWorkspaceWriterTest` で「`CreateProject` → ロケーション取得 → 所有記録の保存」の順を検証する。Codex round 9 P1 反映) |
 | `DuoTutorialHandlerTest` | F2 | UI 時点の `Refuse` → 通知のみ・Job 未起動; `WriterOutcome` ごと: `Ready` → エディタ open シームが 1 回、`Refused` → 拒否の通知のみ(open されない)、`Failed` → 失敗の通知のみ、`Cancelled` → 何もしない; **UI 読み取り後・Job 再読み取り前に同名のユーザープロジェクト / フォルダが現れる競合 → `Refused` になり、ユーザー側のファイルを開かない** |
-| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストアで: **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、作ったプロジェクトを削除、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `create` 後に `open` 失敗 → 作ったプロジェクトを内容ごと削除 1 回・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを `create` 前 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら作ったプロジェクトを削除して `Cancelled`、設定後なら残して `Cancelled`** |
+| `DuoTutorialWorkspaceWriterTest` | F2 | fake の `IProject` / `IWorkspaceRoot` / 設定ストアで: **未作成のハンドルは `locationURI == null` を返す fake にして、ロケーションの取得が `create` の後であること**; **設定の `save()` が例外 → 設定キーが直前の値に戻り、作ったプロジェクトを削除、`Failed`(`open` も property 設定も行われない)**; **保存に成功した値が、新しいストア インスタンス(再起動相当)から読めること**; `create` 後に `open` 失敗 → 作ったプロジェクトを内容ごと削除 1 回・`Failed`; property 設定失敗 → 同; 補償の削除も失敗 → `Failed`(Job は ERROR); `CreateFile` 失敗 → プロジェクトは削除しない; Job 内で状態を再読み取りして `Refuse` なら何も変更せず `Refused`; **キャンセルを `create` 前 / `create` 後 / 保存後 / `open` 後 / property 設定後の各行動間で発生させる → property 設定前なら作ったプロジェクトを削除して `Cancelled`、設定後なら残して `Cancelled`**; **補償の削除は、キャンセル済みの monitor を受け取ると `OperationCanceledException` を投げる fake に対しても完了する(`NullProgressMonitor` で呼ばれている)** |
 
 **手動(実機)**: メニュー表示・可視性の切替・エディタ種別・Code Suggestions の発火(§25)。
 
@@ -426,13 +426,13 @@ Kotest `DescribeSpec` + MockK(`build.gradle.kts:146-147`、既存例 `ClipboardW
 |---|---|---|
 | A1 | 状態メニューに「GitLab Forum (Help and feedback)」「GitLab Duo Documentation」「GitLab Duo Tutorial」が「Show Documentation」の直後に並び、Forum / Duo Documentation が §5.1 の URL を開く | 実機(M1)+ 自動(URL 定数) |
 | A2 | 未認証(トークン未設定/無効)のとき「Sign in to GitLab」が `StatusActions` 区切りの直前に出て、設定ページを開く。認証後は消える(再起動なしで) | 実機(M2)。再起動なしの切替は U1 |
-| A3 | `gitlab_authenticated` が §8.1 の規則どおり 3 値を取る | 自動 |
+| A3 | 内部状態が §8.1 の規則どおり 3 値を取り、公開値 `gitlab_sign_in_required` は「現在の接続で未認証と確定」のときだけ `Boolean.TRUE`。**plugin.xml と同じ `<with><equals value="true"/></with>` を core expression として評価し、未認証で真・それ以外で偽になる** | 自動 |
 | A4 | チュートリアルコマンドで `GitLab Duo Tutorial/duo_tutorial.js` が作られエディタで開き、`didOpen` の `languageId` が `javascript`(LS ログで確認)で、本文中の `const multiply` 直後で Code Suggestions が出る | 実機(M3) |
 | A5 | 2 回目の実行、本文を編集後の実行のいずれでも、**本文が書き換わらない**で開く。**Tutorial プロジェクトを閉じた状態で実行すると、開かずに拒否の通知が出る。ユーザーが開いてから再実行すると、編集済みの本文のまま開く** | 実機(M4)+ 自動(Planner 全行) |
 | A5b | ユーザー自身の `GitLab Duo Tutorial` プロジェクト(開/閉)、未知の同名フォルダ、**過去の Tutorial を削除した後に同じパスへ作って import したプロジェクト**がある状態で実行すると、**そのプロジェクト/フォルダに一切変更がなく**(ファイル追加なし・開閉状態も不変)拒否の通知だけが出る | 実機(M10)+ 自動(Planner) |
 | A6 | 本文が §12.2 の翻案規則を満たす(MIT 表記あり、Quick Chat なし、実ラベル、エスケープ正しい) | 自動 |
 | A7 | チュートリアル実行後も Duo Chat / Code Suggestions が `duo-disabled-for-project` にならない | 実機(M3 で Diagnostics を確認) |
-| A3b | 起動直後の古い認証状態の連続通知で Sign in 項目が揺れない。LS の再起動後、新しい接続の状態が確定するまで Sign in 項目は出ない。**旧接続の遅れた通知が新しい接続の debounce を取り消さず、`gitlab_authenticated` が `unknown` のまま残らない**(§9.1 手順 1)。**再起動の前後で同じ認証値が届いても、新しい接続の値で Sign in 項目が表示・非表示される** | 自動(`AuthenticationStateServiceProviderFeedTest` / `AuthenticationSourceProviderTest`)+ 実機(M2) |
+| A3b | 起動直後の古い認証状態の連続通知で Sign in 項目が揺れない。LS の再起動後、新しい接続の状態が確定するまで Sign in 項目は出ない。**旧接続の遅れた通知が新しい接続の debounce を取り消さず、`gitlab_sign_in_required` が `unknown` のまま残らない**(§9.1 手順 1)。**再起動の前後で同じ認証値が届いても、新しい接続の値で Sign in 項目が表示・非表示される** | 自動(`AuthenticationStateServiceProviderFeedTest` / `AuthenticationSourceProviderTest`)+ 実機(M2) |
 | A16 | ログにパス・ファイル本文が出ない | コードレビュー + 自動(fake ログで文字列不在) |
 | A17 | `verify.sh` が `FAILSET_IDENTICAL`、detekt がベースラインちょうど | CI 相当 |
 | A18 | `Require-Bundle` が変わらない(`build.gradle.kts` 差分ゼロ) | `git diff` |
@@ -455,7 +455,7 @@ A8–A15 および A13b–A13j は F3 用だったため削除(付録 A)。
 
 | ID | 内容 | 扱い |
 |---|---|---|
-| U1 | 一度生成された状態メニューの項目可視性が、`gitlab_authenticated` の変化に再起動なしで追随するか(`ShowPluginStatusMenu.kt:15-28` は 1 回だけ populate) | 実機(M2)。否なら `menuManager.update(true)` を `execute` に 1 行追加 |
+| U1 | 一度生成された状態メニューの項目可視性が、`gitlab_sign_in_required` の変化に再起動なしで追随するか(`ShowPluginStatusMenu.kt:15-28` は 1 回だけ populate) | 実機(M2)。否なら `menuManager.update(true)` を `execute` に 1 行追加 |
 | U2 | `duo_tutorial.js` を `IDE.openEditor` が何のエディタで開くか(既定テキスト / Generic / Wild Web Developer)。いずれも `ITextEditor` である前提 | 実機(M3)。`ITextEditor` でないエディタが選ばれたら `IDE.openEditor(page, file, "org.eclipse.ui.DefaultTextEditor")` へ固定する |
 | U3 | (削除: 既存 `ProjectOpenLanguageServerListener` が通知している。§9.2 のワークスペースフォルダの通知を参照) | — |
 | U10 | 所有判定のための persistent property(`duoTutorialId`)が、Eclipse の再起動後も保持され、プロジェクト削除で消えること | 実機(M10 の後に再起動 / 削除 → 同じパスで再 import) |
@@ -613,3 +613,8 @@ T1 / T2 の実装ブリーフには §8.1 / §9.1 の session 照合規則、§9
 | 8 | P1 所有設定を明示的に永続化せよ | 採用。`setValue` の後に `ScopedPreferenceStore.save()`(前例 `PublishRecordStore.kt:42-54`)。保存失敗は直前の値へ戻し、作ったプロジェクトを補償削除して `Failed`。保存後に新しいストアから読める試験を追加。異常終了時の残留は安全側の拒否 + 手動削除として §27 に記載 | §9.2, §27, `DuoTutorialWorkspaceWriterTest` |
 | 8 | P1 Provider 更新を既存の早期 return より前に固定せよ | 採用。`delay` 直後、`:36-39` と `:42` の早期 return より前にプロバイダへ通知すると明記。再起動前後で同じ認証値が届く試験を追加 | §9.1 手順 1, A3b, `AuthenticationStateServiceProviderFeedTest` |
 | 8 | P2 セッション確認と状態更新を原子的に | 採用(方式は「公開を接続に結び付ける」)。状態を `(session, value)` の 1 値で保持し、公開時に現在の接続と照合。照合通過後・書き込み前に `reset()` を挟む決定的な競合試験を追加 | §8.1, `AuthenticationSourceProviderTest` |
+| 9 | P1 visibleWhen の false をプロバイダの型に合わせよ | 採用(実ソースで確認: `Expressions.convertArgument` は引用符なしの `true` / `false` を `Boolean` に変換)。内部は 3 値のまま、公開するソース変数を `Boolean` の `gitlab_sign_in_required`(現在の接続で未認証と確定したときだけ `true`)に変更し、`<equals value="true"/>` で比較。既存の `duo_chat_enabled` と同じ形。plugin.xml と同じ式を core expression として評価する試験を追加 | §8.1, §11.2, §11.3, A3, `AuthenticationSourceProviderTest` |
+| 9 | P1 セッション確認と debounce の差替えを直列化せよ | 採用。入口照合・既存 Job の取消・新 Job の投入を 1 つのロックで一続きにし、debounce 後にも再照合。照合通過後・取消前に新通知を挟む決定的な試験を追加 | §9.1 手順 1, `AuthenticationStateServiceProviderFeedTest` |
+| 9 | P1 所有記録の順序テストを作成後へ修正せよ | 採用。Planner の試験から「記録が作成より前」を削除し、Writer の試験で「`CreateProject` → ロケーション取得 → 保存」の順を検証 | §23 |
+| 9 | P1 authentication-required 不在時の期待値を統一せよ | 採用。試験を §8.1 の規則に合わせ、null / `invalid-token` のみ / 関連 check なしの 3 ケースを区別 | §23 |
+| 9 | P2 キャンセル補償には未キャンセルの monitor を | 採用。補償の削除は `NullProgressMonitor` で行うと明記し、キャンセル済み monitor で失敗する fake で削除完了を検証 | §9.2, `DuoTutorialWorkspaceWriterTest` |
