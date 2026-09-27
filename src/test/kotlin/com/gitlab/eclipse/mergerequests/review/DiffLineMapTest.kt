@@ -128,6 +128,62 @@ class DiffLineMapTest : DescribeSpec({
       }
     }
 
+    describe("a hunk header omitting line counts: an omitted count means one line") {
+      it("accepts an omitted-count hunk whose body has exactly one line per side") {
+        val map = DiffLineMap.parse(diffOf("@@ -4 +4 @@", "-old", "+new", "@@ -10 +10 @@", " ctx"))
+        map.classify(4) shouldBe NewLineKind.Added
+        map.classify(10) shouldBe NewLineKind.Unchanged(10)
+      }
+
+      it("rejects an omitted-count hunk whose body consumes two old lines") {
+        DiffLineMap.parse(diffOf("@@ -4 +4 @@", " ctx", "-old", "+new")) shouldBe DiffLineMap.Unavailable
+      }
+    }
+
+    describe("a hunk body that disagrees with its header's counts") {
+      it("fails a truncated body (fewer lines than declared) to Unavailable") {
+        val diff = diffOf(
+          "@@ -3,3 +3,4 @@",
+          " ctxA",
+          "-removed1",
+          "+added1",
+        )
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
+      }
+
+      it("fails a file whose first hunk is short only on the new side to Unavailable") {
+        val diff = diffOf(
+          "@@ -1,1 +1,2 @@",
+          " a",
+          "@@ -20,1 +21,1 @@",
+          " b",
+        )
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
+      }
+
+      it("fails an over-long body (more lines than declared) to Unavailable") {
+        val diff = diffOf(
+          "@@ -3,3 +3,4 @@",
+          " ctxA",
+          "-removed1",
+          "+added1",
+          "+added2",
+          " ctxB",
+          " ctxC",
+        )
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
+      }
+
+      it("fails a body with an extra removed line (old side only) to Unavailable") {
+        val diff = diffOf("@@ -5,3 +4,0 @@", "-del1", "-del2", "-del3", "-del4")
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
+      }
+
+      it("still accepts a body that matches its header followed by the trailing newline") {
+        DiffLineMap.parse("@@ -1,2 +1,3 @@\n a\n+b\n c\n").classify(3) shouldBe NewLineKind.Unchanged(2)
+      }
+    }
+
     describe("out-of-range line numbers") {
       val diff = diffOf(
         "@@ -3,3 +3,4 @@",

@@ -16,9 +16,10 @@ sealed interface NewLineKind {
 sealed interface DiffLineMap {
   /**
    * No line mapping is available: the diff is too large or was collapsed, contains no hunk
-   * header at all (e.g. a binary-file notice), or contains a hunk body line this parser cannot
-   * interpret (fail-safe: an unparseable line invalidates the whole file rather than silently
-   * shifting later lines).
+   * header at all (e.g. a binary-file notice), contains a hunk body line this parser cannot
+   * interpret, or contains a hunk whose body does not consume exactly the old/new line counts its
+   * header declares (a truncated or inconsistent patch). Fail-safe: any of these invalidates the
+   * whole file rather than silently shifting later lines.
    */
   object Unavailable : DiffLineMap
 
@@ -29,9 +30,6 @@ sealed interface DiffLineMap {
   class Parsed internal constructor(internal val hunks: List<Hunk>) : DiffLineMap
 
   companion object {
-    // Same pattern as the reference implementation, src/desktop/git/diff_line_count.ts:17.
-    private val HUNK_HEADER = Regex("""@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@""")
-
     /**
      * Parses one file's unified-diff body (REST `diffs[].diff`). Non-empty input only; the
      * empty-diff cases are decided by T3a's `classifyEmptyDiff`.
@@ -47,14 +45,16 @@ sealed interface DiffLineMap {
       return Parsed(hunks)
     }
 
-    private fun isHunkHeaderLine(line: String) = HUNK_HEADER.find(line)?.range?.first == 0
+    private fun isHunkHeaderLine(line: String) = HunkHeader.startsWithHeader(line)
 
-    /** Returns null if [body] contains a line this parser cannot interpret. */
+    /**
+     * Returns null if [body] contains a line this parser cannot interpret, or if its old-side
+     * lines (context + removed) or new-side lines (context + added) differ from the header's
+     * declared counts.
+     */
     private fun parseHunk(header: String, body: List<String>): Hunk? {
-      val match = requireNotNull(HUNK_HEADER.find(header)) { "not a hunk header: $header" }
-      val oldStart = match.groupValues[1].toInt()
-      val newStart = match.groupValues[2].toInt()
-      var oldLine = oldStart
+      val parsed = HunkHeader.parse(header) ?: return null
+      var oldLine = parsed.oldStart
       var oldLineCount = 0
       val entries = mutableListOf<NewLineKind>()
       for (line in body) {
@@ -73,7 +73,33 @@ sealed interface DiffLineMap {
           else -> return null // unrecognized prefix: fail-safe, never silently miscount
         }
       }
-      return Hunk(oldStart, newStart, entries, oldLineCount)
+      if (oldLineCount != parsed.oldCount || entries.size != parsed.newCount) return null
+      return Hunk(parsed.oldStart, parsed.newStart, entries, oldLineCount)
+    }
+  }
+}
+
+/** A hunk header's declared ranges; an omitted count is 1 (unified-diff convention). */
+private class HunkHeader(val oldStart: Int, val oldCount: Int, val newStart: Int, val newCount: Int) {
+  companion object {
+    // The reference implementation's pattern (src/desktop/git/diff_line_count.ts:17), with the
+    // counts captured too: an omitted count means one line (unified-diff convention).
+    private val HUNK_HEADER =
+      Regex("""@@ -(?<oldStart>\d+)(?:,(?<oldCount>\d+))? \+(?<newStart>\d+)(?:,(?<newCount>\d+))? @@""")
+
+    fun startsWithHeader(line: String) = HUNK_HEADER.find(line)?.range?.first == 0
+
+    /** Null when a number does not fit an [Int]. */
+    fun parse(header: String): HunkHeader? {
+      val match = requireNotNull(HUNK_HEADER.find(header)) { "not a hunk header: $header" }
+      fun number(group: String, omitted: Int? = null): Int? =
+        match.groups[group]?.value?.toIntOrNull() ?: omitted.takeIf { match.groups[group] == null }
+      return HunkHeader(
+        oldStart = number("oldStart") ?: return null,
+        oldCount = number("oldCount", omitted = 1) ?: return null,
+        newStart = number("newStart") ?: return null,
+        newCount = number("newCount", omitted = 1) ?: return null,
+      )
     }
   }
 }
