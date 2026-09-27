@@ -19,6 +19,7 @@ import org.eclipse.jgit.treewalk.filter.PathFilter
 import java.io.File
 import java.io.IOException
 import java.nio.charset.Charset
+import java.util.concurrent.CancellationException
 
 /** Whether line N of the editor's text is line N of the HEAD blob (design §9.3.2, gate G8). */
 sealed interface BodyIdentity {
@@ -26,12 +27,27 @@ sealed interface BodyIdentity {
   data class Different(val reason: BodyMismatch) : BodyIdentity
 }
 
-enum class BodyMismatch { FILTER_ATTRIBUTE, NOT_REGULAR_FILE, INDEX_FLAG, DISK_TEXT_DIFFERS, STATUS_NOT_CLEAN, UNREADABLE }
+enum class BodyMismatch {
+  FILTER_ATTRIBUTE,
+  NOT_REGULAR_FILE,
+  INDEX_FLAG,
+
+  /** The disk text differs from the document text, or the re-read after G8c differs from the first read. */
+  DISK_TEXT_DIFFERS,
+  STATUS_NOT_CLEAN,
+
+  /** The document text has a lone `\r`: Eclipse counts it as a line break, Git and GitLab do not. */
+  UNSUPPORTED_LINE_DELIMITER,
+  UNREADABLE,
+}
 
 /** Attributes that rewrite content between the blob and the working tree, breaking line correspondence. */
 private val REWRITING_ATTRIBUTES = listOf("filter", "working-tree-encoding")
 
-private const val BYTE_ORDER_MARK = '﻿'
+private const val BYTE_ORDER_MARK = '\uFEFF'
+
+/** A carriage return not immediately followed by a line feed. */
+private val LONE_CARRIAGE_RETURN = Regex("\r(?!\n)")
 
 /**
  * Background only. Evaluates G8a'', G8a', G8a, G8b, G8c and the G8b re-read of design §9.3.2, in this order.
@@ -42,11 +58,15 @@ private const val BYTE_ORDER_MARK = '﻿'
  * - G8a'': the HEAD tree and index entries are regular or executable files (not a symlink/gitlink).
  * - G8a': the index entry is neither assume-valid nor skip-worktree (status would hide edits).
  * - G8a: no `filter` / `working-tree-encoding` attribute is set or valued for the path.
- * - G8b: the file's bytes decoded with [charset], minus one leading U+FEFF, equal [documentText]
- *   exactly (newlines are not normalized).
+ * - G8b: [documentText] has no lone `\r` (else [BodyMismatch.UNSUPPORTED_LINE_DELIMITER]), and the
+ *   file's bytes decoded with [charset], minus one leading U+FEFF, equal it exactly (newlines are not
+ *   normalized).
  * - G8c: JGit status reports the path in none of its sets, so index and working tree both match HEAD
  *   up to newline conversion, which never changes line count or order.
  * - G8b again: the bytes re-read after G8c are identical to the first read.
+ *
+ * Before any gate, [file] must canonically be [repoRelativePath] inside the work tree; otherwise the
+ * result is [BodyMismatch.UNREADABLE].
  *
  * Never throws: any I/O or JGit failure is [BodyMismatch.UNREADABLE]. Logs nothing.
  */
@@ -79,6 +99,11 @@ internal fun checkBodyIdentity(
   BodyIdentity.Different(BodyMismatch.UNREADABLE)
 } catch (_: IllegalArgumentException) {
   BodyIdentity.Different(BodyMismatch.UNREADABLE)
+} catch (e: CancellationException) {
+  throw e
+} catch (@Suppress("TooGenericExceptionCaught") _: RuntimeException) {
+  // Any other JGit runtime failure fails closed rather than escaping to the caller.
+  BodyIdentity.Different(BodyMismatch.UNREADABLE)
 }
 
 /** The first failing gate's mismatch, or `null` when every gate passes. */
@@ -90,24 +115,41 @@ private fun evaluate(
   charset: Charset,
   afterStatus: () -> Unit,
 ): BodyMismatch? {
+  if (file.canonicalFile != File(repository.workTree, path).canonicalFile) return BodyMismatch.UNREADABLE
+  return indexGates(repository, path) ?: diskGates(repository, path, file, documentText, charset, afterStatus)
+}
+
+/** G8a'', G8a' and G8a: what HEAD, the index and the attributes say about [path]. */
+private fun indexGates(repository: Repository, path: String): BodyMismatch? {
   val dirCache = repository.readDirCache()
   val indexEntry = dirCache.getEntry(path)
-  val headMode = headFileMode(repository, path)
   return when {
-    indexEntry == null || !isRegular(headMode) || !isRegular(indexEntry.fileMode) -> BodyMismatch.NOT_REGULAR_FILE
+    indexEntry == null || !isRegular(headFileMode(repository, path)) || !isRegular(indexEntry.fileMode) ->
+      BodyMismatch.NOT_REGULAR_FILE
     indexEntry.isAssumeValid || indexEntry.isSkipWorkTree -> BodyMismatch.INDEX_FLAG
-    REWRITING_ATTRIBUTES.any { attributes(repository, dirCache, path).isSetOrValued(it) } ->
+    attributes(repository, dirCache, path).let { attrs -> REWRITING_ATTRIBUTES.any { attrs.isSetOrValued(it) } } ->
       BodyMismatch.FILTER_ATTRIBUTE
+    else -> null
+  }
+}
+
+/** G8b, G8c and the G8b re-read. */
+private fun diskGates(
+  repository: Repository,
+  path: String,
+  file: File,
+  documentText: String,
+  charset: Charset,
+  afterStatus: () -> Unit,
+): BodyMismatch? {
+  if (LONE_CARRIAGE_RETURN.containsMatchIn(documentText)) return BodyMismatch.UNSUPPORTED_LINE_DELIMITER
+  val firstRead = file.readBytes()
+  return when {
+    String(firstRead, charset).removePrefix(BYTE_ORDER_MARK.toString()) != documentText -> BodyMismatch.DISK_TEXT_DIFFERS
+    !isStatusClean(repository, path) -> BodyMismatch.STATUS_NOT_CLEAN
     else -> {
-      val firstRead = file.readBytes()
-      when {
-        decode(firstRead, charset) != documentText -> BodyMismatch.DISK_TEXT_DIFFERS
-        !isStatusClean(repository, path) -> BodyMismatch.STATUS_NOT_CLEAN
-        else -> {
-          afterStatus()
-          if (file.readBytes().contentEquals(firstRead)) null else BodyMismatch.DISK_TEXT_DIFFERS
-        }
-      }
+      afterStatus()
+      if (file.readBytes().contentEquals(firstRead)) null else BodyMismatch.DISK_TEXT_DIFFERS
     }
   }
 }
@@ -142,9 +184,6 @@ private fun Attributes.isSetOrValued(key: String): Boolean =
     Attribute.State.SET, Attribute.State.CUSTOM -> true
     Attribute.State.UNSET, Attribute.State.UNSPECIFIED, null -> false
   }
-
-private fun decode(bytes: ByteArray, charset: Charset): String =
-  String(bytes, charset).removePrefix(BYTE_ORDER_MARK.toString())
 
 private fun isStatusClean(repository: Repository, path: String): Boolean {
   val status = Git.wrap(repository).status().addPath(path).call()

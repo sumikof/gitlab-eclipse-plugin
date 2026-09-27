@@ -6,6 +6,8 @@ import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.shouldBe
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.dircache.DirCacheEntry
+import org.eclipse.jgit.revwalk.RevWalk
+import org.eclipse.jgit.treewalk.TreeWalk
 import java.io.File
 import java.io.IOException
 import java.nio.charset.Charset
@@ -41,6 +43,12 @@ class BodyIdentityGateTest : DescribeSpec({
 
   fun check(path: String, text: String, charset: Charset = utf8, file: File = File(dir, path)) =
     checkBodyIdentity(git.repository, path, file, text, charset)
+
+  fun headBlob(path: String): ByteArray {
+    val repo = git.repository
+    val tree = RevWalk(repo).use { it.parseCommit(repo.resolve("HEAD")).tree }
+    return TreeWalk.forPath(repo, path, tree).use { repo.open(it.getObjectId(0)).bytes }
+  }
 
   fun different(reason: BodyMismatch) = BodyIdentity.Different(reason)
 
@@ -93,6 +101,7 @@ class BodyIdentityGateTest : DescribeSpec({
       writeAndCommit("a.txt", "first\r\nsecond\r\n".toByteArray(utf8))
 
       check("a.txt", "first\r\nsecond\r\n") shouldBe BodyIdentity.Same
+      headBlob("a.txt").contains('\r'.code.toByte()) shouldBe false
     }
 
     it("is the same for Shift_JIS text decoded with Shift_JIS") {
@@ -110,16 +119,16 @@ class BodyIdentityGateTest : DescribeSpec({
     }
 
     it("is the same for a UTF-8 BOM file whose document text has no BOM") {
-      writeAndCommit("b.txt", "﻿first\nsecond\n".toByteArray(utf8))
+      writeAndCommit("b.txt", "\uFEFFfirst\nsecond\n".toByteArray(utf8))
 
       check("b.txt", "first\nsecond\n") shouldBe BodyIdentity.Same
     }
 
     it("strips only one leading BOM") {
-      writeAndCommit("b.txt", "﻿﻿first\n".toByteArray(utf8))
+      writeAndCommit("b.txt", "\uFEFF\uFEFFfirst\n".toByteArray(utf8))
 
       check("b.txt", "first\n") shouldBe different(BodyMismatch.DISK_TEXT_DIFFERS)
-      check("b.txt", "﻿first\n") shouldBe BodyIdentity.Same
+      check("b.txt", "\uFEFFfirst\n") shouldBe BodyIdentity.Same
     }
   }
 
@@ -155,11 +164,28 @@ class BodyIdentityGateTest : DescribeSpec({
       check("link.txt", "first\n") shouldBe different(BodyMismatch.NOT_REGULAR_FILE)
     }
 
-    it("rejects a path that is not in HEAD") {
+    it("rejects a path that is not in the index") {
       writeAndCommit("a.txt", "first\n".toByteArray(utf8))
       File(dir, "new.txt").writeText("new\n")
 
       check("new.txt", "new\n") shouldBe different(BodyMismatch.NOT_REGULAR_FILE)
+    }
+
+    it("rejects a staged new file that is not in HEAD") {
+      writeAndCommit("a.txt", "first\n".toByteArray(utf8))
+      File(dir, "new.txt").writeText("new\n")
+      git.add().addFilepattern("new.txt").call()
+
+      check("new.txt", "new\n") shouldBe different(BodyMismatch.NOT_REGULAR_FILE)
+    }
+  }
+
+  describe("file and path consistency") {
+    it("rejects a file outside the work tree even when its text matches a clean tracked file") {
+      writeAndCommit("a.txt", "first\n".toByteArray(utf8))
+      val outside = File(tempdir(), "a.txt").apply { writeText("first\n") }
+
+      check("a.txt", "first\n", file = outside) shouldBe different(BodyMismatch.UNREADABLE)
     }
   }
 
@@ -218,6 +244,26 @@ class BodyIdentityGateTest : DescribeSpec({
       File(dir, "a.txt").delete()
 
       check("a.txt", "first\n") shouldBe different(BodyMismatch.UNREADABLE)
+    }
+  }
+
+  describe("G8b line delimiters") {
+    it("rejects a lone CR at the end of a line mid-file") {
+      writeAndCommit("a.txt", "first\rsecond\nthird\n".toByteArray(utf8))
+
+      check("a.txt", "first\rsecond\nthird\n") shouldBe different(BodyMismatch.UNSUPPORTED_LINE_DELIMITER)
+    }
+
+    it("rejects a lone CR as the last character") {
+      writeAndCommit("a.txt", "first\nsecond\r".toByteArray(utf8))
+
+      check("a.txt", "first\nsecond\r") shouldBe different(BodyMismatch.UNSUPPORTED_LINE_DELIMITER)
+    }
+
+    it("still accepts CRLF committed as-is") {
+      writeAndCommit("a.txt", "first\r\nsecond\r\n".toByteArray(utf8))
+
+      check("a.txt", "first\r\nsecond\r\n") shouldBe BodyIdentity.Same
     }
   }
 
