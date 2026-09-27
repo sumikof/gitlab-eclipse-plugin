@@ -23,7 +23,6 @@ import org.eclipse.swt.widgets.Shell
 import org.eclipse.swt.widgets.Text
 import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWorkbenchPage
-import org.eclipse.ui.IWorkbenchPartReference
 import org.eclipse.ui.texteditor.ITextEditor
 
 /**
@@ -84,10 +83,10 @@ private const val MARGIN = 8
  * view of it (drafts and edit generations per thread, busy, selection). Placed under the line by
  * [PopupAnchor] when opened, and not moved afterwards (no scroll following).
  *
- * **UI thread only.** Closing through Esc, the title-bar close button, the editor's close (own
- * `IPartListener2`, so it holds for editors no session ever tracked) or [close] first hands the
- * unsent drafts to [InlineThreadHost.preserveDrafts] (§29 #22), except the body of the ticket in
- * flight, which the launcher's terminal keeps. [discard] closes without that (bundle stop).
+ * **UI thread only.** Closing through Esc, the title-bar close button, the editor's close or input
+ * change (own [EditorGoneListener], so it holds for editors no session ever tracked) or [close]
+ * first hands the unsent drafts to [InlineThreadHost.preserveDrafts] (§29 #22), except the body of
+ * the ticket in flight, which the launcher's terminal keeps. [discard] closes without that (bundle stop).
  *
  * `@Suppress("TooManyFunctions")`: a widget class — the §11.3 API plus one builder per control
  * and the E8 placement steps; splitting it would scatter one shell's lifecycle.
@@ -117,15 +116,9 @@ class InlineThreadPopup(
   private var syncingInput = false
 
   private var page: IWorkbenchPage? = null
-  private var editorReference: IWorkbenchPartReference? = null
 
-  /** Design §9.6 / FR-11: the editor closed → the popup closes (with its drafts preserved). */
-  private val partListener = object : IPartListener2 {
-    override fun partClosed(partRef: IWorkbenchPartReference) {
-      // Every other IPartListener2 method is a default method on this platform (see ReviewEditorTracker).
-      if (partRef === editorReference || partRef.getPart(false) === editor) close()
-    }
-  }
+  /** Design §9.6 / FR-11: the editor closed or shows another input → the popup closes (drafts preserved). */
+  private var partListener: IPartListener2? = null
 
   override val isOpen: Boolean
     get() = shell?.isDisposed == false
@@ -168,8 +161,9 @@ class InlineThreadPopup(
     newShell.setBounds(bounds.x, bounds.y, bounds.width, bounds.height)
     editor.site.page.let { editorPage ->
       page = editorPage
-      editorReference = editorPage.getReference(editor)
-      editorPage.addPartListener(partListener)
+      val listener = EditorGoneListener(editor, editorPage.getReference(editor), ::close)
+      partListener = listener
+      editorPage.addPartListener(listener)
     }
     newShell.open()
     input?.setFocus()
@@ -240,11 +234,12 @@ class InlineThreadPopup(
     val current = shell ?: return
     shell = null
     try {
-      page?.removePartListener(partListener)
+      partListener?.let { page?.removePartListener(it) }
     } catch (e: Exception) {
       logger.warn("inlineThreadPopup part listener removal failed: exceptionType=${e.javaClass.name}")
     }
     page = null
+    partListener = null
     if (!current.isDisposed) current.dispose()
     try {
       host.onClosed()
