@@ -1,6 +1,6 @@
 # D13 エディタ行コメント + エディタ内スレッド UI 基盤 設計書
 
-- 版: 第 2 版(2026-09-27、Codex round 1 反映)
+- 版: 第 3 版(2026-09-27、Codex round 2 反映)
 - ベース: `gitlab-ls-9.3.0` @ `5fba3e8`
 - 関連: ロードマップ #8 / パリティ台帳 #7(D13「コメント作成」🟡)/ Phase 6 残余 #14 / 前提設計 = Phase 5A 設計書 §21(Close 済み PR #45、`git fetch origin refs/pull/45/head` → `docs/review/mr-discussions-design.md` L1285-1492)
 - 参照実装: `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
@@ -65,7 +65,7 @@ VSCode 版は MR のレビュー diff(`gl-review` スキーム)上で任意の�
 - **FR-2(セッション確立: エディタ経由)** 任意の作業ツリーのテキストエディタで「GitLab ▸ Add Merge Request Comment on This Line…」を実行したとき、セッションが無ければ Phase 5A §21 の G1〜G9 と同じ手順(現ブランチ → MR)で確立してから F4 を続ける。
 - **FR-3(表示対象)** 次をすべて満たすスレッドだけを注釈にする: 先頭ノートの `position.positionType == "text"` / `position.diffRefs` の `baseSha`・`startSha`・`headSha` がセッションの version と一致 / `newPath` がエディタのファイルの MR 内パスと一致 / `newLine != null`。解決済み(`resolved == true`)は別の注釈タイプ。
 - **FR-4(ホバー)** 注釈のホバーに「作成者・本文の先頭(1 行、上限 200 文字)・返信数・解決状態」を出す。HTML としてエスケープする。
-- **FR-5(ポップアップ)** 行に吸着する非モーダルのポップアップで、スレッドの全ノート(作成者 username・作成日時・本文の Markdown ソース)を読み取り専用で表示する。フォーカスがエディタへ戻っても閉じない。ウィンドウごとに同時に 1 つ。
+- **FR-5(ポップアップ)** 行に吸着する非モーダルのポップアップで、スレッドの取得済みノート(作成者 username・作成日時・本文の Markdown ソース)を読み取り専用で表示する。ノートが途中までしか取得できていなければ、それを明示する(§9.1.1)。フォーカスがエディタへ戻っても閉じない。ウィンドウごとに同時に 1 つ。
 - **FR-6(返信・解決)** ポップアップから返信(先頭ノートの `userPermissions.createNote` が true のとき)、解決 / 未解決化(`resolvable && resolveNote` のとき)を行う。送信経路は既存の `runDiscussionWrite` / `DiscussionWriteLauncher` を再利用する。
 - **FR-7(新規作成)** 追加行と変更なし行のどちらにもコメントできる。`DiffPositionInput` は §12.3 のとおり(追加行 = `newLine` のみ、変更なし行 = `oldLine` + `newLine`)。
 - **FR-8(本文保持)** 送信が成功するまで入力本文を失わない。失敗・曖昧時の扱いは既存ランチャーの終端処理(`[Retry]` / `[Copy text]` / `[Send again]`)に従う。
@@ -196,10 +196,22 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
      result = DiscussionService.getDiscussions(conn, namespaceWithPath, iid, deadline)(既存・diffRefs 追加)
        → discussions と canCreateNote(mergeRequest.userPermissions.createNote)を同時に得る
      placements = ThreadPlacement(result.discussions, version, entry.newPath)
+     complete = (result.truncation == null)   ← 部分取得を完全と扱わない(§9.1.1)
 [UI] 世代が最新 かつ 文書にまだ E が開いている かつ bundle が active → 注釈を接続
 ```
 
 拒否は情報通知 1 回(エディタは開いたまま。コメント機能だけが無効)。
+
+#### 9.1.1 部分取得の扱い(Codex round 2 P1 反映)
+
+`DiscussionService.getDiscussions` はページ上限・deadline・cursor 欠落で**例外ではなく部分一覧**を返し(`DiscussionsReadResult.truncation != null`)、スレッド内のノートはページングしない(`GitLabDiscussion.hasMoreNotes`)。サイドバーはこれを「隠さず見せる」方針で扱っている(`SidebarViewModel.kt:35-47, 296-311`)。エディタ側も同じ方針に揃え、さらに二重投稿の防止に使う。
+
+| 状態 | 表示 | 再送判定への影響 |
+|---|---|---|
+| `truncation != null` | 取得できた分の注釈は出す。セッション確立時に 1 回だけ「一部のスレッドを読み込めなかった(GitLab で確認)」旨を通知する | そのセッションの `reload` は `Applied` を返さない(新規作成の Ambiguous で `[Send again]` を出さない) |
+| スレッドの `hasMoreNotes` | ポップアップの末尾に既存と同じ文言 `(more replies — open in GitLab)` を出す | そのスレッドへの返信が Ambiguous になったとき、`reload` は `Applied` を返さない |
+
+スレッド内ノートのページング取得は本サイクルでは設計しない(既存の「スレッド内はページングしない」方針に従う)。
 
 ### 9.2 スレッドポップアップ(FR-5 / FR-6)
 
@@ -245,7 +257,11 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 - **G5〜G9 はすべて `write` の中にあり、試行ごとに毎回実行される。**ランチャーの `[Retry]` / `[Send again]` は `relaunch` で同じ `write` を呼び直すため、再試行のたびに HEAD・version・権限・本文の同一性が再検証される。事前検証だけをして別ジョブで `launch` する構成は採らない。
 - 再試行で使う `documentText` / `oneBasedLine` は UI ターン 1 の凍結値のままである(本文を編集したユーザーが再試行すると G8 で拒否され、その場合は新しくメニューから始め直す)。
 - `DiscussionWriteOutcome` に `Rejected(message: String)` を追加する。意味は「ゲートで拒否した・送信していない・再送しても同じ結果」で、終端は `promptCopyText(message, body)`(本文保持、再送ボタンなし)。既存の 5 分岐は不変。`when` の網羅性のため既存の `when` 箇所(7 箇所)に分岐を足す。
-- `reload`(終端から呼ばれる)は、エディタ経路では「そのセッションの再取得」とし、注釈とポップアップへ反映できたときだけ `LoadOutcome.Applied` を返す。セッションが無い・置き換えられた場合は `Skipped`(= `[Send again]` を出さない)。サイドバーの再取得は結果を待たずに並行して依頼する。
+- **`reload`(終端から Success / Ambiguous で呼ばれる)の契約**(Codex round 2 P1 反映): `lineCommentAttempt` は G6 / G9 で確定した **MR ターゲット**(`SessionIdentity` + `MergeRequestRef`)を、その launch に 1 つだけ紐付く可変ホルダ(`AttemptTarget`、`@Volatile`。background で書き、終端の UI ターンで読む)に書き込む。`reload` はこのホルダを読み、**セッションが無ければ確立し、あれば再取得する**(どちらも §9.1 の BG 部分をそのターゲットで実行)。
+  - `Applied` を返すのは、確立 / 再取得の結果が**完全**(§9.1 の `truncation == null`)で、その文書に注釈として反映できたときだけ。
+  - ホルダが空(G6 より前で失敗した試行)、エディタが閉じた、結果が部分取得、確立に失敗した場合は `Skipped`(= `[Send again]` を出さない)。
+  - 成功専用のコールバックはランチャーに追加しない。Success 分岐は既存どおり `reload { }` を呼ぶだけで、確立はこの `reload` が担う(A8 はこの経路で満たす)。
+  - サイドバーの再取得(`reloadDiscussionsFor`)は結果を待たずに並行して依頼する。
 - 返信・解決はこれまでどおり `forDiscussion` キーで `launch` する(ゲートは既存の `runDiscussionWrite`)。
 
 #### 9.3.2 G8 本文の同一性(Codex round 1 P1 反映)
@@ -256,11 +272,11 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 |---|---|---|
 | G8a | 対象パスの Git 属性に `filter`(LFS など clean/smudge)と `working-tree-encoding` が設定されていない | 設定されていれば拒否(行の対応を保証できない) |
 | G8b | ディスク上のファイルを**エディタの文字コード**で復号し、先頭の BOM を取り除いた文字列が `documentText` と一致(改行は正規化しない) | 不一致なら拒否 |
-| G8c | JGit の `status().addPath(path)` で、そのパスが modified / untracked / missing / conflicting のいずれでもない(JGit は `core.autocrlf` と `text` / `eol` 属性を適用して比較する) | 該当すれば拒否 |
+| G8c | JGit の `status().addPath(path)` の結果で、そのパスが **どの集合にも含まれない**(`added` / `changed` / `removed` / `modified` / `missing` / `untracked` / `conflicting` のすべてが空。= index と作業ツリーの両方が HEAD と一致)。JGit は `core.autocrlf` と `text` / `eol` 属性を適用して比較する | いずれかに含まれれば拒否(ステージ済みの変更も拒否) |
 
 G8b の読み取り → G8c → G8b と同じファイルの再読み取りを行い、両読み取りの内容が同一であることを確認する(G8c の最中の書き換えを弾く)。
 
-根拠: G8c が成り立てば、作業ツリーと HEAD の blob の差は改行変換だけであり、改行変換は行の数と順序を変えない。G8b が成り立てば、凍結した本文と作業ツリーは同じ文字列である。したがって、凍結した本文の N 行目は HEAD の N 行目と一致する。
+根拠: G8c が成り立てば(index も作業ツリーも HEAD と一致するので)、作業ツリーと HEAD の blob の差は改行変換だけであり、改行変換は行の数と順序を変えない。G8b が成り立てば、凍結した本文と作業ツリーは同じ文字列である。したがって、凍結した本文の N 行目は HEAD の N 行目と一致する。
 
 エディタの文字コードは `IFile.getCharset()`(ワークスペースファイル)または `IEncodingSupport.getEncoding()`(外部ファイル)から UI ターン 1 で取得する。取得できなければ拒否する。
 
@@ -454,7 +470,7 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 23. テスト方針
 
-- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
+- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、ステージ済みの変更で送信 0 回、`AttemptTarget` による確立(セッションなしの Success / Ambiguous)、部分取得(page-limit / deadline / cursor 欠落)と `hasMoreNotes` で `Applied` にならないこと、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
 - **実装レビューの重点確認項目**(設計では詰めず、実装段階で検出する): 空白のみ・Unicode 空白のみの本文の送信不可(A16)、通知文言、ホバー文の整形と HTML エスケープ、`oneBasedLine` の基数(先頭行のテストを含む)、世代比較の位置、ログに本文が出ないこと。
 - **手動検証**(§25): SWT 表示・ルーラー・ポップアップ・JDT エディタ・ジェネリックエディタ。
 
@@ -477,6 +493,9 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 | A13 | 同じファイルを別 MR / 別アカウント / 新しい version から開くと、旧セッションの注釈とポップアップが消え、新しいセッションの内容だけが出る(§9.5) |
 | A14 | `[Retry]` / `[Send again]` の再試行でも G5〜G9 が再評価され、途中で HEAD や version が変わっていれば送信しない(§9.3.1) |
 | A15 | CRLF(`core.autocrlf=true`)・非 UTF-8(例: Shift_JIS)・UTF-8 BOM の未編集ファイルにコメントできる。`filter` / `working-tree-encoding` 属性付きのファイルは拒否する(§9.3.2) |
+| A17 | ステージ済み(index が HEAD と異なる)のファイルではコメントを送らない(§9.3.2 G8c) |
+| A18 | 手で開いたエディタから初めて作成して成功すると、`reload` がセッションを確立し注釈が出る。セッションなしの Success と Ambiguous を別々にテストする(§9.3.1) |
+| A19 | スレッド取得が部分的(ページ上限・deadline・cursor 欠落)なら通知し、Ambiguous 後に `[Send again]` を出さない。`hasMoreNotes` のスレッドはポップアップに明示し、そのスレッドへの返信が Ambiguous のとき `[Send again]` を出さない(§9.1.1) |
 | A16 | ポップアップの送信ボタンは、本文が `isSubmittable`(`CommentInputDialog.kt:122`、空白のみ不可)を満たし、かつ送信中でないときだけ有効 |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
@@ -525,3 +544,12 @@ M1 サイドバーから変更ファイルを開く → 注釈 / 解決済みア
 | 2 | P1 事前検証と書き込みが既存ランチャーの契約と合わない | 採用(構造) | §9.3.1: ローカルキーを UI ターンで確定し、G5〜G9 を `write` 内で毎試行実行。`Rejected` 分岐を追加。Phase 5A §21.5 の background ガード取得は廃止。A14 |
 | 3 | P1 G8 のバイト列比較が文字コード・改行変換で壊れる | 採用(Git の実挙動) | §9.3.2: G8a 属性 / G8b 文字コード復号の一致 / G8c JGit status。A15 |
 | 4 | P2 ポップアップ送信の本文検証 | 実装段階へ | A16 と §23 の重点確認に記録のみ |
+
+### round 2(`9951cc7` に対する指摘。round 1 の #3 / #4 は同じ文面が再アンカーされたもので、新規は 4 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 5 | P1 ステージ済みの変更を G8c が通してしまう | 採用(誤った行への書き込み) | G8c を「全 status 集合が空」に変更、A17 |
+| 6 | P1 セッションなしの成功後の確立と `Skipped` の記述が矛盾 | 採用(契約) | §9.3.1: `AttemptTarget` ホルダ経由で `reload` が確立 / 再取得。A18 |
+| 7 | P1 部分取得したスレッド一覧を完全と扱っている | 採用(二重投稿) | §9.1.1、部分取得では `Applied` を返さない。A19 |
+| 8 | P1 スレッド内ノートを完全取得していない | 採用(明示 + 再送禁止の案) | §9.1.1、FR-5 の文言、A19。ページング取得は既存方針に従い設計しない |
