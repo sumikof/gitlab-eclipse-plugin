@@ -1,6 +1,6 @@
 # D13 エディタ行コメント + エディタ内スレッド UI 基盤 設計書
 
-- 版: 第 3 版(2026-09-27、Codex round 2 反映)
+- 版: 第 4 版(2026-09-27、Codex round 3 反映)
 - ベース: `gitlab-ls-9.3.0` @ `5fba3e8`
 - 関連: ロードマップ #8 / パリティ台帳 #7(D13「コメント作成」🟡)/ Phase 6 残余 #14 / 前提設計 = Phase 5A 設計書 §21(Close 済み PR #45、`git fetch origin refs/pull/45/head` → `docs/review/mr-discussions-design.md` L1285-1492)
 - 参照実装: `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
@@ -145,7 +145,7 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 
 | コンポーネント | 責務 | 依存 |
 |---|---|---|
-| `DiffLineMap` | 1 ファイル分の unified diff を解析し、新ファイルの各行(1 始まり)を `Added` / `Unchanged(oldLine)` に分類する。hunk 外の行は直前 hunk までの行数差で `oldLine` を求める。`diff == ""` は `Unavailable`(巨大・生成ファイル) | なし |
+| `DiffLineMap` | 1 ファイル分の unified diff を解析し、新ファイルの各行(1 始まり)を `Added` / `Unchanged(oldLine)` に分類する。hunk 外の行は直前 hunk までの行数差で `oldLine` を求める。空の `diff` の意味は §12.2.1 で区別する | なし |
 | `ThreadPlacement` | `GitLabDiscussion` の一覧とセッション(version の 3 SHA、ファイルの `newPath`)から、FR-3 を満たすスレッドを `(oneBasedLine, discussion, resolved)` に変換する | model |
 | `DiffPositionBuilder` | `(version, diffEntry, lineMap, oneBasedLine)` → `DiffPositionInput` 変数マップ、または拒否理由 | `DiffLineMap` |
 | `ReviewSessionLoader` | 捕捉済み接続 1 つで version 取得 → 対象 diff の特定 → `DiffLineMap` → スレッド取得 → `ThreadPlacement`。結果は `ReviewSessionSnapshot`(不変)または拒否理由 | 既存サービス(接続引数付き) |
@@ -197,7 +197,9 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
        → discussions と canCreateNote(mergeRequest.userPermissions.createNote)を同時に得る
      placements = ThreadPlacement(result.discussions, version, entry.newPath)
      complete = (result.truncation == null)   ← 部分取得を完全と扱わない(§9.1.1)
-[UI] 世代が最新 かつ 文書にまだ E が開いている かつ bundle が active → 注釈を接続
+[UI] 世代が最新 かつ その文書の接続中エディタ集合が空でない かつ bundle が active
+      → 注釈を文書に接続し、集合に残っている各エディタへルーラーのリスナーを付ける
+      (起動元の E が先に閉じていても、同じ文書の E2 が残っていれば適用する)
 ```
 
 拒否は情報通知 1 回(エディタは開いたまま。コメント機能だけが無効)。
@@ -208,8 +210,8 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 
 | 状態 | 表示 | 再送判定への影響 |
 |---|---|---|
-| `truncation != null` | 取得できた分の注釈は出す。セッション確立時に 1 回だけ「一部のスレッドを読み込めなかった(GitLab で確認)」旨を通知する | そのセッションの `reload` は `Applied` を返さない(新規作成の Ambiguous で `[Send again]` を出さない) |
-| スレッドの `hasMoreNotes` | ポップアップの末尾に既存と同じ文言 `(more replies — open in GitLab)` を出す | そのスレッドへの返信が Ambiguous になったとき、`reload` は `Applied` を返さない |
+| `truncation != null` | 取得できた分の注釈は出す。セッション確立時に 1 回だけ「一部のスレッドを読み込めなかった(GitLab で確認)」旨を通知する | なし(エディタ経路はもともと `Applied` を返さない、§9.3.1) |
+| スレッドの `hasMoreNotes` | ポップアップの末尾に既存と同じ文言 `(more replies — open in GitLab)` を出す | なし(同上) |
 
 スレッド内ノートのページング取得は本サイクルでは設計しない(既存の「スレッド内はページングしない」方針に従う)。
 
@@ -258,11 +260,13 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 - 再試行で使う `documentText` / `oneBasedLine` は UI ターン 1 の凍結値のままである(本文を編集したユーザーが再試行すると G8 で拒否され、その場合は新しくメニューから始め直す)。
 - `DiscussionWriteOutcome` に `Rejected(message: String)` を追加する。意味は「ゲートで拒否した・送信していない・再送しても同じ結果」で、終端は `promptCopyText(message, body)`(本文保持、再送ボタンなし)。既存の 5 分岐は不変。`when` の網羅性のため既存の `when` 箇所(7 箇所)に分岐を足す。
 - **`reload`(終端から Success / Ambiguous で呼ばれる)の契約**(Codex round 2 P1 反映): `lineCommentAttempt` は G6 / G9 で確定した **MR ターゲット**(`SessionIdentity` + `MergeRequestRef`)を、その launch に 1 つだけ紐付く可変ホルダ(`AttemptTarget`、`@Volatile`。background で書き、終端の UI ターンで読む)に書き込む。`reload` はこのホルダを読み、**セッションが無ければ確立し、あれば再取得する**(どちらも §9.1 の BG 部分をそのターゲットで実行)。
-  - `Applied` を返すのは、確立 / 再取得の結果が**完全**(§9.1 の `truncation == null`)で、その文書に注釈として反映できたときだけ。
-  - ホルダが空(G6 より前で失敗した試行)、エディタが閉じた、結果が部分取得、確立に失敗した場合は `Skipped`(= `[Send again]` を出さない)。
+  - **エディタ経路の `reload` は、確立 / 再取得の成否にかかわらず常に `Skipped` を報告する**(Codex round 3 P1 反映)。したがってエディタ経路の Ambiguous は `[Send again]` を出さず、`promptCopyText`(本文コピー + GitLab で確認する案内)だけになる。理由: `createDiffNote` / `createNote` は冪等でなく、in-flight ガードは最初の試行の終了時に解放される。タイムアウト後もサーバ側で mutation が処理中である場合、完全な再取得がその確定より先に終わると「表示されていない = 未実行」と誤認して再送し、二重投稿になる。完全取得は未実行の根拠にならない。
+  - Success 分岐では報告値は使われない(既存の `reload { }`)ので、常に `Skipped` でも確立・再取得の効果は失われない。
+  - ホルダが空(G6 より前で失敗した試行)の場合は、確立も再取得もしない。
   - 成功専用のコールバックはランチャーに追加しない。Success 分岐は既存どおり `reload { }` を呼ぶだけで、確立はこの `reload` が担う(A8 はこの経路で満たす)。
   - サイドバーの再取得(`reloadDiscussionsFor`)は結果を待たずに並行して依頼する。
-- 返信・解決はこれまでどおり `forDiscussion` キーで `launch` する(ゲートは既存の `runDiscussionWrite`)。
+- 返信・解決はこれまでどおり `forDiscussion` キーで `launch` する(ゲートは既存の `runDiscussionWrite`)。`reload` は上記と同じエディタ経路の `reload`(常に `Skipped`)を渡すので、ポップアップからの返信も Ambiguous 後の `[Send again]` を出さない。
+- **サイドバー経路(Phase 5A)の `[Send again]` は本サイクルでは変更しない。**同じ懸念(mutation の確定が再取得より遅れる)が当てはまるため、follow-up issue として記録する(実装 PR で起票)。
 
 #### 9.3.2 G8 本文の同一性(Codex round 1 P1 反映)
 
@@ -271,6 +275,7 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 | 段 | 判定 | 拒否条件 |
 |---|---|---|
 | G8a | 対象パスの Git 属性に `filter`(LFS など clean/smudge)と `working-tree-encoding` が設定されていない | 設定されていれば拒否(行の対応を保証できない) |
+| G8a' | index の対象エントリ(`DirCacheEntry`)に `assume-valid` / `skip-worktree` が付いていない | 付いていれば拒否(status が作業ツリーの変更を報告しなくなるため) |
 | G8b | ディスク上のファイルを**エディタの文字コード**で復号し、先頭の BOM を取り除いた文字列が `documentText` と一致(改行は正規化しない) | 不一致なら拒否 |
 | G8c | JGit の `status().addPath(path)` の結果で、そのパスが **どの集合にも含まれない**(`added` / `changed` / `removed` / `modified` / `missing` / `untracked` / `conflicting` のすべてが空。= index と作業ツリーの両方が HEAD と一致)。JGit は `core.autocrlf` と `text` / `eol` 属性を適用して比較する | いずれかに含まれれば拒否(ステージ済みの変更も拒否) |
 
@@ -388,9 +393,21 @@ data class ReviewSessionSnapshot(
 sealed interface NewLineKind { object Added : NewLineKind; data class Unchanged(val oldLine: Int) : NewLineKind }
 sealed interface DiffLineMap {
   object Unavailable : DiffLineMap
+  object Identity : DiffLineMap         // 純粋なリネーム(§12.2.1)
   class Parsed(...) : DiffLineMap { fun classify(oneBasedNewLine: Int): NewLineKind }
 }
 ```
+
+#### 12.2.1 空の `diff` の区別(Codex round 3 P1 反映)
+
+| 条件(上から順に判定) | 結果 |
+|---|---|
+| `tooLarge == true` または `collapsed == true` | `Unavailable`(巨大・生成ファイル) |
+| `diff == ""` かつ `renamedFile == true`、かつローカル JGit で **base の `oldPath` の blob id == HEAD の `newPath` の blob id**(base コミットがローカルに無ければ判定不能) | `Identity`(純粋なリネーム: 全行 `Unchanged(oldLine = newLine)`) |
+| `diff == ""` かつ `newFile == true` かつ HEAD の blob が空 | `Parsed`(行なし) |
+| 上記以外で `diff == ""`(18.4 未満でフラグが無い巨大ファイル、base コミットがローカルに無いリネームを含む) | `Unavailable` |
+
+base の blob の読み取りは G9 の一部として background で行う。フラグの無い古い GitLab でも、ローカルで blob id が一致すれば純粋なリネームと確定でき、一致を確認できなければ安全側(`Unavailable`)に倒す。
 
 hunk ヘッダは `@@ -a[,b] +c[,d] @@`(参照実装 `diff_line_count.ts:17` と同じ正規表現)。`\ No newline at end of file` 行は数えない。
 
@@ -422,11 +439,11 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 15. タイムアウトとリトライ
 
-既存の GraphQL / REST クライアントのタイムアウトをそのまま使う。**自動リトライはしない**(Ambiguous の再送はユーザーが最新状態を見てから、既存ランチャーの `[Send again]` のみ)。
+既存の GraphQL / REST クライアントのタイムアウトをそのまま使う。**自動リトライはしない**(エディタ経路では Ambiguous 後の再送ボタンを出さない。§9.3.1)。
 
 ## 16. 冪等性
 
-`createDiffNote` は冪等ではない。二重送信は in-flight ガード(`forEditorLine` キー、UI ターンで取得、既存ランチャーが管理)で防ぎ、Ambiguous 時の再送はユーザー確認後のみ。送信中はポップアップの送信ボタンを無効化する。
+`createDiffNote` は冪等ではない。二重送信は in-flight ガード(`forEditorLine` キー、UI ターンで取得、既存ランチャーが管理)で防ぎ、エディタ経路は Ambiguous 後の再送を提供しない(本文コピーのみ)。送信中はポップアップの送信ボタンを無効化する。
 
 ## 17. 並行処理
 
@@ -470,7 +487,7 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 23. テスト方針
 
-- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、ステージ済みの変更で送信 0 回、`AttemptTarget` による確立(セッションなしの Success / Ambiguous)、部分取得(page-limit / deadline / cursor 欠落)と `hasMoreNotes` で `Applied` にならないこと、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
+- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、ステージ済みの変更で送信 0 回、`AttemptTarget` による確立(セッションなしの Success / Ambiguous)、エディタ経路の `reload` が常に `Skipped` であること(Ambiguous で `[Send again]` が出ない)、部分取得の通知、`assume-valid` / `skip-worktree` で送信 0 回、純粋なリネームと巨大 diff の区別(JGit 実リポジトリ)、ロード中に起動元エディタだけ閉じた場合の適用(`ReviewSessionRegistry` の SWT 非依存部で)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
 - **実装レビューの重点確認項目**(設計では詰めず、実装段階で検出する): 空白のみ・Unicode 空白のみの本文の送信不可(A16)、通知文言、ホバー文の整形と HTML エスケープ、`oneBasedLine` の基数(先頭行のテストを含む)、世代比較の位置、ログに本文が出ないこと。
 - **手動検証**(§25): SWT 表示・ルーラー・ポップアップ・JDT エディタ・ジェネリックエディタ。
 
@@ -495,7 +512,11 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 | A15 | CRLF(`core.autocrlf=true`)・非 UTF-8(例: Shift_JIS)・UTF-8 BOM の未編集ファイルにコメントできる。`filter` / `working-tree-encoding` 属性付きのファイルは拒否する(§9.3.2) |
 | A17 | ステージ済み(index が HEAD と異なる)のファイルではコメントを送らない(§9.3.2 G8c) |
 | A18 | 手で開いたエディタから初めて作成して成功すると、`reload` がセッションを確立し注釈が出る。セッションなしの Success と Ambiguous を別々にテストする(§9.3.1) |
-| A19 | スレッド取得が部分的(ページ上限・deadline・cursor 欠落)なら通知し、Ambiguous 後に `[Send again]` を出さない。`hasMoreNotes` のスレッドはポップアップに明示し、そのスレッドへの返信が Ambiguous のとき `[Send again]` を出さない(§9.1.1) |
+| A19 | スレッド取得が部分的(ページ上限・deadline・cursor 欠落)なら通知する。`hasMoreNotes` のスレッドはポップアップに明示する(§9.1.1) |
+| A21 | 分割エディタでロード中に起動元のエディタだけを閉じても、残ったエディタに注釈が出る(§9.1) |
+| A22 | 内容を変えない純粋なリネームにはコメントでき(`oldLine == newLine`)、巨大 diff と区別される。base コミットがローカルに無い場合は拒否する(§12.2.1) |
+| A23 | `assume-valid` / `skip-worktree` 付きでローカル変更されたファイルではコメントを送らない(§9.3.2 G8a') |
+| A20 | エディタ経路(新規作成・ポップアップからの返信)の Ambiguous では `[Send again]` を出さず、本文コピーのみ(mutation の確定が再取得より遅れる場合でも二重投稿しない、§9.3.1) |
 | A16 | ポップアップの送信ボタンは、本文が `isSubmittable`(`CommentInputDialog.kt:122`、空白のみ不可)を満たし、かつ送信中でないときだけ有効 |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
@@ -553,3 +574,12 @@ M1 サイドバーから変更ファイルを開く → 注釈 / 解決済みア
 | 6 | P1 セッションなしの成功後の確立と `Skipped` の記述が矛盾 | 採用(契約) | §9.3.1: `AttemptTarget` ホルダ経由で `reload` が確立 / 再取得。A18 |
 | 7 | P1 部分取得したスレッド一覧を完全と扱っている | 採用(二重投稿) | §9.1.1、部分取得では `Applied` を返さない。A19 |
 | 8 | P1 スレッド内ノートを完全取得していない | 採用(明示 + 再送禁止の案) | §9.1.1、FR-5 の文言、A19。ページング取得は既存方針に従い設計しない |
+
+### round 3(`f07c6c5` に対する新規 4 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 9 | P1 Ambiguous 後の再送は、mutation の確定が再取得より遅れると二重投稿になる | 採用(二重投稿) | §9.3.1: エディタ経路の `reload` は常に `Skipped` = `[Send again]` を出さない。A20。サイドバー経路は follow-up issue |
+| 10 | P1 `assume-valid` / `skip-worktree` で status が変更を報告しない | 採用(誤った行) | G8a'、A23 |
+| 11 | P1 分割エディタで起動元だけ閉じると結果が捨てられる | 採用(SWT ライフサイクル) | §9.1 の適用条件を「接続集合が空でない」に変更、A21 |
+| 12 | P1 純粋なリネームの空 patch を巨大 diff と区別していない | 採用 | §12.2.1(フラグ優先 + ローカル blob id の一致)、A22 |
