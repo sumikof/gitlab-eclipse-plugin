@@ -189,6 +189,24 @@ class CurrentBranchMrLookupTest : DescribeSpec({
       verify(exactly = 1) { mrService.getClosesIssues(REPO_PROJECT_ID.toString(), theMr.iid, conn) }
     }
 
+    it("with includeClosesIssues = false returns the MR without ever requesting closes_issues") {
+      val theMr = mr()
+      every { mrService.findOpenMrsForBranch("feature") } returns listOf(theMr)
+
+      val result = lookup().lookup(context(), branch(), includeClosesIssues = false)
+
+      result shouldBe CurrentBranchInfo(theMr, emptyList())
+      verify(exactly = 0) { mrService.getClosesIssues(any(), any(), any()) }
+    }
+
+    it("the MR-only lookup used by editor comments returns the MR and skips closes_issues") {
+      val theMr = mr()
+      every { mrService.findOpenMrsForBranch("feature") } returns listOf(theMr)
+
+      lookupMrOnly(lookup(), context(), branch(), null) shouldBe theMr
+      verify(exactly = 0) { mrService.getClosesIssues(any(), any(), any()) }
+    }
+
     // Every other test in this describe block calls lookup() without a connection argument, so
     // the default null is exercised implicitly by the whole file and must keep matching the
     // beforeEach getProject(ENCODED_PROJECT_ID) stub (no connection arg) unchanged — that is the

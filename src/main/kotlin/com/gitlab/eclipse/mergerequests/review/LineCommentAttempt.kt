@@ -18,6 +18,7 @@ import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionWriteOutcome
 import com.gitlab.eclipse.mergerequests.discussions.runDiscussionWrite
+import com.gitlab.eclipse.mergerequests.lookupMrOnly
 import kotlinx.coroutines.CancellationException
 import org.eclipse.jgit.lib.Repository
 import java.io.File
@@ -58,7 +59,7 @@ class LineCommentAttempt(
   private val candidateContexts: () -> List<RepositoryContext> = { RepositoryContextResolver().candidateContexts() },
   private val readBranch: (File) -> CurrentBranch = { CurrentBranchGitReader().read(it) },
   private val lookupMr: (RepositoryContext, CurrentBranch, ConnectionSnapshot) -> GitLabMergeRequest? =
-    { context, branch, conn -> CurrentBranchMrLookup().lookup(context, branch, conn).mr },
+    { context, branch, conn -> lookupMrOnly(CurrentBranchMrLookup(), context, branch, conn) },
   private val canCreateNote: (ConnectionSnapshot, String, Long) -> Boolean =
     { conn, namespaceWithPath, iid -> fetchCanCreateNote(service(), conn, namespaceWithPath, iid) },
   private val getLatestMrVersion: (String, Long, ConnectionSnapshot) -> GitLabMrVersion? =
