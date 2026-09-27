@@ -43,7 +43,9 @@ import org.eclipse.ui.texteditor.ITextEditor
  *   it — use the document argument) and, if it was the last editor, the annotations are already gone.
  * - [onSessionReleased]: invoked when a document's session ends — its last editor closed, another
  *   identity replaced it (design §9.5 step 3), or the bundle stopped — after its annotations are gone.
- * All three are optional, are not reset by [clear], and are called under a guard: an exception from
+ * - [onSnapshotApplied]: invoked after a load (begin or reload, FR-10 / design §9.4) was applied
+ *   to a document and its annotations were replaced, so an open popup can swap its display model.
+ * All four are optional, are not reset by [clear], and are called under a guard: an exception from
  * a hook is logged (class name only) and never disturbs the session, listener or sub-model bookkeeping.
  */
 object ReviewSessionRegistry {
@@ -77,6 +79,9 @@ object ReviewSessionRegistry {
 
   /** See the class comment. */
   var onSessionReleased: ((document: IDocument) -> Unit)? = null
+
+  /** See the class comment. */
+  var onSnapshotApplied: ((document: IDocument, snapshot: ReviewSessionSnapshot) -> Unit)? = null
 
   /**
    * UI thread. Connects [editor] to the review session of its document for the MR [ref], the
@@ -200,6 +205,7 @@ object ReviewSessionRegistry {
     )
     // Design §9.1.1: a partial fetch is shown, and said once, at session establishment.
     if (notifyPartial && !result.complete) NotificationUtils.showOnUiThread(PARTIAL_LOAD_MESSAGE)
+    guarded("onSnapshotApplied hook") { onSnapshotApplied?.invoke(document, result.snapshot) }
   }
 
   /**

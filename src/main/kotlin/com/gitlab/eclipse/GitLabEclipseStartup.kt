@@ -20,6 +20,7 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
+import com.gitlab.eclipse.mergerequests.review.MrThreadPopups
 import com.gitlab.eclipse.mergerequests.review.ReviewSessionRegistry
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.security.SecurityScanLifecycle
@@ -158,8 +159,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
             // Same reasoning as above: every discussion reflect runnable runs on the UI thread
             // and gates on `active`, so the flip must happen here, not as a bare off-thread write.
             DiscussionGenerationRegistry.onDeactivate()
-            // Editor review sessions gate on the same flag; with it down, release their
+            // Thread popups first, without a copy-text prompt (no dialogs at stop); then the
+            // sessions. Editor review sessions gate on the same flag; with it down, release their
             // annotations, ruler and part listeners in this same UI turn (FR-11). Never throws.
+            MrThreadPopups.discardAll()
             ReviewSessionRegistry.clear()
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()
@@ -289,6 +292,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
           try {
             CiLintGenerationRegistry.onActivate()
             DiscussionGenerationRegistry.onActivate()
+            // Wires the review-session hooks (ruler click → popup, close on release, refresh on
+            // reload) in the same UI turn the discussion lifecycle comes up.
+            MrThreadPopups.install()
             // The stop hook clears JobLogGenerationRegistry.active and nothing else restores it:
             // without this call a stop->start cycle in the same class loader leaves every
             // shouldAct() false forever and "Display Log" silently stops reflecting.
