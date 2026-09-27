@@ -129,9 +129,9 @@ class OpenMrFileHandler(
   private fun mrBelongsTo(context: RepositoryContext, mrWebUrl: String): Boolean =
     mrWebUrl.startsWith("${context.webUrl.trimEnd('/')}/-/merge_requests/")
 
-  private companion object {
+  internal companion object {
     const val CHECKOUT_FIRST_MESSAGE =
       "Check out the merge request branch first (the working tree does not match this merge request)."
-    const val OPEN_FAILED_MESSAGE = "Failed to open the file — see the Error Log."
+    private const val OPEN_FAILED_MESSAGE = "Failed to open the file — see the Error Log."
   }
 }

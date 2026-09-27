@@ -12,6 +12,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.mergerequests.CurrentBranch
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
+import com.gitlab.eclipse.mergerequests.OpenMrFileHandler
 import com.gitlab.eclipse.mergerequests.RepositoryContext
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
@@ -58,7 +59,8 @@ class LineCommentAttempt(
   private val readBranch: (File) -> CurrentBranch = { CurrentBranchGitReader().read(it) },
   private val lookupMr: (RepositoryContext, CurrentBranch, ConnectionSnapshot) -> GitLabMergeRequest? =
     { context, branch, conn -> CurrentBranchMrLookup().lookup(context, branch, conn).mr },
-  private val canCreateNote: (ConnectionSnapshot, String, Long) -> Boolean = ::fetchCanCreateNote,
+  private val canCreateNote: (ConnectionSnapshot, String, Long) -> Boolean =
+    { conn, namespaceWithPath, iid -> fetchCanCreateNote(service(), conn, namespaceWithPath, iid) },
   private val getLatestMrVersion: (String, Long, ConnectionSnapshot) -> GitLabMrVersion? =
     { projectId, iid, conn -> service<MergeRequestService>().getLatestMrVersion(projectId, iid, conn) },
   private val openRepository: (File) -> Repository = ::openGitDir,
@@ -231,9 +233,8 @@ class LineCommentAttempt(
     const val NO_MERGE_REQUEST_MESSAGE = "No open merge request was found for the current branch."
     const val NO_PERMISSION_MESSAGE = "You do not have permission to comment on this merge request."
 
-    /** Same wording as the sidebar's open-file command (`OpenMrFileHandler`). */
-    const val CHECKOUT_FIRST_MESSAGE =
-      "Check out the merge request branch first (the working tree does not match this merge request)."
+    /** The sidebar's open-file command's wording, shared. */
+    const val CHECKOUT_FIRST_MESSAGE = OpenMrFileHandler.CHECKOUT_FIRST_MESSAGE
     const val FILE_MISMATCH_MESSAGE = "This file does not match the merge request revision; its line numbers would not line up."
     const val DIFF_UNAVAILABLE_MESSAGE = "This file's diff is too large to comment on from the editor."
     const val LINE_OUT_OF_RANGE_MESSAGE = "The selected line is not in the file."
@@ -259,10 +260,16 @@ internal fun repositoryRelativePath(workTree: File, file: File): String? = try {
 }
 
 /**
- * G6b's production check: `mergeRequest.userPermissions.createNote` from the discussions query's
- * first page (design §9.3). Runs the full discussions fetch; only its permission is used.
+ * G6b's production check (design §9.3): `mergeRequest.userPermissions.createNote`, which the
+ * discussions query carries on its first page. Exactly one page is requested (`maxPages = 1`);
+ * the discussions themselves are not needed. Evaluated on every attempt.
  */
-private fun fetchCanCreateNote(connection: ConnectionSnapshot, namespaceWithPath: String, mrIid: Long): Boolean =
-  service<DiscussionService>()
-    .getDiscussions(connection, namespaceWithPath, mrIid, DiscussionService.DISCUSSIONS_DEADLINE)
+internal fun fetchCanCreateNote(
+  discussionService: DiscussionService,
+  connection: ConnectionSnapshot,
+  namespaceWithPath: String,
+  mrIid: Long,
+): Boolean =
+  discussionService
+    .getDiscussions(connection, namespaceWithPath, mrIid, DiscussionService.DISCUSSIONS_DEADLINE, maxPages = 1)
     .canCreateNote

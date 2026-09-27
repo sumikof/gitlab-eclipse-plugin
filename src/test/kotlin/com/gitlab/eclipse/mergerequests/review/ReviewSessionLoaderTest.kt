@@ -16,6 +16,7 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import kotlinx.coroutines.CancellationException
@@ -229,7 +230,8 @@ class ReviewSessionLoaderTest : DescribeSpec({
         val f = Fakes()
         f.captured = { CONN.copy(instanceUrl = "https://other.example.com") }
 
-        f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
+        f.loader().load(MR_REF, PATH, HEAD, conn = null) shouldBe
+          LoadResult.Refused(ReviewSessionLoader.CONNECTION_CHANGED_MESSAGE)
 
         f.versionCalls shouldBe emptyList()
       }
@@ -247,8 +249,9 @@ class ReviewSessionLoaderTest : DescribeSpec({
         val f = Fakes()
         f.captured = { throw UnstableConnectionException() }
 
-        f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
+        val refused = f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
 
+        refused shouldBe LoadResult.Refused(ReviewSessionLoader.CONNECTION_UNSTABLE_MESSAGE, cause = null)
         f.versionCalls shouldBe emptyList()
       }
 
@@ -265,7 +268,7 @@ class ReviewSessionLoaderTest : DescribeSpec({
         val f = Fakes()
         f.version = { mrVersion(head = "head2") }
 
-        f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
+        f.loader().load(MR_REF, PATH, HEAD, conn = null) shouldBe LoadResult.Refused(VersionDiff.Missing.HEAD_MOVED.message)
 
         f.discussionCalls shouldBe emptyList()
       }
@@ -290,18 +293,24 @@ class ReviewSessionLoaderTest : DescribeSpec({
 
       it("refuses, rather than throwing, when a request fails") {
         val f = Fakes()
-        f.discussions = { throw GraphQlException(hasDataKey = false, messages = listOf("boom")) }
+        val boom = GraphQlException(hasDataKey = false, messages = listOf("boom"))
+        f.discussions = { throw boom }
 
-        f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
+        val refused = f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
+
+        refused.cause shouldBeSameInstanceAs boom
       }
 
-      it("uses fixed messages that carry no server text") {
+      it("uses a fixed message, hands the unexpected cause back for logging, and keeps its text out of toString") {
         val f = Fakes()
-        f.version = { throw IOException("server said secret-token") }
+        val cause = IOException("server said secret-token")
+        f.version = { throw cause }
 
         val refused = f.loader().load(MR_REF, PATH, HEAD, conn = null).shouldBeInstanceOf<LoadResult.Refused>()
 
         refused.reason shouldBe ReviewSessionLoader.LOAD_FAILED_MESSAGE
+        refused.cause shouldBeSameInstanceAs cause
+        refused.toString() shouldNotContain "secret-token"
       }
     }
 

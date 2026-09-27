@@ -1,8 +1,11 @@
 package com.gitlab.eclipse.mergerequests.review
 
 import com.gitlab.eclipse.api.ConnectionSnapshot
+import com.gitlab.eclipse.api.DiscussionService
+import com.gitlab.eclipse.api.DiscussionsReadResult
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.GraphQlException
+import com.gitlab.eclipse.api.TruncationReason
 import com.gitlab.eclipse.api.UnstableConnectionException
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
@@ -18,6 +21,7 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import org.eclipse.jgit.lib.Repository
 import java.io.File
@@ -291,101 +295,101 @@ class LineCommentAttemptTest : DescribeSpec({
   }
 
   describe("gate refusals: Rejected, nothing sent, no MR target recorded") {
-    fun expectRejected(message: String, target: AttemptTarget = AttemptTarget(), run: () -> DiscussionWriteOutcome) {
-      run() shouldBe DiscussionWriteOutcome.Rejected(message)
+    /** [run] must pass the holder it is given to the attempt, so the asserted holder is the written one. */
+    fun expectRejected(message: String, run: (AttemptTarget) -> DiscussionWriteOutcome) {
+      val target = AttemptTarget()
+      run(target) shouldBe DiscussionWriteOutcome.Rejected(message)
       h.sent shouldBe emptyList()
       target.value.shouldBeNull()
     }
 
     it("G5: no workspace repository contains the file") {
       h.contexts = emptyList()
-      val target = AttemptTarget()
-      expectRejected(LineCommentAttempt.NO_REPOSITORY_MESSAGE, target) { h.run(target = target) }
+      expectRejected(LineCommentAttempt.NO_REPOSITORY_MESSAGE) { h.run(target = it) }
     }
 
     it("G5: the only repository does not contain the file") {
       h.contexts = listOf(h.context(tempdir()))
-      expectRejected(LineCommentAttempt.NO_REPOSITORY_MESSAGE) { h.run() }
+      expectRejected(LineCommentAttempt.NO_REPOSITORY_MESSAGE) { h.run(target = it) }
     }
 
     it("with a session: the file is not the session's file") {
       val session = sessionSnapshot(EXPECTED_IDENTITY.copy(newPath = "src/Other.kt"))
-      expectRejected(LineCommentAttempt.FILE_MISMATCH_MESSAGE) { h.run(session = session) }
+      expectRejected(LineCommentAttempt.FILE_MISMATCH_MESSAGE) { h.run(session = session, target = it) }
     }
 
     it("G6: the current branch has no open MR") {
       h.mr = null
-      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run() }
+      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run(target = it) }
     }
 
     it("G6: the MR has no reference to address its discussions with") {
       h.mr = mergeRequest(references = null)
-      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run() }
+      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run(target = it) }
     }
 
     it("G6: the MR has no head sha") {
       h.mr = mergeRequest(sha = null)
-      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run() }
+      expectRejected(LineCommentAttempt.NO_MERGE_REQUEST_MESSAGE) { h.run(target = it) }
     }
 
     it("G6b: the user may not create notes on the MR") {
       h.canCreate = false
-      val target = AttemptTarget()
-      expectRejected(LineCommentAttempt.NO_PERMISSION_MESSAGE, target) { h.run(target = target) }
+      expectRejected(LineCommentAttempt.NO_PERMISSION_MESSAGE) { h.run(target = it) }
     }
 
     it("G7: HEAD is not the MR's head") {
       h.headSha = "local-commit"
-      val target = AttemptTarget()
-      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE, target) { h.run(target = target) }
+      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE) { h.run(target = it) }
       h.bodyChecks shouldBe emptyList()
     }
 
     it("G7 with a session: HEAD is not the session's head") {
       h.headSha = "local-commit"
-      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE) { h.run(session = sessionSnapshot()) }
+      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE) { h.run(session = sessionSnapshot(), target = it) }
     }
 
     it("G7: HEAD cannot be read") {
       h.headSha = null
-      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE) { h.run() }
+      expectRejected(LineCommentAttempt.CHECKOUT_FIRST_MESSAGE) { h.run(target = it) }
     }
 
     it("G8: the editor text does not map onto HEAD") {
       h.body = BodyIdentity.Different(BodyMismatch.STATUS_NOT_CLEAN)
-      val target = AttemptTarget()
-      expectRejected(LineCommentAttempt.FILE_MISMATCH_MESSAGE, target) { h.run(target = target) }
+      expectRejected(LineCommentAttempt.FILE_MISMATCH_MESSAGE) { h.run(target = it) }
       h.versionCalls shouldBe emptyList()
     }
 
     it("G9: the MR has no version") {
       h.version = { null }
-      expectRejected(VersionDiff.Missing.NO_VERSION.message) { h.run() }
+      expectRejected(VersionDiff.Missing.NO_VERSION.message) { h.run(target = it) }
     }
 
     it("G9: the latest version's head is not the checked HEAD") {
       h.version = { mrVersion(head = "head2") }
-      val target = AttemptTarget()
-      expectRejected(VersionDiff.Missing.HEAD_MOVED.message, target) { h.run(target = target) }
+      expectRejected(VersionDiff.Missing.HEAD_MOVED.message) { h.run(target = it) }
     }
 
     it("G9: the version has no entry for the file") {
       h.version = { mrVersion(diffs = listOf(entry(newPath = "src/Other.kt"))) }
-      expectRejected(VersionDiff.Missing.NO_ENTRY.message) { h.run() }
+      expectRejected(VersionDiff.Missing.NO_ENTRY.message) { h.run(target = it) }
     }
 
     it("G9: the file's diff is too large to map lines") {
       h.version = { mrVersion(diffs = listOf(entry(diff = "", tooLarge = true))) }
-      val target = AttemptTarget()
-      expectRejected(LineCommentAttempt.DIFF_UNAVAILABLE_MESSAGE, target) { h.run(target = target) }
+      expectRejected(LineCommentAttempt.DIFF_UNAVAILABLE_MESSAGE) { h.run(target = it) }
     }
 
     it("G9: the line is past the end of the document") {
-      expectRejected(LineCommentAttempt.LINE_OUT_OF_RANGE_MESSAGE) { h.run(h.line(oneBasedLine = 4, lineCount = 3)) }
+      expectRejected(LineCommentAttempt.LINE_OUT_OF_RANGE_MESSAGE) {
+        h.run(h.line(oneBasedLine = 4, lineCount = 3), target = it)
+      }
     }
 
     it("G9: an empty document (lineCount 0) has no line to comment on") {
-      expectRejected(LineCommentAttempt.LINE_OUT_OF_RANGE_MESSAGE) { h.run(h.line(oneBasedLine = 1, lineCount = 0)) }
+      expectRejected(LineCommentAttempt.LINE_OUT_OF_RANGE_MESSAGE) {
+        h.run(h.line(oneBasedLine = 1, lineCount = 0), target = it)
+      }
     }
   }
 
@@ -455,6 +459,20 @@ class LineCommentAttemptTest : DescribeSpec({
       h.version = { mrVersion() }
       h.send = { throw CancellationException("cancelled") }
       shouldThrow<CancellationException> { h.run() }
+    }
+  }
+
+  describe("G6b production check") {
+    it("requests exactly one discussions page and answers with its createNote permission") {
+      val service = mockk<DiscussionService>()
+      every { service.getDiscussions(any(), any(), any(), any(), any(), any(), any()) } returns
+        DiscussionsReadResult(canCreateNote = true, discussions = emptyList(), truncation = TruncationReason.PAGE_LIMIT)
+
+      fetchCanCreateNote(service, CONN, "group/project", 42L) shouldBe true
+
+      verify(exactly = 1) {
+        service.getDiscussions(CONN, "group/project", 42L, DiscussionService.DISCUSSIONS_DEADLINE, any(), any(), 1)
+      }
     }
   }
 

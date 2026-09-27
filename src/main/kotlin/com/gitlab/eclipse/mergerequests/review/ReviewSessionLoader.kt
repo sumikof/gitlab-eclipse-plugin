@@ -5,6 +5,7 @@ import com.gitlab.eclipse.api.DiscussionService
 import com.gitlab.eclipse.api.DiscussionsReadResult
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.MergeRequestService
+import com.gitlab.eclipse.api.UnstableConnectionException
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.ci.actions.sameConfiguredInstance
 import com.gitlab.eclipse.inject.service
@@ -16,8 +17,17 @@ sealed interface LoadResult {
   /** [complete] is `false` when the discussions fetch was truncated (design §9.1.1). */
   data class Loaded(val snapshot: ReviewSessionSnapshot, val complete: Boolean) : LoadResult
 
-  /** No session: [reason] is a fixed, user-facing English sentence with no server data in it. */
-  data class Refused(val reason: String) : LoadResult
+  /**
+   * No session: [reason] is a fixed, user-facing English sentence with no server data in it.
+   * [cause] is set only for an unexpected failure (the reason then points at the Error Log): the
+   * caller logs it the secret-safe way — the exception's class name and vetted metadata, never
+   * `cause.message` or the exception object, which can carry server text. Expected refusals have
+   * no cause.
+   */
+  data class Refused(val reason: String, val cause: Throwable? = null) : LoadResult {
+    /** Keeps [cause]'s message out of any `toString()` (design §19). */
+    override fun toString(): String = "LoadResult.Refused(reason=$reason, causeType=${cause?.javaClass?.name})"
+  }
 }
 
 /**
@@ -43,7 +53,9 @@ class ReviewSessionLoader(
    *    must have a diff entry whose new path is [relPath];
    * 3. the discussions, placed on the version's refs.
    *
-   * Any refusal or failure is [LoadResult.Refused] with a fixed message; nothing is logged here.
+   * Any refusal or failure is [LoadResult.Refused] with a fixed message; an unstable connection
+   * (settings mid-change) is an expected refusal without a cause, and any other exception is
+   * returned as [LoadResult.Refused.cause] for the caller to log. Nothing is logged here.
    * The snapshot's identity is built from [ref], [expectedHeadSha] and [relPath], so it equals the
    * identity the session was begun with.
    */
@@ -65,8 +77,10 @@ class ReviewSessionLoader(
     }
   } catch (e: CancellationException) {
     throw e
-  } catch (_: Exception) {
-    LoadResult.Refused(LOAD_FAILED_MESSAGE)
+  } catch (_: UnstableConnectionException) {
+    LoadResult.Refused(CONNECTION_UNSTABLE_MESSAGE)
+  } catch (e: Exception) {
+    LoadResult.Refused(LOAD_FAILED_MESSAGE, e)
   }
 
   private fun loaded(
@@ -102,6 +116,8 @@ class ReviewSessionLoader(
   companion object {
     const val CONNECTION_CHANGED_MESSAGE =
       "The GitLab connection changed since this merge request was loaded; refresh the sidebar and open the file again."
+    const val CONNECTION_UNSTABLE_MESSAGE =
+      "The GitLab connection settings were changing; open the file again to load its merge request threads."
     const val LOAD_FAILED_MESSAGE = "Could not load this file's merge request threads — see the Error Log."
   }
 }

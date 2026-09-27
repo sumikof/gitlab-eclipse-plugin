@@ -226,6 +226,10 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
    * notes at all, so per-note permissions cannot answer "can this user comment", and only the
    * envelope-level value on the first (and, for an empty MR, only) page can.
    *
+   * [maxPages] caps the pages fetched (default [MAX_DISCUSSION_PAGES]); a caller that needs only
+   * `canCreateNote` passes `1` so exactly one request is issued, and a list cut short by the cap is
+   * reported as [TruncationReason.PAGE_LIMIT] as usual.
+   *
    * Each page's discussions are normalized via [DiscussionDto.toDomain], then notes whose `system`
    * flag is `true` (GitLab's automated activity entries) are dropped, and a discussion left with no
    * notes after that filtering is dropped entirely. The final list — across all pages fetched
@@ -244,6 +248,7 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
     deadline: Duration,
     clock: () -> Long = { System.nanoTime() },
     isActive: () -> Boolean = { true },
+    maxPages: Int = MAX_DISCUSSION_PAGES,
   ): DiscussionsReadResult {
     val start = clock()
     val discussions = mutableListOf<GitLabDiscussion>()
@@ -299,7 +304,7 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
         // page cap. Stop with what was gathered instead, as for a missing cursor.
         return buildResult(canCreateNote, discussions, TruncationReason.MISSING_CURSOR)
       }
-      if (page >= MAX_DISCUSSION_PAGES) {
+      if (page >= maxPages) {
         return buildResult(canCreateNote, discussions, TruncationReason.PAGE_LIMIT)
       }
       cursor = endCursor
