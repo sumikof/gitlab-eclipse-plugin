@@ -16,7 +16,7 @@ class ShowDuoDocumentation(
   private val logger = logger<ShowDuoDocumentation>()
 
   override fun execute(event: ExecutionEvent): Any? {
-    logger.info("Opening the GitLab Duo documentation: $URL")
+    logger.info("Opening GitLab Duo documentation")
     browser.open(URL)
     return null
   }

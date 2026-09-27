@@ -13,7 +13,7 @@ class ShowDuoForum(
   private val logger = logger<ShowDuoForum>()
 
   override fun execute(event: ExecutionEvent): Any? {
-    logger.info("Opening the GitLab Duo forum: $URL")
+    logger.info("Opening GitLab Forum")
     browser.open(URL)
     return null
   }
