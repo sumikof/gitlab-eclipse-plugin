@@ -1,6 +1,6 @@
 # D13 エディタ行コメント + エディタ内スレッド UI 基盤 設計書
 
-- 版: 第 1 版(2026-09-27)
+- 版: 第 2 版(2026-09-27、Codex round 1 反映)
 - ベース: `gitlab-ls-9.3.0` @ `5fba3e8`
 - 関連: ロードマップ #8 / パリティ台帳 #7(D13「コメント作成」🟡)/ Phase 6 残余 #14 / 前提設計 = Phase 5A 設計書 §21(Close 済み PR #45、`git fetch origin refs/pull/45/head` → `docs/review/mr-discussions-design.md` L1285-1492)
 - 参照実装: `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
@@ -149,7 +149,7 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 | `ThreadPlacement` | `GitLabDiscussion` の一覧とセッション(version の 3 SHA、ファイルの `newPath`)から、FR-3 を満たすスレッドを `(oneBasedLine, discussion, resolved)` に変換する | model |
 | `DiffPositionBuilder` | `(version, diffEntry, lineMap, oneBasedLine)` → `DiffPositionInput` 変数マップ、または拒否理由 | `DiffLineMap` |
 | `ReviewSessionLoader` | 捕捉済み接続 1 つで version 取得 → 対象 diff の特定 → `DiffLineMap` → スレッド取得 → `ThreadPlacement`。結果は `ReviewSessionSnapshot`(不変)または拒否理由 | 既存サービス(接続引数付き) |
-| `LineCommentFlow` | 新規作成の前段ゲート(§9.3)。効果(JGit 読み取り・API・通知)は関数として注入する | 上記 |
+| `LineCommentFlow` | 新規作成の 1 試行(`lineCommentAttempt`、§9.3)。ゲート G5〜G9 と送信を毎試行実行する。効果(JGit 読み取り・ファイル読み取り・API)は関数として注入する | 上記 |
 | `InlineThreadModel` | ポップアップの表示モデル: タイトル、エントリ列(作成者・日時・本文テキスト)、状態(未解決 / 解決済み / 新規)、利用可能な操作(返信・解決・未解決化・作成)、入力欄のプレースホルダ。MR に依存しない | なし |
 | `ReviewSessionGeneration` | セッションごとの再取得の世代(latest-wins)。UI スレッド専有 | なし |
 
@@ -157,7 +157,7 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 
 | コンポーネント | 責務 |
 |---|---|
-| `ReviewSessionRegistry` | UI スレッド専有。キー = 文書(`IDocument` の同一性)。値 = セッション + 接続中のエディタ集合。`IPartListener2.partClosed` で参照を減らし、0 で解放(FR-11)。bundle 停止で全解放 |
+| `ReviewSessionRegistry` | UI スレッド専有。キー = 文書(`IDocument` の同一性)。値 = セッション(`SessionIdentity` 付き)+ 接続中のエディタ集合。identity が異なる確立要求は置き換え(§9.5)。`IPartListener2.partClosed` で参照を減らし、0 で解放(FR-11)。bundle 停止で全解放 |
 | `ThreadAnnotationAttacher` | 文書の注釈モデル(E3)にキー `com.gitlab.eclipse.mrReviewThreads` でサブモデルを接続し、注釈を差し替える。注釈モデルが `null` または `IAnnotationModelExtension` でない場合は表示を諦め、ログに 1 行残す(コメント作成は可能)。セッション確立時にルーラー制御へマウスリスナーを付け、解放時に外す |
 | `InlineThreadPopup` | `Shell(workbenchShell, SWT.TOOL or SWT.RESIZE or SWT.TITLE or SWT.CLOSE)`。`PopupDialog` は使わない(E7)。E8 の手順で行の直下に配置し、行が非表示(-1)なら `revealRange` 後に再計算、それでも -1 ならエディタ領域の中央上部に置く。Esc と閉じるボタンで閉じる。エディタが閉じたら閉じる。スクロールには追従しない(開いた時点の位置のまま) |
 | ハンドラ 2 本 | `AddLineCommentHandler`(エディタ / ルーラーのメニュー)、`OpenLineThreadHandler`(ルーラーメニュー)。UI ターンで行と本文をスナップショットして SWT 非依存層へ渡す |
@@ -169,7 +169,8 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 | `GitLabMrVersion.Diff` | `diff: String?`、`tooLarge: Boolean?`、`collapsed: Boolean?` を追加(Gson の null 許容) |
 | `DiscussionService.GET_MR_DISCUSSIONS_QUERY` | `position { diffRefs { baseSha headSha startSha } }` を追加。`GitLabNotePosition` に `diffRefs: GitLabDiffRefs?` |
 | `DiscussionWriteService` | `createDiffNote(connection, mrGid, body, position)` と `createDiffNoteVariables(...)` を追加。3 層のエラー検査は既存 `requireNoPayloadErrors` を再利用 |
-| `DiscussionWriteKey` | `forMergeRequestLine(instanceUrl, fp, mrGid, newPath, oneBasedLine)` を追加 |
+| `DiscussionWriteKey` | `forEditorLine(filePath, oneBasedLine)` を追加(§9.3.1) |
+| `DiscussionWriteOutcome` / `DiscussionWriteLauncher` | `Rejected(message)` と、その終端分岐(`promptCopyText`)を追加。既存 5 分岐は不変(§9.3.1) |
 | `CurrentBranchMrLookup.lookup` / `ProjectDetailService.getProject` | `connection: ConnectionSnapshot? = null` を追加(Phase 5A §21.1。既定 null で現行挙動と同一) |
 | `ChangedFileNode` | `mrRef: MergeRequestRef? = null`(instanceUrl・authFingerprint・projectId・mrIid・mrGid・namespaceWithPath)を追加。`SidebarViewModel.toChangedFileNode` が `DiscussionsSectionNode` と同じ条件で埋める |
 | `OpenMrFileHandler` | エディタを開けたら、`node.mrRef != null` のときだけ `ReviewSessionLoader` を起動する。開く処理・ゲート・文言は変えない |
@@ -181,8 +182,10 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 
 ```
 [UI] OpenMrFileHandler: 既存どおりゲート → エディタを開く(既存)
-[UI] 開いたエディタ E と node.mrRef を ReviewSessionRegistry.begin(E, mrRef, relPath, diffHeadSha) へ
-      → 同じ文書にセッションがあれば E を接続集合に加えて終わり
+[UI] 開いたエディタ E と node.mrRef を ReviewSessionRegistry.begin(E, identity) へ
+      identity = SessionIdentity(instanceUrl, authFingerprint, projectId, mrIid, headSha, newPath)
+      → 同じ文書に identity が等しいセッションがあれば E を接続集合に加えて終わり
+      → identity が異なるセッションがあれば、それを置き換える(§9.5)
       → 無ければ世代を進め、background へ
 [BG] conn = captureConnection()(失敗 → 通知して終了)
      conn の (instanceUrl, fp) が mrRef と一致しなければ拒否(サイドバー取得後に接続が変わった)
@@ -215,24 +218,53 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
   G2 入力がローカルファイル(IFileEditorInput、または file: の IURIEditorInput)
   G3 エディタが dirty でない(早期拒否。保証は G8)
   SNAPSHOT: oneBasedLine(エディタメニュー = キャレット行 / ルーラーメニュー = E2 の行、いずれも +1)、
-            documentText = document.get()、filePath
+            documentText = document.get()、encoding = エディタの文字コード(§9.3.2)、filePath(絶対パス)
   ポップアップを「新規」モードで開く(非モーダル。以降エディタは自由に操作できる)
 [UI ターン 2 — 送信ボタン押下時]
-  startEpoch = registry.currentEpoch(ここで凍結)
-  → background へ(以降エディタに触れない)
-[BG] conn = captureConnection()(G5 より前に 1 回だけ。例外も終端へ合流)
-  セッションあり: その mrRef を使う(conn と tags が一致しなければ GateRejected)
+  startEpoch = DiscussionGenerationRegistry.currentEpoch(ここで凍結)
+  key = DiscussionWriteKey.forEditorLine(filePath, oneBasedLine)   ← UI ターンで確定できるローカル識別子
+  DiscussionWriteLauncher.launch(key, body, startEpoch, write = lineCommentAttempt)   ← 既存の公開 API をそのまま使う
+[BG] lineCommentAttempt(body, epoch) = 1 回の試行(下記を毎回すべて実行する)
+  conn = captureConnection()(UnstableConnectionException は GateRejected。既存 runDiscussionWrite と同じ)
+  セッションあり: その identity の (instanceUrl, fp) と conn が一致しなければ GateRejected
   セッションなし: G5 リポジトリ一意 → G6 現ブランチの MR(lookup(context, branch, conn))
-  G6b 権限: mergeRequest.userPermissions.createNote(セッションあり = セッション値、なし = getDiscussions の結果)
+  G6b 権限: mergeRequest.userPermissions.createNote(毎試行、getDiscussions の先頭ページまたは権限クエリ)
   G7 HEAD sha == MR の diff head sha
-  G8 snapshot.documentText == HEAD の blob(バイト列の厳密比較)
+  G8 本文の同一性(§9.3.2)
   G9 version = getLatestMrVersion(conn)、version.head == G7 の sha、対象 diff エントリ、
      DiffLineMap が Unavailable でないこと → DiffPositionBuilder で position を凍結
-  in-flight ガード: DiscussionWriteKey.forMergeRequestLine(...)(background で取得 = §21.5 の例外)
-  pinnedConnectionFor → ライフサイクル検証 → createDiffNote → 3 層検査 → 分類
-[UI] 既存ランチャーの終端処理。成功時はポップアップを閉じ、セッションが無ければ確立し(§9.1 の BG 部分を
-     conn で実行)、あれば再取得(FR-10)
+  pinnedConnectionFor → ライフサイクル検証(epoch 引数と比較)→ createDiffNote → 3 層検査 → 分類
+  ゲート不成立は Rejected(reason) を返す(送信なし)
+[UI] 既存ランチャーの終端処理(Rejected を 1 分岐追加、§9.3.1)。成功時はポップアップを閉じ、
+     セッションが無ければ確立し、あれば再取得(FR-10)
 ```
+
+#### 9.3.1 ランチャー契約(Codex round 1 P1 反映)
+
+- **既存の `DiscussionWriteLauncher.launch(key, body, startEpoch, write)` をそのまま使う。**キーは UI ターンで確定している必要があるため、エディタ経路のキーは MR の識別子ではなく**ローカル識別子** `DiscussionWriteKey.forEditorLine(filePath, oneBasedLine)`(`instanceUrl = ""`、`authFingerprint = ""`、`targetKind = "editorLine"`、`targetId = "<絶対パス>:<oneBasedLine>"`)とする。同じファイルの同じ行への同時送信はこれで 1 本に絞られる。Phase 5A §21.5 の「background でガードを取得する例外」は**不要になり、採らない**。
+- **G5〜G9 はすべて `write` の中にあり、試行ごとに毎回実行される。**ランチャーの `[Retry]` / `[Send again]` は `relaunch` で同じ `write` を呼び直すため、再試行のたびに HEAD・version・権限・本文の同一性が再検証される。事前検証だけをして別ジョブで `launch` する構成は採らない。
+- 再試行で使う `documentText` / `oneBasedLine` は UI ターン 1 の凍結値のままである(本文を編集したユーザーが再試行すると G8 で拒否され、その場合は新しくメニューから始め直す)。
+- `DiscussionWriteOutcome` に `Rejected(message: String)` を追加する。意味は「ゲートで拒否した・送信していない・再送しても同じ結果」で、終端は `promptCopyText(message, body)`(本文保持、再送ボタンなし)。既存の 5 分岐は不変。`when` の網羅性のため既存の `when` 箇所(7 箇所)に分岐を足す。
+- `reload`(終端から呼ばれる)は、エディタ経路では「そのセッションの再取得」とし、注釈とポップアップへ反映できたときだけ `LoadOutcome.Applied` を返す。セッションが無い・置き換えられた場合は `Skipped`(= `[Send again]` を出さない)。サイドバーの再取得は結果を待たずに並行して依頼する。
+- 返信・解決はこれまでどおり `forDiscussion` キーで `launch` する(ゲートは既存の `runDiscussionWrite`)。
+
+#### 9.3.2 G8 本文の同一性(Codex round 1 P1 反映)
+
+バイト列の厳密比較はやめる。`core.autocrlf` / `eol` 属性 / BOM / 非 UTF-8 の文字コードでは、未編集のファイルでも作業ツリーと HEAD の blob のバイト列が一致しないためである。代わりに、次の 3 段で「凍結した本文の N 行目 = HEAD の N 行目」を保証する。
+
+| 段 | 判定 | 拒否条件 |
+|---|---|---|
+| G8a | 対象パスの Git 属性に `filter`(LFS など clean/smudge)と `working-tree-encoding` が設定されていない | 設定されていれば拒否(行の対応を保証できない) |
+| G8b | ディスク上のファイルを**エディタの文字コード**で復号し、先頭の BOM を取り除いた文字列が `documentText` と一致(改行は正規化しない) | 不一致なら拒否 |
+| G8c | JGit の `status().addPath(path)` で、そのパスが modified / untracked / missing / conflicting のいずれでもない(JGit は `core.autocrlf` と `text` / `eol` 属性を適用して比較する) | 該当すれば拒否 |
+
+G8b の読み取り → G8c → G8b と同じファイルの再読み取りを行い、両読み取りの内容が同一であることを確認する(G8c の最中の書き換えを弾く)。
+
+根拠: G8c が成り立てば、作業ツリーと HEAD の blob の差は改行変換だけであり、改行変換は行の数と順序を変えない。G8b が成り立てば、凍結した本文と作業ツリーは同じ文字列である。したがって、凍結した本文の N 行目は HEAD の N 行目と一致する。
+
+エディタの文字コードは `IFile.getCharset()`(ワークスペースファイル)または `IEncodingSupport.getEncoding()`(外部ファイル)から UI ターン 1 で取得する。取得できなければ拒否する。
+
+**既知の制限**: `working-tree-encoding` と `filter` を使うファイルにはコメントできない。
 
 **スナップショットと送信の分離(Phase 5A §21.2「2 つの捕捉時点」を踏襲)**: 行番号と本文はポップアップを開く前に凍結し、`startEpoch` は送信時に凍結する。ポップアップが開いている間にユーザーが編集しても、送る行番号は凍結した本文に対するもので、その本文が HEAD と一致することを G8 が保証する。
 
@@ -242,7 +274,18 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 
 書き込み成功後、セッションの世代を進めて §9.1 の BG 部分(version は取り直す)を実行し、UI で注釈と開いているポップアップの表示モデルを差し替える。サイドバーは既存 `reloadDiscussionsFor` を呼ぶ。
 
-### 9.5 解放(FR-11)
+### 9.5 セッションの置き換え(同じ文書に別の identity)
+
+レジストリのキーは文書だが、**セッションを共有するのは `SessionIdentity` が完全に一致するときだけ**である。別 MR の `ChangedFileNode` から同じファイルを開いた、アカウントを切り替えた、同じ MR の新しい version(head が違う)で開き直した、のいずれでも identity は異なる。そのときは次を UI ターン内で行ってから新しいセッションを確立する。
+
+1. 旧セッションの世代を無効化する(到着中の再取得結果を捨てる)。
+2. 旧セッションの注釈をサブモデルから取り除く。
+3. 旧セッションに結び付いたポップアップを閉じる(入力中の本文があれば、閉じる前に `[Copy text]` 相当で退避する。文言は実装段階)。
+4. 接続中のエディタ集合は新セッションへ引き継ぐ(同じ文書を表示しているため)。
+
+進行中の書き込みは置き換えの影響を受けない(書き込みは試行ごとにゲートを再評価し、§9.3)。置き換え後の終端処理は、試行が持つ identity のセッションがもう無ければ再取得を `Skipped` とする。
+
+### 9.6 解放(FR-11)
 
 `partClosed` でエディタを接続集合から外し、空になったらサブ注釈モデルを外し、ルーラーのマウスリスナーを外し、そのエディタに吸着したポップアップを閉じる。bundle 停止時は `DiscussionGenerationRegistry` の停止と同じ経路で全セッションを解放する。
 
@@ -309,7 +352,11 @@ class InlineThreadPopup(editor: ITextEditor, oneBasedLine: Int, host: InlineThre
 data class MergeRequestRef(val instanceUrl: String, val authFingerprint: String,
   val projectId: Long, val mrIid: Long, val mrGid: String, val namespaceWithPath: String)
 
+data class SessionIdentity(val instanceUrl: String, val authFingerprint: String,
+  val projectId: Long, val mrIid: Long, val headSha: String, val newPath: String)
+
 data class ReviewSessionSnapshot(
+  val identity: SessionIdentity,
   val mrRef: MergeRequestRef,
   val baseSha: String, val startSha: String, val headSha: String,
   val oldPath: String, val newPath: String,
@@ -349,7 +396,7 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 | 事象 | 扱い |
 |---|---|
 | G1〜G3 の不成立 | 情報通知。ポップアップを開かない |
-| G5〜G9 の不成立 | 送信しない。Definite 相当で既存終端(本文保持)。文言は Phase 5A §21.5 の表を出発点にし、実装で確定 |
+| G5〜G9 の不成立 | 送信しない。`Rejected(message)` で終端(本文保持・再送なし、§9.3.1)。文言は Phase 5A §21.5 の表を出発点にし、実装で確定 |
 | `DiffLineMap.Unavailable` | 「この MR のファイル diff は大きすぎるためコメントできない」旨で拒否(G-6 と同じ) |
 | セッション確立の失敗 | 情報通知 1 回。エディタは開いたまま |
 | 注釈モデルが使えない | 表示を諦める(ログ 1 行)。メニューからの作成は可能 |
@@ -363,7 +410,7 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 16. 冪等性
 
-`createDiffNote` は冪等ではない。二重送信は in-flight ガード(`forMergeRequestLine` キー、background 取得、`ConcurrentHashMap` の set-add でアトミック)で防ぎ、Ambiguous 時の再送はユーザー確認後のみ。送信中はポップアップの送信ボタンを無効化する。
+`createDiffNote` は冪等ではない。二重送信は in-flight ガード(`forEditorLine` キー、UI ターンで取得、既存ランチャーが管理)で防ぎ、Ambiguous 時の再送はユーザー確認後のみ。送信中はポップアップの送信ボタンを無効化する。
 
 ## 17. 並行処理
 
@@ -407,8 +454,8 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 23. テスト方針
 
-- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
-- **実装レビューの重点確認項目**(設計では詰めず、実装段階で検出する): 通知文言、ホバー文の整形と HTML エスケープ、`oneBasedLine` の基数(先頭行のテストを含む)、世代比較の位置、ログに本文が出ないこと。
+- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
+- **実装レビューの重点確認項目**(設計では詰めず、実装段階で検出する): 空白のみ・Unicode 空白のみの本文の送信不可(A16)、通知文言、ホバー文の整形と HTML エスケープ、`oneBasedLine` の基数(先頭行のテストを含む)、世代比較の位置、ログに本文が出ないこと。
 - **手動検証**(§25): SWT 表示・ルーラー・ポップアップ・JDT エディタ・ジェネリックエディタ。
 
 ## 24. 受け入れ条件
@@ -427,6 +474,10 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 | A10 | 送信失敗時に本文が失われない |
 | A11 | エディタを閉じると注釈・リスナー・ポップアップが解放される。bundle 停止でも同様 |
 | A12 | 既存テストの失敗集合が変わらない(`FAILSET_IDENTICAL`)、detekt の新規指摘 0 |
+| A13 | 同じファイルを別 MR / 別アカウント / 新しい version から開くと、旧セッションの注釈とポップアップが消え、新しいセッションの内容だけが出る(§9.5) |
+| A14 | `[Retry]` / `[Send again]` の再試行でも G5〜G9 が再評価され、途中で HEAD や version が変わっていれば送信しない(§9.3.1) |
+| A15 | CRLF(`core.autocrlf=true`)・非 UTF-8(例: Shift_JIS)・UTF-8 BOM の未編集ファイルにコメントできる。`filter` / `working-tree-encoding` 属性付きのファイルは拒否する(§9.3.2) |
+| A16 | ポップアップの送信ボタンは、本文が `isSubmittable`(`CommentInputDialog.kt:122`、空白のみ不可)を満たし、かつ送信中でないときだけ有効 |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
 
@@ -456,7 +507,7 @@ M1 サイドバーから変更ファイルを開く → 注釈 / 解決済みア
 | # | 内容 | 実装 | レビュー |
 |---|---|---|---|
 | T1 | `DiffLineMap`(TDD) | sonnet | fable |
-| T2 | API 追加: `Diff` の 3 フィールド、`diffRefs`、`createDiffNote`、`forMergeRequestLine`、接続引数(TDD) | sonnet | fable |
+| T2 | API 追加: `Diff` の 3 フィールド、`diffRefs`、`createDiffNote`、`forEditorLine`、`Rejected` 分岐、接続引数(TDD) | sonnet | fable |
 | T3 | `ThreadPlacement` / `DiffPositionBuilder` / `InlineThreadModel`(TDD) | sonnet | fable |
 | T4 | `ReviewSessionLoader` / `LineCommentFlow`(効果注入、TDD) | opus | fable |
 | T5 | `ReviewSessionRegistry` / `ThreadAnnotationAttacher` / 注釈タイプ | fable | fable |
@@ -466,4 +517,11 @@ M1 サイドバーから変更ファイルを開く → 注釈 / 解決済みア
 
 ## 29. Codex レビュー反映履歴
 
-(第 1 版。レビュー後に追記する。仕分け = 採用 / 実装段階へ / 不採用)
+### round 1(`59846d1` に対する指摘 4 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 文書セッションの再利用で MR の同一性を検証していない | 採用(別 MR への書き込み = データ整合性) | `SessionIdentity` と置き換え手順 §9.5、A13 |
+| 2 | P1 事前検証と書き込みが既存ランチャーの契約と合わない | 採用(構造) | §9.3.1: ローカルキーを UI ターンで確定し、G5〜G9 を `write` 内で毎試行実行。`Rejected` 分岐を追加。Phase 5A §21.5 の background ガード取得は廃止。A14 |
+| 3 | P1 G8 のバイト列比較が文字コード・改行変換で壊れる | 採用(Git の実挙動) | §9.3.2: G8a 属性 / G8b 文字コード復号の一致 / G8c JGit status。A15 |
+| 4 | P2 ポップアップ送信の本文検証 | 実装段階へ | A16 と §23 の重点確認に記録のみ |
