@@ -20,5 +20,11 @@ data class GitLabMrVersion(
     @SerializedName("new_file") val newFile: Boolean = false,
     @SerializedName("deleted_file") val deletedFile: Boolean = false,
     @SerializedName("renamed_file") val renamedFile: Boolean = false,
+    /** The unified diff text for this entry (design §12.2.1). `null` when absent from the JSON. */
+    val diff: String? = null,
+    /** Whether GitLab omitted [diff] because the file is too large (design §12.2.1). */
+    @SerializedName("too_large") val tooLarge: Boolean? = null,
+    /** Whether GitLab omitted [diff] because the file was auto-generated (design §12.2.1). */
+    val collapsed: Boolean? = null,
   )
 }

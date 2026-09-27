@@ -2,6 +2,7 @@ package com.gitlab.eclipse.utils
 
 import org.eclipse.core.filesystem.IFileStore
 import org.eclipse.core.resources.IFile
+import org.eclipse.ui.IEditorPart
 import org.eclipse.ui.IWorkbenchPage
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.ide.IDE
@@ -29,19 +30,22 @@ import org.eclipse.ui.ide.IDE
  * @param workspaceFile the workspace resource for the file, or `null` when it maps to none
  * @param fileStore the file store to fall back to, evaluated only when [workspaceFile] gives none
  * @param activePage the page to open in; defaults to the active window's active page
+ * @param onOpened receives the part `IDE` returned (`null` when the file went to a system editor)
+ *   right after a successful open, before this returns `true`; the default does nothing
  * @return `false` when there was no page, or nothing to open in it — no editor was opened
  */
 internal fun openInActiveEditor(
   workspaceFile: () -> IFile?,
   fileStore: () -> IFileStore?,
   activePage: () -> IWorkbenchPage? = { PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage },
+  onOpened: (IEditorPart?) -> Unit = {},
 ): Boolean {
   val page = activePage() ?: return false
   workspaceFile()?.let {
-    IDE.openEditor(page, it)
+    onOpened(IDE.openEditor(page, it))
     return true
   }
   val store = fileStore() ?: return false
-  IDE.openEditorOnFileStore(page, store)
+  onOpened(IDE.openEditorOnFileStore(page, store))
   return true
 }

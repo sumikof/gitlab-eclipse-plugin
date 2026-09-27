@@ -25,5 +25,16 @@ data class DiscussionWriteKey(
 
     fun forMergeRequest(instanceUrl: String, authFingerprint: String, mrGid: String) =
       DiscussionWriteKey(normalizeInstanceUrl(instanceUrl), authFingerprint, "mergeRequest", mrGid)
+
+    /**
+     * A key for the editor line-comment write path (design §9.3.1). Unlike the other factories,
+     * this key is NOT scoped by instance/account: it is built entirely from information available
+     * in the UI turn that opens the popup (the file path and its 1-based line), before any
+     * connection or MR identifier is resolved. `instanceUrl`/`authFingerprint` are therefore `""`
+     * — not omitted, so the shape stays a plain [DiscussionWriteKey] — which is enough to
+     * serialize concurrent writes to the same file+line without racing.
+     */
+    fun forEditorLine(filePath: String, oneBasedLine: Int) =
+      DiscussionWriteKey("", "", "editorLine", "$filePath:$oneBasedLine")
   }
 }

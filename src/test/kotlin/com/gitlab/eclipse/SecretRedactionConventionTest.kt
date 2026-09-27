@@ -62,6 +62,7 @@ private val EXPECTED_SECRET_CLASSES: Map<String, Set<String>> = mapOf(
   "com.gitlab.eclipse.mergerequests.discussions.DiscussionWriteOutcome\$Definite" to setOf("cause"),
   "com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader\$FetchOutcome\$Failed" to setOf("cause"),
   "com.gitlab.eclipse.mergerequests.discussions.LoadOutcome\$Failed" to setOf("cause"),
+  "com.gitlab.eclipse.mergerequests.review.LoadResult\$Refused" to setOf("cause"),
   "com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest" to setOf("token"),
 )
 

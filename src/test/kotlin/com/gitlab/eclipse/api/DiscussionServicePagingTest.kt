@@ -220,6 +220,26 @@ class DiscussionServicePagingTest : DescribeSpec({
       }
     }
 
+    it("with maxPages = 1 issues exactly one request and still returns the first page's canCreateNote") {
+      val recorded = stub(
+        queryData(
+          canCreateNote = true,
+          hasNextPage = true,
+          endCursor = "cursor-1",
+          nodes = listOf(discussionDto("r1")),
+        ),
+        queryData(canCreateNote = false, nodes = listOf(discussionDto("r2"))),
+      )
+
+      val result = service.getDiscussions(connection, namespaceWithPath, mrIid, deadline, maxPages = 1)
+
+      recorded.size shouldBe 1
+      verify(exactly = 1) { graphQlClient.execute(any(), any(), any<Class<*>>(), any(), any()) }
+      result.canCreateNote shouldBe true
+      result.discussions.map { it.replyId } shouldContainExactly listOf("r1")
+      result.truncation shouldBe TruncationReason.PAGE_LIMIT
+    }
+
     it("never pages the inner notes connection, but surfaces hasMoreNotes on the discussion") {
       stub(
         queryData(

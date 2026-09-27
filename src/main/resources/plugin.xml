@@ -457,6 +457,25 @@
                 name="GitLab Duo Tutorial"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- Editor-thread-ui design §11.1: MR diff threads from any text editor. No key bindings.
+             The optional source parameter is "ruler" from the ruler menu (the clicked line, E2);
+             without it the caret line is used. -->
+        <command
+                id="gitlab-eclipse-plugin.addMergeRequestLineComment"
+                name="Add Merge Request Comment on This Line…"
+                categoryId="gitlab-eclipse-plugin">
+            <commandParameter
+                    id="gitlab-eclipse-plugin.addMergeRequestLineComment.source"
+                    name="Line Source"
+                    optional="true"/>
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.openMergeRequestLineThread"
+                name="Open Merge Request Thread"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -1039,6 +1058,17 @@
                 commandId="gitlab-eclipse-plugin.commands.DuoTutorial"
                 class="com.gitlab.eclipse.codesuggestions.tutorial.DuoTutorialHandler"
         />
+
+        <!-- Always enabled: the gates and the permission are decided when they run (FR-9). -->
+        <handler
+                commandId="gitlab-eclipse-plugin.addMergeRequestLineComment"
+                class="com.gitlab.eclipse.mergerequests.review.AddLineCommentHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.openMergeRequestLineThread"
+                class="com.gitlab.eclipse.mergerequests.review.OpenLineThreadHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -1334,7 +1364,32 @@
                         commandId="com.gitlab.eclipse.commands.SelectProject"
                         label="Select GitLab Project"
                 />
+
+                <separator name="gitlab-eclipse-plugin.navigation.sep6" visible="true"/>
+
+                <!-- Editor-thread-ui design §11.1: the caret line (no source parameter). Always
+                     visible: permission cannot be filtered synchronously (FR-9). -->
+                <command
+                        commandId="gitlab-eclipse-plugin.addMergeRequestLineComment"
+                        label="Add Merge Request Comment on This Line…"
+                />
             </menu>
+        </menuContribution>
+
+        <!-- Editor-thread-ui design §11.1 / E1: every AbstractTextEditor's ruler menu (JDT included).
+             Both commands use the ruler's last-clicked line (E2); always visible (FR-9). -->
+        <menuContribution locationURI="popup:#AbstractTextEditorRulerContext?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.addMergeRequestLineComment"
+                    label="Add Merge Request Comment on This Line…">
+                <parameter
+                        name="gitlab-eclipse-plugin.addMergeRequestLineComment.source"
+                        value="ruler"/>
+            </command>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.openMergeRequestLineThread"
+                    label="Open Merge Request Thread"/>
         </menuContribution>
 
         <!-- Chat-mode selector on the Duo Chat view toolbar: a pulldown whose menu offers the two
@@ -1825,12 +1880,57 @@
                 markerType="codeSuggestionsMarker"
                 super="org.eclipse.ui.workbench.texteditor.info">
         </type>
+        <!-- Merge request review threads shown in the editor (no marker: the annotations live in
+             a sub-model attached by ThreadAnnotationAttacher). Resolved threads are a separate type. -->
+        <type
+                name="com.gitlab.eclipse.mrThread.unresolved"
+                super="org.eclipse.ui.workbench.texteditor.info">
+        </type>
+        <type
+                name="com.gitlab.eclipse.mrThread.resolved"
+                super="org.eclipse.ui.workbench.texteditor.info">
+        </type>
     </extension>
 
     <extension point="org.eclipse.ui.editors.markerAnnotationSpecification">
         <specification
                 annotationType="codeSuggestionsMarker"
                 annotationImageProvider="com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsAnnotationImageProvider"
+        >
+        </specification>
+        <!-- The vertical/overview ruler keys are read by TextSourceViewerConfiguration (a key that is
+             present but false hides the type); their defaults come from the *PreferenceValue attributes
+             via MarkerAnnotationPreferences.initializeDefaultValues. No text decoration by default. -->
+        <specification
+                annotationType="com.gitlab.eclipse.mrThread.unresolved"
+                label="GitLab Merge Request Threads (unresolved)"
+                annotationImageProvider="com.gitlab.eclipse.mergerequests.review.ThreadAnnotationImageProvider"
+                includeOnPreferencePage="true"
+                presentationLayer="4"
+                colorPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.color"
+                colorPreferenceValue="252,109,38"
+                textPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.text"
+                textPreferenceValue="false"
+                overviewRulerPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.overviewRuler"
+                overviewRulerPreferenceValue="true"
+                verticalRulerPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.verticalRuler"
+                verticalRulerPreferenceValue="true"
+        >
+        </specification>
+        <specification
+                annotationType="com.gitlab.eclipse.mrThread.resolved"
+                label="GitLab Merge Request Threads (resolved)"
+                annotationImageProvider="com.gitlab.eclipse.mergerequests.review.ThreadAnnotationImageProvider"
+                includeOnPreferencePage="true"
+                presentationLayer="3"
+                colorPreferenceKey="com.gitlab.eclipse.mrThread.resolved.color"
+                colorPreferenceValue="108,183,110"
+                textPreferenceKey="com.gitlab.eclipse.mrThread.resolved.text"
+                textPreferenceValue="false"
+                overviewRulerPreferenceKey="com.gitlab.eclipse.mrThread.resolved.overviewRuler"
+                overviewRulerPreferenceValue="true"
+                verticalRulerPreferenceKey="com.gitlab.eclipse.mrThread.resolved.verticalRuler"
+                verticalRulerPreferenceValue="true"
         >
         </specification>
     </extension>

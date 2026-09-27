@@ -160,6 +160,36 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       }
     }
 
+    it("returns false and calls write zero times when the guard is already held (design §29 round 6 #20)") {
+      val key = keyFor("guard-held-returns-false")
+      InFlightWriteGuard.tryAcquire(key) shouldBe true
+      try {
+        val h = LauncherHarness()
+        val write = WriteSpy(DiscussionWriteOutcome.Success)
+
+        val accepted = h.launcher.launch(key, "typed text", DiscussionGenerationRegistry.currentEpoch, write.fn)
+
+        accepted shouldBe false
+        write.bodies.shouldBeEmpty()
+      } finally {
+        InFlightWriteGuard.release(key)
+      }
+    }
+
+    it("returns true when the guard is acquired and the write is scheduled") {
+      val key = keyFor("guard-acquired-returns-true")
+      val h = LauncherHarness()
+
+      val accepted = h.launcher.launch(
+        key,
+        "b",
+        DiscussionGenerationRegistry.currentEpoch,
+        WriteSpy(DiscussionWriteOutcome.Success).fn,
+      )
+
+      accepted shouldBe true
+    }
+
     it("after Success the key is released") {
       val key = keyFor("release-success")
       val h = LauncherHarness()
@@ -202,6 +232,15 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       val h = LauncherHarness()
 
       h.launch(key, "b", WriteSpy(DiscussionWriteOutcome.Aborted).fn)
+
+      assertGuardReleased(key)
+    }
+
+    it("after Rejected the key is released") {
+      val key = keyFor("release-rejected")
+      val h = LauncherHarness()
+
+      h.launch(key, "b", WriteSpy(DiscussionWriteOutcome.Rejected("gate closed")).fn)
 
       assertGuardReleased(key)
     }
@@ -415,6 +454,32 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.launch(key, "my comment", WriteSpy(DiscussionWriteOutcome.Aborted).fn)
 
       h.assertNoUiEffects()
+    }
+
+    it("Rejected with a non-empty body prompts copy-text once; reload/retry/sendAgain/notify never called") {
+      val key = keyFor("terminal-rejected-body")
+      val h = LauncherHarness()
+
+      h.launch(key, "my comment", WriteSpy(DiscussionWriteOutcome.Rejected("HEAD moved")).fn)
+
+      h.copyTextPrompts shouldContainExactly listOf("HEAD moved" to "my comment")
+      h.notifications.shouldBeEmpty()
+      h.reloadCount shouldBe 0
+      h.retryPrompts.shouldBeEmpty()
+      h.sendAgainPrompts.shouldBeEmpty()
+    }
+
+    it("Rejected with an empty body notifies once with the message; no copy-text and no reload") {
+      val key = keyFor("terminal-rejected-empty")
+      val h = LauncherHarness()
+
+      h.launch(key, "", WriteSpy(DiscussionWriteOutcome.Rejected("HEAD moved")).fn)
+
+      h.notifications shouldContainExactly listOf("HEAD moved")
+      h.copyTextPrompts.shouldBeEmpty()
+      h.reloadCount shouldBe 0
+      h.retryPrompts.shouldBeEmpty()
+      h.sendAgainPrompts.shouldBeEmpty()
     }
   }
 

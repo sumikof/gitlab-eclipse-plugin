@@ -39,6 +39,12 @@ class DiscussionWriteServiceTest : DescribeSpec({
 
   val mrGid = "gid://gitlab/MergeRequest/1234"
   val noteGid = "gid://gitlab/Note/7"
+  val diffNotePosition: Map<String, Any?> = mapOf(
+    "baseSha" to "base-1",
+    "headSha" to "head-1",
+    "startSha" to "start-1",
+    "newLine" to 10,
+  )
 
   class Recorded {
     val query: CapturingSlot<String> = slot()
@@ -103,6 +109,20 @@ class DiscussionWriteServiceTest : DescribeSpec({
     return r
   }
 
+  fun stubCreateDiffNote(payload: MutationPayloadDto?): Recorded {
+    val r = Recorded()
+    every {
+      graphQlClient.execute(
+        capture(r.query),
+        capture(r.variables),
+        eq(CreateDiffNoteData::class.java),
+        capture(r.connection),
+        capture(r.timeout),
+      )
+    } returns CreateDiffNoteData(payload)
+    return r
+  }
+
   data class WriteCase(
     val name: String,
     val mutation: String,
@@ -144,6 +164,17 @@ class DiscussionWriteServiceTest : DescribeSpec({
       expectedVariables = mapOf("noteId" to noteGid),
       stub = { stubDestroyNote(it) },
       call = { service.destroyNote(connection, noteGid) },
+    ),
+    WriteCase(
+      name = "createDiffNote",
+      mutation = DiscussionWriteService.CREATE_DIFF_NOTE_MUTATION,
+      expectedVariables = mapOf(
+        "noteableId" to mrGid,
+        "body" to "hello",
+        "position" to diffNotePosition,
+      ),
+      stub = { stubCreateDiffNote(it) },
+      call = { service.createDiffNote(connection, mrGid, "hello", diffNotePosition) },
     ),
   )
 
@@ -292,6 +323,7 @@ class DiscussionWriteServiceTest : DescribeSpec({
       DiscussionWriteService.TOGGLE_RESOLVE_MUTATION,
       DiscussionWriteService.UPDATE_NOTE_MUTATION,
       DiscussionWriteService.DESTROY_NOTE_MUTATION,
+      DiscussionWriteService.CREATE_DIFF_NOTE_MUTATION,
     )
 
     it("select { errors } only — no noteDetails fragment (approved deviation from design §10.3)") {
@@ -327,6 +359,28 @@ class DiscussionWriteServiceTest : DescribeSpec({
       val m = DiscussionWriteService.DESTROY_NOTE_MUTATION
       m shouldContain "mutation DeleteNote(\$noteId: NoteID!)"
       m shouldContain "destroyNote(input: { id: \$noteId })"
+    }
+
+    it("declares CREATE_DIFF_NOTE_MUTATION exactly as in design §11.2, character for character") {
+      DiscussionWriteService.CREATE_DIFF_NOTE_MUTATION shouldBe """
+mutation CreateDiffNote(${'$'}noteableId: NoteableID!, ${'$'}body: String!, ${'$'}position: DiffPositionInput!) {
+  createDiffNote(input: { noteableId: ${'$'}noteableId, body: ${'$'}body, position: ${'$'}position }) {
+    errors
+  }
+}
+"""
+    }
+  }
+
+  describe("createDiffNoteVariables") {
+    it("returns exactly {noteableId, body, position}, with position passed through unmodified") {
+      val variables = DiscussionWriteService.createDiffNoteVariables(mrGid, "hello", diffNotePosition)
+
+      variables shouldBe mapOf(
+        "noteableId" to mrGid,
+        "body" to "hello",
+        "position" to diffNotePosition,
+      )
     }
   }
 })

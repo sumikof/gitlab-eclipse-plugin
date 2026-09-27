@@ -70,16 +70,21 @@ class DiscussionWriteLauncher(
    *   always return [DiscussionWriteOutcome.Aborted] — and Aborted shows no UI at all, so the text
    *   the user explicitly confirmed would vanish silently. Handlers must pass the parameter
    *   straight through and never capture an epoch of their own.
+   *
+   * @return `true` when the in-flight guard was acquired and the write was scheduled in the
+   * background; `false` when it was rejected because the guard was already held (the existing
+   * [ALREADY_IN_PROGRESS_MESSAGE] notify still fires either way — design §29 round 6 #20). Callers
+   * that predate this change ignore the return value, which is why this change is additive.
    */
   fun launch(
     key: DiscussionWriteKey,
     body: String,
     startEpoch: Long,
     write: (body: String, startEpoch: Long) -> DiscussionWriteOutcome,
-  ) {
+  ): Boolean {
     if (!InFlightWriteGuard.tryAcquire(key)) {
       notify(ALREADY_IN_PROGRESS_MESSAGE)
-      return
+      return false
     }
     runInBackground {
       val outcome = try {
@@ -114,6 +119,7 @@ class DiscussionWriteLauncher(
       }
       scheduleTerminal(key, body, startEpoch, outcome, write)
     }
+    return true
   }
 
   /**
@@ -184,6 +190,11 @@ class DiscussionWriteLauncher(
         if (body.isNotEmpty()) promptCopyText(CONNECTION_CHANGED_MESSAGE, body)
       }
       DiscussionWriteOutcome.Aborted -> Unit // pre-send lifecycle rejection: no UI at all
+      // A local gate refused before send: no [Retry]/[Send again] (retrying re-evaluates the same
+      // stable condition), and no reload — nothing was sent, so there is nothing new to show
+      // (design §9.3.1).
+      is DiscussionWriteOutcome.Rejected ->
+        if (body.isEmpty()) notify(outcome.message) else promptCopyText(outcome.message, body)
     }
   }
 

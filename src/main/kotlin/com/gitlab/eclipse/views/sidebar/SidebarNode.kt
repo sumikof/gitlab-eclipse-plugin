@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.model.GitLabNotePermissions
 import com.gitlab.eclipse.api.model.GitLabNotePosition
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiStatus
+import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 
 /**
  * Node in the sidebar tree (query roots, project groups, issues, merge requests,
@@ -121,6 +122,11 @@ enum class ChangeType { NEW, DELETED, RENAMED, MODIFIED }
  * `OpenMrFileHandler` matches against a workspace repository's project web URL. [diffHeadSha]
  * is the diff version's head commit — the handler refuses to open a file unless the matched
  * repository's HEAD is exactly this commit.
+ *
+ * [mrRef] addresses the enclosing merge request for the editor review session the handler begins
+ * once the file is open (editor-thread-ui design §8.3, FR-1). It is non-null exactly when the
+ * sibling [DiscussionsSectionNode] could be built — same connection tags, same GID and namespace —
+ * and `null` otherwise, in which case the file opens as before without a session.
  */
 class ChangedFileNode(
   val oldPath: String?,
@@ -128,6 +134,7 @@ class ChangedFileNode(
   val changeType: ChangeType,
   val diffHeadSha: String?,
   val mrWebUrl: String? = null,
+  val mrRef: MergeRequestRef? = null,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()

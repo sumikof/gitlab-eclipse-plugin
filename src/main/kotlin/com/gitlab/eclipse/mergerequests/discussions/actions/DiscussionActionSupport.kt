@@ -138,7 +138,7 @@ internal fun discussionWriteLauncher(
  * non-`Applied`, so it can never unlock the `[Send again]` that might duplicate a comment; it
  * routes to the "could not be confirmed" message plus the text-preserving copy dialog.
  */
-private fun reloadDiscussionsFor(
+internal fun reloadDiscussionsFor(
   window: IWorkbenchWindow?,
   target: DiscussionWriteTarget,
   onOutcome: (LoadOutcome) -> Unit,

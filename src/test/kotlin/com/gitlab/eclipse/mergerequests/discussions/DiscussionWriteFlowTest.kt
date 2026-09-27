@@ -380,6 +380,23 @@ class DiscussionWriteFlowTest : DescribeSpec({
       }
     }
 
+    it("on Rejected produces only the outcome=rejected label — no message text, no exceptionType") {
+      val secretMessage = "HEAD moved to $secretMarker"
+
+      val message = discussionAuditMessage(
+        action = "createDiffNote",
+        instanceUrl = "https://gitlab.example.com",
+        projectId = 1234L,
+        mrIid = 56L,
+        targetKind = "editorLine",
+        outcome = DiscussionWriteOutcome.Rejected(secretMessage),
+      )
+
+      message shouldContain "outcome=rejected"
+      message shouldNotContain secretMarker
+      message shouldNotContain "exceptionType"
+    }
+
     it("normalizes a trailing-slash url in the line") {
       val message = discussionAuditMessage(
         action = "toggleResolve",

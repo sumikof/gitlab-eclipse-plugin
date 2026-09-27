@@ -112,6 +112,9 @@ fun discussionAuditMessage(
       append(" outcome=ambiguous")
       appendSafeCauseFields(outcome.cause)
     }
+    // Label only, per the class KDoc: outcome.message is user-facing text chosen by the gate
+    // that rejected, and must never reach a log line.
+    is DiscussionWriteOutcome.Rejected -> append(" outcome=rejected")
   }
 }
 

@@ -23,13 +23,13 @@ class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
    * repository root; the caller is responsible for filtering results by
    * `sourceProjectId`.
    */
-  fun findOpenMrsForBranch(sourceBranch: String): List<GitLabMergeRequest> {
+  fun findOpenMrsForBranch(sourceBranch: String, connection: ConnectionSnapshot? = null): List<GitLabMergeRequest> {
     val request = ApiRequest(
       path = "/merge_requests",
       query = mapOf("scope" to "all", "state" to "opened", "source_branch" to sourceBranch),
       elementType = GitLabMergeRequest::class.java,
     )
-    return apiClient.fetchListFromApi(request)
+    return apiClient.fetchListFromApi(request, connection = connection)
   }
 
   /**
@@ -37,12 +37,16 @@ class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
    * by [encodedProjectId] (already URL-encoded; the caller passes the MR's own — i.e.
    * target — project id, not the source project).
    */
-  fun getClosesIssues(encodedProjectId: String, mrIid: Long): List<GitLabIssue> {
+  fun getClosesIssues(
+    encodedProjectId: String,
+    mrIid: Long,
+    connection: ConnectionSnapshot? = null,
+  ): List<GitLabIssue> {
     val request = ApiRequest(
       path = "/projects/$encodedProjectId/merge_requests/$mrIid/closes_issues",
       elementType = GitLabIssue::class.java,
     )
-    return apiClient.fetchListFromApi(request)
+    return apiClient.fetchListFromApi(request, connection = connection)
   }
 
   /**
