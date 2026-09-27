@@ -33,12 +33,31 @@ object MrThreadModelMapper {
     session: ReviewSessionSnapshot,
     oneBasedLine: Int,
     zone: ZoneId = ZoneId.systemDefault(),
+  ): InlineThreadModel? =
+    modelOf(session.placements.filter { it.oneBasedLine == oneBasedLine }, session.canCreateNote, zone)
+
+  /**
+   * The threads whose discussion reply id is in [threadIds] as one model, like [threadsAt] (placement
+   * order, "Thread i of N", same actions), or `null` when none of them is in [session]. This is the
+   * lookup for a clicked live line (design §9.2, E4): the ids come from the annotations that sit on
+   * that line now, so a thread whose annotation moved with an edit is found by its identity, never
+   * confused with another thread that was loaded on the clicked line number.
+   */
+  fun threadsWithIds(
+    session: ReviewSessionSnapshot,
+    threadIds: List<String>,
+    zone: ZoneId = ZoneId.systemDefault(),
   ): InlineThreadModel? {
-    val threads = session.placements.filter { it.oneBasedLine == oneBasedLine && it.discussion.notes.isNotEmpty() }
+    val wanted = threadIds.toSet()
+    return modelOf(session.placements.filter { it.discussion.replyId in wanted }, session.canCreateNote, zone)
+  }
+
+  private fun modelOf(candidates: List<PlacedThread>, canCreateNote: Boolean, zone: ZoneId): InlineThreadModel? {
+    val threads = candidates.filter { it.discussion.notes.isNotEmpty() }
     if (threads.isEmpty()) return null
     val items = threads.mapIndexed { index, placed ->
       val discussion = placed.discussion
-      val actions = actionsFor(discussion, session.canCreateNote)
+      val actions = actionsFor(discussion, canCreateNote)
       InlineThreadItem(
         threadId = discussion.replyId,
         title = "Thread ${index + 1} of ${threads.size}",

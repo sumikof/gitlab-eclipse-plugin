@@ -49,11 +49,15 @@ object ThreadHoverText {
     .replace("\"", "&quot;")
 }
 
-/** The annotation of one placed thread: its line, the type for its resolution state, and its hover. */
+/**
+ * The annotation of one placed thread: its line, the type for its resolution state, its hover, and
+ * the discussion's reply id (the thread's identity once the annotation has moved with an edit).
+ */
 fun PlacedThread.toLineAnnotation(): LineAnnotation = LineAnnotation(
   oneBasedLine = oneBasedLine,
   type = if (resolved) RESOLVED_THREAD_ANNOTATION_TYPE else UNRESOLVED_THREAD_ANNOTATION_TYPE,
   hoverText = ThreadHoverText.of(this),
+  threadIds = listOf(discussion.replyId),
 )
 
 /** [toLineAnnotation] over a snapshot's placements, in their order. */

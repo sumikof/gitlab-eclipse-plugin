@@ -15,7 +15,7 @@ import org.eclipse.ui.texteditor.ITextEditor
  *
  * UI thread: G1 (the active part is an [ITextEditor]) → the ruler's last-clicked line (E2, 0-based,
  * `-1` outside → refused) + 1 → a thread annotation on that line
- * ([ReviewSessionRegistry.hasThreadAnnotationAt], the ruler left-click's check) → the popup
+ * ([ReviewSessionRegistry.threadIdsAt] not empty, the ruler left-click's check) → the popup
  * ([MrThreadPopups.openThreads]). A refusal is one notification and nothing else; once the bundle
  * is deactivated the command does nothing.
  */
@@ -34,7 +34,7 @@ class OpenLineThreadHandler : AbstractHandler() {
     when {
       !DiscussionGenerationRegistry.active -> Unit
       oneBasedLine == null -> NotificationUtils.showOnUiThread(LineSnapshotCapture.NO_LINE_MESSAGE)
-      !ReviewSessionRegistry.hasThreadAnnotationAt(editor, oneBasedLine) ->
+      ReviewSessionRegistry.threadIdsAt(editor, oneBasedLine).isEmpty() ->
         NotificationUtils.showOnUiThread(MrThreadPopups.NO_THREAD_MESSAGE)
       else -> {
         logger.info("openLineThread requested.")

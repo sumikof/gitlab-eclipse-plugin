@@ -196,6 +196,38 @@ class MrThreadModelMapperTest : DescribeSpec({
     }
   }
 
+  describe("threadsWithIds (the live annotation's threads, design §9.2)") {
+    it("returns the threads with the given reply ids, whatever line they were loaded on") {
+      // "moved" was loaded on line 3 and its annotation moved to line 5 with an edit; "stay" was
+      // loaded on line 5. The ids of the annotation now on line 5 are what decides.
+      val s = session(listOf(thread("moved", 3), thread("stay", 5)))
+
+      val model = MrThreadModelMapper.threadsWithIds(s, listOf("moved"), UTC).shouldNotBeNull()
+
+      model.items.map { it.threadId } shouldContainExactly listOf("moved")
+      model.items.single().title shouldBe "Thread 1 of 1"
+    }
+
+    it("keeps the placement order and ignores duplicate ids") {
+      val s = session(listOf(thread("d1", 3), thread("d2", 9), thread("d3", 3)))
+
+      val model = MrThreadModelMapper.threadsWithIds(s, listOf("d3", "d1", "d3"), UTC).shouldNotBeNull()
+
+      model.items.map { it.threadId to it.title } shouldContainExactly listOf(
+        "d1" to "Thread 1 of 2",
+        "d3" to "Thread 2 of 2",
+      )
+    }
+
+    it("is null for no ids, for ids the snapshot does not have, and for a thread without notes") {
+      val s = session(listOf(thread("d1", 3), thread("empty", 4, notes = emptyList())))
+
+      MrThreadModelMapper.threadsWithIds(s, emptyList(), UTC).shouldBeNull()
+      MrThreadModelMapper.threadsWithIds(s, listOf("gone"), UTC).shouldBeNull()
+      MrThreadModelMapper.threadsWithIds(s, listOf("empty"), UTC).shouldBeNull()
+    }
+  }
+
   describe("newThread") {
     it("builds the single CREATE item with no entries and a placeholder naming the line") {
       val model = MrThreadModelMapper.newThread(12, session = null).shouldNotBeNull()

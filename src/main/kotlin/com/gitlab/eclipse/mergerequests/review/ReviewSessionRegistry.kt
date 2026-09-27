@@ -36,7 +36,9 @@ import org.eclipse.ui.texteditor.ITextEditor
  * ### Integration points for the popup layer
  * - [threadOpener]: invoked on a ruler left-click on a line that currently carries a thread
  *   annotation (`(editor, oneBasedLine)`, UI thread). The line is the clicked one — annotations
- *   follow edits (E4) while [ReviewSessionSnapshot.placements] keep the loaded lines.
+ *   follow edits (E4) while [ReviewSessionSnapshot.placements] keep the loaded lines — so the
+ *   threads to show are [threadIdsAt] that line, looked up by id, never the placements of that
+ *   line number.
  * - [onEditorReleased]: invoked once when a connected editor closes (or its input changed), so a
  *   popup anchored to that editor can close (design §9.6). It runs after this registry's own
  *   bookkeeping for that close: the editor is no longer tracked ([snapshotFor] returns `null` for
@@ -57,7 +59,7 @@ object ReviewSessionRegistry {
   private val tracker = ReviewEditorTracker(
     onEditorClosed = ::handleEditorClosed,
     onRulerClick = { editor, document, oneBasedLine ->
-      if (DiscussionGenerationRegistry.active && attacher.hasAnnotationAt(document, oneBasedLine)) {
+      if (DiscussionGenerationRegistry.active && attacher.threadIdsAt(document, oneBasedLine).isNotEmpty()) {
         guarded("threadOpener hook") { threadOpener?.invoke(editor, oneBasedLine) }
       }
     },
@@ -133,12 +135,14 @@ object ReviewSessionRegistry {
   fun snapshotFor(editor: ITextEditor): ReviewSessionSnapshot? = tracker.documentOf(editor)?.let(state::snapshot)
 
   /**
-   * UI thread. Whether [oneBasedLine] of [editor]'s document currently carries a thread annotation
-   * (the same check as the ruler left-click; the annotations follow edits, E4). `false` for an
-   * editor without a session.
+   * UI thread. The reply ids of the threads whose annotations currently sit on [oneBasedLine] of
+   * [editor]'s document; not empty exactly when the line carries a thread annotation (the ruler
+   * left-click's check). Live positions (E4): after an edit moved an annotation, its thread is
+   * found on the line it is on now, not on the line it was loaded on. Empty for an editor without
+   * a session.
    */
-  fun hasThreadAnnotationAt(editor: ITextEditor, oneBasedLine: Int): Boolean =
-    tracker.documentOf(editor)?.let { attacher.hasAnnotationAt(it, oneBasedLine) } ?: false
+  fun threadIdsAt(editor: ITextEditor, oneBasedLine: Int): List<String> =
+    tracker.documentOf(editor)?.let { attacher.threadIdsAt(it, oneBasedLine) }.orEmpty()
 
   /**
    * UI thread, from the stop hook (`GitLabEclipseStartup.shutdownJobLog`, in the same `syncExec`

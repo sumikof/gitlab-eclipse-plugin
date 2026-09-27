@@ -40,7 +40,8 @@ class ThreadAnnotationAttacher {
   private val logger by lazy { logger<ThreadAnnotationAttacher>() }
 
   private class Attachment(val parent: IAnnotationModelExtension, val subModel: AnnotationModel) {
-    var current: List<Annotation> = emptyList()
+    /** The shown annotations, in the order they were given, with their [LineAnnotation.threadIds]. */
+    var current: Map<Annotation, List<String>> = emptyMap()
   }
 
   private val attachments = HashMap<IDocument, Attachment>()
@@ -69,13 +70,20 @@ class ThreadAnnotationAttacher {
       attach(document, parent)
     }
     val added = LinkedHashMap<Annotation, Position>()
+    val threadIds = LinkedHashMap<Annotation, List<String>>()
     var skipped = 0
     for (annotation in annotations) {
       val position = linePosition(document, annotation.oneBasedLine)
-      if (position == null) skipped += 1 else added[Annotation(annotation.type, false, annotation.hoverText)] = position
+      if (position == null) {
+        skipped += 1
+      } else {
+        val shown = Annotation(annotation.type, false, annotation.hoverText)
+        added[shown] = position
+        threadIds[shown] = annotation.threadIds
+      }
     }
-    attachment.subModel.replaceAnnotations(attachment.current.toTypedArray(), added)
-    attachment.current = added.keys.toList()
+    attachment.subModel.replaceAnnotations(attachment.current.keys.toTypedArray(), added)
+    attachment.current = threadIds
     if (skipped > 0) {
       logger.warn("Inline thread annotations: $skipped of ${annotations.size} lines are outside the document.")
     }
@@ -103,9 +111,21 @@ class ThreadAnnotationAttacher {
    * True when one of [document]'s shown annotations currently sits on [oneBasedLine]. Uses the
    * live positions (E4), so a line that moved with an edit is found where it is now.
    */
-  fun hasAnnotationAt(document: IDocument, oneBasedLine: Int): Boolean {
-    val attachment = attachments[document] ?: return false
-    return attachment.current.any { annotation ->
+  fun hasAnnotationAt(document: IDocument, oneBasedLine: Int): Boolean =
+    annotationsOn(document, oneBasedLine).isNotEmpty()
+
+  /**
+   * The [LineAnnotation.threadIds] of the annotations that currently sit on [oneBasedLine] of
+   * [document], in the order the annotations were given to [replace], without duplicates. Uses the
+   * live positions (E4): after an edit moved an annotation, its ids are found on its new line and
+   * no longer on the line it was placed on. Empty when nothing is shown there.
+   */
+  fun threadIdsAt(document: IDocument, oneBasedLine: Int): List<String> =
+    annotationsOn(document, oneBasedLine).flatMap { it.value }.distinct()
+
+  private fun annotationsOn(document: IDocument, oneBasedLine: Int): List<Map.Entry<Annotation, List<String>>> {
+    val attachment = attachments[document] ?: return emptyList()
+    return attachment.current.entries.filter { (annotation, _) ->
       val position = attachment.subModel.getPosition(annotation)
       position != null && !position.isDeleted && lineOf(document, position.offset) == oneBasedLine - 1
     }

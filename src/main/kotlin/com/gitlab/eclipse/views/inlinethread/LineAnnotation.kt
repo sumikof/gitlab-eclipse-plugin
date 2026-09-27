@@ -11,5 +11,14 @@ package com.gitlab.eclipse.views.inlinethread
  *   `DefaultAnnotationHover` shows `Annotation.getText()` verbatim and its `HTML2TextReader`
  *   interprets `<` and `&` as markup (design §6.4 E5). A single line is expected: the reader
  *   collapses line breaks into spaces.
+ * @param threadIds the ids of the threads this annotation stands for, opaque to the attacher. They
+ *   stay with the live annotation while its position follows edits, so the threads of a clicked line
+ *   are looked up by these ids ([ThreadAnnotationAttacher.threadIdsAt]), never by [oneBasedLine],
+ *   which is only where the annotation was placed.
  */
-data class LineAnnotation(val oneBasedLine: Int, val type: String, val hoverText: String)
+data class LineAnnotation(
+  val oneBasedLine: Int,
+  val type: String,
+  val hoverText: String,
+  val threadIds: List<String> = emptyList(),
+)

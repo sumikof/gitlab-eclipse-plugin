@@ -132,7 +132,11 @@ class ThreadHoverTextTest : DescribeSpec({
   describe("toLineAnnotation") {
     it("maps an unresolved thread to the unresolved annotation type on its line, including line 1") {
       thread(oneBasedLine = 1, body = "top").toLineAnnotation() shouldBe
-        LineAnnotation(1, UNRESOLVED_THREAD_ANNOTATION_TYPE, "alice: top — no replies, unresolved")
+        LineAnnotation(1, UNRESOLVED_THREAD_ANNOTATION_TYPE, "alice: top — no replies, unresolved", listOf("disc-1"))
+    }
+
+    it("carries the discussion's reply id, so the live annotation knows its thread wherever it moved") {
+      thread(oneBasedLine = 4).toLineAnnotation().threadIds shouldContainExactly listOf("disc-1")
     }
 
     it("maps a resolved thread to the resolved annotation type") {

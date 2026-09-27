@@ -50,7 +50,14 @@ object MrThreadPopups {
     GitLabMrThreadWrites(apiClient, writeService, LineCommentAttempt(), logger)
   }
 
-  private class Open(val popup: InlineThreadPopup, val editor: ITextEditor, val document: IDocument?, val kind: MrPopupKind)
+  /** [threadIds]: for an [MrPopupKind.ExistingThreads] popup, the reply ids it shows (re-mapped by id on a reload). */
+  private class Open(
+    val popup: InlineThreadPopup,
+    val editor: ITextEditor,
+    val document: IDocument?,
+    val kind: MrPopupKind,
+    var threadIds: List<String>,
+  )
 
   private val open = HashMap<IWorkbenchWindow, Open>()
 
@@ -68,8 +75,10 @@ object MrThreadPopups {
   }
 
   /**
-   * UI thread. Opens (or re-activates) the popup over the threads of [oneBasedLine] in [editor]'s
-   * session. Nothing to show → one notification.
+   * UI thread. Opens (or re-activates) the popup over the threads whose annotations currently sit
+   * on [oneBasedLine] in [editor] (the clicked live line; annotations follow edits, E4), looked up
+   * in the session snapshot by reply id — never the placements loaded on that line number, which
+   * may be another thread once the text above moved. Nothing to show → one notification.
    */
   fun openThreads(editor: ITextEditor, oneBasedLine: Int) {
     if (!DiscussionGenerationRegistry.active) return
@@ -78,12 +87,13 @@ object MrThreadPopups {
       NotificationUtils.showOnUiThread(NO_SESSION_MESSAGE)
       return
     }
-    val model = MrThreadModelMapper.threadsAt(session, oneBasedLine)
+    val threadIds = ReviewSessionRegistry.threadIdsAt(editor, oneBasedLine)
+    val model = MrThreadModelMapper.threadsWithIds(session, threadIds)
     if (model == null) {
       NotificationUtils.showOnUiThread(NO_THREAD_MESSAGE)
       return
     }
-    show(editor, oneBasedLine, MrPopupKind.ExistingThreads(session), model)
+    show(editor, oneBasedLine, MrPopupKind.ExistingThreads(session), model, model.items.map { it.threadId })
   }
 
   /**
@@ -98,7 +108,7 @@ object MrThreadPopups {
       NotificationUtils.showOnUiThread(LineCommentAttempt.NO_PERMISSION_MESSAGE)
       return
     }
-    show(editor, snapshot.oneBasedLine, MrPopupKind.NewThread(snapshot), model)
+    show(editor, snapshot.oneBasedLine, MrPopupKind.NewThread(snapshot), model, emptyList())
   }
 
   /** UI thread, stop hook. Closes every popup without prompting; the count is all that is logged. */
@@ -110,7 +120,13 @@ object MrThreadPopups {
   }
 
   /** Design §9.2: one per window; a busy popup refuses the replacement; the same line is re-activated; otherwise close-with-prompt first. */
-  private fun show(editor: ITextEditor, oneBasedLine: Int, kind: MrPopupKind, model: InlineThreadModel) {
+  private fun show(
+    editor: ITextEditor,
+    oneBasedLine: Int,
+    kind: MrPopupKind,
+    model: InlineThreadModel,
+    threadIds: List<String>,
+  ) {
     val window = editor.site.workbenchWindow
     val current = open[window]?.takeIf { it.popup.isOpen }
     if (current != null) {
@@ -120,6 +136,7 @@ object MrThreadPopups {
       }
       val sameLine = current.editor === editor && current.popup.oneBasedLine == oneBasedLine
       if (sameLine && kind is MrPopupKind.ExistingThreads && current.kind is MrPopupKind.ExistingThreads) {
+        current.threadIds = threadIds
         current.popup.update(model)
         current.popup.activate()
         return
@@ -148,7 +165,7 @@ object MrThreadPopups {
       onPopupClosed = { if (open[window]?.popup === popup) open.remove(window) },
     )
     popup = InlineThreadPopup(editor, oneBasedLine, host)
-    open[window] = Open(popup, editor, document, kind)
+    open[window] = Open(popup, editor, document, kind, threadIds)
     popup.open(model)
   }
 
@@ -186,13 +203,17 @@ object MrThreadPopups {
     ReviewSessionRegistry.begin(editor, ref, identity.newPath, identity.headSha)
   }
 
-  /** A reload landed (FR-10): re-map the popups of that document; a line whose threads vanished closes (with its drafts preserved). */
+  /**
+   * A reload landed (FR-10): re-map the popups of that document by the reply ids they show (never by
+   * their anchor line, which is the clicked live line); a popup whose threads all vanished closes
+   * (with its drafts preserved).
+   */
   private fun applySnapshot(document: IDocument, snapshot: ReviewSessionSnapshot) {
     open.values.filter { it.document == document && it.popup.isOpen }.forEach { entry ->
       when (entry.kind) {
         is MrPopupKind.NewThread -> Unit
         is MrPopupKind.ExistingThreads -> {
-          val model = MrThreadModelMapper.threadsAt(snapshot, entry.popup.oneBasedLine)
+          val model = MrThreadModelMapper.threadsWithIds(snapshot, entry.threadIds)
           if (model == null) entry.popup.close() else entry.popup.update(model)
         }
       }
