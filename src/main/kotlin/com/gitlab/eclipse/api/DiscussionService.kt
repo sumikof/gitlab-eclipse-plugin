@@ -91,9 +91,18 @@ class DiscussionService(private val graphQlClient: GitLabGraphQlClient = service
      *   may comment.
      *
      * Deliberately omitted relative to the reference's field set: `author { avatarUrl name
-     * webUrl }`, `bodyHtml`, `url`, `position { diffRefs { baseSha headSha startSha } filePath }`.
-     * None of these are requested because no domain type in this PR carries them, and a smaller
-     * selection means a smaller response — this is not an oversight, do not add them back.
+     * webUrl }`, `bodyHtml`, `url`, `position { filePath }`. None of these are requested because
+     * no domain type in this PR carries them, and a smaller selection means a smaller response —
+     * this is not an oversight, do not add them back.
+     *
+     * `position { diffRefs { baseSha headSha startSha } }` IS selected (task 2, design §11.2,
+     * §12.2, G-4): unlike the fields above, a domain type now carries it
+     * ([GitLabNotePosition.diffRefs]) — a later task's `ThreadPlacement` compares an existing
+     * diff-anchored note's `diffRefs` against the current MR version's `(baseSha, headSha,
+     * startSha)` to decide whether that note's position is still current (FR-3/A2: a thread whose
+     * `diffRefs` no longer match the latest version is stale and is not annotated in the editor).
+     * This is unrelated to `createDiffNote`'s own `position`, which is built from
+     * `GitLabMrVersion`, not from an existing note's `diffRefs`.
      *
      * `$iid` is `String!`, not an integer — see [queryVariables] for the required
      * `mrIid.toString()` conversion. `$namespaceWithPath` is `ID!`.
@@ -126,6 +135,7 @@ query GetMrDiscussions(${'$'}namespaceWithPath: ID!, ${'$'}iid: String!, ${'$'}a
                 oldLine
                 newPath
                 oldPath
+                diffRefs { baseSha headSha startSha }
               }
             }
           }

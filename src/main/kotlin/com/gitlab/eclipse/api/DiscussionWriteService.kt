@@ -41,6 +41,12 @@ internal data class UpdateNoteData(val updateNote: MutationPayloadDto?)
  */
 internal data class DestroyNoteData(val destroyNote: MutationPayloadDto?)
 
+/**
+ * Raw parse target for [DiscussionWriteService.CREATE_DIFF_NOTE_MUTATION]'s `data` payload; the
+ * field name must equal the selected mutation field (`createDiffNote`).
+ */
+internal data class CreateDiffNoteData(val createDiffNote: MutationPayloadDto?)
+
 private val NOTE_GID_TAIL = Regex("""^gid://gitlab/[A-Za-z]+/(\d+)$""")
 
 /**
@@ -126,6 +132,29 @@ class DiscussionWriteService(
       WRITE_TIMEOUT,
     )
     requireNoPayloadErrors(data.updateNote)
+  }
+
+  /**
+   * Creates a diff note anchored at [position] on the issuable identified by [mrGid] (a
+   * `gid://gitlab/MergeRequest/<id>` built by [DiscussionService.mrGid]). [position] is passed
+   * through unmodified — its shape is `DiffPositionInput` (design §12.3: `baseSha`, `headSha`,
+   * `startSha`, `paths{oldPath,newPath}`, `newLine`, and `oldLine` for an unchanged line), built by
+   * a later task's `DiffPositionBuilder`; this method has no opinion on its keys.
+   */
+  fun createDiffNote(
+    connection: ConnectionSnapshot,
+    mrGid: String,
+    body: String,
+    position: Map<String, Any?>,
+  ) {
+    val data = graphQlClient.execute(
+      CREATE_DIFF_NOTE_MUTATION,
+      createDiffNoteVariables(mrGid, body, position),
+      CreateDiffNoteData::class.java,
+      connection,
+      WRITE_TIMEOUT,
+    )
+    requireNoPayloadErrors(data.createDiffNote)
   }
 
   /** Deletes the note identified by [noteGid] (a `gid://gitlab/Note/<id>`). */
@@ -269,6 +298,22 @@ mutation DeleteNote(${'$'}noteId: NoteID!) {
 }
 """
 
+    /**
+     * The `CreateDiffNote` GraphQL mutation (design §11.2). Selects `{ errors }` only, for the
+     * same reasons documented on [CREATE_NOTE_MUTATION]: success always triggers a full re-fetch,
+     * so the created note is never read back here.
+     *
+     * Evidence: design §11.2 (this project's design doc — the mutation shape, not a reference
+     * source file, since the reference does not build `DiffPositionInput` this way).
+     */
+    const val CREATE_DIFF_NOTE_MUTATION = """
+mutation CreateDiffNote(${'$'}noteableId: NoteableID!, ${'$'}body: String!, ${'$'}position: DiffPositionInput!) {
+  createDiffNote(input: { noteableId: ${'$'}noteableId, body: ${'$'}body, position: ${'$'}position }) {
+    errors
+  }
+}
+"""
+
     /** Timeout for a single write request, mirroring [DiscussionService]'s single-request cap. */
     val WRITE_TIMEOUT: Duration = Duration.ofSeconds(30)
 
@@ -331,6 +376,13 @@ mutation DeleteNote(${'$'}noteId: NoteID!) {
      */
     fun destroyNoteVariables(noteGid: String): Map<String, Any?> = mapOf(
       "noteId" to noteGid,
+    )
+
+    /** Assembles the `CreateDiffNote` variable map. [position] is passed through unmodified. */
+    fun createDiffNoteVariables(mrGid: String, body: String, position: Map<String, Any?>): Map<String, Any?> = mapOf(
+      "noteableId" to mrGid,
+      "body" to body,
+      "position" to position,
     )
   }
 }

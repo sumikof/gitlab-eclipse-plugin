@@ -3,6 +3,9 @@ package com.gitlab.eclipse.api.model
 /**
  * Where a diff note is anchored, if at all. Most notes are plain discussion notes with no
  * position; a note on a specific diff line carries [newPath]/[newLine] or [oldPath]/[oldLine].
+ * [diffRefs] (task 2) is `null` for a non-diff note and for older responses that omit it;
+ * defaulted to `null` so existing callers that construct this class positionally/by name without
+ * it keep compiling unchanged.
  */
 data class GitLabNotePosition(
   val positionType: String,
@@ -10,6 +13,7 @@ data class GitLabNotePosition(
   val oldPath: String?,
   val newLine: Int?,
   val oldLine: Int?,
+  val diffRefs: GitLabDiffRefs? = null,
 )
 
 /**
@@ -26,6 +30,7 @@ internal data class NotePositionDto(
   val oldPath: String?,
   val newLine: Int?,
   val oldLine: Int?,
+  val diffRefs: GitLabDiffRefs? = null,
 )
 
 internal fun NotePositionDto.toDomain(): GitLabNotePosition = GitLabNotePosition(
@@ -34,4 +39,5 @@ internal fun NotePositionDto.toDomain(): GitLabNotePosition = GitLabNotePosition
   oldPath = oldPath,
   newLine = newLine,
   oldLine = oldLine,
+  diffRefs = diffRefs,
 )

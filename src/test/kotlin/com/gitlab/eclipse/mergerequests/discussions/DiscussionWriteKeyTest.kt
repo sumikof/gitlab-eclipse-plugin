@@ -93,5 +93,20 @@ class DiscussionWriteKeyTest : DescribeSpec({
       ci shouldNotBe discussion
       discussion shouldNotBe ci
     }
+
+    it("forEditorLine builds an empty-scoped key from the file path and 1-based line") {
+      val key = DiscussionWriteKey.forEditorLine("/w/a.kt", 1)
+
+      key.instanceUrl shouldBe ""
+      key.authFingerprint shouldBe ""
+      key.targetKind shouldBe "editorLine"
+      key.targetId shouldBe "/w/a.kt:1"
+    }
+
+    it("forEditorLine gives different keys for different lines in the same file") {
+      val line1 = DiscussionWriteKey.forEditorLine("/w/a.kt", 1)
+      val line2 = DiscussionWriteKey.forEditorLine("/w/a.kt", 2)
+      line1 shouldNotBe line2
+    }
   }
 })

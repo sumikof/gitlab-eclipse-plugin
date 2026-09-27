@@ -1,7 +1,10 @@
 package com.gitlab.eclipse.api
 
+import com.gitlab.eclipse.api.model.GitLabDiffRefs
+import com.gitlab.eclipse.api.model.toDomain
 import com.google.gson.Gson
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
@@ -92,13 +95,18 @@ class DiscussionServiceTest : DescribeSpec({
       DiscussionService.GET_MR_DISCUSSIONS_QUERY.contains("discussions(after: \$afterCursor)") shouldBe true
     }
 
-    it("does not request bodyHtml, avatarUrl, diffRefs, or filePath") {
+    it("does not request bodyHtml, avatarUrl, or filePath") {
       val query = DiscussionService.GET_MR_DISCUSSIONS_QUERY
 
       query.contains("bodyHtml") shouldBe false
       query.contains("avatarUrl") shouldBe false
-      query.contains("diffRefs") shouldBe false
       query.contains("filePath") shouldBe false
+    }
+
+    it("requests position { diffRefs { baseSha headSha startSha } } (task 2)") {
+      DiscussionService.GET_MR_DISCUSSIONS_QUERY.contains(
+        "diffRefs { baseSha headSha startSha }",
+      ) shouldBe true
     }
   }
 
@@ -164,6 +172,49 @@ class DiscussionServiceTest : DescribeSpec({
       val data = gson.fromJson(json, DiscussionsQueryData::class.java)
 
       data.project shouldBe ProjectDto(id = "gid://gitlab/Project/1", mergeRequest = null)
+    }
+  }
+
+  describe("Note.position.diffRefs (task 2)") {
+    fun noteJson(positionJson: String) = """
+      {
+        "project": {
+          "mergeRequest": {
+            "discussions": {
+              "nodes": [
+                {
+                  "replyId": "reply-1",
+                  "notes": {
+                    "nodes": [
+                      { "id": "note-1", "position": $positionJson }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    """.trimIndent()
+
+    fun parsedPosition(positionJson: String) = gson.fromJson(noteJson(positionJson), DiscussionsQueryData::class.java)
+      .project?.mergeRequest?.discussions?.nodes?.get(0)?.notes?.nodes?.get(0)?.toDomain()?.position
+
+    it("parses diffRefs into GitLabNotePosition.diffRefs when the field is present") {
+      val position = parsedPosition(
+        """{
+          "positionType": "text", "newPath": "a.txt", "oldPath": "a.txt", "newLine": 5, "oldLine": 5,
+          "diffRefs": { "baseSha": "base-1", "headSha": "head-1", "startSha": "start-1" }
+        }""",
+      )
+
+      position?.diffRefs shouldBe GitLabDiffRefs(baseSha = "base-1", headSha = "head-1", startSha = "start-1")
+    }
+
+    it("leaves GitLabNotePosition.diffRefs null when the position has no diffRefs field") {
+      val position = parsedPosition("""{"positionType": "text"}""")
+
+      position?.diffRefs.shouldBeNull()
     }
   }
 })

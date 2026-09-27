@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mergerequests
 
+import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.ProjectDetailService
 import com.gitlab.eclipse.api.model.GitLabIssue
@@ -168,5 +169,29 @@ class CurrentBranchMrLookupTest : DescribeSpec({
       result shouldBe CurrentBranchInfo(theMr, listOf(issue))
       verify(exactly = 1) { mrService.getClosesIssues("777", theMr.iid) }
     }
+
+    it("passes the same non-null connection to getProject, findOpenMrsForBranch, and getClosesIssues") {
+      val conn = ConnectionSnapshot(
+        instanceUrl = "https://gitlab.example.com",
+        token = "tok-1",
+        authFingerprint = "fp-1",
+        configGeneration = 1L,
+      )
+      val theMr = mr()
+      every { projectDetail.getProject(ENCODED_PROJECT_ID, conn) } returns GitLabProject(id = REPO_PROJECT_ID)
+      every { mrService.findOpenMrsForBranch("feature", conn) } returns listOf(theMr)
+      every { mrService.getClosesIssues(REPO_PROJECT_ID.toString(), theMr.iid, conn) } returns emptyList()
+
+      lookup().lookup(context(), branch(), conn)
+
+      verify(exactly = 1) { projectDetail.getProject(ENCODED_PROJECT_ID, conn) }
+      verify(exactly = 1) { mrService.findOpenMrsForBranch("feature", conn) }
+      verify(exactly = 1) { mrService.getClosesIssues(REPO_PROJECT_ID.toString(), theMr.iid, conn) }
+    }
+
+    // Every other test in this describe block calls lookup() without a connection argument, so
+    // the default null is exercised implicitly by the whole file and must keep matching the
+    // beforeEach getProject(ENCODED_PROJECT_ID) stub (no connection arg) unchanged — that is the
+    // "existing tests pass unmodified" requirement for the null default.
   }
 })
