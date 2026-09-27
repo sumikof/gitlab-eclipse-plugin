@@ -14,7 +14,12 @@ sealed interface NewLineKind {
  * unified-diff hunks (GitLab REST `diffs[].diff`). See [classify].
  */
 sealed interface DiffLineMap {
-  /** No line mapping is available (e.g. the diff is too large or was collapsed). */
+  /**
+   * No line mapping is available: the diff is too large or was collapsed, contains no hunk
+   * header at all (e.g. a binary-file notice), or contains a hunk body line this parser cannot
+   * interpret (fail-safe: an unparseable line invalidates the whole file rather than silently
+   * shifting later lines).
+   */
   object Unavailable : DiffLineMap
 
   /** A pure rename with identical content: every new-file line maps 1:1 to the same old-file line. */
@@ -34,16 +39,18 @@ sealed interface DiffLineMap {
     fun parse(diff: String): DiffLineMap {
       val lines = diff.split("\n")
       val headerLineIndices = lines.indices.filter { isHunkHeaderLine(lines[it]) }
+      if (headerLineIndices.isEmpty()) return Unavailable
       val hunks = headerLineIndices.mapIndexed { i, headerIndex ->
         val bodyEnd = headerLineIndices.getOrElse(i + 1) { lines.size }
-        parseHunk(lines[headerIndex], lines.subList(headerIndex + 1, bodyEnd))
+        parseHunk(lines[headerIndex], lines.subList(headerIndex + 1, bodyEnd)) ?: return Unavailable
       }
       return Parsed(hunks)
     }
 
     private fun isHunkHeaderLine(line: String) = HUNK_HEADER.find(line)?.range?.first == 0
 
-    private fun parseHunk(header: String, body: List<String>): Hunk {
+    /** Returns null if [body] contains a line this parser cannot interpret. */
+    private fun parseHunk(header: String, body: List<String>): Hunk? {
       val match = requireNotNull(HUNK_HEADER.find(header)) { "not a hunk header: $header" }
       val oldStart = match.groupValues[1].toInt()
       val newStart = match.groupValues[2].toInt()
@@ -63,7 +70,7 @@ sealed interface DiffLineMap {
             oldLine++
             oldLineCount++
           }
-          else -> Unit // ignore malformed lines rather than fail the whole parse
+          else -> return null // unrecognized prefix: fail-safe, never silently miscount
         }
       }
       return Hunk(oldStart, newStart, entries, oldLineCount)
@@ -74,10 +81,19 @@ sealed interface DiffLineMap {
 /**
  * One parsed hunk: [entries] are this hunk's new-file lines in order, starting at [newStart].
  * [oldLineCount] is the number of old-file lines the hunk consumes (unchanged + removed).
+ *
+ * Zero-count sides follow git's unified-diff convention: a `,0` range's header start is the line
+ * BEFORE the (empty) range, not the first line in it (e.g. `@@ -5,3 +4,0 @@` deletes old lines
+ * 5-7 immediately after new line 4; `@@ -0,0 +1,3 @@` inserts at the very start of a new file).
+ * So when [entries] is empty, the hunk's first new line is one past [headerNewStart]; when
+ * [oldLineCount] is zero, the hunk's last old line is exactly [headerOldStart] (not one before
+ * it).
  */
-internal class Hunk(oldStart: Int, val newStart: Int, val entries: List<NewLineKind>, oldLineCount: Int) {
-  private val oldEnd: Int = oldStart + oldLineCount - 1
+internal class Hunk(headerOldStart: Int, headerNewStart: Int, val entries: List<NewLineKind>, oldLineCount: Int) {
+  val newStart: Int = if (entries.isEmpty()) headerNewStart + 1 else headerNewStart
   val newEnd: Int = newStart + entries.size - 1
+  private val oldStart: Int = if (oldLineCount == 0) headerOldStart + 1 else headerOldStart
+  private val oldEnd: Int = oldStart + oldLineCount - 1
 
   /** The cumulative new-vs-old line-number offset in effect immediately after this hunk. */
   val delta: Int = newEnd - oldEnd

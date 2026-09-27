@@ -9,9 +9,9 @@ private fun diffOf(vararg lines: String) = lines.joinToString("\n")
 class DiffLineMapTest : DescribeSpec({
   describe("DiffLineMap.parse / classify") {
 
-    describe("a single modified hunk (@@ -3,4 +3,5 @@)") {
+    describe("a single modified hunk (@@ -3,3 +3,4 @@)") {
       val diff = diffOf(
-        "@@ -3,4 +3,5 @@",
+        "@@ -3,3 +3,4 @@",
         " ctxA",
         "-removed1",
         "+added1",
@@ -38,13 +38,13 @@ class DiffLineMapTest : DescribeSpec({
 
     describe("multiple hunks") {
       val diff = diffOf(
-        "@@ -3,4 +3,5 @@",
+        "@@ -3,3 +3,4 @@",
         " ctxA",
         "-removed1",
         "+added1",
         "+added2",
         " ctxB",
-        "@@ -20,2 +21,2 @@",
+        "@@ -20,1 +21,2 @@",
         " ctxC",
         "+added3",
       )
@@ -59,14 +59,18 @@ class DiffLineMapTest : DescribeSpec({
       }
     }
 
-    describe("a deletion-only hunk (+c,0)") {
+    describe("a deletion-only hunk (@@ -5,3 +4,0 @@): git's zero-count start is the line BEFORE the empty range") {
       val diff = diffOf(
-        "@@ -5,3 +5,0 @@",
+        "@@ -5,3 +4,0 @@",
         "-del1",
         "-del2",
         "-del3",
       )
       val map = DiffLineMap.parse(diff)
+
+      it("classifies the last unaffected line before the deletion as itself") {
+        map.classify(4) shouldBe NewLineKind.Unchanged(4)
+      }
 
       it("classifies the line right after the deletion with a negative offset") {
         map.classify(5) shouldBe NewLineKind.Unchanged(8)
@@ -90,19 +94,25 @@ class DiffLineMapTest : DescribeSpec({
       }
     }
 
-    describe("a diff ending with '\\ No newline at end of file'") {
+    describe("a hunk whose OLD side lacked a trailing newline") {
+      // Git emits the marker right after the line it describes: here the removed old line,
+      // since it was the old file's last line and had no trailing newline.
       val diff = diffOf(
         "@@ -1,2 +1,2 @@",
         " first",
         "-second",
-        "+second-modified",
         "\\ No newline at end of file",
+        "+second-modified",
       )
       val map = DiffLineMap.parse(diff)
 
-      it("does not count the marker line, so the last real line classifies correctly") {
+      it("does not count the marker line towards the hunk's line counts") {
         map.classify(1) shouldBe NewLineKind.Unchanged(1)
         map.classify(2) shouldBe NewLineKind.Added
+      }
+
+      it("classifies a line after the hunk with a zero offset (a miscounted marker would shift this)") {
+        map.classify(3) shouldBe NewLineKind.Unchanged(3)
       }
     }
 
@@ -120,7 +130,7 @@ class DiffLineMapTest : DescribeSpec({
 
     describe("out-of-range line numbers") {
       val diff = diffOf(
-        "@@ -3,4 +3,5 @@",
+        "@@ -3,3 +3,4 @@",
         " ctxA",
         "-removed1",
         "+added1",
@@ -135,6 +145,25 @@ class DiffLineMapTest : DescribeSpec({
 
       it("throws IllegalArgumentException for a negative line") {
         shouldThrow<IllegalArgumentException> { map.classify(-1) }
+      }
+    }
+
+    describe("a non-empty diff body with no hunk header (e.g. a binary-file notice)") {
+      it("parses to Unavailable, not an empty Parsed") {
+        val diff = diffOf("Binary files a/x and b/x differ")
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
+      }
+    }
+
+    describe("a hunk body line with an unrecognized prefix") {
+      it("fails the whole file to Unavailable instead of silently miscounting later lines") {
+        val diff = diffOf(
+          "@@ -1,2 +1,2 @@",
+          " first",
+          "?garbled",
+          "+second",
+        )
+        DiffLineMap.parse(diff) shouldBe DiffLineMap.Unavailable
       }
     }
 
