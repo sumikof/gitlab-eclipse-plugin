@@ -75,8 +75,10 @@ private class HandlerFixture {
   }
   var ruleHeldAtPost: ISchedulingRule? = null
   val opened = mutableListOf<IFile>()
-  var openEditor: (IFile) -> Boolean = {
-    opened += it
+  val openedWindows = mutableListOf<IWorkbenchWindow>()
+  var openEditor: (IWorkbenchWindow, IFile) -> Boolean = { window, file ->
+    openedWindows += window
+    opened += file
     true
   }
   val notices = mutableListOf<String>()
@@ -113,7 +115,7 @@ private class HandlerFixture {
       runInUI(runnable, rule)
     },
     ownership = ownership,
-    openEditor = { openEditor(it) },
+    openEditor = { window, file -> openEditor(window, file) },
     localCodeSuggestionsEnabled = { localEnabled },
     engagedCheckIds = { engagedChecks },
     notify = { notices += it },
@@ -616,7 +618,7 @@ class DuoTutorialHandlerTest : DescribeSpec({
       val logged = captureLog()
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
-      f.openEditor = { throw PartInitException("no editor for /ws/GitLab Duo Tutorial/duo_tutorial.js") }
+      f.openEditor = { _, _ -> throw PartInitException("no editor for /ws/GitLab Duo Tutorial/duo_tutorial.js") }
 
       f.execute()
       f.runScheduled()
@@ -633,7 +635,7 @@ class DuoTutorialHandlerTest : DescribeSpec({
     it("no active page (open returned false) is reported as a failure too") {
       val f = HandlerFixture()
       f.ws.ownedProject("id-1", fileExists = true)
-      f.openEditor = { false }
+      f.openEditor = { _, _ -> false }
 
       f.execute()
       f.runScheduled()
@@ -691,6 +693,37 @@ class DuoTutorialHandlerTest : DescribeSpec({
       f.runInUIWindows.shouldBeEmpty()
       f.opened.shouldBeEmpty()
       f.notices shouldContainExactly listOf(OPEN_FAILED_TEXT)
+    }
+
+    it("opens the editor with the event's window, not the window the workbench happens to have active later") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      // Focus moves to a different window while the workspace job runs; captured at execute() time,
+      // f.window must still be what the editor opens in.
+      val laterActiveWindow: IWorkbenchWindow = mockk()
+
+      f.execute()
+      f.runScheduled()
+      f.activeWindow = laterActiveWindow
+      f.drainUi()
+
+      f.openedWindows shouldContainExactly listOf(f.window)
+      f.runInUIWindows shouldContainExactly listOf(f.window)
+    }
+
+    it("no window on the event: the editor opens with the same fallback window used for runInUI") {
+      val f = HandlerFixture()
+      f.ws.ownedProject("id-1", fileExists = true)
+      f.activeWindow = null
+      val fallback: IWorkbenchWindow = mockk()
+      f.fallbackWindow = { fallback }
+
+      f.execute()
+      f.runScheduled()
+      f.drainUi()
+
+      f.openedWindows shouldContainExactly listOf(fallback)
+      f.runInUIWindows shouldContainExactly listOf(fallback)
     }
 
     it("the fallback read throwing (workbench closed) is contained: a failure notice, class name only") {

@@ -42,7 +42,7 @@ class DuoTutorialEditorOpener(
   private val runInUI: (IWorkbenchWindow, IRunnableWithProgress, ISchedulingRule) -> Unit =
     ::runInUIWithProgressService,
   private val ownership: DuoTutorialOwnership = DuoTutorialOwnership(),
-  private val openEditor: (IFile) -> Boolean = ::openTutorialInActiveEditor,
+  private val openEditor: (IWorkbenchWindow, IFile) -> Boolean = ::openTutorialInActiveEditor,
   private val localCodeSuggestionsEnabled: () -> Boolean = {
     service<ScopedPreferenceStore>().getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED)
   },
@@ -78,7 +78,7 @@ class DuoTutorialEditorOpener(
         notify(DuoTutorialMessages.OPEN_FAILED)
         return
       }
-      runInUI(target, IRunnableWithProgress { verifyAndOpen(file) }, file.workspace.root)
+      runInUI(target, IRunnableWithProgress { verifyAndOpen(target, file) }, file.workspace.root)
     } catch (e: InterruptedException) {
       logger.info("$LOG_PREFIX cancelled while waiting for the workspace: ${e.javaClass.name}")
     } catch (e: Exception) {
@@ -88,8 +88,14 @@ class DuoTutorialEditorOpener(
     }
   }
 
-  /** Inside `runInUI`, holding the root rule. Exceptions propagate to [openOnUiThread]'s catch. */
-  private fun verifyAndOpen(file: IFile) {
+  /**
+   * Inside `runInUI`, holding the root rule. Exceptions propagate to [openOnUiThread]'s catch.
+   *
+   * [window] is the same window [openOnUiThread] resolved and handed to `runInUI` — the editor
+   * must open in it, not in whatever window the workbench happens to consider active by the time
+   * this runs (round 25 P2: focus can move to another window while the workspace job is pending).
+   */
+  private fun verifyAndOpen(window: IWorkbenchWindow, file: IFile) {
     val project = file.project
     val refusal = when {
       !project.exists() -> DuoTutorialMessages.TUTORIAL_CHANGED
@@ -103,7 +109,7 @@ class DuoTutorialEditorOpener(
       notify(refusal)
       return
     }
-    if (!openEditor(file)) {
+    if (!openEditor(window, file)) {
       logger.error("$LOG_PREFIX no active workbench page")
       notify(DuoTutorialMessages.OPEN_FAILED)
       return
@@ -125,6 +131,11 @@ private fun runInUIWithProgressService(
   window.workbench.progressService.runInUI(window, runnable, rule)
 }
 
-/** Production default. UI thread only; false when there is no active page. */
-private fun openTutorialInActiveEditor(file: IFile): Boolean =
-  openInActiveEditor(workspaceFile = { file }, fileStore = { null })
+/**
+ * Production default. UI thread only; false when [window] has no active page.
+ *
+ * Passes [window]'s own page explicitly rather than [openInActiveEditor]'s default, which resolves
+ * the workbench's globally active window again — not necessarily [window].
+ */
+private fun openTutorialInActiveEditor(window: IWorkbenchWindow, file: IFile): Boolean =
+  openInActiveEditor(workspaceFile = { file }, fileStore = { null }, activePage = { window.activePage })
