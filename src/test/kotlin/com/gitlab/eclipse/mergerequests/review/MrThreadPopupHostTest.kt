@@ -104,7 +104,12 @@ private class FakeWrites : MrThreadWrites {
   }
 }
 
-private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnapshot? = { null }) {
+private class HostHarness(
+  kind: MrPopupKind,
+  sessionNow: () -> ReviewSessionSnapshot? = { null },
+  /** When set, wired the way `MrThreadPopups.show` wires it: its flag gates attempts, onClosed disposes it. */
+  tracker: NewThreadEditTracker? = null,
+) {
   val writes = FakeWrites()
   val notifies = mutableListOf<String>()
   val retries = mutableListOf<Triple<String, String, (String) -> Unit>>()
@@ -153,13 +158,16 @@ private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnap
     reloadSidebar = { sidebarReloads += it },
     preserveDraft = { preserved += it },
     log = { hostLogs += it },
-    onPopupClosed = { closedCalls++ },
+    onPopupClosed = {
+      tracker?.dispose()
+      closedCalls++
+    },
     newThreadStale = { snapshot ->
       staleChecks += snapshot
       stale
     },
     notify = { hostNotifies += it },
-    newThreadEdited = { edited },
+    newThreadEdited = { tracker?.edited ?: edited },
   )
 
   fun allLogs() = launcherLogs + hostLogs
@@ -324,6 +332,23 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
       s.isOpen shouldBe true
       s.state.draft(NEW_THREAD_ID) shouldBe BODY
+    }
+
+    it("refuses a [Retry] once the popup was closed after a Definite failure (Codex r5, fail closed)") {
+      val tracker = NewThreadEditTracker(org.eclipse.jface.text.Document("text\n")).also { it.install() }
+      val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT), sessionNow = { SESSION }, tracker = tracker)
+      h.writes.outcome = DiscussionWriteOutcome.Definite(RuntimeException("no"))
+      val s = FakeSurface(NEW_MODEL)
+      s.type(NEW_THREAD_ID, BODY)
+
+      h.host.onSubmit(s, s.submit())
+      val (_, _, onRetry) = h.retries.single()
+      h.host.onClosed()
+      h.writes.outcome = DiscussionWriteOutcome.Success
+      onRetry(BODY)
+
+      h.writes.creates shouldHaveSize 1
+      h.copyTexts shouldContainExactly listOf(MrThreadPopupHost.FILE_CHANGED_MESSAGE to BODY)
     }
 
     it("lets a [Retry] proceed when the editor is unchanged (Codex r5)") {

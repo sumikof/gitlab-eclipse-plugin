@@ -122,8 +122,9 @@ class GitLabMrThreadWrites(
  * @param notify the fixed notification of a refused launch.
  * @param newThreadEdited background, at the start of **every** new-thread attempt — the first
  *   send and each `[Retry]` re-entry, which never passes through [onSubmit] (Codex r5): whether
- *   the popup's editor document changed since the popup opened ([NewThreadEditTracker.edited]).
- *   `true` refuses the attempt with [FILE_CHANGED_MESSAGE] before anything is sent.
+ *   the popup's editor document changed since the popup opened, or the popup is closed
+ *   ([NewThreadEditTracker.edited], fail closed). `true` refuses the attempt with
+ *   [FILE_CHANGED_MESSAGE] before anything is sent.
  */
 class MrThreadPopupHost(
   private val kind: MrPopupKind,

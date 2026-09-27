@@ -40,15 +40,14 @@ class NewThreadEditTrackerTest : DescribeSpec({
       tracker.edited shouldBe true
     }
 
-    it("removes its listener on dispose (idempotent), and later edits no longer reach it") {
+    it("removes its listener on dispose (idempotent) and reports edited from then on (fail closed)") {
       val document = CountingDocument("a\nb\nc\n")
       val tracker = NewThreadEditTracker(document).also { it.install() }
 
       tracker.dispose()
       tracker.dispose()
       document.listeners shouldBe 0
-      document.replace(0, 0, "new\n")
-      tracker.edited shouldBe false
+      tracker.edited shouldBe true
     }
 
     it("without a document installs nothing and reports unedited (the submit-time check refuses then)") {
@@ -56,6 +55,7 @@ class NewThreadEditTrackerTest : DescribeSpec({
 
       tracker.edited shouldBe false
       tracker.dispose()
+      tracker.edited shouldBe true
     }
   }
 })

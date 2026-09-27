@@ -15,7 +15,9 @@ import org.eclipse.jface.text.IDocumentListener
  * listener fires on the thread that changes the document (the UI thread for an editor), and
  * [edited] is read by the background write, hence `@Volatile`. The flag never resets: an edit
  * undone back to the frozen text still refuses the retry (conservative; the user starts the
- * comment again from the line). After [dispose] the flag keeps its last value. SWT-free.
+ * comment again from the line). [dispose] sets it too (fail closed): once the popup is closed its
+ * document is no longer followed, so a later `[Retry]` (the popup or editor is gone) is refused.
+ * SWT-free.
  */
 class NewThreadEditTracker(private val document: IDocument?) {
   @Volatile
@@ -41,8 +43,9 @@ class NewThreadEditTracker(private val document: IDocument?) {
     installed = true
   }
 
-  /** UI thread, on every close path of the popup. Idempotent. */
+  /** UI thread, on every close path of the popup. Idempotent; from here on [edited] is `true`. */
   fun dispose() {
+    edited = true
     if (!installed) return
     installed = false
     document?.removeDocumentListener(listener)
