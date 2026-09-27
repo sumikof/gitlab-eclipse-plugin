@@ -74,4 +74,51 @@ class ThreadAnnotationAttacherTest : DescribeSpec({
       doc.attacher.threadIdsAt(doc.document, 3).shouldBeEmpty()
     }
   }
+
+  describe("ThreadAnnotationAttacher.replace keeps the live line of a known thread (Codex r4)") {
+
+    it("a refresh with the server's line keeps a moved thread where the edit put it") {
+      val doc = AttachedDocument()
+      doc.show(LineAnnotation(3, TYPE, "a", listOf("A")))
+      doc.insertLinesAtTop(2)
+      doc.attacher.threadIdsAt(doc.document, 5) shouldContainExactly listOf("A")
+
+      doc.show(LineAnnotation(3, TYPE, "a refreshed", listOf("A")))
+
+      doc.attacher.threadIdsAt(doc.document, 5) shouldContainExactly listOf("A")
+      doc.attacher.threadIdsAt(doc.document, 3).shouldBeEmpty()
+    }
+
+    it("a brand-new thread id is placed on the server's line, next to a kept one") {
+      val doc = AttachedDocument()
+      doc.show(LineAnnotation(3, TYPE, "a", listOf("A")))
+      doc.insertLinesAtTop(2)
+
+      doc.show(LineAnnotation(3, TYPE, "a", listOf("A")), LineAnnotation(3, TYPE, "n", listOf("N")))
+
+      doc.attacher.threadIdsAt(doc.document, 5) shouldContainExactly listOf("A")
+      doc.attacher.threadIdsAt(doc.document, 3) shouldContainExactly listOf("N")
+    }
+
+    it("an annotation sharing one id with a moved one follows that live line") {
+      val doc = AttachedDocument()
+      doc.show(LineAnnotation(4, TYPE, "a", listOf("A")))
+      doc.insertLinesAtTop(1)
+
+      doc.show(LineAnnotation(4, TYPE, "ab", listOf("B", "A")))
+
+      doc.attacher.threadIdsAt(doc.document, 5) shouldContainExactly listOf("B", "A")
+    }
+
+    it("after a detach the server's line is used again") {
+      val doc = AttachedDocument()
+      doc.show(LineAnnotation(3, TYPE, "a", listOf("A")))
+      doc.insertLinesAtTop(2)
+      doc.attacher.detach(doc.document)
+
+      doc.show(LineAnnotation(3, TYPE, "a", listOf("A")))
+
+      doc.attacher.threadIdsAt(doc.document, 3) shouldContainExactly listOf("A")
+    }
+  }
 })

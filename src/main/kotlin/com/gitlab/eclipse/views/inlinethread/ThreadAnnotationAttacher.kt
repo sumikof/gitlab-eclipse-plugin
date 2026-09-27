@@ -52,6 +52,12 @@ class ThreadAnnotationAttacher {
    * `false`, after logging one line, when [annotationModel] cannot host a sub-model — the caller
    * keeps its session (design §8.2: commenting still works, only the display is given up).
    * Annotations whose line is outside the document are skipped and counted in the log.
+   *
+   * An annotation sharing a [LineAnnotation.threadIds] entry with one already shown here is placed
+   * on that shown annotation's **live** line instead of [LineAnnotation.oneBasedLine] (Codex r4):
+   * the given lines are the server's, while the shown positions have followed unsaved edits (E4),
+   * so a refresh after a reply or resolve must not move a known thread back to the loaded line
+   * number. Ids not shown before use the given line.
    */
   fun replace(
     document: IDocument,
@@ -69,11 +75,13 @@ class ThreadAnnotationAttacher {
       detach(document)
       attach(document, parent)
     }
+    val liveLines = liveLinesByThreadId(document, attachment)
     val added = LinkedHashMap<Annotation, Position>()
     val threadIds = LinkedHashMap<Annotation, List<String>>()
     var skipped = 0
     for (annotation in annotations) {
-      val position = linePosition(document, annotation.oneBasedLine)
+      val oneBasedLine = annotation.threadIds.firstNotNullOfOrNull { liveLines[it] } ?: annotation.oneBasedLine
+      val position = linePosition(document, oneBasedLine)
       if (position == null) {
         skipped += 1
       } else {
@@ -129,6 +137,17 @@ class ThreadAnnotationAttacher {
       val position = attachment.subModel.getPosition(annotation)
       position != null && !position.isDeleted && lineOf(document, position.offset) == oneBasedLine - 1
     }
+  }
+
+  /** The live 1-based line of every thread id currently shown for [document]; the first shown annotation wins. */
+  private fun liveLinesByThreadId(document: IDocument, attachment: Attachment): Map<String, Int> {
+    val lines = HashMap<String, Int>()
+    for ((annotation, ids) in attachment.current) {
+      val position = attachment.subModel.getPosition(annotation)?.takeUnless { it.isDeleted }
+      val zeroBasedLine = if (position == null) -1 else lineOf(document, position.offset)
+      if (zeroBasedLine >= 0) ids.forEach { id -> lines.putIfAbsent(id, zeroBasedLine + 1) }
+    }
+    return lines
   }
 
   private fun attach(document: IDocument, parent: IAnnotationModelExtension): Attachment {
