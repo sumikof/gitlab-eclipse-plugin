@@ -115,6 +115,11 @@ class GitLabMrThreadWrites(
  *   document has none (`ReviewSessionRegistry.refresh` → `begin`).
  * @param reloadSidebar the existing `reloadDiscussionsFor` for the identity's MR (its outcome is not awaited).
  * @param preserveDraft the copy-text dialog for one unsent draft when the popup closes (§29 #22).
+ * @param newThreadStale UI thread, at a new-thread submit before the launch (Codex r4): whether
+ *   the popup's editor no longer holds the frozen snapshot (dirty, or its text differs), read off
+ *   the live editor ([newThreadSnapshotStale]). The popup is non-modal, so the editor may have been
+ *   edited since UI turn 1; the send-time body-identity gate compares only the file on disk.
+ * @param notify the fixed notification of a refused launch.
  */
 class MrThreadPopupHost(
   private val kind: MrPopupKind,
@@ -128,10 +133,20 @@ class MrThreadPopupHost(
   private val preserveDraft: (String) -> Unit,
   private val log: (String) -> Unit,
   private val onPopupClosed: () -> Unit = {},
+  private val newThreadStale: (LineSnapshot) -> Boolean = { false },
+  private val notify: (String) -> Unit = {},
 ) : InlineThreadHost {
 
   /** UI thread. [ticket] was frozen by the popup's `beginSubmit`; busy is released on every path from here. */
   override fun onSubmit(surface: InlineThreadSurface, ticket: SubmitTicket) {
+    if (ticket.threadId == NEW_THREAD_ID && kind is MrPopupKind.NewThread && newThreadStale(kind.snapshot)) {
+      // Codex r4: the frozen line no longer matches what the user sees; nothing is launched and the draft stays.
+      log("threadPopup submit refused: the editor changed after the popup opened.")
+      notify(FILE_CHANGED_MESSAGE)
+      surface.state.onLaunchRejected(ticket)
+      surface.refresh()
+      return
+    }
     val launch = launchFor(ticket)
     if (launch == null) {
       log("threadPopup submit refused: ticket does not match the popup kind.")
@@ -288,4 +303,10 @@ class MrThreadPopupHost(
 
   private fun keyFor(session: ReviewSessionSnapshot, replyId: String) =
     DiscussionWriteKey.forDiscussion(session.identity.instanceUrl, session.identity.authFingerprint, replyId)
+
+  companion object {
+    /** Fixed text, no path or body (design §19). */
+    const val FILE_CHANGED_MESSAGE =
+      "The file changed after you started this comment. Save or undo your changes, then start the comment again from the line."
+  }
 }

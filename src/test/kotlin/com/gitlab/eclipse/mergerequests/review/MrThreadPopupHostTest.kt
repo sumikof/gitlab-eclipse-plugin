@@ -119,6 +119,9 @@ private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnap
   var closedCalls = 0
   var runOnUi: (() -> Unit) -> Unit = { it() }
   var refreshSession: (SessionIdentity, MergeRequestRef) -> Unit = { i, r -> refreshed += i to r }
+  var stale = false
+  val staleChecks = mutableListOf<LineSnapshot>()
+  val hostNotifies = mutableListOf<String>()
 
   val host = MrThreadPopupHost(
     kind = kind,
@@ -150,6 +153,11 @@ private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnap
     preserveDraft = { preserved += it },
     log = { hostLogs += it },
     onPopupClosed = { closedCalls++ },
+    newThreadStale = { snapshot ->
+      staleChecks += snapshot
+      stale
+    },
+    notify = { hostNotifies += it },
   )
 
   fun allLogs() = launcherLogs + hostLogs
@@ -253,6 +261,41 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
       s.state.draft(NEW_THREAD_ID) shouldBe BODY
       s.isOpen shouldBe true
+    }
+
+    it("refuses to launch once the editor changed (Codex r4): busy released, draft kept, one notification") {
+      val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT), sessionNow = { SESSION })
+      h.stale = true
+      val s = FakeSurface(NEW_MODEL)
+      s.type(NEW_THREAD_ID, BODY)
+
+      h.host.onSubmit(s, s.submit())
+
+      h.staleChecks shouldContainExactly listOf(SNAPSHOT)
+      h.writes.creates.shouldBeEmpty()
+      h.hostNotifies shouldContainExactly listOf(MrThreadPopupHost.FILE_CHANGED_MESSAGE)
+      h.reloadOutcomes.shouldBeEmpty()
+      s.state.busy shouldBe false
+      s.state.draft(NEW_THREAD_ID) shouldBe BODY
+      s.isOpen shouldBe true
+      h.allLogs().forEach { it shouldNotContain BODY }
+      // The same unedited draft can be sent again once the editor matches (no ticket consumed).
+      h.stale = false
+      h.host.onSubmit(s, s.submit())
+      h.writes.creates shouldHaveSize 1
+    }
+
+    it("does not check the editor for a reply (not line-anchored)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      h.stale = true
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+
+      h.host.onSubmit(s, s.submit())
+
+      h.staleChecks.shouldBeEmpty()
+      h.hostNotifies.shouldBeEmpty()
+      h.writes.replies shouldHaveSize 1
     }
 
     it("refuses a NEW ticket on an existing-threads host without launching anything") {

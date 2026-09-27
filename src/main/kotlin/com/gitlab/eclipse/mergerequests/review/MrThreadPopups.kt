@@ -165,6 +165,11 @@ object MrThreadPopups {
       preserveDraft = { draft -> showCopyTextDialog(window, DIALOG_TITLE, UNSENT_DRAFT_MESSAGE, draft) },
       log = { message -> logger.info(message) },
       onPopupClosed = { if (open[window]?.popup === popup) open.remove(window) },
+      newThreadStale = { snapshot ->
+        val liveDocument = editor.editorInput?.let { editor.documentProvider?.getDocument(it) }
+        newThreadSnapshotStale(snapshot, editor.isDirty, liveDocument?.get())
+      },
+      notify = { message -> NotificationUtils.showOnUiThread(message) },
     )
     popup = InlineThreadPopup(editor, oneBasedLine, host)
     open[window] = Open(popup, editor, document, kind, threadIds)
@@ -272,3 +277,14 @@ internal fun editorStillShows(
   currentDocument: Any?,
 ): Boolean = alive && openedInput != null && openedDocument != null &&
   currentInput == openedInput && currentDocument === openedDocument
+
+/**
+ * Whether a new-thread popup's frozen [snapshot] no longer matches its editor at send time
+ * (Codex r4): the editor is [dirty], or its live document text ([liveText], `null` without a
+ * document) differs from the text frozen in UI turn 1. The popup is non-modal, so the user may have
+ * edited (and even undone back to the on-disk text) meanwhile; the send-time body-identity gate
+ * compares only the file on disk, so this is the check that the line number still means what the
+ * user sees. SWT-free.
+ */
+internal fun newThreadSnapshotStale(snapshot: LineSnapshot, dirty: Boolean, liveText: String?): Boolean =
+  dirty || liveText != snapshot.documentText
