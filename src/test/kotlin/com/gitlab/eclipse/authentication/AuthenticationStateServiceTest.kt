@@ -2,6 +2,7 @@ package com.gitlab.eclipse.authentication
 
 import com.gitlab.eclipse.lsp.FeatureStateChange
 import com.gitlab.eclipse.lsp.FeatureStateChangeCheck
+import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.utils.currentDisplay
 import io.kotest.core.spec.style.DescribeSpec
 import io.mockk.*
@@ -18,7 +19,14 @@ class AuthenticationStateServiceTest : DescribeSpec({
   val testScope = TestScope(StandardTestDispatcher())
   val notifDelay = 1000L
 
-  fun getAuthStateService() = AuthenticationStateService(testScope, notifDelay)
+  val session = LanguageServerSession()
+
+  fun getAuthStateService() = AuthenticationStateService(
+    scope = testScope,
+    notifDelay = notifDelay,
+    sourceProvider = { AuthenticationSourceProvider({ session }, { it.run() }) },
+    currentSession = { session },
+  )
   var authStateService = getAuthStateService()
 
   beforeTest {
@@ -47,7 +55,8 @@ class AuthenticationStateServiceTest : DescribeSpec({
       )
 
       authStateService.update(
-        featureStateChange = featureStateChange
+        featureStateChange = featureStateChange,
+        session = session
       )
 
       for (time in listOf(0L, notifDelay / 3, notifDelay / 2, notifDelay)) {
@@ -80,12 +89,12 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = featureStateChange1)
+      authStateService.update(featureStateChange = featureStateChange1, session = session)
 
       testScope.advanceTimeBy(notifDelay / 2)
       verify(exactly = 0) { currentDisplay.asyncExec(any()) }
 
-      authStateService.update(featureStateChange = featureStateChange2)
+      authStateService.update(featureStateChange = featureStateChange2, session = session)
 
       testScope.advanceTimeBy(notifDelay / 2 + 1)
       verify(exactly = 0) { currentDisplay.asyncExec(any()) }
@@ -105,7 +114,7 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = enableAuthStateChange)
+      authStateService.update(featureStateChange = enableAuthStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
 
       val featureStateChange = FeatureStateChange(
@@ -118,7 +127,7 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = featureStateChange)
+      authStateService.update(featureStateChange = featureStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 0) { currentDisplay.asyncExec(any()) }
     }
@@ -134,7 +143,7 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = featureStateChange)
+      authStateService.update(featureStateChange = featureStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 1) { currentDisplay.asyncExec(any()) }
     }
@@ -150,7 +159,7 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = featureStateChange)
+      authStateService.update(featureStateChange = featureStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 0) { currentDisplay.asyncExec(any()) }
     }
@@ -168,17 +177,17 @@ class AuthenticationStateServiceTest : DescribeSpec({
         )
       )
 
-      authStateService.update(featureStateChange = unauthenticatedStateChange)
+      authStateService.update(featureStateChange = unauthenticatedStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 1) { currentDisplay.asyncExec(any()) }
 
-      authStateService.update(featureStateChange = unauthenticatedStateChange)
+      authStateService.update(featureStateChange = unauthenticatedStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 1) { currentDisplay.asyncExec(any()) }
 
       authStateService.resetAuthenticatedState()
 
-      authStateService.update(featureStateChange = unauthenticatedStateChange)
+      authStateService.update(featureStateChange = unauthenticatedStateChange, session = session)
       testScope.advanceTimeBy(notifDelay + 1)
       verify(exactly = 2) { currentDisplay.asyncExec(any()) }
     }

@@ -38,4 +38,22 @@ object PreferenceConstants {
 
   const val SECURITY_SCAN_ENABLED: String = "gitlab.securityScan.enabled"
   const val SECURITY_SCAN_ON_SAVE: String = "gitlab.securityScan.scanFileOnSave"
+
+  /**
+   * The random ID recorded for the GitLab Duo Tutorial project this plugin created (design §9.2).
+   *
+   * Hidden: no preference page, no default, never sent to the language server. Compared against
+   * the created project's persistent property `duoTutorialId` to decide ownership — see
+   * [DUO_TUTORIAL_PROJECT_LOCATION], which must match too.
+   */
+  const val DUO_TUTORIAL_PROJECT_ID: String = "gitlab.duoTutorial.projectId"
+
+  /**
+   * The Tutorial project's `IProject.getLocationURI()` at the time it was created (design §9.2).
+   *
+   * Hidden, same as [DUO_TUTORIAL_PROJECT_ID]. Recorded after `create()` returns, since an
+   * unresolved project handle's location can be null; compared again on every ownership check so a
+   * project description repointed at a different location is not mistaken for the one created.
+   */
+  const val DUO_TUTORIAL_PROJECT_LOCATION: String = "gitlab.duoTutorial.projectLocation"
 }

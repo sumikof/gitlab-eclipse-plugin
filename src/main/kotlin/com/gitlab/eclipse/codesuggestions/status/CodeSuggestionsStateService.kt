@@ -22,6 +22,9 @@ class CodeSuggestionsStateService {
 
   fun getFirstEngagedCheck() = checks?.firstOrNull { it.engaged }
 
+  /** The ids of every engaged check, in the server's order; empty until the first feature state arrives. */
+  fun engagedCheckIds(): List<String> = checks.orEmpty().filter { it.engaged }.map { it.checkId }
+
   private fun refreshCodeSuggestionsStatus() {
     PlatformUI
       .getWorkbench()
