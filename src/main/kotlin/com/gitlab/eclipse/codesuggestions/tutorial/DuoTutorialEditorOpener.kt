@@ -93,7 +93,8 @@ class DuoTutorialEditorOpener(
    *
    * [window] is the same window [openOnUiThread] resolved and handed to `runInUI` — the editor
    * must open in it, not in whatever window the workbench happens to consider active by the time
-   * this runs (round 25 P2: focus can move to another window while the workspace job is pending).
+   * this runs (implementation review round 2: focus can move to another window while the workspace
+   * job is pending).
    */
   private fun verifyAndOpen(window: IWorkbenchWindow, file: IFile) {
     val project = file.project
