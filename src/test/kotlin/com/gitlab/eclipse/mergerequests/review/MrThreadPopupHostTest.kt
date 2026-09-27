@@ -122,6 +122,7 @@ private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnap
   var stale = false
   val staleChecks = mutableListOf<LineSnapshot>()
   val hostNotifies = mutableListOf<String>()
+  var edited = false
 
   val host = MrThreadPopupHost(
     kind = kind,
@@ -158,6 +159,7 @@ private class HostHarness(kind: MrPopupKind, sessionNow: () -> ReviewSessionSnap
       stale
     },
     notify = { hostNotifies += it },
+    newThreadEdited = { edited },
   )
 
   fun allLogs() = launcherLogs + hostLogs
@@ -285,9 +287,64 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.writes.creates shouldHaveSize 1
     }
 
+    it("refuses the first attempt when the editor changed after the popup opened (Codex r5)") {
+      val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT), sessionNow = { SESSION })
+      h.edited = true
+      val s = FakeSurface(NEW_MODEL)
+      s.type(NEW_THREAD_ID, BODY)
+
+      h.host.onSubmit(s, s.submit())
+
+      h.writes.creates.shouldBeEmpty()
+      h.copyTexts shouldContainExactly listOf(MrThreadPopupHost.FILE_CHANGED_MESSAGE to BODY)
+      h.retries.shouldBeEmpty()
+      h.reloadOutcomes.shouldBeEmpty()
+      s.state.busy shouldBe false
+      s.state.draft(NEW_THREAD_ID) shouldBe BODY
+      h.allLogs().forEach { it shouldNotContain BODY }
+    }
+
+    it("refuses a [Retry] after a Definite failure when the editor changed meanwhile (Codex r5)") {
+      val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT), sessionNow = { SESSION })
+      h.writes.outcome = DiscussionWriteOutcome.Definite(RuntimeException("no"))
+      val s = FakeSurface(NEW_MODEL)
+      s.type(NEW_THREAD_ID, BODY)
+
+      h.host.onSubmit(s, s.submit())
+      val (_, _, onRetry) = h.retries.single()
+      h.writes.creates shouldHaveSize 1
+
+      h.edited = true
+      h.writes.outcome = DiscussionWriteOutcome.Success
+      onRetry(BODY)
+
+      h.writes.creates shouldHaveSize 1
+      h.copyTexts shouldContainExactly listOf(MrThreadPopupHost.FILE_CHANGED_MESSAGE to BODY)
+      h.retries shouldHaveSize 1
+      s.state.busy shouldBe false
+      s.isOpen shouldBe true
+      s.state.draft(NEW_THREAD_ID) shouldBe BODY
+    }
+
+    it("lets a [Retry] proceed when the editor is unchanged (Codex r5)") {
+      val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT), sessionNow = { SESSION })
+      h.writes.outcome = DiscussionWriteOutcome.Definite(RuntimeException("no"))
+      val s = FakeSurface(NEW_MODEL)
+      s.type(NEW_THREAD_ID, BODY)
+
+      h.host.onSubmit(s, s.submit())
+      h.writes.outcome = DiscussionWriteOutcome.Success
+      h.retries.single().third(BODY)
+
+      h.writes.creates shouldHaveSize 2
+      h.copyTexts.shouldBeEmpty()
+      s.isOpen shouldBe false
+    }
+
     it("does not check the editor for a reply (not line-anchored)") {
       val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
       h.stale = true
+      h.edited = true
       val s = FakeSurface(REPLY_MODEL)
       s.type("d1", BODY)
 

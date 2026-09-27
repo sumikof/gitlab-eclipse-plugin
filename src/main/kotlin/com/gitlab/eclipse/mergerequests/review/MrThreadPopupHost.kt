@@ -120,6 +120,10 @@ class GitLabMrThreadWrites(
  *   the live editor ([newThreadSnapshotStale]). The popup is non-modal, so the editor may have been
  *   edited since UI turn 1; the send-time body-identity gate compares only the file on disk.
  * @param notify the fixed notification of a refused launch.
+ * @param newThreadEdited background, at the start of **every** new-thread attempt — the first
+ *   send and each `[Retry]` re-entry, which never passes through [onSubmit] (Codex r5): whether
+ *   the popup's editor document changed since the popup opened ([NewThreadEditTracker.edited]).
+ *   `true` refuses the attempt with [FILE_CHANGED_MESSAGE] before anything is sent.
  */
 class MrThreadPopupHost(
   private val kind: MrPopupKind,
@@ -135,6 +139,7 @@ class MrThreadPopupHost(
   private val onPopupClosed: () -> Unit = {},
   private val newThreadStale: (LineSnapshot) -> Boolean = { false },
   private val notify: (String) -> Unit = {},
+  private val newThreadEdited: () -> Boolean = { false },
 ) : InlineThreadHost {
 
   /** UI thread. [ticket] was frozen by the popup's `beginSubmit`; busy is released on every path from here. */
@@ -207,7 +212,15 @@ class MrThreadPopupHost(
       val holder = AttemptTarget()
       Launch(
         key = DiscussionWriteKey.forEditorLine(snapshot.filePath.path, snapshot.oneBasedLine),
-        write = { body, epoch -> writes.create(snapshot, session, holder, body, epoch) },
+        write = { body, epoch ->
+          if (newThreadEdited()) {
+            // Codex r5: also on a [Retry] re-entry — the editor moved while the earlier attempt ran.
+            log("threadPopup create refused: the editor changed after the popup opened.")
+            DiscussionWriteOutcome.Rejected(FILE_CHANGED_MESSAGE)
+          } else {
+            writes.create(snapshot, session, holder, body, epoch)
+          }
+        },
         target = { holder.value },
       )
     }

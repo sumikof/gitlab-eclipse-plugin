@@ -148,6 +148,8 @@ object MrThreadPopups {
     }
     val input = editor.editorInput
     val document = editor.documentProvider?.getDocument(input)
+    // Codex r5: follows every edit of a new-thread popup's document so a [Retry] can refuse too.
+    val editTracker = if (kind is MrPopupKind.NewThread) NewThreadEditTracker(document) else null
     lateinit var popup: InlineThreadPopup
     val host = MrThreadPopupHost(
       kind = kind,
@@ -164,13 +166,18 @@ object MrThreadPopups {
       },
       preserveDraft = { draft -> showCopyTextDialog(window, DIALOG_TITLE, UNSENT_DRAFT_MESSAGE, draft) },
       log = { message -> logger.info(message) },
-      onPopupClosed = { if (open[window]?.popup === popup) open.remove(window) },
+      onPopupClosed = {
+        editTracker?.dispose()
+        if (open[window]?.popup === popup) open.remove(window)
+      },
       newThreadStale = { snapshot ->
         val liveDocument = editor.editorInput?.let { editor.documentProvider?.getDocument(it) }
         newThreadSnapshotStale(snapshot, editor.isDirty, liveDocument?.get())
       },
       notify = { message -> NotificationUtils.showOnUiThread(message) },
+      newThreadEdited = { editTracker?.edited ?: false },
     )
+    editTracker?.install()
     popup = InlineThreadPopup(editor, oneBasedLine, host)
     open[window] = Open(popup, editor, document, kind, threadIds)
     popup.open(model)
