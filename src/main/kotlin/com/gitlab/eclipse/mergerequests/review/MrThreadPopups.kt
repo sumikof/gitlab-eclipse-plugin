@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.jface.text.IDocument
 import org.eclipse.swt.widgets.Control
+import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.texteditor.ITextEditor
 
@@ -145,7 +146,8 @@ object MrThreadPopups {
       // LineSnapshot must be the one frozen now, never the earlier popup's (design §9.3.2).
       current.popup.close() // preserves its drafts; its host's onClosed drops the entry
     }
-    val document = editor.documentProvider?.getDocument(editor.editorInput)
+    val input = editor.editorInput
+    val document = editor.documentProvider?.getDocument(input)
     lateinit var popup: InlineThreadPopup
     val host = MrThreadPopupHost(
       kind = kind,
@@ -154,7 +156,7 @@ object MrThreadPopups {
       newLauncher = { reload -> launcherFor(window, reload) },
       runOnUi = { block -> currentDisplay.asyncExec { block() } },
       currentEpoch = { DiscussionGenerationRegistry.currentEpoch },
-      refreshSession = { identity, ref -> refreshOrBegin(editor, identity, ref) },
+      refreshSession = { identity, ref -> refreshOrBegin(editor, input, document, identity, ref) },
       reloadSidebar = { identity ->
         // The outcome is not awaited and never unlocks anything: the editor path reports Skipped itself.
         val target = with(identity) { DiscussionWriteTarget(instanceUrl, authFingerprint, projectId, mrIid) }
@@ -191,15 +193,31 @@ object MrThreadPopups {
 
   /**
    * UI thread, from the editor-path reload (design §9.3.1, FR-10): refresh the identity's session,
-   * or establish it when the document has none (A8 / A18) — provided the editor is still alive.
+   * or establish it when the document has none (A8 / A18) — provided the editor is still alive and
+   * still shows the [openedInput] and [openedDocument] its popup was opened on. A write that lands
+   * after an input change must not attach the old MR/path session to the new document.
    */
-  private fun refreshOrBegin(editor: ITextEditor, identity: SessionIdentity, ref: MergeRequestRef) {
-    if (ReviewSessionRegistry.refresh(editor, identity)) return
+  private fun refreshOrBegin(
+    editor: ITextEditor,
+    openedInput: IEditorInput?,
+    openedDocument: IDocument?,
+    identity: SessionIdentity,
+    ref: MergeRequestRef,
+  ) {
     val control = editor.getAdapter(Control::class.java)
-    if (control == null || control.isDisposed) {
-      logger.info("threadPopup reload skipped: the editor is gone.")
+    val currentInput = editor.editorInput
+    val stillShown = editorStillShows(
+      alive = control != null && !control.isDisposed,
+      openedInput = openedInput,
+      openedDocument = openedDocument,
+      currentInput = currentInput,
+      currentDocument = currentInput?.let { editor.documentProvider?.getDocument(it) },
+    )
+    if (!stillShown) {
+      logger.info("threadPopup reload skipped: the editor is gone or shows another input.")
       return
     }
+    if (ReviewSessionRegistry.refresh(editor, identity)) return
     ReviewSessionRegistry.begin(editor, ref, identity.newPath, identity.headSha)
   }
 
@@ -239,3 +257,18 @@ object MrThreadPopups {
   const val UNSENT_DRAFT_MESSAGE =
     "The thread popup was closed with an unsent comment. Copy it from here if you want to keep it."
 }
+
+/**
+ * Whether the editor-path reload may refresh or begin a session on the popup's editor (Codex r3):
+ * only while the editor is [alive] and still shows the [openedInput] and the [openedDocument]
+ * instance captured when the popup opened. After an input change the old MR/path session must not
+ * be attached to the editor's new document. SWT-free.
+ */
+internal fun editorStillShows(
+  alive: Boolean,
+  openedInput: Any?,
+  openedDocument: Any?,
+  currentInput: Any?,
+  currentDocument: Any?,
+): Boolean = alive && openedInput != null && openedDocument != null &&
+  currentInput == openedInput && currentDocument === openedDocument
