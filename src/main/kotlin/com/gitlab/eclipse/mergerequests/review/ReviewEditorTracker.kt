@@ -14,7 +14,7 @@ import org.eclipse.ui.texteditor.ITextEditor
 
 /**
  * The SWT listeners of [ReviewSessionRegistry]: which document each connected editor shows, a
- * part listener per workbench page that reports the editor's close (design §9.6), and a
+ * part listener per workbench page that reports the editor's close or input change (design §9.6), and a
  * best-effort left-click listener on the editor's vertical ruler (design U1). UI-thread only.
  *
  * Platform facts relied on (design §6.4):
@@ -29,6 +29,10 @@ import org.eclipse.ui.texteditor.ITextEditor
  *   editor's document provider afterwards: by the time `partClosed` arrives the provider may
  *   already be disconnected. The closed part is matched by its [IWorkbenchPartReference] first
  *   (`IWorkbenchPage.getReference(part)` taken at track time), with `getPart(false)` as the fallback.
+ * - A reused editor (`IReusableEditor.setInput`, e.g. the search view's reuse-editor preference)
+ *   keeps its part but shows another input: the page reports `partInputChanged` for it, and the
+ *   editor is released exactly as on `partClosed`, with the document it was tracked under. Nothing
+ *   is started for the new input; a session for it needs a new `begin`.
  *
  * @param onEditorClosed called once per released editor with the document it showed, after its
  *   ruler listener is removed; never while the editor is still tracked.
@@ -54,7 +58,11 @@ internal class ReviewEditorTracker(
 
   // Every other IPartListener2 method is a default method on this platform (see JobLogEditorOpener).
   private val partListener = object : IPartListener2 {
-    override fun partClosed(partRef: IWorkbenchPartReference) = onPartClosed(partRef)
+    override fun partClosed(partRef: IWorkbenchPartReference) = onPartGone(partRef)
+
+    // The part stays open but no longer shows the tracked document: the old session, ruler
+    // listener and popups must not survive into the new input.
+    override fun partInputChanged(partRef: IWorkbenchPartReference) = onPartGone(partRef)
   }
 
   /**
@@ -114,7 +122,8 @@ internal class ReviewEditorTracker(
     }
   }
 
-  private fun onPartClosed(partRef: IWorkbenchPartReference) {
+  /** `partClosed` / `partInputChanged`: releases the tracked editor behind [partRef], if any. */
+  private fun onPartGone(partRef: IWorkbenchPartReference) {
     try {
       val editor = tracked.entries.firstOrNull { it.value.reference === partRef }?.key
         ?: (partRef.getPart(false) as? ITextEditor)?.takeIf { it in tracked }
