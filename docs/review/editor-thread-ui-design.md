@@ -1,6 +1,6 @@
 # D13 エディタ行コメント + エディタ内スレッド UI 基盤 設計書
 
-- 版: 第 5 版(2026-09-27、Codex round 4 反映)
+- 版: 第 6 版(2026-09-27、Codex round 5 反映)
 - ベース: `gitlab-ls-9.3.0` @ `5fba3e8`
 - 関連: ロードマップ #8 / パリティ台帳 #7(D13「コメント作成」🟡)/ Phase 6 残余 #14 / 前提設計 = Phase 5A 設計書 §21(Close 済み PR #45、`git fetch origin refs/pull/45/head` → `docs/review/mr-discussions-design.md` L1285-1492)
 - 参照実装: `gitlab-workflow` v6.85.3(`./out/gitlab-vscode-extension`、読み取り専用)
@@ -217,6 +217,7 @@ devcontainer は headless で、エディタ・ルーラー・ポップアップ
 
 ### 9.2 スレッドポップアップ(FR-5 / FR-6)
 
+- **ウィンドウごとに 1 つ**の制約で既存ポップアップを置き換えるとき(別の行・別のエディタ・別の MR)、既存ポップアップの入力欄に未送信の本文(`isSubmittable`)があれば、閉じる前に `promptCopyText` で本文を退避させる(§9.5 の置き換えと同じ扱い。本文を別スレッドへ持ち込まない)。送信中(busy)のポップアップは閉じずに置き換えを拒否し、「送信中」を通知する。
 - 入口: (a) ルーラー右クリック「Open Merge Request Thread」(E2 の行に注釈があるときだけ有効)、(b) 注釈アイコンの左クリック(ルーラー制御のマウスリスナー、mouseUp・ボタン 1。**ベストエフォート** — §26 U1)。
 - 同じ行に複数のスレッドがあれば、ポップアップ上部の選択(「Thread 1 of N」)で切り替える。
 - 返信 / 解決: `DiscussionWriteKey.forDiscussion` と既存 `DiscussionWriteLauncher.launch` を使う。本文の入力はポップアップの入力欄が担い、既存の `CommentInputDialog` は開かない。終端処理(成功 / Definite / Ambiguous / GateRejected / Aborted)はランチャーの既存 UI をそのまま使う。成功時は入力欄を空にして FR-10。
@@ -264,7 +265,7 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
   - Success 分岐では報告値は使われない(既存の `reload { }`)ので、常に `Skipped` でも確立・再取得の効果は失われない。
   - ホルダが空(G6 より前で失敗した試行)の場合は、確立も再取得もしない。
   - 確立はこの `reload` が担う(A8 はこの経路で満たす)。`reload` はポップアップの本文に**触れない**(Ambiguous でも呼ばれるため)。
-- **ポップアップの成功終端**(Codex round 4 P1 反映): ランチャーの公開 API は変えず、ランチャーへ渡す `write` を**ラッパー**にする。`write = { b, e -> attempt(b, e).also { if (it == Success) runOnUi { popup.onWriteSucceeded(b) } } }`。`onWriteSucceeded(sentBody)` は UI スレッドで、ポップアップがまだ開いていて入力欄の本文が `sentBody` と等しいときだけ、返信なら入力欄を空にし、新規作成ならポップアップを閉じる(送信後にユーザーが書き足した本文は消さない)。Success 以外(Definite / Ambiguous / Rejected / GateRejected / Aborted)では本文に一切触れない。ラッパーの UI ホップも既存の `scheduleTerminal` と同じく、スケジュール失敗を握りつぶしてログ 1 行にする(共有スコープを落とさない)。
+- **ポップアップの成功終端**(Codex round 4 P1 反映): ランチャーの公開 API は変えず、ランチャーへ渡す `write` を**ラッパー**にする。`write = { b, e -> attempt(b, e).also { if (it == Success) runOnUi { popup.onWriteSucceeded(b) } } }`。`onWriteSucceeded()` は UI スレッドで、ポップアップがまだ開いていて、**入力欄の編集世代が送信ボタン押下時から変わっていない**ときだけ、返信なら入力欄を空にし、新規作成ならポップアップを閉じる(Codex round 5 反映: 本文の一致ではなく編集世代で判定する。`[Retry]` ダイアログで本文を編集して再送が成功した場合も、ポップアップ自体が編集されていなければ終端する。送信後にポップアップへ書き足した本文は消さない)。編集世代は入力欄の変更イベントごとに増える UI スレッド専有のカウンタで、送信押下時に凍結して `write` ラッパーへ渡す。Success 以外(Definite / Ambiguous / Rejected / GateRejected / Aborted)では本文に一切触れない。ラッパーの UI ホップも既存の `scheduleTerminal` と同じく、スケジュール失敗を握りつぶしてログ 1 行にする(共有スコープを落とさない)。
   - サイドバーの再取得(`reloadDiscussionsFor`)は結果を待たずに並行して依頼する。
 - 返信・解決はこれまでどおり `forDiscussion` キーで `launch` する(ゲートは既存の `runDiscussionWrite`)。`reload` は上記と同じエディタ経路の `reload`(常に `Skipped`)を渡すので、ポップアップからの返信も Ambiguous 後の `[Send again]` を出さない。
 - **サイドバー経路(Phase 5A)の `[Send again]` は本サイクルでは変更しない。**同じ懸念(mutation の確定が再取得より遅れる)が当てはまるため、follow-up issue として記録する(実装 PR で起票)。
@@ -276,6 +277,7 @@ Phase 5A §21.2 のゲート列を出発点とし、**入力を modal ダイア�
 | 段 | 判定 | 拒否条件 |
 |---|---|---|
 | G8a | 対象パスの Git 属性に `filter`(LFS など clean/smudge)と `working-tree-encoding` が設定されていない | 設定されていれば拒否(行の対応を保証できない) |
+| G8a'' | HEAD ツリーと index の対象エントリの file mode が通常ファイル(`100644` / `100755`)である | シンボリックリンク(`120000`)・gitlink 等は拒否(エディタはリンク先の本文を読むが、HEAD の blob はリンク先パス文字列のため行が対応しない) |
 | G8a' | index の対象エントリ(`DirCacheEntry`)に `assume-valid` / `skip-worktree` が付いていない | 付いていれば拒否(status が作業ツリーの変更を報告しなくなるため) |
 | G8b | ディスク上のファイルを**エディタの文字コード**で復号し、先頭の BOM を取り除いた文字列が `documentText` と一致(改行は正規化しない) | 不一致なら拒否 |
 | G8c | JGit の `status().addPath(path)` の結果で、そのパスが **どの集合にも含まれない**(`added` / `changed` / `removed` / `modified` / `missing` / `untracked` / `conflicting` のすべてが空。= index と作業ツリーの両方が HEAD と一致)。JGit は `core.autocrlf` と `text` / `eol` 属性を適用して比較する | いずれかに含まれれば拒否(ステージ済みの変更も拒否) |
@@ -298,17 +300,19 @@ G8b の読み取り → G8c → G8b と同じファイルの再読み取りを�
 
 #### 9.1.2 セッションの状態(Codex round 4 P2 反映)
 
-レジストリの各エントリは `LOADING` / `READY` の 2 状態を持つ。
+レジストリの各エントリは状態(下表)と接続エディタ集合を持つ。
 
 | 事象 | 遷移 |
 |---|---|
 | `begin`(エントリ無し) | `LOADING` で登録し、ロードを開始する |
 | `begin`(同じ identity・`LOADING` / `READY`) | エディタを接続集合に加えるだけ |
 | ロード成功(世代が最新・接続集合が空でない) | `READY`、注釈を接続 |
-| ロード失敗(接続捕捉・version・head 不一致・diff エントリ無し・スレッド取得の失敗) | **エントリを除去する**(接続集合ごと)。通知 1 回。以後の `begin` は新規として扱う |
-| 接続集合が空になった | エントリを除去(§9.6) |
+| ロード失敗(接続捕捉・version・head 不一致・diff エントリ無し・スレッド取得の失敗) | `FAILED`(**接続集合は保持する**)。通知 1 回 |
+| `begin`(同じ identity・`FAILED`) | エディタを接続集合に加え、世代を進めて `LOADING` で再ロード |
+| `begin`(別 identity) | §9.5 の置き換え(接続集合は引き継ぐ) |
+| 接続集合が空になった | 状態にかかわらずエントリを除去(§9.6) |
 
-失敗エントリを残さないので、サイドバーからの開き直し(§20)で必ず再ロードされる。
+状態は `LOADING` / `READY` / `FAILED` の 3 つ。失敗しても接続集合を捨てないので、E1 / E2 で失敗 → E1 から開き直して成功 → E1 を閉じても、E2 に注釈が残る。
 
 ### 9.5 セッションの置き換え(同じ文書に別の identity)
 
@@ -504,7 +508,7 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 
 ## 23. テスト方針
 
-- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、ステージ済みの変更で送信 0 回、`AttemptTarget` による確立(セッションなしの Success / Ambiguous)、エディタ経路の `reload` が常に `Skipped` であること、`write` ラッパーの成功終端(Success のみ・本文一致時のみ)、ロード失敗後のエントリ除去と再ロード(Ambiguous で `[Send again]` が出ない)、部分取得の通知、`assume-valid` / `skip-worktree` で送信 0 回、純粋なリネームと巨大 diff の区別(JGit 実リポジトリ)、ロード中に起動元エディタだけ閉じた場合の適用(`ReviewSessionRegistry` の SWT 非依存部で)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
+- **TDD(headless)**: `DiffLineMap`(hunk 無し / 複数 hunk / hunk 外の行 / 先頭行 / 末尾行 / 新規ファイル / 空 diff / `\ No newline`)、`ThreadPlacement`(diffRefs 不一致・positionType・oldLine のみ・パス不一致・解決済み)、`DiffPositionBuilder`、`createDiffNoteVariables`、`LineCommentFlow` のゲート列(効果を注入し、各ゲートで送信 0 回を確認。再試行でゲートが再評価されること)、G8 の JGit 実リポジトリテスト(一時リポジトリで `core.autocrlf=true` の CRLF、Shift_JIS、BOM、`filter` / `working-tree-encoding` 属性)、`Rejected` の終端分岐、セッション置き換え(identity の各要素の不一致)、ステージ済みの変更で送信 0 回、`AttemptTarget` による確立(セッションなしの Success / Ambiguous)、エディタ経路の `reload` が常に `Skipped` であること、`write` ラッパーの成功終端(Success のみ・本文一致時のみ)、ロード失敗後の `FAILED` 保持と再ロード(分割エディタ)、編集世代による成功終端(`[Retry]` 編集あり)、未送信本文ありのポップアップ置き換え、symlink(`120000`)で送信 0 回(JGit 実リポジトリ)(Ambiguous で `[Send again]` が出ない)、部分取得の通知、`assume-valid` / `skip-worktree` で送信 0 回、純粋なリネームと巨大 diff の区別(JGit 実リポジトリ)、ロード中に起動元エディタだけ閉じた場合の適用(`ReviewSessionRegistry` の SWT 非依存部で)、`ReviewSessionLoader`(接続 1 回捕捉・head 不一致拒否)、`InlineThreadModel` の組み立て(権限による操作の出し分け)。
 - **実装レビューの重点確認項目**(設計では詰めず、実装段階で検出する): 空白のみ・Unicode 空白のみの本文の送信不可(A16)、通知文言、ホバー文の整形と HTML エスケープ、`oneBasedLine` の基数(先頭行のテストを含む)、世代比較の位置、ログに本文が出ないこと。
 - **手動検証**(§25): SWT 表示・ルーラー・ポップアップ・JDT エディタ・ジェネリックエディタ。
 
@@ -536,7 +540,10 @@ GitLab への書き込みは 1 操作 = 1 mutation(`createDiffNote` / `createNot
 | A22 | 内容を変えない純粋なリネームにはコメントでき(`oldLine == newLine`)、巨大 diff と区別される。base コミットがローカルに無い場合は拒否する(§12.2.1) |
 | A23 | `assume-valid` / `skip-worktree` 付きでローカル変更されたファイルではコメントを送らない(§9.3.2 G8a') |
 | A24 | 返信の Success で入力欄が空になり、新規作成の Success でポップアップが閉じる。Ambiguous / Definite / Rejected では本文が残る(§9.3.1) |
-| A25 | 初回ロードが失敗した後に同じファイルを開き直すと、再ロードされて注釈が出る(§9.1.2) |
+| A25 | 初回ロードが失敗した後に同じファイルを開き直すと、再ロードされて注釈が出る。E1 / E2 で失敗 → E1 から再ロード → E1 を閉じても E2 に注釈が残る(§9.1.2) |
+| A26 | `[Retry]` ダイアログで本文を編集して再送が成功した場合も、ポップアップ自体が未編集なら成功終端(クリア / クローズ)が適用される(§9.3.1) |
+| A27 | 未送信の本文があるポップアップを別の行・別のエディタ・別の MR のポップアップで置き換えると、本文コピーの退避が出る。送信中なら置き換えを拒否する(§9.2) |
+| A28 | シンボリックリンク(リポジトリ内を指すものを含む)のファイルではコメントを送らない(§9.3.2 G8a'') |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
 
@@ -610,3 +617,12 @@ M1 サイドバーから変更ファイルを開く → 注釈 / 解決済みア
 | 13 | P1 成功時だけのポップアップ終端が定義されていない | 採用(本文消失 / 二重送信) | §9.3.1: `write` ラッパーで Success 時のみ UI へ通知、本文一致時のみクリア / クローズ。A24 |
 | 14 | P1 §20 の復旧手順がエディタ経路の「再送なし」と矛盾 | 採用(記述の矛盾) | §20 を経路別に分割 |
 | 15 | P2 初回ロード失敗後に同じ identity を再ロードできない | 採用(軽微・契約の明確化) | §9.1.2、A25 |
+
+### round 5(`26a3e25` に対する新規 4 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 16 | P1 シンボリックリンクで行が対応しない | 採用(誤った行・Git の実挙動) | G8a''(file mode が通常ファイル)、A28 |
+| 17 | P1 編集された `[Retry]` 本文だと成功終端が適用されない | 実装段階へ(SWT 非依存のロジック。規則だけ確定) | 本文一致 → 編集世代で判定に変更(§9.3.1)、A26 |
+| 18 | P1 別ポップアップを開くときの未送信本文 | 実装段階へ(規則だけ確定。§9.5 と同じ扱い) | §9.2 に退避 / 送信中は拒否の規則、A27 |
+| 19 | P1 ロード失敗で分割エディタの接続集合を捨てる | 採用(SWT ライフサイクル) | §9.1.2 に `FAILED` を追加し接続集合を保持、A25 |
