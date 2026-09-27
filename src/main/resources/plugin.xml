@@ -1825,12 +1825,57 @@
                 markerType="codeSuggestionsMarker"
                 super="org.eclipse.ui.workbench.texteditor.info">
         </type>
+        <!-- Merge request review threads shown in the editor (no marker: the annotations live in
+             a sub-model attached by ThreadAnnotationAttacher). Resolved threads are a separate type. -->
+        <type
+                name="com.gitlab.eclipse.mrThread.unresolved"
+                super="org.eclipse.ui.workbench.texteditor.info">
+        </type>
+        <type
+                name="com.gitlab.eclipse.mrThread.resolved"
+                super="org.eclipse.ui.workbench.texteditor.info">
+        </type>
     </extension>
 
     <extension point="org.eclipse.ui.editors.markerAnnotationSpecification">
         <specification
                 annotationType="codeSuggestionsMarker"
                 annotationImageProvider="com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsAnnotationImageProvider"
+        >
+        </specification>
+        <!-- The vertical/overview ruler keys are read by TextSourceViewerConfiguration (a key that is
+             present but false hides the type); their defaults come from the *PreferenceValue attributes
+             via MarkerAnnotationPreferences.initializeDefaultValues. No text decoration by default. -->
+        <specification
+                annotationType="com.gitlab.eclipse.mrThread.unresolved"
+                label="GitLab Merge Request Threads (unresolved)"
+                annotationImageProvider="com.gitlab.eclipse.mergerequests.review.ThreadAnnotationImageProvider"
+                includeOnPreferencePage="true"
+                presentationLayer="4"
+                colorPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.color"
+                colorPreferenceValue="252,109,38"
+                textPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.text"
+                textPreferenceValue="false"
+                overviewRulerPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.overviewRuler"
+                overviewRulerPreferenceValue="true"
+                verticalRulerPreferenceKey="com.gitlab.eclipse.mrThread.unresolved.verticalRuler"
+                verticalRulerPreferenceValue="true"
+        >
+        </specification>
+        <specification
+                annotationType="com.gitlab.eclipse.mrThread.resolved"
+                label="GitLab Merge Request Threads (resolved)"
+                annotationImageProvider="com.gitlab.eclipse.mergerequests.review.ThreadAnnotationImageProvider"
+                includeOnPreferencePage="true"
+                presentationLayer="3"
+                colorPreferenceKey="com.gitlab.eclipse.mrThread.resolved.color"
+                colorPreferenceValue="108,183,110"
+                textPreferenceKey="com.gitlab.eclipse.mrThread.resolved.text"
+                textPreferenceValue="false"
+                overviewRulerPreferenceKey="com.gitlab.eclipse.mrThread.resolved.overviewRuler"
+                overviewRulerPreferenceValue="true"
+                verticalRulerPreferenceKey="com.gitlab.eclipse.mrThread.resolved.verticalRuler"
+                verticalRulerPreferenceValue="true"
         >
         </specification>
     </extension>
