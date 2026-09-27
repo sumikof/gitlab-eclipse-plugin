@@ -82,21 +82,36 @@ internal class ReviewEditorTracker(
    */
   fun release(editor: ITextEditor) {
     val entry = tracked.remove(editor) ?: return
-    val control = entry.rulerControl
-    if (control != null && entry.rulerListener != null && !control.isDisposed) {
-      control.removeMouseListener(entry.rulerListener)
-    }
-    val page = entry.page
-    if (page != null && tracked.values.none { it.page === page }) {
-      pages.remove(page)
-      page.removePartListener(partListener)
+    try {
+      val control = entry.rulerControl
+      if (control != null && entry.rulerListener != null && !control.isDisposed) {
+        control.removeMouseListener(entry.rulerListener)
+      }
+      val page = entry.page
+      if (page != null && tracked.values.none { it.page === page }) {
+        pages.remove(page)
+        page.removePartListener(partListener)
+      }
+    } catch (e: Exception) {
+      // A widget or page torn down under us (shutdown): the editor is untracked regardless,
+      // and the close is still reported below.
+      logger.error("reviewSession listener removal failed: exceptionType=${e.javaClass.name}")
     }
     onEditorClosed(editor, entry.document)
   }
 
-  /** [release] for every tracked editor (bundle stop). */
+  /**
+   * [release] for every tracked editor (bundle stop). Each editor is released under its own
+   * guard, so one failing release (a hook, a disposed widget) never leaves the others tracked.
+   */
   fun releaseAll() {
-    tracked.keys.toList().forEach(::release)
+    tracked.keys.toList().forEach { editor ->
+      try {
+        release(editor)
+      } catch (e: Exception) {
+        logger.error("reviewSession editor release failed: exceptionType=${e.javaClass.name}")
+      }
+    }
   }
 
   private fun onPartClosed(partRef: IWorkbenchPartReference) {

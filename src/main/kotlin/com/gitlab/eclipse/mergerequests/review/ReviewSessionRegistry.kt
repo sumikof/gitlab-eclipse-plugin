@@ -37,13 +37,14 @@ import org.eclipse.ui.texteditor.ITextEditor
  * - [threadOpener]: invoked on a ruler left-click on a line that currently carries a thread
  *   annotation (`(editor, oneBasedLine)`, UI thread). The line is the clicked one — annotations
  *   follow edits (E4) while [ReviewSessionSnapshot.placements] keep the loaded lines.
- * - [onEditorReleased]: invoked once when a connected editor closes (or its input changed), before
- *   the session state is updated, so a popup anchored to that editor can close (design §9.6). The
- *   editor is no longer tracked at that point ([snapshotFor] returns `null` for it): use the
- *   document argument.
+ * - [onEditorReleased]: invoked once when a connected editor closes (or its input changed), so a
+ *   popup anchored to that editor can close (design §9.6). It runs after this registry's own
+ *   bookkeeping for that close: the editor is no longer tracked ([snapshotFor] returns `null` for
+ *   it — use the document argument) and, if it was the last editor, the annotations are already gone.
  * - [onSessionReleased]: invoked when a document's session ends — its last editor closed, another
  *   identity replaced it (design §9.5 step 3), or the bundle stopped — after its annotations are gone.
- * All three are optional and are not reset by [clear].
+ * All three are optional, are not reset by [clear], and are called under a guard: an exception from
+ * a hook is logged (class name only) and never disturbs the session, listener or sub-model bookkeeping.
  */
 object ReviewSessionRegistry {
   private val logger by lazy { logger<ReviewSessionRegistry>() }
@@ -55,7 +56,7 @@ object ReviewSessionRegistry {
     onEditorClosed = ::handleEditorClosed,
     onRulerClick = { editor, document, oneBasedLine ->
       if (DiscussionGenerationRegistry.active && attacher.hasAnnotationAt(document, oneBasedLine)) {
-        threadOpener?.invoke(editor, oneBasedLine)
+        guarded("threadOpener hook") { threadOpener?.invoke(editor, oneBasedLine) }
       }
     },
   )
@@ -99,7 +100,7 @@ object ReviewSessionRegistry {
     val previous = origins.put(document, origin)
     if (previous != null && previous.identity != origin.identity) {
       attacher.detach(document)
-      onSessionReleased?.invoke(document)
+      guarded("onSessionReleased hook") { onSessionReleased?.invoke(document) }
       logger.info("reviewSession replaced: another identity for the same document.")
     }
     when (val result = state.begin(document, editor, origin.identity)) {
@@ -130,19 +131,28 @@ object ReviewSessionRegistry {
    * UI thread, from the stop hook (`GitLabEclipseStartup.shutdownJobLog`, in the same `syncExec`
    * that deactivates [DiscussionGenerationRegistry]). Releases every editor (ruler and part
    * listeners), every session and every sub-model, firing [onEditorReleased] / [onSessionReleased]
-   * as for a close (FR-11). Never throws.
+   * as for a close (FR-11). Never throws, and no step depends on the previous one having
+   * succeeded: a failing hook or listener removal is logged and the remaining editors, sessions
+   * and sub-models are still released.
    */
   fun clear() {
-    try {
-      tracker.releaseAll()
-      val leftovers = state.clear()
-      attacher.detachAll()
-      origins.clear()
-      leftovers.forEach { document -> onSessionReleased?.invoke(document) }
-      logger.info("reviewSession cleared.")
-    } catch (e: Exception) {
-      logger.error("reviewSession clear failed: exceptionType=${e.javaClass.name}")
-    }
+    tracker.releaseAll()
+    val leftovers = guarded("clear sessions") { state.clear() }.orEmpty()
+    guarded("detach annotations") { attacher.detachAll() }
+    origins.clear()
+    leftovers.forEach { document -> guarded("onSessionReleased hook") { onSessionReleased?.invoke(document) } }
+    logger.info("reviewSession cleared.")
+  }
+
+  /**
+   * Runs [block], logging (class name only) and swallowing any exception, so that bookkeeping
+   * never depends on foreign code — the popup hooks — or on a widget's state at shutdown.
+   */
+  private inline fun <T> guarded(step: String, block: () -> T): T? = try {
+    block()
+  } catch (e: Exception) {
+    logger.error("reviewSession $step failed: exceptionType=${e.javaClass.name}")
+    null
   }
 
   private fun launchLoad(document: IDocument, generation: Long, origin: Origin, notifyPartial: Boolean) {
@@ -214,13 +224,18 @@ object ReviewSessionRegistry {
 
   /** UI thread, from the tracker. Design §9.6: the last editor releases the session, whatever its phase. */
   private fun handleEditorClosed(editor: ITextEditor, document: IDocument) {
-    onEditorReleased?.invoke(editor, document)
+    // Own bookkeeping first, hooks last and guarded: a throwing popup hook must not leave the
+    // editor counted, the sub-model attached or the origin alive until bundle stop.
     val hadSession = state.phase(document) != null
     state.editorClosed(document, editor)
-    if (hadSession && state.phase(document) == null) {
+    val released = hadSession && state.phase(document) == null
+    if (released) {
       origins.remove(document)
       attacher.detach(document)
-      onSessionReleased?.invoke(document)
+    }
+    guarded("onEditorReleased hook") { onEditorReleased?.invoke(editor, document) }
+    if (released) {
+      guarded("onSessionReleased hook") { onSessionReleased?.invoke(document) }
       logger.info("reviewSession released: last editor closed.")
     }
   }
