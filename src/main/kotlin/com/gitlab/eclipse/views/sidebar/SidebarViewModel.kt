@@ -13,6 +13,7 @@ import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiAction
 import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.configErrorMessage
 
@@ -183,6 +184,9 @@ class SidebarViewModel {
    * request's `references.full` yields a namespace path. The three trailing parameters default to
    * `null` so the pre-existing three-argument call shape keeps producing exactly today's children;
    * see [discussionsSectionChildren] for what each omission means.
+   *
+   * The changed files carry a [MergeRequestRef] taken from that very section node, so they have
+   * one exactly when the section is built, with the same tags, GID and namespace (design §8.3).
    */
   fun buildMrChildren(
     webUrl: String,
@@ -191,13 +195,26 @@ class SidebarViewModel {
     mr: GitLabMergeRequest? = null,
     sourceInstanceUrl: String? = null,
     sourceAuthFingerprint: String? = null,
-  ): List<SidebarNode> =
-    listOf(OverviewNode(webUrl)) +
-      discussionsSectionChildren(mr, sourceInstanceUrl, sourceAuthFingerprint) +
+  ): List<SidebarNode> {
+    val section = discussionsSectionChildren(mr, sourceInstanceUrl, sourceAuthFingerprint)
+    val mrRef = section.filterIsInstance<DiscussionsSectionNode>().firstOrNull()?.toMergeRequestRef()
+    return listOf(OverviewNode(webUrl)) +
+      section +
       versionResult.fold(
-        onSuccess = { version -> buildChangedFileNodes(version, mode, webUrl) },
+        onSuccess = { version -> buildChangedFileNodes(version, mode, webUrl, mrRef) },
         onFailure = { error -> failureChildren(error) },
       )
+  }
+
+  private fun DiscussionsSectionNode.toMergeRequestRef() =
+    MergeRequestRef(
+      instanceUrl = sourceInstanceUrl,
+      authFingerprint = sourceAuthFingerprint,
+      projectId = projectId,
+      mrIid = mrIid,
+      mrGid = mrGid,
+      namespaceWithPath = namespaceWithPath,
+    )
 
   /**
    * Turns an MR version's diffs (design doc §7.2) into sidebar nodes: [SidebarViewMode.LIST]
@@ -205,16 +222,18 @@ class SidebarViewModel {
    * [ChangedDirectoryNode] hierarchy via [buildChangedFileTree]. A `null` [version] (the MR
    * has no diff versions at all) renders the same "No changed files" message as empty diffs.
    * [mrWebUrl] is the enclosing MR's web URL, stamped on each [ChangedFileNode] so
-   * `OpenMrFileHandler` can match the node back to a workspace repository.
+   * `OpenMrFileHandler` can match the node back to a workspace repository; [mrRef] is stamped the
+   * same way, for the editor review session that handler begins (`null`: no session).
    */
   fun buildChangedFileNodes(
     version: GitLabMrVersion?,
     mode: SidebarViewMode,
     mrWebUrl: String? = null,
+    mrRef: MergeRequestRef? = null,
   ): List<SidebarNode> {
     val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
-    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl) }
+    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef) }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
       SidebarViewMode.TREE -> buildChangedFileTree(fileNodes)
@@ -225,6 +244,7 @@ class SidebarViewModel {
     diff: GitLabMrVersion.Diff,
     headCommitSha: String?,
     mrWebUrl: String?,
+    mrRef: MergeRequestRef?,
   ): ChangedFileNode {
     val changeType =
       when {
@@ -233,7 +253,7 @@ class SidebarViewModel {
         diff.renamedFile -> ChangeType.RENAMED
         else -> ChangeType.MODIFIED
       }
-    return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl)
+    return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl, mrRef)
   }
 
   /**

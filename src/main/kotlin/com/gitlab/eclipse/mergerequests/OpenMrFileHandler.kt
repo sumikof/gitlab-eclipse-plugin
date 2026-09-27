@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.mergerequests
 
 import com.gitlab.eclipse.inject.lazyService
+import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
+import com.gitlab.eclipse.mergerequests.review.ReviewSessionRegistry
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
@@ -16,6 +18,7 @@ import org.eclipse.core.resources.ResourcesPlugin
 import org.eclipse.core.runtime.Path
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.ui.handlers.HandlerUtil
+import org.eclipse.ui.texteditor.ITextEditor
 import java.io.File
 
 /**
@@ -29,6 +32,11 @@ import java.io.File
  *    otherwise the file on disk is not the MR's version and opening it would be misleading.
  * 3. Containment: the diff path (server-supplied data) must resolve — symlinks and `..`
  *    included — to a real path inside the work tree ([resolveContainedRealPath]).
+ *
+ * Once the file is open in a text editor and the node carries a [ChangedFileNode.mrRef], the
+ * editor's merge request review session is begun ([ReviewSessionRegistry.begin], editor-thread-ui
+ * design §9.1, FR-1): the MR's diff threads appear as editor annotations. The gates, the messages
+ * and the open itself are unchanged.
  */
 @Suppress("unused")
 class OpenMrFileHandler(
@@ -48,7 +56,7 @@ class OpenMrFileHandler(
       node.mrWebUrl == null ->
         NotificationUtils.show("Cannot determine this file's merge request; refresh the sidebar.")
       node.diffHeadSha.isNullOrBlank() -> NotificationUtils.show(CHECKOUT_FIRST_MESSAGE)
-      else -> openInBackground(node.mrWebUrl, node.diffHeadSha, relPath)
+      else -> openInBackground(node.mrWebUrl, node.diffHeadSha, relPath, node.mrRef)
     }
     logger.info("openMrFile requested.")
     return null
@@ -62,7 +70,12 @@ class OpenMrFileHandler(
     return (selection as? IStructuredSelection)?.firstElement as? ChangedFileNode
   }
 
-  private fun openInBackground(mrWebUrl: String, diffHeadSha: String, relPath: String) {
+  private fun openInBackground(
+    mrWebUrl: String,
+    diffHeadSha: String,
+    relPath: String,
+    mrRef: MergeRequestRef?,
+  ) {
     // Everything below is blocking local I/O (JGit enumeration, HEAD read, real-path
     // resolution) — background only. NotificationUtils self-marshals to the UI thread.
     coroutineScope.launch {
@@ -77,7 +90,7 @@ class OpenMrFileHandler(
             NotificationUtils.show(
               "Multiple workspace repositories match this merge request; cannot choose one.",
             )
-          else -> resolveAndOpen(matches[0], diffHeadSha, relPath)
+          else -> resolveAndOpen(matches[0], diffHeadSha, relPath, mrRef)
         }
       } catch (e: CancellationException) {
         throw e
@@ -89,7 +102,12 @@ class OpenMrFileHandler(
   }
 
   /** Background thread: the revision gate, then the containment gate, then the UI-thread open. */
-  private fun resolveAndOpen(context: RepositoryContext, diffHeadSha: String, relPath: String) {
+  private fun resolveAndOpen(
+    context: RepositoryContext,
+    diffHeadSha: String,
+    relPath: String,
+    mrRef: MergeRequestRef?,
+  ) {
     val headSha = gitReader.read(File(context.gitDir)).headSha
     if (headSha == null || headSha != diffHeadSha) {
       NotificationUtils.show(CHECKOUT_FIRST_MESSAGE)
@@ -100,7 +118,9 @@ class OpenMrFileHandler(
       NotificationUtils.show("File not found in the working tree.")
       return
     }
-    currentDisplay.asyncExec { openEditorFor(file) }
+    currentDisplay.asyncExec {
+      openEditorFor(file) { editor -> beginReviewSession(editor, mrRef, relPath, diffHeadSha) }
+    }
   }
 
   /** UI thread. Prefers the workspace [org.eclipse.core.resources.IFile] mapping (project-aware
@@ -108,8 +128,11 @@ class OpenMrFileHandler(
    *
    *  The opening itself is [openInActiveEditor], shared with `$/gitlab/openFile`. The **lookup**
    *  stays here and stays `getFileForLocation`: it is what this command has always used, and the
-   *  lambdas keep the order unchanged (page first, then the lookup, then the store). */
-  private fun openEditorFor(file: File) {
+   *  lambdas keep the order unchanged (page first, then the lookup, then the store).
+   *
+   *  [onTextEditor] runs right after a successful open when the opened part is an [ITextEditor]
+   *  (editor-thread-ui design §9.1, FR-1). */
+  private fun openEditorFor(file: File, onTextEditor: (ITextEditor) -> Unit) {
     try {
       val opened = openInActiveEditor(
         workspaceFile = {
@@ -117,11 +140,33 @@ class OpenMrFileHandler(
             ?.takeIf { it.exists() }
         },
         fileStore = { EFS.getLocalFileSystem().getStore(file.toURI()) },
+        onOpened = { part -> if (part is ITextEditor) onTextEditor(part) },
       )
       if (!opened) NotificationUtils.show(OPEN_FAILED_MESSAGE)
     } catch (e: Exception) {
       logger.error("Failed to open editor for ${file.path}.", e)
       NotificationUtils.show(OPEN_FAILED_MESSAGE)
+    }
+  }
+
+  /**
+   * UI thread, right after the editor opened: begins the editor's MR review session (design §9.1,
+   * FR-1) when the node carried a [MergeRequestRef]; without one the file just opens, as before.
+   * [relPath] is the diff path that was opened and [diffHeadSha] the HEAD the revision gate checked.
+   * The file is already open, so a failure here is logged (class name only) and never reported as
+   * a failed open.
+   */
+  private fun beginReviewSession(
+    editor: ITextEditor,
+    mrRef: MergeRequestRef?,
+    relPath: String,
+    diffHeadSha: String,
+  ) {
+    if (mrRef == null) return
+    try {
+      ReviewSessionRegistry.begin(editor, mrRef, relPath, diffHeadSha)
+    } catch (e: Exception) {
+      logger.error("Failed to begin the merge request review session: exceptionType=${e.javaClass.name}")
     }
   }
 

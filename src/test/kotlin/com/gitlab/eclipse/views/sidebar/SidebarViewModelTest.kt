@@ -4,8 +4,10 @@ import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
+import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -305,5 +307,86 @@ class SidebarViewModelTest : StringSpec({
     val pipelineNode = node.children[0] as PipelineNode
     pipelineNode.sourceInstanceUrl shouldBe "https://x"
     pipelineNode.sourceAuthFingerprint shouldBe "fpX"
+  }
+
+  // --- ChangedFileNode.mrRef (editor-thread-ui design §8.3): set exactly when a Discussions section is built ---
+
+  val refMrUrl = "https://gitlab.example.com/group/sub/proj/-/merge_requests/42"
+  fun refMr(full: String? = "group/sub/proj!42") =
+    GitLabMergeRequest(
+      id = 987L,
+      iid = 42L,
+      title = "A merge request",
+      projectId = 7L,
+      webUrl = refMrUrl,
+      state = "opened",
+      sha = "headsha",
+      references = full?.let { GitLabMergeRequest.Reference(it) },
+    )
+  val refVersion =
+    GitLabMrVersion(
+      id = 1L,
+      headCommitSha = "headsha",
+      diffs = listOf(
+        GitLabMrVersion.Diff("src/A.kt", "src/A.kt", false, false, false),
+        GitLabMrVersion.Diff("docs/B.md", "docs/B.md", false, false, false),
+      ),
+    )
+  fun changedFiles(children: List<SidebarNode>): List<ChangedFileNode> {
+    fun walk(node: SidebarNode): List<ChangedFileNode> =
+      if (node is ChangedFileNode) listOf(node) else node.children.flatMap(::walk)
+    return children.flatMap(::walk)
+  }
+
+  "buildMrChildren: every changed file carries the section's MergeRequestRef (LIST and TREE)" {
+    SidebarViewMode.entries.forEach { mode ->
+      val children =
+        vm.buildMrChildren(refMrUrl, Result.success(refVersion), mode, refMr(), "https://gitlab.example.com/", "fp-1")
+      val section = children.filterIsInstance<DiscussionsSectionNode>().single()
+      val files = changedFiles(children)
+
+      files shouldHaveSize 2
+      files.forEach { file ->
+        file.mrRef shouldBe
+          MergeRequestRef(
+            instanceUrl = "https://gitlab.example.com/",
+            authFingerprint = "fp-1",
+            projectId = 7L,
+            mrIid = 42L,
+            mrGid = "gid://gitlab/MergeRequest/987",
+            namespaceWithPath = "group/sub/proj",
+          )
+        file.mrRef?.mrGid shouldBe section.mrGid
+        file.mrRef?.namespaceWithPath shouldBe section.namespaceWithPath
+        file.diffHeadSha shouldBe "headsha"
+        file.mrWebUrl shouldBe refMrUrl
+      }
+    }
+  }
+
+  "buildMrChildren: no MergeRequestRef whenever the Discussions section is omitted" {
+    val ok = Result.success(refVersion)
+    val list = SidebarViewMode.LIST
+    val cases = listOf(
+      vm.buildMrChildren(refMrUrl, ok, list),
+      vm.buildMrChildren(refMrUrl, ok, list, refMr(), null, "fp-1"),
+      vm.buildMrChildren(refMrUrl, ok, list, refMr(), "https://gitlab.example.com", null),
+      vm.buildMrChildren(refMrUrl, ok, list, refMr(full = null), "https://gitlab.example.com", "fp-1"),
+    )
+    cases.forEach { children ->
+      children.none { it is DiscussionsSectionNode } shouldBe true
+      val files = changedFiles(children)
+      files shouldHaveSize 2
+      files.forEach { it.mrRef.shouldBeNull() }
+    }
+  }
+
+  "buildChangedFileNodes: the MergeRequestRef argument is stamped on every node and defaults to null" {
+    val ref = MergeRequestRef("https://x", "fp", 1L, 2L, "gid://gitlab/MergeRequest/3", "g/p")
+    changedFiles(vm.buildChangedFileNodes(refVersion, SidebarViewMode.TREE, refMrUrl, ref)).map { it.mrRef } shouldBe
+      listOf(ref, ref)
+    changedFiles(vm.buildChangedFileNodes(refVersion, SidebarViewMode.LIST, refMrUrl)).forEach {
+      it.mrRef.shouldBeNull()
+    }
   }
 })

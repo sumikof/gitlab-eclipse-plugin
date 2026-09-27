@@ -133,6 +133,14 @@ object ReviewSessionRegistry {
   fun snapshotFor(editor: ITextEditor): ReviewSessionSnapshot? = tracker.documentOf(editor)?.let(state::snapshot)
 
   /**
+   * UI thread. Whether [oneBasedLine] of [editor]'s document currently carries a thread annotation
+   * (the same check as the ruler left-click; the annotations follow edits, E4). `false` for an
+   * editor without a session.
+   */
+  fun hasThreadAnnotationAt(editor: ITextEditor, oneBasedLine: Int): Boolean =
+    tracker.documentOf(editor)?.let { attacher.hasAnnotationAt(it, oneBasedLine) } ?: false
+
+  /**
    * UI thread, from the stop hook (`GitLabEclipseStartup.shutdownJobLog`, in the same `syncExec`
    * that deactivates [DiscussionGenerationRegistry]). Releases every editor (ruler and part
    * listeners), every session and every sub-model, firing [onEditorReleased] / [onSessionReleased]
