@@ -18,6 +18,9 @@ import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
+/** The first HTTP status of the server-error class (5xx). */
+private const val FIRST_SERVER_ERROR_STATUS = 500
+
 /** What became of a background `/clear` / `/reset` (design §9.4); only logged, never shown. */
 enum class ClearResult { NO_THREAD, SENT, REJECTED, CONNECTION_CHANGED, TIMED_OUT, FAILED }
 
@@ -143,6 +146,7 @@ class QuickChatService(
    */
   private fun classify(e: Exception, progress: Progress, budget: RequestBudget): QuickChatOutcome {
     val update = progress.update
+    if (progress.stage == Stage.SENDING && mayHaveRun(e)) return QuickChatOutcome.MaybeSent(update)
     val known = knownTransportFailure(e, update)
     if (known != null) return known
     val deadlinePassed = e is HttpTimeoutException && budget.expired()
@@ -153,7 +157,18 @@ class QuickChatService(
     }
   }
 
-  /** Failures that mean the same at every stage: nothing (more) went out, or the server said no. */
+  /**
+   * During `aiAction`, a GraphQL error that came with a `data` key, or a server-side (5xx) HTTP
+   * failure, may follow a mutation that already ran: calling it failed would invite a double send.
+   * A GraphQL error without data and a 4xx are definite rejections and stay failures.
+   */
+  private fun mayHaveRun(e: Exception): Boolean = when (e) {
+    is GraphQlException -> e.hasDataKey
+    is GitLabApiException -> e.statusCode >= FIRST_SERVER_ERROR_STATUS
+    else -> false
+  }
+
+  /** Definite failures: nothing (more) went out, or the server said no before running anything. */
   private fun knownTransportFailure(e: Exception, update: BindingUpdate?): QuickChatOutcome? {
     val kind = when (e) {
       is ConnectException, is UnresolvedAddressException, is HttpConnectTimeoutException -> TransportKind.CONNECT

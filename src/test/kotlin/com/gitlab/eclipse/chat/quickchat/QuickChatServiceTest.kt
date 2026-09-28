@@ -310,14 +310,20 @@ class QuickChatServiceTest : DescribeSpec({
       }
       h.service.ask(h.request()) shouldBe QuickChatOutcome.TimedOut(beforeSend = true, update = null)
     }
-    it("maps aiAction failures: not connected → TransportFailed, sent-but-unknown → MaybeSent") {
+    it("maps aiAction failures: not run → TransportFailed, possibly run → MaybeSent") {
       val h = Harness(api).apply { resolution = ProjectResolution.Resolved(project()) }
       listOf(
         ConnectException() to failed(TransportKind.CONNECT, preflightOnly),
         UnresolvedAddressException() to failed(TransportKind.CONNECT, preflightOnly),
         HttpConnectTimeoutException("x") to failed(TransportKind.CONNECT, preflightOnly),
-        GitLabApiException(500, "body", "cid-3") to failed(TransportKind.HTTP, preflightOnly, 500, "cid-3"),
-        GraphQlException(true, listOf("m"), "cid-4") to failed(TransportKind.GRAPHQL, preflightOnly, cid = "cid-4"),
+        // A definite client-side rejection, or a GraphQL error with no data: aiAction did not run.
+        GitLabApiException(400, "body", "cid-3") to failed(TransportKind.HTTP, preflightOnly, 400, "cid-3"),
+        GitLabApiException(499, "body", "cid-3") to failed(TransportKind.HTTP, preflightOnly, 499, "cid-3"),
+        GraphQlException(false, listOf("m"), "cid-4") to failed(TransportKind.GRAPHQL, preflightOnly, cid = "cid-4"),
+        // Execution may have reached aiAction: retrying could submit the question twice.
+        GitLabApiException(500, "body", "cid-3") to QuickChatOutcome.MaybeSent(preflightOnly),
+        GitLabApiException(502, "body", "cid-3") to QuickChatOutcome.MaybeSent(preflightOnly),
+        GraphQlException(true, listOf("m"), "cid-4") to QuickChatOutcome.MaybeSent(preflightOnly),
         UnstableConnectionException() to failed(TransportKind.UNSTABLE_CONNECTION, preflightOnly),
         JsonSyntaxException("result unknown") to QuickChatOutcome.MaybeSent(preflightOnly),
         HttpTimeoutException("x") to QuickChatOutcome.MaybeSent(preflightOnly),
@@ -332,6 +338,9 @@ class QuickChatServiceTest : DescribeSpec({
       val h = Harness(api).apply { resolution = ProjectResolution.Resolved(project()) }
       listOf(
         GitLabApiException(503, "body", "cid-5") to failed(TransportKind.HTTP, firstUpdate, 503, "cid-5"),
+        GitLabApiException(500, "body", "cid-5") to failed(TransportKind.HTTP, firstUpdate, 500, "cid-5"),
+        GraphQlException(true, listOf("m"), "cid-6") to failed(TransportKind.GRAPHQL, firstUpdate, cid = "cid-6"),
+        GraphQlException(false, listOf("m"), "cid-6") to failed(TransportKind.GRAPHQL, firstUpdate, cid = "cid-6"),
         JsonSyntaxException("x") to failed(TransportKind.INVALID_RESPONSE, firstUpdate),
         HttpTimeoutException("x") to failed(TransportKind.TIMEOUT, firstUpdate),
         IOException("x") to failed(TransportKind.IO, firstUpdate),
