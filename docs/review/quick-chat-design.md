@@ -145,7 +145,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
                      ---------------- 背景 ----------------------
                                    QuickChatRuntime(バンドルに 1 つ)
                                       | 専用 scope = SupervisorJob + Dispatchers.IO
-                                      | 手放した処理の数の上限(DetachedJobs)
+                                      | 手放した処理の上限は QuickChatDetachedJobs(object。クラスローダーに 1 つ)
                                       v
                                    QuickChatService(1 回の送信。送信ゲート SendGate)
                                       |-- QuickChatPreflight(version / project)
@@ -168,7 +168,9 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | `QuickChatPoller` | `requestId` と `threadId` で `aiMessages` を問い合わせ、ASSISTANT のメッセージが現れるまで待つ(§9.3)。時計と待ち合わせは注入できる |
 | `QuickChatService` | 1 回の送信を「接続の取得 → プロジェクトの解決と preflight → 送信ゲート → aiAction → ポーリング」の順に実行し、結果を 1 つの `QuickChatOutcome`(§12.3)で返す。ブロックする呼び出しはすべて `runInterruptible` の中で行う。会話オブジェクトには触れない。例外を外に出さない(`CancellationException` を除く) |
 | `SendGate` | 「`aiAction` を送ったか」を表す、1 回の送信ごとの原子的な状態(§12.4)。UI スレッドと背景処理が共有する唯一の可変状態 |
-| `QuickChatRuntime` | バンドルに 1 つ(Koin の `single`)。Quick Chat 専用の scope(`SupervisorJob() + Dispatchers.IO`)、手放した処理の数 `DetachedJobs`(§15.3)、単調時計を持つ。バンドル停止時に scope を取り消す。全ウィンドウの会話がこの 1 つを共有する |
+| `QuickChatRuntime` | バンドルの activation ごとに 1 つ(Koin の `single`)。Quick Chat 専用の scope(`SupervisorJob() + Dispatchers.IO`)と単調時計を持つ。バンドル停止時に scope を取り消す。全ウィンドウの会話がこの 1 つを共有する |
+| `QuickChatDetachedJobs` | 手放した処理の計数(§15.3)。**Kotlin の `object`(クラスローダーに 1 つ)**で、Koin には置かない。同じクラスローダーでのバンドルの stop → start をまたいで計数を保つ(Codex round 7 #2)。`onActivate` のような初期化で 0 に戻さない |
+| `ResultSink` | 背景処理から UI への結果の受け口(§9.2.5)。1 回の送信ごとに 1 つ。`QuickChatSession` への参照を 1 つだけ持ち、終端で切る |
 | `QuickChatSession` | 1 つの popup の会話と送信の進行役。**UI スレッド専用**。`QuickChatConversation` を持ち、送信の開始(`submit`)、期限の監視、唯一の終端 `finishOnce`(§9.2.4)、会話の終了(`end`)を行う。UI への戻り(`runOnUi`)と UI タイマー(`scheduleOnUi`)は注入する。画面への反映は `QuickChatView`(`render(model)` / `released(ticket, succeeded)`)を通す |
 | `QuickChatConversation` | 会話の状態(§12.1): 会話欄の項目、結び付き、世代番号、実行中の送信。UI スレッド専用。`InlineThreadModel` を作る |
 | `QuickChatCommand` | 入力を `/clear` / `/reset` / 通常の質問に分類する純粋関数 |
@@ -226,7 +228,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
    - 文脈の固定(§9.2.1)でサイズ上限を超えた → `TooLarge`。
 5. 会話欄に「質問」と「回答を待っています」を足し、表示を更新する。
 6. 要求 `QuickChatRequest` を作る。内容は不変の値と送信ゲートだけ: 文脈(`QuickChatContext`)、アンカーのファイルの場所、会話の結び付きの不変のコピー `ConversationBinding?`(§12.1)、`deadline`、`SendGate`。
-7. `QuickChatRuntime` の scope で背景処理を起動し、`Job` を実行中の送信に記録する。`Job` に完了フック(§9.2.4 の (c))を付ける。
+7. `ResultSink`(§9.2.5)を作り、`QuickChatRuntime` の scope で背景処理を起動する。背景処理に渡すのは要求と `ResultSink` だけで、セッション・view・popup・エディタへの参照は渡さない。`Job` と、完了フック(§9.2.4 の (c))の登録で得た `DisposableHandle` を実行中の送信に記録する。
 8. UI タイマーで期限の監視を予約する: `scheduleOnUi(deadline - clock.now()) { onDeadline(ticket, gen) }`(残りが 0 以下ならすぐに実行する)。
 
 **背景**(`QuickChatService.ask`)。会話オブジェクトには触れず、要求の値だけを読む。ブロックする呼び出し(接続の取得、プロジェクトの解決、HTTP)はすべて `runInterruptible { … }` の中で行い、各段の前に「取り消されていないか」と「期限までの残り時間」を確かめる:
@@ -237,7 +239,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 - w4. **送信ゲートを通る**: `SendGate` を `Open → Sending` に原子的に進める。進められなければ(UI 側が先に `Closed` にした = この送信はすでに終わっている)、**`aiAction` を送らずに**、結果も出さずに終わる。
 - w5. `aiAction` を送る(§11.2 M1)。`threadId` は `binding` にあれば付ける(R4)。`resourceId` は preflight の結果の値。応答を検査する: `errors` が空でなければ `ServerRejected(errors)`。`requestId` が無ければ `ServerRejected`。`threadId` が無ければ `Unsupported`(K3)。成功したら `SendGate` を `Sent(bindingUpdate)` にする(`bindingUpdate` = 結び付けるインスタンス、`threadId`、preflight の結果)。
 - w6. `QuickChatPoller` で回答を待つ(§9.3)。
-- w7. 結果を `QuickChatOutcome`(§12.3)にし、`delivered` の印を立ててから `runOnUi { finishOnce(ticket, gen, outcome) }` で UI へ渡す。例外はすべて結果に変換する(`CancellationException` だけは再送出)。
+- w7. 結果を `QuickChatOutcome`(§12.3)にし、`resultSink.deliver(outcome)` で UI へ渡す(§9.2.5。`delivered` の印を立て、`runOnUi` で `finishOnce` を呼ぶ)。例外はすべて結果に変換する(`CancellationException` だけは再送出)。
 
 送信は会話ごとに 1 本だけ(busy)なので、preflight や `threadId` の更新が並行して競合することは無い。
 
@@ -304,7 +306,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 |---|---|---|
 | (a) | 背景処理の結果(w7 の `runOnUi`) | 背景処理が作った結果 |
 | (b) | 期限の監視 `onDeadline`(UI タイマー) | `SendGate` を読んで決める(§12.4): 送信前 → `TimedOut(beforeSend = true)`、送信中 → `MaybeSent`、送信後 → `TimedOut(beforeSend = false)` |
-| (c) | `Job` の完了フック `invokeOnCompletion`。`delivered` の印が立っていないときだけ `runOnUi` で呼ぶ(起動前の取り消し、scope の取り消し、捕まえ損ねた例外) | `Interrupted` |
+| (c) | `Job` の完了フック `invokeOnCompletion`。`resultSink.completed()` を呼び、`delivered` の印が立っていないときだけ `runOnUi` で `finishOnce` を呼ぶ(起動前の取り消し、scope の取り消し、捕まえ損ねた例外)。フックが握るのは `ResultSink` だけ | `Interrupted` |
 | (d) | `submit` の中の即時失敗(手順 2・4) | その結果 |
 
 処理の内容:
@@ -318,7 +320,9 @@ fun finishOnce(ticket, gen, outcome) {            // UI スレッド
   } catch (e: Exception) { log(クラス名のみ) } finally {
     send.watchdog?.cancel()                        // 即時失敗 (d) では未予約
     send.gate.closeIfOpen()                        // まだ送っていなければ、以後も送らせない
-    send.job?.let { it.cancel(); runtime.detached.track(it) }   // 完了済みの Job には何も起きない
+    send.completionHandle?.dispose()               // 完了フックを外す(Job からの参照を切る)
+    send.resultSink?.detach()                      // セッションへの参照を切る(§9.2.5)
+    send.job?.let { it.cancel(); QuickChatDetachedJobs.track(it) }   // 完了済みの Job は数えない
     guarded { view.released(ticket, succeeded = outcome is Answered) }
     guarded { view.render(conversation.toInlineModel()) }
   }
@@ -328,7 +332,20 @@ fun finishOnce(ticket, gen, outcome) {            // UI スレッド
 - 状態の切り替え(`clearInFlight`)を最初に行うので、`apply` や表示の更新が例外を出しても、チケットの解放(`released`)は `finally` で必ず 1 回行われ、2 回目以降の呼び出しは何もしない。印を付ける時機による分岐(投入時 / 反映後)は無い。
 - すべて UI スレッドの上で順に実行されるので、(a)〜(d) の間の排他にロックは要らない。UI スレッドと背景処理の間で共有する可変状態は `SendGate` と `delivered` の印だけである。
 - `guarded { … }` は例外を捕まえてクラス名だけをログに残す。`released` の失敗が `render` を止めない。
-- 閉じる・置き換え・`/clear` `/reset`(§9.4、§9.5)は `finishOnce` を通らず、`session.end()` / 世代番号の更新で同じ後始末(`watchdog.cancel`、`gate.closeIfOpen`、`job.cancel`、`detached.track`)を行う。その後に届く (a)〜(c) は `isCurrent` で捨てられる。
+- 閉じる・置き換え・`/clear` `/reset`(§9.4、§9.5)は `finishOnce` を通らず、`session.end()` / 世代番号の更新で同じ後始末(`watchdog.cancel`、`gate.closeIfOpen`、`completionHandle.dispose`、`resultSink.detach`、`job.cancel`、`QuickChatDetachedJobs.track`)を行う。その後に届く (a)〜(c) は `resultSink` が切られているか `isCurrent` で捨てられる。
+
+#### 9.2.5 手放した処理が UI オブジェクトを握らないこと(Codex round 7 #1)
+
+割り込みで止まらない処理(§15.3)は、手放した後も戻らないことがある。そのあいだ、`Job` とそのコルーチンが参照しているものは解放されない。そこで、背景処理と完了フックが UI 側に届く参照を `ResultSink` の 1 本だけにし、終端でその 1 本を切る。
+
+- `ResultSink` は `AtomicReference<QuickChatSession?>`、`ticket`、`gen`、`delivered`(原子的な真偽値)、`runOnUi` を持つ。
+  - `deliver(outcome)`(背景): `delivered` を立て、参照が残っていれば `runOnUi { session.finishOnce(ticket, gen, outcome) }`。参照が切られていれば何もしない。
+  - `completed()`(完了フック): `delivered` が立っておらず参照が残っていれば、`runOnUi` で `finishOnce(…, Interrupted)`。
+  - `detach()`(UI。`finishOnce` の `finally` と `end()`): 参照を null にする。
+- `finishOnce` と `end()` は、完了フックの `DisposableHandle` も `dispose()` する(Job の完了リストから外す)。
+- 背景処理(`QuickChatService.ask` のコルーチン)が持つのは、要求(不変の値。文脈は §9.2.1 の上限で最大およそ 144 KiB)、`SendGate`、`ResultSink` だけである。`IDocument`・エディタ・popup・view・`QuickChatSession` は持たない。
+- したがって、手放した処理 1 つが保持し続けるのは「要求 + 小さな状態」だけで、その数は §15.3 の上限で抑えられる。
+
 
 ### 9.3 ポーリング(T1)
 
@@ -357,7 +374,7 @@ UI スレッドで処理し、チケットは即座に完了させる(`finishOnc
 どの閉じ方でも同じ終了処理を通す:
 
 1. `InlineThreadPopup.close()`(既存): 未送信の下書きを `preserveDrafts` に渡し(実行中のチケットの本文は除く。E7)、Shell を破棄し、`host.onClosed()` を呼ぶ。
-2. `QuickChatHost.onClosed()` → `QuickChatSession.end()`: 世代番号を進め、実行中の送信があれば期限の監視を取り消し、`SendGate` を閉じ(まだ送っていなければ以後も送られない)、`Job` を取り消して `DetachedJobs` に渡す。結び付きを破棄し、`QuickChatPopups` から外す。
+2. `QuickChatHost.onClosed()` → `QuickChatSession.end()`: 世代番号を進め、実行中の送信があれば期限の監視を取り消し、`SendGate` を閉じ(まだ送っていなければ以後も送られない)、完了フックを外し、`ResultSink` の参照を切り、`Job` を取り消して `QuickChatDetachedJobs` に渡す(§9.2.5)。結び付きを破棄し、`QuickChatPopups` から外す。
 3. サーバには何も送らない(`/clear` も送らない)。サーバ側の会話は GitLab の保持期限で消える。参照実装は次に開いたときに前の会話へ `/clear` を送る(REF `quick_chat/quick_chat_state.ts:394-418`)が、閉じる操作やウィンドウ終了のたびにネットワークへ書き込む副作用を避けるため採らない。
 - `preserveDrafts` はコピー用ダイアログを出す(MR 経路と同じ部品 `CommentInputDialog` + `COPY_TEXT_PROMPT`。E `mergerequests/discussions/actions/DiscussionActionSupport.kt:54, 267`)。ダイアログの親はウィンドウの Shell。置き換え(§9.1 手順 4)では、古い popup の下書きダイアログを閉じてから新しい popup を開く。
 - 「Close Quick Chat」はアクティブなウィンドウの Quick Chat を閉じる。開いていなければハンドラは無効。
@@ -486,7 +503,7 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | `entries` | 会話欄の項目の列。種類 = `Question(text)` / `Pending` / `Answer(markdown)` / `Failure(message)` / `Separator` |
 | `binding` | 会話の結び付き(§9.2.3)。`instanceUrl`(正規化済み)、`preflight`(バージョン判定済み・`resourceId`・プロジェクトの対応キー。§9.2.2)、`threadId?`。未確立なら null。`ConnectionChanged` と終了で破棄 |
 | `generation` | 世代番号。`/clear` `/reset`、`ConnectionChanged`、終了で進める |
-| `inFlight` | 実行中の送信: チケット、開始時の世代番号、`deadline`、`SendGate`、期限の監視の取り消し手段、`Job`(起動後)。`begin` で作り、`clearInFlight` で外す |
+| `inFlight` | 実行中の送信: チケット、開始時の世代番号、`deadline`、`SendGate`、期限の監視の取り消し手段、`ResultSink`、`Job` と完了フックの `DisposableHandle`(起動後)。`begin` で作り、`clearInFlight` で外す |
 
 - `binding` を書き換えるのは UI スレッドの 3 箇所だけ: `finishOnce`(照合済みの `bindingUpdate` の保存、`ConnectionChanged` での破棄)、`end`(§9.5 の破棄)、§9.4(`threadId` の破棄)。背景処理は要求に入った `binding` の不変のコピーだけを読む。
 
@@ -586,19 +603,21 @@ round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔
 - ポーリングの待ちは `delay`(取り消しですぐ止まる)。待ちは残り時間を超えない。
 - 期限切れの結果は `SendGate` の状態で決まる(§12.4)。`aiAction` の結果が期限の後に届いても使わない(`finishOnce` が捨てる)。
 
-### 15.3 手放した処理の上限(`DetachedJobs`)
+### 15.3 手放した処理の上限(`QuickChatDetachedJobs`)
 
-- 「手放した処理」= チケットを解放した(`finishOnce` / 終了)後も完了していない `Job`、および実行中の `/clear` `/reset` の背景送信(§9.4)。`QuickChatRuntime` が全ウィンドウを通じて 1 つの計数を持つ。`Job` の完了で 1 つ減る。
+- 「手放した処理」= チケットを解放した(`finishOnce` / 終了)後も完了していない `Job`、および実行中の `/clear` `/reset` の背景送信(§9.4)。計数は `object QuickChatDetachedJobs` が持つ(クラスローダーに 1 つ。全ウィンドウ共通)。`track(job)` は完了していない `Job` だけを数えに加え、その `Job` の完了フックで 1 つ減らす(このフックが握るのは `object` だけ)。
 - 割り込みで止まる処理(HTTP、`delay`)は取り消しから短時間で完了するので、数はすぐ 0 に戻る。残り続けるのは、割り込みで止まらない呼び出しの中にいる処理だけである。該当するのは OAuth のトークン更新(ScribeJava の `HttpURLConnection`。タイムアウト未設定で、割り込みでも止まらない。E13)と、JGit のローカル I/O。
 - 手放した処理が `MAX_DETACHED`(既定 4)以上のあいだ、新しい送信は通信せずに `Busy` で終える(§9.2 手順 4)。新しい `/clear` `/reset` の背景送信は行わずにログに記録する(画面上の効果とローカルの `threadId` の破棄は行う)。
 - **正常に実行中の送信は数えない**(会話ごとに 1 本なので、数はウィンドウの数で抑えられる)。したがって複数のウィンドウで同時に送信しても、互いを拒否しない。
 - これにより、Quick Chat が同時に占める背景の処理は「送信中のウィンドウの数 + `MAX_DETACHED` + 上限に達した時点で送信中だったもの」を超えない。スレッドは `Dispatchers.IO` のものを使い、専用のスレッドは作らない。
+- **バンドルの stop → start をまたいで上限を保つ**(Codex round 7 #2): stop は scope を取り消すが、割り込みで止まらない処理は残る。計数が Koin の `single` にあると start で 0 から数え直し、再起動のたびに上限まで溜まる。計数を `object` に置くので、同じクラスローダーでの stop → start(既存コードが想定している。E `GitLabEclipseStartup.kt:298-300` のコメント)では、前の activation の手放した処理も数え続け、上限は戻らない。既存の `object` のレジストリ(`JobLogGenerationRegistry` など)と同じ前提である。
+  - 既知の制限: プラグインの更新などでクラスローダーが替わると、新しいクラスローダーの計数は 0 から始まる。Eclipse のプラグインの更新は通常ワークベンチの再起動を伴うので、この場合は扱わない(§27)。
 - OAuth のトークン更新が止まっている状態では、`captureConnection` を使う他のすべての機能も同じ場所で止まる(既存の性質。§27)。Quick Chat はその状態でも Send を戻し、理由を表示する。
 
 ### 15.4 `/clear` `/reset` の背景送信(§9.4)
 
 - `QuickChatRuntime` の scope で起動し、誰も完了を待たない。処理全体を `withTimeout(CLEAR_DEADLINE)`(既定 30 秒)と `runInterruptible` で囲む。HTTP のタイムアウト = min(25000 ms, 残り)。
-- 起動した時点から完了まで `DetachedJobs` に数える(§15.3)。popup を閉じても続ける(サーバ上の会話の片付けなので)。バンドル停止時に scope ごと取り消す。
+- 起動した時点から完了まで `QuickChatDetachedJobs` に数える(§15.3)。popup を閉じても続ける(サーバ上の会話の片付けなので)。バンドル停止時に scope ごと取り消す。
 - 期限切れ・失敗はログに記録するだけ(§19)。
 
 ### 15.5 リトライ
@@ -617,15 +636,15 @@ round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔
 ## 17. 並行処理
 
 - **UI スレッド専用**: popup、`InlineThreadState`、`QuickChatSession`、`QuickChatConversation`(NFR-1)。
-- **背景処理が触るもの**: 要求に入った不変の値(`QuickChatContext`、`binding` のコピー、`deadline`)、`SendGate`、`delivered` の印、接続。UI スレッドと背景処理が共有する可変状態は `SendGate`(原子的な参照)と `delivered`(原子的な真偽値)だけである。
+- **背景処理が触るもの**: 要求に入った不変の値(`QuickChatContext`、`binding` のコピー、`deadline`)、`SendGate`、`ResultSink`、接続。UI スレッドと背景処理が共有する可変状態は `SendGate`(原子的な参照)と `ResultSink`(原子的な参照と真偽値)だけである。
 - **背景から UI へ**は `runOnUi`(= `Display.asyncExec`)のみ。`syncExec` は使わない。ディスプレイが破棄済みで投入に失敗したら、何もしない(popup も存在しない)。投入の失敗と、投入した処理の中の例外は捕まえてクラス名だけをログに残す(既存の `hop` と同じ扱い。E `mergerequests/review/MrThreadPopupHost.kt:310-324`)。
 - **終端は 1 つ**: §9.2.4 の `finishOnce`。古い結果(閉じた後・置き換えた後・`/clear` `/reset` の後・期限切れの後)は `conversation.isCurrent(ticket, gen)` で捨てる。照合と反映は同じ UI の処理の中で行うので、順序はすべて UI スレッド上で決まる。
 - **送信ゲート**(§12.4): 「期限切れ・閉じる・置き換えが先か、`aiAction` の送信が先か」は `SendGate` の 1 回の原子的な更新で決まる。UI 側が先なら `aiAction` は送られない。背景側が先なら UI 側は「送信中」または「送信後」として扱う。「何も送っていない」と表示した質問が後から送られることは無い。
-- **scope**: `QuickChatRuntime` が持つ `CoroutineScope(SupervisorJob() + Dispatchers.IO)` を、全ウィンドウの送信と `/clear` `/reset` の背景送信が使う。既存の共有 scope(`SupervisorJob` でなく、他の機能の例外で失効しうる。E4)は使わない。`QuickChatRuntime` は Koin の `single` で、生成は 1 回だけ。
+- **scope**: `QuickChatRuntime` が持つ `CoroutineScope(SupervisorJob() + Dispatchers.IO)` を、全ウィンドウの送信と `/clear` `/reset` の背景送信が使う。既存の共有 scope(`SupervisorJob` でなく、他の機能の例外で失効しうる。E4)は使わない。`QuickChatRuntime` は Koin の `single` で、activation ごとに 1 回だけ生成する。手放した処理の計数だけは activation をまたぐため `object QuickChatDetachedJobs` に置く(§15.3)。
 - **送信は会話ごとに 1 本**(busy)。ウィンドウごとに会話は 1 つ。ウィンドウが違えば独立して並行できる(§15.3 のとおり、正常な同時送信は拒否しない)。
 - **キャンセル**: `finishOnce`・閉じる・置き換えで `Job.cancel()`。`runInterruptible` の中の HTTP と `delay` はすぐ止まる。割り込みで止まらない呼び出しは戻るまで残るが、誰も待たない(§15.3)。
 - **`QuickChatService` は `CancellationException` 以外のすべての例外を結果に変換する。** 捕まえ損ねた例外で `Job` が終わっても、scope は `SupervisorJob` なので他の送信に波及せず、完了フック(§9.2.4 の (c))がチケットを解放する。
-- **バンドル停止時の順序**: (1) UI スレッドで `QuickChatPopups` がすべての popup を `discard()` する(各 `session.end()` が `SendGate` を閉じ、`Job` を取り消す)。(2) `QuickChatRuntime.close()` が scope を取り消す。どちらも処理の完了を待たない(join しない)。
+- **バンドル停止時の順序**: (1) UI スレッドで `QuickChatPopups` がすべての popup を `discard()` する(各 `session.end()` が `SendGate` を閉じ、`Job` を取り消す)。(2) `QuickChatRuntime.close()` が scope を取り消す。どちらも処理の完了を待たない(join しない)。`QuickChatDetachedJobs` は 0 に戻さない(残った処理が完了したときに減る)。
 
 ## 18. 認証と認可
 
@@ -660,7 +679,7 @@ round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔
 
 ## 23. テスト方針
 
-- **SWT 非依存層**(TDD、headless で実行): `QuickChatCommand`、`QuickChatContextBuilder`、`GitLabVersion`、`MarkdownCodeBlocks`、`QuickChatApi`(GraphQL クライアントを差し替えて、送る変数と応答の変換を検証)、`QuickChatPoller`(時計・待ち合わせ・問い合わせを差し替え: 即時応答 / 何回目かで応答 / 回数切れ / 途中のエラー / 他の requestId・role の混在 / `errors` あり / 空 / キャンセル / 接続先の変更)、`QuickChatService`(各段の失敗が `QuickChatOutcome` に写ること、`CancellationException` だけが外に出ること、送信ゲートが閉じていたら `aiAction` を送らないこと)、`SendGate`、`DetachedJobs`、`QuickChatSession`(偽の時計・偽の UI タイマー・偽の `runOnUi` を注入。`finishOnce` の 1 回性、期限の監視、完了フック、`end`)、`QuickChatConversation`(世代番号・チケットの照合、`/clear` `/reset`、閉じた後の結果の破棄、`toInlineModel`)。
+- **SWT 非依存層**(TDD、headless で実行): `QuickChatCommand`、`QuickChatContextBuilder`、`GitLabVersion`、`MarkdownCodeBlocks`、`QuickChatApi`(GraphQL クライアントを差し替えて、送る変数と応答の変換を検証)、`QuickChatPoller`(時計・待ち合わせ・問い合わせを差し替え: 即時応答 / 何回目かで応答 / 回数切れ / 途中のエラー / 他の requestId・role の混在 / `errors` あり / 空 / キャンセル / 接続先の変更)、`QuickChatService`(各段の失敗が `QuickChatOutcome` に写ること、`CancellationException` だけが外に出ること、送信ゲートが閉じていたら `aiAction` を送らないこと)、`SendGate`、`ResultSink`、`QuickChatDetachedJobs`、`QuickChatSession`(偽の時計・偽の UI タイマー・偽の `runOnUi` を注入。`finishOnce` の 1 回性、期限の監視、完了フック、`end`)、`QuickChatConversation`(世代番号・チケットの照合、`/clear` `/reset`、閉じた後の結果の破棄、`toInlineModel`)。
 - **SWT 層**: `QuickChatHost` は薄いアダプタで、`released` / `render` の写像を headless で検証する(MR の `MrThreadPopupHost` と同じ方式)。進行の論理は SWT 非依存の `QuickChatSession` にあり、PR-1 でテストする。popup の見た目・キー・フォーカス・挿入は手動検証(§25)。
 - **既存の回帰**: `views/inlinethread` と MR 経路の既存テストがすべて通ること、`FAILSET_IDENTICAL`、detekt がベースライン(main 17 / test 45)から増えないこと。
 
@@ -694,10 +713,12 @@ round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔
 | A25 | 非 ASCII の名前を percent-encoded の HTTP remote で clone したプロジェクトで、Q1 の `fullPath` がデコード済みになり、プロジェクトを確かめられる | preflight のテスト |
 | A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない。区切り「New chat」はその送信の質問の前に表示される | preflight・サービス・会話のテスト |
 | A27 | 256 KiB を超える回答、31 個以上のコードブロック、41 項目目の追加で、それぞれ §9.7 の上限表のとおりになる | 分割・会話のテスト |
-| A30 | 手放した処理が `MAX_DETACHED` 以上のあいだ、新しい送信は通信せずに `Busy` になり、`/clear` `/reset` の背景送信は行われない。止まっていた処理が完了すると数が減り、送信できるようになる。正常に実行中の送信は数えない(`MAX_DETACHED + 1` 個の会話が同時に送信しても拒否されない)。計数は全ウィンドウで 1 つ | `DetachedJobs`・セッションのテスト(複数の会話) |
+| A30 | 手放した処理が `MAX_DETACHED` 以上のあいだ、新しい送信は通信せずに `Busy` になり、`/clear` `/reset` の背景送信は行われない。止まっていた処理が完了すると数が減り、送信できるようになる。正常に実行中の送信は数えない(`MAX_DETACHED + 1` 個の会話が同時に送信しても拒否されない)。計数は全ウィンドウで 1 つ | `QuickChatDetachedJobs`・セッションのテスト(複数の会話) |
 | A31 | 期限は `submit` の最初の文で決まり、文脈の固定や背景処理の開始の遅れを含めて数えられる。`finishOnce` は (a) 背景の結果・(b) 期限の監視・(c) 完了フック・(d) 即時失敗のどの順序・組み合わせでも 1 回だけ効き、`released` は 1 回だけ呼ばれる。結果の反映や表示の更新が例外を出しても `released` は呼ばれる。scope が取り消し済み / 実行中に取り消されても、Send が戻る | セッションのテスト(順序を入れ替えた組み合わせ、例外を出す偽の view) |
 | A28 | 送信ゲート: 期限切れ・閉じる・置き換えが `aiAction` の前に起きた場合、その後に背景処理が進んでも `aiAction` は送られない(`TimedOut(beforeSend = true)`)。`aiAction` の実行中の期限切れは `MaybeSent`、成功後は `TimedOut(beforeSend = false)` で `threadId` が会話に保存される。「何も送っていない」と表示した質問が送られることは無い | `SendGate`・サービス・セッションのテスト(w4 の直前で止めて UI 側を先に進める) |
-| A29 | `/clear` `/reset` の背景送信が止まっても、画面上の効果と `threadId` の破棄は行われ、Send は使える。背景送信は `CLEAR_DEADLINE` で取り消され、完了するまで `DetachedJobs` に数えられる | 止まる偽物を使ったテスト |
+| A29 | `/clear` `/reset` の背景送信が止まっても、画面上の効果と `threadId` の破棄は行われ、Send は使える。背景送信は `CLEAR_DEADLINE` で取り消され、完了するまで `QuickChatDetachedJobs` に数えられる | 止まる偽物を使ったテスト |
+| A33 | 割り込みを無視して戻らない偽の処理を手放した後(期限切れ、閉じる、置き換え)、`QuickChatSession`・view・偽のエディタへの参照が `Job`・完了フック・背景のコルーチンから辿れない(`ResultSink` が切れ、完了フックが外れている)。その後に偽の処理が戻っても、UI には何も届かない | セッションのテスト(弱参照 + GC、または参照の到達性を検査する偽物) |
+| A34 | 割り込みを無視して戻らない処理を手放したまま、`QuickChatRuntime` を閉じて作り直しても(stop → start の再現)、手放した処理の数は引き継がれ、上限に達していれば新しい送信は `Busy` になる。処理が戻ると数が減る | `QuickChatDetachedJobs`・ランタイムのテスト |
 | A32 | 取り消しで実行中の HTTP が止まる(`runInterruptible` + `HttpClient.send`)。ヘッダの後に本文が止まる偽サーバでも止まる | ループバックの偽サーバを使ったテスト(headless で実行可能) |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
 
@@ -742,6 +763,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | GitLab の Experiment API(`aiAction` / `aiMessages` は Experiment 表記) | 将来の変更で壊れる | 17.10 版の形に固定し、失敗は §14 で表示する |
 | 異常に大きい GraphQL 応答 | 既存の HTTP 層は本文全体を文字列で受け取ってから解析する(E `api/http/GitLabHttpClient.kt:18-31`)。巨大な応答でヒープを圧迫しうる | 本サイクルでは HTTP 層を変えない(既存のすべての API 呼び出しに共通する性質で、回答は LLM の出力でサーバ側で長さが限られる)。表示側の上限(§9.7)だけを設ける。受信バイト数の上限を HTTP 層に入れるのは後続候補(Codex round 4 #2) |
 | OAuth のトークン更新が無期限に止まりうる(既存。E13) | `captureConnection` を使うすべての機能が同じ場所で止まる。Quick Chat では送信が期限で失敗し、4 回で `Busy` になる | Quick Chat は UI 側の期限の監視で Send を戻す(§15.1)ので、この欠陥に依存しない。認証コードは本サイクルで変えない。**後続候補**: `GitLabOAuthService` の ScribeJava に接続・読み取りのタイムアウトを設定する(`JDKHttpClientConfig.withConnectTimeout / withReadTimeout`)。全機能に効く修正で、更新失敗時の既存の挙動(通知と PAT への切り替え)に合流するため、別 issue で扱う |
+| プラグインの更新でクラスローダーが替わると、手放した処理の計数が 0 から始まる | 前のクラスローダーの止まった処理(最大 `MAX_DETACHED`)に加えて、新しく上限まで手放しうる | Eclipse のプラグインの更新は通常再起動を伴うので扱わない(§15.3)。根本の解消は OAuth 更新のタイムアウト(上の後続候補) |
 | `CodeFormatter` の既存の弱さ(`null` の結果を扱わない) | Java の Insert で例外 | Quick Chat 側で例外を捕まえて整形なしで挿入する(§9.6)。Duo Chat 側の修正は本サイクルの対象外(後続候補として記録) |
 | 置き換え時のコピー用ダイアログ | 新しい popup の前にモーダルが出る | 下書きがあるときだけ出る(既存の挙動)。手動で確認 |
 
@@ -754,7 +776,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | T1 | `QuickChatCommand` / `QuickChatContextBuilder` / `GitLabVersion`(純粋関数 + テスト) | sonnet |
 | T2 | `QuickChatApi`(M1 / M2 / Q1 / Q2 + 応答の型 + テスト) | opus |
 | T3 | `QuickChatPoller` / `QuickChatPreflight` / `QuickChatService` / `SendGate`(結果の写像、`runInterruptible`、送信ゲート、会話の結び付きと接続の照合、`GitLabProjectUrlResolver` の 4 種類の兄弟メソッド + テスト。A32 の偽サーバのテストを含む) | opus |
-| T4 | `QuickChatConversation` / `QuickChatSession` / `QuickChatRuntime` / `DetachedJobs`(世代番号・チケット照合・`finishOnce`・期限の監視・完了フック・`toInlineModel` + テスト) | opus |
+| T4 | `QuickChatConversation` / `QuickChatSession` / `QuickChatRuntime` / `QuickChatDetachedJobs` / `ResultSink`(世代番号・チケット照合・`finishOnce`・期限の監視・完了フック・`toInlineModel` + テスト) | opus |
 
 **PR-2 UI・コード操作**(`feat/quick-chat-ui`)
 
@@ -766,7 +788,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | T8 | Copy / Insert(`QuickChatSnippetInserter`、`CodeFormatter` の引数版) | opus |
 | T9 | ハンドラ 2 件と `plugin.xml` の配線 | opus |
 
-**実装レビュー(Codex)の重点確認項目**: プロジェクト確認のフェイルクローズ(§9.2.2 の表)と接続先の結び付き(§9.2.3)、UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、`finishOnce` が唯一の終端であること(§9.2.4。チケットを解放する経路が他に無いか)、送信ゲートの比較交換(§12.4)、`runInterruptible` の外にブロックする呼び出しが無いこと、`DetachedJobs` の計数の増減、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
+**実装レビュー(Codex)の重点確認項目**: プロジェクト確認のフェイルクローズ(§9.2.2 の表)と接続先の結び付き(§9.2.3)、UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、`finishOnce` が唯一の終端であること(§9.2.4。チケットを解放する経路が他に無いか)、送信ゲートの比較交換(§12.4)、`runInterruptible` の外にブロックする呼び出しが無いこと、`QuickChatDetachedJobs` の計数の増減と stop → start での保持、手放した処理が UI オブジェクトを握らないこと(§9.2.5)、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
 
 ## 29. Codex レビュー反映履歴
 
@@ -842,3 +864,10 @@ round 2〜6 の 19 件中 9 件が「期限・止まる処理の隔離・executo
 | 5 | P2 `CompletableFuture.cancel(true)` は割り込まない | 方式変更で解消 | `CompletableFuture` を廃止。割り込みは `runInterruptible`(E14)、止まることは実測(E12)と A32 で確認。止まらない処理が残ることを §15.3 に明記 |
 
 round 2 #1、round 3 #3、round 4 #1・#3、round 5 #1〜#3 の反映内容(§15・§17 の旧記述)は、この方式変更で置き換えた。各指摘が求めた性質(期限の保証、段階に応じた分類、`/clear` `/reset` の資源の上限、scope の隔離、正常な同時処理を拒否しないこと)は、それぞれ §15.1、§12.4、§15.4、§17、§15.3 で満たす。
+
+### round 7(`4d15692` に対する指摘 2 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 完了フックがセッション → view → popup → エディタを強参照し、戻らない処理を手放すたびに UI オブジェクトと文書が残る | 採用(局所的な修正) | §9.2.5 を新設。背景処理と完了フックが UI 側に届く参照を `ResultSink` の 1 本にし、`finishOnce` / `end()` で切る。完了フックの `DisposableHandle` も dispose。§9.2 手順 7・w7、§9.2.4、§9.5、§17、A33 |
+| 2 | P1 バンドルの stop → start で計数(Koin の `single`)が 0 に戻り、止まった処理が再起動のたびに溜まる | 採用・設計(ユーザー判断: 案 A) | 計数を `object QuickChatDetachedJobs`(クラスローダーに 1 つ)に移し、stop → start で 0 に戻さない。クラスローダーが替わる更新は既知の制限。§8.1、§15.3、§17、§27、A34 |
