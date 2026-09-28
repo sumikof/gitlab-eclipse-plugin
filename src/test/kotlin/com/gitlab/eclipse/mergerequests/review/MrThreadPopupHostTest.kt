@@ -113,7 +113,6 @@ private class HostHarness(
   val writes = FakeWrites()
   val notifies = mutableListOf<String>()
   val retries = mutableListOf<Triple<String, String, (String) -> Unit>>()
-  val sendAgains = mutableListOf<String>()
   val copyTexts = mutableListOf<Pair<String, String>>()
   val launcherLogs = mutableListOf<String>()
   val hostLogs = mutableListOf<String>()
@@ -145,7 +144,6 @@ private class HostHarness(
         },
         notify = { notifies += it },
         promptRetry = { m, b, r -> retries += Triple(m, b, r) },
-        promptSendAgain = { m, _, _ -> sendAgains += m },
         promptCopyText = { m, b -> copyTexts += m to b },
         log = { launcherLogs += it },
         registryActive = { true },
@@ -209,7 +207,7 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.sidebarReloads shouldContainExactly listOf(OTHER_IDENTITY)
     }
 
-    it("Ambiguous: reload reports Skipped, so no [Send again], only copy-text, and the draft stays (A20, A24)") {
+    it("Ambiguous: reload reports Skipped, so the unconfirmed message and copy-text only; draft stays (A20, A24)") {
       val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT))
       h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
       val s = FakeSurface(NEW_MODEL)
@@ -218,7 +216,6 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.host.onSubmit(s, s.submit())
 
       h.reloadOutcomes shouldContainExactly listOf(LoadOutcome.Skipped)
-      h.sendAgains.shouldBeEmpty()
       h.copyTexts shouldContainExactly listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to BODY)
       h.refreshed shouldContainExactly listOf(IDENTITY to REF)
       h.sidebarReloads shouldContainExactly listOf(IDENTITY)
@@ -451,7 +448,7 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
     }
 
-    it("Ambiguous on a reply never offers [Send again] either (A20)") {
+    it("Ambiguous on a reply never re-sends either (A20, #96)") {
       val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
       h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
       val s = FakeSurface(REPLY_MODEL)
@@ -459,7 +456,6 @@ class MrThreadPopupHostTest : DescribeSpec({
 
       h.host.onSubmit(s, s.submit())
 
-      h.sendAgains.shouldBeEmpty()
       h.reloadOutcomes shouldContainExactly listOf(LoadOutcome.Skipped)
       h.copyTexts shouldHaveSize 1
       h.refreshed shouldContainExactly listOf(IDENTITY to REF)

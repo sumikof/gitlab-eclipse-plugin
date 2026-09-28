@@ -32,7 +32,7 @@ private fun select(sections: List<DiscussionsSectionNode>) =
  * delegates to so it is reachable headless. The load-bearing case is the first one: one merge
  * request can own two section nodes (it appears under both "Merge requests assigned to me" and
  * "For current branch"), and the post-write re-fetch must see BOTH — refreshing only the first
- * would let the `[Send again]` prompt claim a thread was reloaded when the one on screen was not.
+ * would let the launcher's Ambiguous message claim a thread was reloaded when the one on screen was not.
  */
 class SelectDiscussionsSectionsTest : DescribeSpec({
   describe("selectDiscussionsSections") {

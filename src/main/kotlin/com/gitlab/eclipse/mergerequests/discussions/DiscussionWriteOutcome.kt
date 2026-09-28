@@ -34,7 +34,7 @@ sealed interface DiscussionWriteOutcome {
   /**
    * A local, pre-send gate refused the write (design §9.3.1: the editor line-comment path's
    * G5–G9). Nothing was sent, and the gate condition is stable — retrying would re-evaluate the
-   * same check and produce the same result, so the terminal offers no `[Retry]`/`[Send again]`,
+   * same check and produce the same result, so the terminal offers no `[Retry]`,
    * only [message] copy-preservation. [message] is a fixed, server-free string chosen by whichever
    * gate rejected (never text derived from the server response or from the submitted body): the
    * audit log logs only the constant label `outcome=rejected`, never this text (design §19).

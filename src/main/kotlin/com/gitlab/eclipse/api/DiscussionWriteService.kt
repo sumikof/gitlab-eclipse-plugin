@@ -206,8 +206,8 @@ class DiscussionWriteService(
    *   well have committed the note and only the response came back incomplete (a proxy truncation,
    *   a schema/field-name drift, an unexpected `null` from Gson). Classifying it Definite would
    *   offer `[Retry]` and let the user post the same comment twice. Ambiguous instead routes them
-   *   through the forced re-fetch, so `[Send again]` is only reachable after they have seen the
-   *   current state. The message is a **constant** on purpose: no server text may reach it, because
+   *   through the forced re-fetch and a copy-text dialog that never re-sends (#96).
+   *   The message is a **constant** on purpose: no server text may reach it, because
    *   GitLab's error strings can echo the submitted comment body.
    * - **Payload present with a non-empty `errors` array** → [DiscussionMutationException], which
    *   maps to **Definite**. Here the server explicitly stated it executed the mutation and refused

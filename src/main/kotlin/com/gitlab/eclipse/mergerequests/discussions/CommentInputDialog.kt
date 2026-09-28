@@ -24,7 +24,7 @@ import org.eclipse.swt.widgets.Text
  *   the caret is placed at the end so the user can keep typing.
  * @param errorMessage when non-null, rendered as a label above the prompt — how a failed send
  *   explains itself while keeping the user's text (design §9.2 / §9.3).
- * @param okLabel label for the OK button, so callers can render `Retry`, `Send again`, or `Save`
+ * @param okLabel label for the OK button, so callers can render `Retry` or `Save`
  *   without a second dialog class.
  */
 class CommentInputDialog(

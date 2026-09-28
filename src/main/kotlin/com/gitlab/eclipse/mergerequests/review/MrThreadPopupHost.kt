@@ -98,7 +98,8 @@ class GitLabMrThreadWrites(
  * `write` so that busy is released on every terminal and the success effect is applied only for
  * a Success, and supplies the **editor-path `reload`**, which establishes or refreshes the review
  * session and asks the sidebar to reload but always reports [LoadOutcome.Skipped] — so an
- * Ambiguous write on this path never offers `[Send again]` (A20).
+ * Ambiguous write on this path never claims the thread was reloaded (A20). No path offers a
+ * re-send after an Ambiguous write (#96).
  *
  * SWT-free: thread hops and every effect are injected. [runOnUi] must schedule onto the UI thread
  * without blocking (`asyncExec`); a scheduling failure is swallowed with one log line, as in
@@ -294,7 +295,7 @@ class MrThreadPopupHost(
    * UI thread, the launcher's terminal (Success / Ambiguous). Establishes or refreshes the session
    * of the attempt's MR target and asks the sidebar to reload, then reports [LoadOutcome.Skipped]
    * **whatever happened** (design §9.3.1, FR-10): the mutation may still be committing server-side
-   * when a reload lands, so a reload can never prove "not posted", and `[Send again]` stays locked.
+   * when a reload lands, so a reload can never prove "not posted".
    * A target of `null` (the attempt failed before G6) does neither.
    */
   private fun editorPathReload(target: Pair<SessionIdentity, MergeRequestRef>?, onOutcome: (LoadOutcome) -> Unit) {

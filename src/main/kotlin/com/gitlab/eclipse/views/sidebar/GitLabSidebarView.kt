@@ -624,8 +624,8 @@ class GitLabSidebarView : ViewPart() {
    * and "For current branch", so the (instance, account, project, iid) tuple identifies a merge
    * request but NOT a single node — see [DiscussionsSectionNode.nodeId]. The post-write re-fetch
    * must refresh all of them, because it cannot tell which one the user is looking at, and
-   * refreshing only one would let the anti-duplicate `[Send again]` prompt claim a thread was
-   * reloaded when it was not.
+   * refreshing only one would let the launcher's Ambiguous message claim a thread was reloaded
+   * when it was not.
    *
    * Matching is delegated to the pure [selectDiscussionsSections] so it stays reachable from the
    * headless tests.
@@ -651,7 +651,7 @@ class GitLabSidebarView : ViewPart() {
    * `force = true` is the requirement, not an optimization: after a successful write the section
    * is already `LOADED`, so a non-forced load would return [LoadOutcome.Skipped] without fetching
    * anything and leave the user looking at a stale thread — and, on the ambiguous-outcome path,
-   * would withhold the `[Send again]` that only an `Applied` reload may offer.
+   * would report the thread as not reloaded even though it could have been.
    */
   internal fun reloadDiscussions(section: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
     discussionsLoader.loadDiscussions(section, force = true, onOutcome)

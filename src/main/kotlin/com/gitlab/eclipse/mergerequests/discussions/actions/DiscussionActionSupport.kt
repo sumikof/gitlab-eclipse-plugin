@@ -45,12 +45,16 @@ internal const val NO_PERMISSION_MESSAGE =
 
 /** Prompts shown above the text area of each flavour of [CommentInputDialog]. */
 internal const val RETRY_PROMPT = "Your text was kept. Edit it if you want, then try again."
-internal const val SEND_AGAIN_PROMPT = "Your text was kept. Send it again only if it is not already shown above."
-internal const val COPY_TEXT_PROMPT = "Your text was not sent. Copy it from here if you want to keep it."
 
-/** OK-button labels; the launcher's two re-send prompts are distinguished only by this label. */
+/**
+ * Neutral on purpose: the copy dialog also closes an Ambiguous write (#96), where the text may
+ * already have been posted, so the prompt must not claim it was not sent. The message above it
+ * says what happened.
+ */
+internal const val COPY_TEXT_PROMPT = "Your text was kept. Copy it from here if you want to keep it."
+
+/** OK-button label of the launcher's only re-send prompt (a Definite failure). */
 internal const val RETRY_LABEL = "Retry"
-internal const val SEND_AGAIN_LABEL = "Send again"
 
 /**
  * The connection tags and merge-request identifiers every discussion write needs, lifted off the
@@ -107,9 +111,6 @@ internal fun discussionWriteLauncher(
   promptRetry = { message, body, onRetry ->
     promptForBody(window, dialogTitle, RETRY_PROMPT, body, retryErrorMessage(message), RETRY_LABEL, onRetry)
   },
-  promptSendAgain = { message, body, onSendAgain ->
-    promptForBody(window, dialogTitle, SEND_AGAIN_PROMPT, body, message, SEND_AGAIN_LABEL, onSendAgain)
-  },
   promptCopyText = { message, body -> showCopyTextDialog(window, dialogTitle, message, body) },
   log = { message -> log.info(message) },
 )
@@ -135,8 +136,8 @@ internal fun discussionWriteLauncher(
  * an empty section list is that the user refreshed the sidebar while the write was in flight, so
  * the rebuilt MR nodes are unexpanded and own no `DiscussionsSectionNode`. Staying silent there
  * would leave an Ambiguous write unreported and discard the text the user typed. `Skipped` is
- * non-`Applied`, so it can never unlock the `[Send again]` that might duplicate a comment; it
- * routes to the "could not be confirmed" message plus the text-preserving copy dialog.
+ * non-`Applied`, so it never claims the thread was reloaded; it routes to the "could not be
+ * confirmed" message plus the text-preserving copy dialog.
  */
 internal fun reloadDiscussionsFor(
   window: IWorkbenchWindow?,
@@ -220,13 +221,13 @@ internal fun <S> reloadAllSections(
  * The outcome to report for a set of per-section reloads: [LoadOutcome.Applied] only when **every**
  * section applied, otherwise the first non-`Applied` outcome in order.
  *
- * `Applied` is the only outcome that unlocks the launcher's `[Send again]` prompt, so it must mean
- * *every* place the user could be looking at now shows the server's state. A mixed list must fall
- * through to the copy-text dead end instead: telling a user their thread was reloaded when one of
- * its two displays is still stale is exactly what makes them post a duplicate comment.
+ * `Applied` is the only outcome for which the launcher tells the user "the thread has been reloaded",
+ * so it must mean *every* place the user could be looking at now shows the server's state. A mixed
+ * list must fall through to the "could not be loaded" message instead: telling a user their thread
+ * was reloaded when one of its two displays is still stale invites them to post a duplicate comment.
  *
  * Total by construction, including the empty list — which maps to [LoadOutcome.Skipped], never
- * `Applied`, because "nothing was reloaded" must not unlock a re-send. That case is unreachable
+ * `Applied`, because "nothing was reloaded" must not be reported as a reload. That case is unreachable
  * from [reloadAllSections], which returns without reporting for an empty section list.
  */
 internal fun aggregateReloadOutcomes(outcomes: List<LoadOutcome>): LoadOutcome {
@@ -273,7 +274,7 @@ internal fun showCopyTextDialog(window: IWorkbenchWindow?, title: String, messag
  *
  * [startEpoch] is the epoch of **this attempt**: handlers must forward the value
  * [DiscussionWriteLauncher.launch] passes to their write lambda, never one they captured when the
- * command was invoked. A `[Retry]` / `[Send again]` re-entry re-freezes the epoch, and re-sending
+ * command was invoked. A `[Retry]` re-entry re-freezes the epoch, and re-sending
  * with the original one would make the pre-send re-check below always report
  * [DiscussionWriteOutcome.Aborted] — which produces no UI, so the text the user just confirmed
  * would disappear silently.
