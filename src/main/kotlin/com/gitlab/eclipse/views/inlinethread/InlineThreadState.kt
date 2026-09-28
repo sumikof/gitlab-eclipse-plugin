@@ -18,8 +18,11 @@ import com.gitlab.eclipse.mergerequests.discussions.isSubmittable
  *   by [onLaunchRejected] or [onAttemptFinished] for the in-flight ticket only (§29 #20).
  * - [unsentDrafts] is what the caller must offer to copy before closing or replacing the popup
  *   (§29 #22), including drafts of threads that vanished in [replaceModel].
+ * - A thread whose attempt ended unconfirmed ([onAttemptUnconfirmed], #96) keeps its draft but can
+ *   never be submitted again from this popup: the text may already be posted, so re-sending it must
+ *   take a deliberate new popup, not one click on the button that just timed out.
  *
- * `@Suppress("TooManyFunctions")`: the eleven members are the fixed API the popup (and later
+ * `@Suppress("TooManyFunctions")`: the twelve members are the fixed API the popup (and later
  * Quick Chat) depends on verbatim; splitting them would scatter one state machine.
  */
 @Suppress("TooManyFunctions")
@@ -42,6 +45,9 @@ class InlineThreadState(model: InlineThreadModel) {
   private var inFlight: SubmitTicket? = null
 
   private val drafts = LinkedHashMap<String, String>()
+
+  /** Threads locked by [onAttemptUnconfirmed]; never cleared for the life of this popup. */
+  private val unconfirmed = HashSet<String>()
   private val generations = HashMap<String, Long>()
 
   fun draft(threadId: String): String = drafts[threadId].orEmpty()
@@ -66,7 +72,8 @@ class InlineThreadState(model: InlineThreadModel) {
     return true
   }
 
-  fun canSubmit(): Boolean = !busy && isSubmittable(draft(selectedThreadId))
+  fun canSubmit(): Boolean =
+    !busy && selectedThreadId !in unconfirmed && isSubmittable(draft(selectedThreadId))
 
   /**
    * Starts a submit of the selected thread's draft: sets [busy] and freezes the thread id, body
@@ -88,6 +95,18 @@ class InlineThreadState(model: InlineThreadModel) {
   /** An attempt for [ticket] returned, whatever its outcome: release busy. */
   fun onAttemptFinished(ticket: SubmitTicket) {
     if (inFlight === ticket) inFlight = null
+  }
+
+  /**
+   * An attempt for [ticket] ended **unconfirmed** (Ambiguous, #96): it may already be posted.
+   * Releases busy exactly like [onAttemptFinished], and in the same call locks [ticket]'s thread
+   * against any further submit from this popup, so no UI turn ever renders its Send enabled with
+   * the kept draft. The draft itself stays (it is still offered by [unsentDrafts] for copying).
+   * A stale ticket still locks its thread but, as in [onAttemptFinished], releases only itself.
+   */
+  fun onAttemptUnconfirmed(ticket: SubmitTicket) {
+    unconfirmed += ticket.threadId
+    onAttemptFinished(ticket)
   }
 
   /**

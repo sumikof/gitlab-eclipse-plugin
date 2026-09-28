@@ -18,6 +18,9 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.collections.shouldNotContain
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -67,7 +70,13 @@ private class FakeSurface(model: InlineThreadModel) : InlineThreadSurface {
   override val state = InlineThreadState(model)
   override var isOpen = true
   val events = mutableListOf<String>()
-  override fun refresh() { events += "refresh(busy=${state.busy})" }
+
+  /** `canSubmit()` as each refresh saw it: what the real popup would render on the Send button. */
+  val submittableAtRefresh = mutableListOf<Boolean>()
+  override fun refresh() {
+    events += "refresh(busy=${state.busy})"
+    submittableAtRefresh += state.canSubmit()
+  }
   override fun close() {
     isOpen = false
     events += "close"
@@ -222,6 +231,12 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
       s.isOpen shouldBe true
       s.state.draft(NEW_THREAD_ID) shouldBe BODY
+      // #96: the kept draft must not be one Send click away from a duplicate post.
+      s.state.canSubmit() shouldBe false
+      // Busy release and the lock land in the same UI turn: no refresh ever shows Send enabled.
+      s.submittableAtRefresh.shouldNotBeEmpty()
+      s.submittableAtRefresh shouldNotContain true
+      s.state.beginSubmit().shouldBeNull()
     }
 
     it("Ambiguous with an empty target (failed before G6): neither establishes nor reloads, still Skipped") {
@@ -461,6 +476,10 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.refreshed shouldContainExactly listOf(IDENTITY to REF)
       s.state.busy shouldBe false
       s.state.draft("d1") shouldBe BODY
+      s.state.canSubmit() shouldBe false
+      s.submittableAtRefresh shouldNotContain true
+      s.state.beginSubmit().shouldBeNull()
+      h.writes.replies shouldHaveSize 1
     }
 
     it("GateRejected and Aborted release busy and keep the draft (A29)") {

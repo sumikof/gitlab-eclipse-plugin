@@ -98,8 +98,8 @@ class GitLabMrThreadWrites(
  * `write` so that busy is released on every terminal and the success effect is applied only for
  * a Success, and supplies the **editor-path `reload`**, which establishes or refreshes the review
  * session and asks the sidebar to reload but always reports [LoadOutcome.Skipped] — so an
- * Ambiguous write on this path never claims the thread was reloaded (A20). No path offers a
- * re-send after an Ambiguous write (#96).
+ * Ambiguous write on this path never claims the thread was reloaded (A20), and its thread cannot be
+ * submitted again from the same popup (#96).
  *
  * SWT-free: thread hops and every effect are injected. [runOnUi] must schedule onto the UI thread
  * without blocking (`asyncExec`); a scheduling failure is swallowed with one log line, as in
@@ -240,18 +240,24 @@ class MrThreadPopupHost(
   /**
    * Background. Design §9.3.1 / §29 #20: whatever [attempt] returns or throws, the popup is told
    * the attempt finished (busy released); only a Success then applies the state's effect, and only
-   * if the ticket's thread is unedited since (the state decides).
+   * if the ticket's thread is unedited since (the state decides). An Ambiguous attempt releases busy
+   * through `state.onAttemptUnconfirmed` in the same UI hop, which also locks the thread
+   * against a re-send (#96): the kept draft must never sit behind an enabled Send button.
    */
   private fun wrapped(
     surface: InlineThreadSurface,
     ticket: SubmitTicket,
     attempt: () -> DiscussionWriteOutcome,
   ): DiscussionWriteOutcome {
+    var unconfirmed = false
     val outcome = try {
-      attempt()
+      attempt().also { unconfirmed = it is DiscussionWriteOutcome.Ambiguous }
     } finally {
+      // A throw is not Ambiguous here: the launcher classifies an escaped throwable as Definite
+      // (nothing was transmitted), so only a returned Ambiguous locks the thread.
+      val lock = unconfirmed
       hop("attemptFinished") {
-        surface.state.onAttemptFinished(ticket)
+        if (lock) surface.state.onAttemptUnconfirmed(ticket) else surface.state.onAttemptFinished(ticket)
         surface.refresh()
       }
     }

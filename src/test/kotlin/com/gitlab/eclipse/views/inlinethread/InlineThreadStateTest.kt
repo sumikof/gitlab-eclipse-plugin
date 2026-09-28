@@ -232,6 +232,61 @@ class InlineThreadStateTest : DescribeSpec({
     }
   }
 
+  describe("onAttemptUnconfirmed (#96: an Ambiguous attempt may already be posted)") {
+    it("releases busy but keeps the thread's draft and makes it non-submittable") {
+      val s = InlineThreadState(model("a"))
+      s.onEdit("a", "hello")
+      val t = s.beginSubmit().shouldNotBeNull()
+
+      s.onAttemptUnconfirmed(t)
+
+      s.busy shouldBe false
+      s.draft("a") shouldBe "hello"
+      s.canSubmit() shouldBe false
+      s.beginSubmit().shouldBeNull()
+      s.unsentDrafts() shouldContainExactly listOf("hello")
+    }
+
+    it("stays locked after further edits and a model swap for the popup's lifetime") {
+      val s = InlineThreadState(model("a"))
+      s.onEdit("a", "hello")
+      s.onAttemptUnconfirmed(s.beginSubmit().shouldNotBeNull())
+
+      s.onEdit("a", "hello again")
+      s.replaceModel(model("a"))
+
+      s.canSubmit() shouldBe false
+    }
+
+    it("locks only that thread: another thread stays submittable") {
+      val s = InlineThreadState(model("a", "b"))
+      s.onEdit("a", "hello")
+      s.onAttemptUnconfirmed(s.beginSubmit().shouldNotBeNull())
+
+      s.select("b") shouldBe true
+      s.onEdit("b", "other")
+      s.canSubmit() shouldBe true
+    }
+
+    it("a stale ticket still locks its thread but never releases a newer in-flight submit") {
+      val s = InlineThreadState(model("a", "b"))
+      s.onEdit("a", "hello")
+      val stale = s.beginSubmit().shouldNotBeNull()
+      s.onAttemptFinished(stale)
+      s.select("b") shouldBe true
+      s.onEdit("b", "other")
+      val current = s.beginSubmit().shouldNotBeNull()
+
+      s.onAttemptUnconfirmed(stale)
+
+      s.busy shouldBe true
+      s.onAttemptFinished(current)
+      s.canSubmit() shouldBe true
+      s.select("a") shouldBe true
+      s.canSubmit() shouldBe false
+    }
+  }
+
   describe("unsentDrafts (§29 #22)") {
     it("lists only submittable drafts") {
       val s = InlineThreadState(model("a", "b", "c"))
