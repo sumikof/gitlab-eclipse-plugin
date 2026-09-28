@@ -339,12 +339,13 @@ fun finishOnce(ticket, gen, outcome) {            // UI スレッド
 割り込みで止まらない処理(§15.3)は、手放した後も戻らないことがある。そのあいだ、`Job` とそのコルーチンが参照しているものは解放されない。そこで、背景処理と完了フックが UI 側に届く参照を `ResultSink` の 1 本だけにし、終端でその 1 本を切る。
 
 - `ResultSink` は `AtomicReference<QuickChatSession?>`、`ticket`、`gen`、`delivered`(原子的な真偽値)、`runOnUi` を持つ。
-  - `deliver(outcome)`(背景): `delivered` を立て、参照が残っていれば `runOnUi { session.finishOnce(ticket, gen, outcome) }`。参照が切られていれば何もしない。
-  - `completed()`(完了フック): `delivered` が立っておらず参照が残っていれば、`runOnUi` で `finishOnce(…, Interrupted)`。
+  - `deliver(outcome)`(背景): `delivered` を立て、`runOnUi { this.onUi(outcome) }` を投入する。**投入するクロージャはセッションを捕捉しない**(捕捉するのは `ResultSink` 自身と結果だけ)。
+  - `completed()`(完了フック): `delivered` が立っていなければ、`runOnUi { this.onUi(Interrupted) }` を投入する。同じくセッションを捕捉しない。
+  - `onUi(outcome)`(UI。投入した処理の本体): **UI スレッドで実行された時点で**参照を読み直し、null なら何もしない。null でなければ `session.finishOnce(ticket, gen, outcome)`。背景側で参照を読んでから投入する形にはしない(読んだ直後に `detach()` されても、投入済みの処理がセッションを握り続けるため。Codex round 8 #1)。
   - `detach()`(UI。`finishOnce` の `finally` と `end()`): 参照を null にする。
 - `finishOnce` と `end()` は、完了フックの `DisposableHandle` も `dispose()` する(Job の完了リストから外す)。
 - 背景処理(`QuickChatService.ask` のコルーチン)が持つのは、要求(不変の値。文脈は §9.2.1 の上限で最大およそ 144 KiB)、`SendGate`、`ResultSink` だけである。`IDocument`・エディタ・popup・view・`QuickChatSession` は持たない。
-- したがって、手放した処理 1 つが保持し続けるのは「要求 + 小さな状態」だけで、その数は §15.3 の上限で抑えられる。
+- したがって、手放した処理 1 つが保持し続けるのは「要求 + 小さな状態」だけで、その数は §15.3 の上限で抑えられる。UI のキューに残った投入済みの処理も、握っているのは `ResultSink` と結果だけである。
 
 
 ### 9.3 ポーリング(T1)
@@ -717,7 +718,7 @@ round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔
 | A31 | 期限は `submit` の最初の文で決まり、文脈の固定や背景処理の開始の遅れを含めて数えられる。`finishOnce` は (a) 背景の結果・(b) 期限の監視・(c) 完了フック・(d) 即時失敗のどの順序・組み合わせでも 1 回だけ効き、`released` は 1 回だけ呼ばれる。結果の反映や表示の更新が例外を出しても `released` は呼ばれる。scope が取り消し済み / 実行中に取り消されても、Send が戻る | セッションのテスト(順序を入れ替えた組み合わせ、例外を出す偽の view) |
 | A28 | 送信ゲート: 期限切れ・閉じる・置き換えが `aiAction` の前に起きた場合、その後に背景処理が進んでも `aiAction` は送られない(`TimedOut(beforeSend = true)`)。`aiAction` の実行中の期限切れは `MaybeSent`、成功後は `TimedOut(beforeSend = false)` で `threadId` が会話に保存される。「何も送っていない」と表示した質問が送られることは無い | `SendGate`・サービス・セッションのテスト(w4 の直前で止めて UI 側を先に進める) |
 | A29 | `/clear` `/reset` の背景送信が止まっても、画面上の効果と `threadId` の破棄は行われ、Send は使える。背景送信は `CLEAR_DEADLINE` で取り消され、完了するまで `QuickChatDetachedJobs` に数えられる | 止まる偽物を使ったテスト |
-| A33 | 割り込みを無視して戻らない偽の処理を手放した後(期限切れ、閉じる、置き換え)、`QuickChatSession`・view・偽のエディタへの参照が `Job`・完了フック・背景のコルーチンから辿れない(`ResultSink` が切れ、完了フックが外れている)。その後に偽の処理が戻っても、UI には何も届かない | セッションのテスト(弱参照 + GC、または参照の到達性を検査する偽物) |
+| A33 | 割り込みを無視して戻らない偽の処理を手放した後(期限切れ、閉じる、置き換え)、`QuickChatSession`・view・偽のエディタへの参照が `Job`・完了フック・背景のコルーチン・UI のキューに投入済みの処理のいずれからも辿れない(`ResultSink` が切れ、完了フックが外れている)。その後に偽の処理が戻っても、UI には何も届かない。**競合**: `deliver` / `completed` が投入した直後、UI で実行される前に `detach()` した場合(バリアで順序を固定し、偽の `runOnUi` がキューに溜めてから流す)も、投入済みの処理はセッションを捕捉しておらず、実行時に何もしない | セッションのテスト(弱参照 + GC、または参照の到達性を検査する偽物。バリア付きの順序固定) |
 | A34 | 割り込みを無視して戻らない処理を手放したまま、`QuickChatRuntime` を閉じて作り直しても(stop → start の再現)、手放した処理の数は引き継がれ、上限に達していれば新しい送信は `Busy` になる。処理が戻ると数が減る | `QuickChatDetachedJobs`・ランタイムのテスト |
 | A32 | 取り消しで実行中の HTTP が止まる(`runInterruptible` + `HttpClient.send`)。ヘッダの後に本文が止まる偽サーバでも止まる | ループバックの偽サーバを使ったテスト(headless で実行可能) |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
@@ -871,3 +872,11 @@ round 2 #1、round 3 #3、round 4 #1・#3、round 5 #1〜#3 の反映内容(§15
 |---|---|---|---|
 | 1 | P1 完了フックがセッション → view → popup → エディタを強参照し、戻らない処理を手放すたびに UI オブジェクトと文書が残る | 採用(局所的な修正) | §9.2.5 を新設。背景処理と完了フックが UI 側に届く参照を `ResultSink` の 1 本にし、`finishOnce` / `end()` で切る。完了フックの `DisposableHandle` も dispose。§9.2 手順 7・w7、§9.2.4、§9.5、§17、A33 |
 | 2 | P1 バンドルの stop → start で計数(Koin の `single`)が 0 に戻り、止まった処理が再起動のたびに溜まる | 採用・設計(ユーザー判断: 案 A) | 計数を `object QuickChatDetachedJobs`(クラスローダーに 1 つ)に移し、stop → start で 0 に戻さない。クラスローダーが替わる更新は既知の制限。§8.1、§15.3、§17、§27、A34 |
+
+### round 8(`51b7cfa` に対する指摘 1 件)— **収束**
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 `deliver` が参照を読んでから `runOnUi` に投入するため、読んだ直後に `detach()` しても、投入済みの処理がセッションを握り続ける | 採用(局所的な修正。受け入れ条件のテストで検出できる) | §9.2.5: 投入するクロージャはセッションを捕捉せず、UI で実行された時点で参照を読み直す。A33 にバリア付きの競合テストを追加 |
+
+8 巡目の未解決は上の 1 件だけで、局所的な修正と、テストで検出できる受け入れ条件(A33)で閉じる。CLAUDE.md の収束基準により、追加の Codex レビューは依頼しない。
