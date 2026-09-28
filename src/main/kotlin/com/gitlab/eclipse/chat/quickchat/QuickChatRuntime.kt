@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The per-activation home of every Quick Chat background job (design §8.1, §17): one Koin `single`
@@ -29,5 +30,32 @@ class QuickChatRuntime(
 
   override fun close() {
     scope.cancel()
+  }
+}
+
+/**
+ * The [QuickChatRuntime] of the current activation, so the bundle stop can close it without creating
+ * one (Koin never closes an `AutoCloseable` single, and asking Koin for it would instantiate it).
+ * The Koin `single` creates it through [create]; the stop calls [closeIfCreated].
+ */
+object QuickChatRuntimeLifecycle {
+  private val created = AtomicReference<QuickChatRuntime?>()
+
+  /** The runtime created and not yet closed, if any. */
+  val current: QuickChatRuntime? get() = created.get()
+
+  fun create(): QuickChatRuntime = QuickChatRuntime().also { created.set(it) }
+
+  /**
+   * Cancels the created runtime's scope, so no preflight, send, poll or background `/clear` keeps
+   * working for a stopped bundle. Never joins (a call ignoring interrupts may not return) and never
+   * resets [QuickChatDetachedJobs]. Never throws: it runs on the bundle stop path.
+   */
+  fun closeIfCreated() {
+    try {
+      created.getAndSet(null)?.close()
+    } catch (e: Exception) {
+      logger<QuickChatRuntimeLifecycle>().warn("Quick Chat shutdown skipped: ${e.javaClass.name}")
+    }
   }
 }

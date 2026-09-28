@@ -2,6 +2,7 @@ package com.gitlab.eclipse
 
 import com.gitlab.eclipse.api.http.GitLabHttpClient
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
+import com.gitlab.eclipse.chat.quickchat.QuickChatRuntimeLifecycle
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
@@ -11,10 +12,12 @@ import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.isActive
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -72,6 +75,27 @@ class GitLabEclipseStartupTest : DescribeSpec({
       DiagnosticGenerationRegistry.active shouldBe false
       verify { markerService.deleteAllMarkers() }
       verify { saveListener.uninstall() }
+    }
+  }
+
+  describe("stop and Quick Chat") {
+    it("closes the Quick Chat runtime this activation created") {
+      every { processProvider.stop() } returns Unit
+      val runtime = QuickChatRuntimeLifecycle.create()
+
+      shouldNotThrowAny { GitLabEclipseStartup().stop(mockk<BundleContext>()) }
+
+      runtime.scope.isActive shouldBe false
+      QuickChatRuntimeLifecycle.current.shouldBeNull()
+    }
+
+    it("does not create a Quick Chat runtime when none was created") {
+      every { processProvider.stop() } returns Unit
+      QuickChatRuntimeLifecycle.current.shouldBeNull()
+
+      shouldNotThrowAny { GitLabEclipseStartup().stop(mockk<BundleContext>()) }
+
+      QuickChatRuntimeLifecycle.current.shouldBeNull()
     }
   }
 })

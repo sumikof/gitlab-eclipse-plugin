@@ -9,6 +9,7 @@ import com.gitlab.eclipse.chat.quickchat.QuickChatConnections
 import com.gitlab.eclipse.chat.quickchat.QuickChatPoller
 import com.gitlab.eclipse.chat.quickchat.QuickChatPreflight
 import com.gitlab.eclipse.chat.quickchat.QuickChatRuntime
+import com.gitlab.eclipse.chat.quickchat.QuickChatRuntimeLifecycle
 import com.gitlab.eclipse.chat.quickchat.QuickChatService
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
@@ -58,7 +59,8 @@ val chatModule = module {
 
   // Quick Chat (design §8.1, §17): one runtime per activation, shared by every window's popup.
   // Its abandoned-job count is deliberately not here but in the QuickChatDetachedJobs object.
-  single<QuickChatRuntime> { QuickChatRuntime() }
+  // Created through the lifecycle holder so the bundle stop can close it (GitLabEclipseStartup.stop).
+  single<QuickChatRuntime> { QuickChatRuntimeLifecycle.create() }
   single<QuickChatApi> { GraphQlQuickChatApi(get()) }
   single<QuickChatConnections> { ApiClientQuickChatConnections(get()) }
   single<QuickChatPreflight> {

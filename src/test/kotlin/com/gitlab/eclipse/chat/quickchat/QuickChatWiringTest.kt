@@ -29,7 +29,7 @@ class QuickChatWiringTest : DescribeSpec({
   }
 
   afterSpec {
-    GlobalContext.get().get<QuickChatRuntime>().close()
+    QuickChatRuntimeLifecycle.closeIfCreated()
     stopKoin()
   }
 
@@ -39,5 +39,6 @@ class QuickChatWiringTest : DescribeSpec({
     val runtime = koin.get<QuickChatRuntime>()
     runtime shouldBeSameInstanceAs koin.get<QuickChatRuntime>()
     runtime.scope.isActive shouldBe true
+    QuickChatRuntimeLifecycle.current shouldBeSameInstanceAs runtime // so the bundle stop closes it
   }
 })
