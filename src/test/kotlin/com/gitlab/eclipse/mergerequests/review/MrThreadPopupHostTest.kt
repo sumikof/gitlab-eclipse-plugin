@@ -463,6 +463,60 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
     }
 
+    it("a submit racing ahead of the UI lock is refused before sending once the thread went unconfirmed (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      val deferred = ArrayDeque<() -> Unit>()
+      h.runOnUi = { deferred += it } // the lock hop has not landed yet
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      // A click queued ahead of the lock hop: the guard is already free again.
+      h.host.onSubmit(s, SubmitTicket("d1", BODY, s.state.editGeneration("d1")))
+
+      h.writes.replies shouldHaveSize 1
+      h.copyTexts.last() shouldBe (MrThreadPopupHost.UNCONFIRMED_RESEND_MESSAGE to BODY)
+      while (deferred.isNotEmpty()) deferred.removeFirst().invoke()
+      s.state.canSubmit() shouldBe false
+      s.state.draft("d1") shouldBe BODY
+    }
+
+    it("Definite, then an Ambiguous [Retry], then a racing submit: the retry's thread is refused too (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      h.writes.outcome = DiscussionWriteOutcome.Definite(java.io.IOException("rejected"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      s.state.busy shouldBe false // the retry below never re-arms busy
+      val deferred = ArrayDeque<() -> Unit>()
+      h.runOnUi = { deferred += it }
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      h.retries.single().third(BODY)
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      h.host.onSubmit(s, s.submit())
+
+      h.writes.replies shouldHaveSize 2 // the first attempt and the retry, never a third
+      h.copyTexts.last() shouldBe (MrThreadPopupHost.UNCONFIRMED_RESEND_MESSAGE to BODY)
+      while (deferred.isNotEmpty()) deferred.removeFirst().invoke()
+      s.state.canSubmit() shouldBe false
+    }
+
+    it("the refusal is per thread: another thread of the same popup still sends (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      h.host.onSubmit(s, SubmitTicket("d2", "other", 1L))
+
+      h.writes.replies shouldHaveSize 2
+    }
+
     it("Ambiguous on a reply never re-sends either (A20, #96)") {
       val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
       h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))

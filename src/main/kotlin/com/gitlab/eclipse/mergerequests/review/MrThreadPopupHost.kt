@@ -17,6 +17,7 @@ import com.gitlab.eclipse.views.inlinethread.SubmitTicket
 import com.gitlab.eclipse.views.inlinethread.SuccessEffect
 import kotlinx.coroutines.CancellationException
 import org.eclipse.core.runtime.ILog
+import java.util.concurrent.ConcurrentHashMap
 
 /** What an MR thread popup is about: a new thread on a frozen line, or the threads of a loaded session's line. */
 sealed interface MrPopupKind {
@@ -144,6 +145,14 @@ class MrThreadPopupHost(
   private val newThreadEdited: () -> Boolean = { false },
 ) : InlineThreadHost {
 
+  /**
+   * Threads of this popup whose attempt ended Ambiguous (#96): they may already be posted, so any
+   * later attempt for them is refused in [wrapped] before sending. Written and read on background
+   * threads (the launcher's `write`), hence concurrent; never cleared — a deliberate re-send takes
+   * a new popup, which gets a new host.
+   */
+  private val unconfirmedThreads: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
   /** UI thread. [ticket] was frozen by the popup's `beginSubmit`; busy is released on every path from here. */
   override fun onSubmit(surface: InlineThreadSurface, ticket: SubmitTicket) {
     if (ticket.threadId == NEW_THREAD_ID && kind is MrPopupKind.NewThread && newThreadStale(kind.snapshot)) {
@@ -249,9 +258,26 @@ class MrThreadPopupHost(
     ticket: SubmitTicket,
     attempt: () -> DiscussionWriteOutcome,
   ): DiscussionWriteOutcome {
+    // Checked here, in the background attempt and therefore AFTER the launcher acquired the write
+    // guard, never in onSubmit: an earlier Ambiguous attempt records its thread below before it
+    // returns, i.e. before the launcher releases the guard, so a submit that won the guard after
+    // that release is guaranteed to see the record — even when it was queued ahead of the UI lock
+    // hop, or came from a `[Retry]` that never re-armed busy (Codex r3). Nothing is sent.
+    if (ticket.threadId in unconfirmedThreads) {
+      hop("attemptRefused") {
+        surface.state.onAttemptUnconfirmed(ticket)
+        surface.refresh()
+      }
+      return DiscussionWriteOutcome.Rejected(UNCONFIRMED_RESEND_MESSAGE)
+    }
     var unconfirmed = false
     val outcome = try {
-      attempt().also { unconfirmed = it is DiscussionWriteOutcome.Ambiguous }
+      attempt().also {
+        if (it is DiscussionWriteOutcome.Ambiguous) {
+          unconfirmed = true
+          unconfirmedThreads += ticket.threadId
+        }
+      }
     } finally {
       // A throw is not Ambiguous here: the launcher classifies an escaped throwable as Definite
       // (nothing was transmitted), so only a returned Ambiguous locks the thread.
@@ -329,5 +355,10 @@ class MrThreadPopupHost(
     /** Fixed text, no path or body (design §19). */
     const val FILE_CHANGED_MESSAGE =
       "The file changed after you started this comment. Save or undo your changes, then start the comment again from the line."
+
+    /** Fixed text (design §19): an earlier send of this thread from this popup could not be confirmed (#96). */
+    const val UNCONFIRMED_RESEND_MESSAGE =
+      "An earlier send from this popup could not be confirmed and may already be posted. " +
+        "Check in GitLab, then close this popup and start again if it is missing."
   }
 }
