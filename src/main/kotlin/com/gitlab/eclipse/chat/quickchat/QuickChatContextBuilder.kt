@@ -74,12 +74,16 @@ object QuickChatContextBuilder {
 
     val aboveStart = maxOf(0, selectionOffset - ADJACENT_MAX_CHARS)
     val aboveLen = selectionOffset - aboveStart
-    val rawAbove = if (aboveLen > 0) text.get(aboveStart, aboveLen) else ""
+    // The character-offset read window itself can land inside a surrogate pair at its far
+    // (leading) edge; drop the resulting lone low surrogate before any byte trimming runs, since
+    // a window already within the byte budget would otherwise pass it through unchanged.
+    val rawAbove = if (aboveLen > 0) Utf8.dropLeadingLowSurrogate(text.get(aboveStart, aboveLen)) else ""
 
     val belowStart = selectionOffset + selectionLength
     val belowEnd = minOf(text.length, belowStart + ADJACENT_MAX_CHARS)
     val belowLen = belowEnd - belowStart
-    val rawBelow = if (belowLen > 0) text.get(belowStart, belowLen) else ""
+    // Symmetric case at the far (trailing) edge of the below window: a lone high surrogate.
+    val rawBelow = if (belowLen > 0) Utf8.dropTrailingHighSurrogate(text.get(belowStart, belowLen)) else ""
 
     val currentFile = CurrentFile(
       fileName = fileName.orEmpty(),
@@ -109,6 +113,20 @@ internal object Utf8 {
 
   /** The UTF-8 byte length of [s]. */
   fun byteLength(s: String): Int = s.toByteArray(Charsets.UTF_8).size
+
+  /**
+   * Drops [s]'s first character if it is a lone low surrogate (design §9.2.1: never split a
+   * code point). A character-offset read window can start in the middle of a surrogate pair when
+   * its far edge was placed by arithmetic rather than by the document's real boundary; the
+   * matching high surrogate is outside the window, so the pair cannot be completed and the
+   * fragment must be discarded rather than sent as malformed UTF-16.
+   */
+  fun dropLeadingLowSurrogate(s: String): String =
+    if (s.isNotEmpty() && Character.isLowSurrogate(s[0])) s.substring(1) else s
+
+  /** Symmetric to [dropLeadingLowSurrogate], for a lone high surrogate left at the far end of [s]. */
+  fun dropTrailingHighSurrogate(s: String): String =
+    if (s.isNotEmpty() && Character.isHighSurrogate(s[s.length - 1])) s.substring(0, s.length - 1) else s
 
   /** Keeps as many complete leading code points of [s] as fit within [maxBytes] UTF-8 bytes. */
   fun keepPrefix(s: String, maxBytes: Int): String {

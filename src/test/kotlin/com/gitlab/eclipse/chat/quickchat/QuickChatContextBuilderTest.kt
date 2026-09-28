@@ -173,4 +173,48 @@ class QuickChatContextBuilderTest : DescribeSpec({
       currentFile.contentBelowCursor shouldBe "after"
     }
   }
+
+  describe(
+    "QuickChatContextBuilder.build — a surrogate pair straddles the CHARACTER-offset read window " +
+      "(controller review round 1: the 32 Ki char window itself, not just the later byte trim, must " +
+      "never split a code point)",
+  ) {
+    it("drops a lone low surrogate left at the far (leading) edge of the above window") {
+      // doc = "P" + high-surrogate + low-surrogate + 32767 'a'. The window is exactly
+      // ADJACENT_LIMIT_CHARS chars, read from aboveStart = 2 (right at the low surrogate), so
+      // text.get() itself returns a string starting with a lone low surrogate. Its UTF-8 byte
+      // length under toByteArray() (~ADJACENT_LIMIT_CHARS bytes, the surrogate counts as 1 byte)
+      // is within the 32 KiB budget, so keepSuffix would return it unchanged if not sanitized first.
+      val highSurrogate = "\uD83D"
+      val lowSurrogate = "\uDE00"
+      val above = "P" + highSurrogate + lowSurrogate + "a".repeat(ADJACENT_LIMIT_CHARS - 1)
+      above.length shouldBe ADJACENT_LIMIT_CHARS + 2
+      val selected = "X"
+      val text = FakeTextWindow(above + selected)
+
+      val result = QuickChatContextBuilder.build("q", "F.kt", text, above.length, selected.length)
+
+      val currentFile = (result as ContextResult.Ok).context.currentFile!!
+      // A strict equality against a pure-ASCII expectation is itself the proof the lone low
+      // surrogate is gone — any leftover surrogate would make this a mismatch, not a "close" pass.
+      currentFile.contentAboveCursor shouldBe "a".repeat(ADJACENT_LIMIT_CHARS - 1)
+    }
+
+    it("drops a lone high surrogate left at the far (trailing) edge of the below window") {
+      // doc(below) = 32767 'a' + high-surrogate + low-surrogate + "Q". The window is exactly
+      // ADJACENT_LIMIT_CHARS chars starting at 0, so it ends right after the high surrogate,
+      // leaving it dangling with no matching low surrogate in the returned string.
+      val highSurrogate = "\uD83D"
+      val lowSurrogate = "\uDE00"
+      val below = "a".repeat(ADJACENT_LIMIT_CHARS - 1) + highSurrogate + lowSurrogate + "Q"
+      below.length shouldBe ADJACENT_LIMIT_CHARS + 2
+      val selected = "X"
+      val text = FakeTextWindow(selected + below)
+
+      val result = QuickChatContextBuilder.build("q", "F.kt", text, 0, selected.length)
+
+      val currentFile = (result as ContextResult.Ok).context.currentFile!!
+      currentFile.contentBelowCursor shouldBe "a".repeat(ADJACENT_LIMIT_CHARS - 1)
+    }
+  }
 })
