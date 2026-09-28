@@ -27,7 +27,12 @@ data class GitLabProjectInfo(
 /**
  * A-plan (no API) URL resolution: git remote → namespaceWithPath → ${gitlab.url}/${namespaceWithPath}.
  * All JGit access is local I/O; call from a background thread. Returns Ok(url) or Warn(message) — never throws.
+ *
+ * TooManyFunctions is suppressed: each public resolve* method is a distinct caller-facing result
+ * shape (URL, context, typed project kind) over the same private remote/assignment rules, and
+ * splitting them across classes would duplicate those rules.
  */
+@Suppress("TooManyFunctions")
 class GitLabProjectUrlResolver(
   private val preferenceStore: ScopedPreferenceStore = service(),
   assignmentLookupFactory: () -> AssignedProjectLookup = { AssignedProjectLookup() },
@@ -93,6 +98,24 @@ class GitLabProjectUrlResolver(
   /** Like [resolveWebUrlForFile] but returns the full project identity. Never throws. */
   fun resolveContextForFile(file: File): ContextResolution =
     withRepo(file) { repo -> contextFor(repo) } ?: ContextResolution.Warn(NOT_IN_REPO)
+
+  /**
+   * Quick Chat's project resolution (design §9.2.2): the same assignment-then-remote rules as
+   * [resolveContextForFile], but with every way of not getting a project kept apart, see
+   * [ProjectResolution]. Never throws. Logs only exception class names — not the path.
+   */
+  fun resolveProjectForFile(file: File?): ProjectResolution {
+    if (file == null) return ProjectResolution.NotInRepository
+    return try {
+      val builder = FileRepositoryBuilder().findGitDir(file)
+      // Checked before build(): without a git dir build() throws, and that must not read as Failed.
+      if (builder.gitDir == null) return ProjectResolution.NotInRepository
+      builder.setMustExist(true).build().use { projectFor(it) }
+    } catch (e: Exception) {
+      logger.warn("Could not resolve the GitLab project of a file: ${e.javaClass.name}")
+      ProjectResolution.Failed
+    }
+  }
 
   fun resolveBlobUrl(file: File, startLine: Int?, endLine: Int?): Resolution =
     withRepo(file) { repo ->
@@ -160,12 +183,39 @@ class GitLabProjectUrlResolver(
     )
   }
 
+  private fun projectFor(repo: Repository): ProjectResolution {
+    // A bare repository has no work tree, so no editor file can belong to it.
+    if (repo.isBare) return ProjectResolution.NotInRepository
+    when (val assigned = assignedProject(repo)) {
+      is AssignedProjectLookup.Result.Use -> return ProjectResolution.Resolved(assigned.project)
+      // The user chose a project we cannot use; guessing another one would defeat that choice.
+      is AssignedProjectLookup.Result.Warn -> return ProjectResolution.Failed
+      AssignedProjectLookup.Result.None -> Unit
+    }
+    return when (val match = matchRemote(repo)) {
+      is RemoteMatch.Hit -> ProjectResolution.Resolved(match.projectInfo(repo))
+      // Without a configured instance nothing can be judged; a remote on another host (MISMATCH)
+      // just means there is no project on the connected instance to check.
+      is RemoteMatch.Miss ->
+        if (match.message == NO_INSTANCE) ProjectResolution.Failed else ProjectResolution.NoGitLabRemote
+    }
+  }
+
   private sealed interface RemoteMatch {
     data class Hit(val remoteName: String, val remote: GitLabRemote, val instanceUrl: String) : RemoteMatch {
       // namespaceWithPath is derived from the remote URL's rawPath, so it is already in
       // URL-path form; re-encoding it would double-encode escapes from HTTP(S) remotes
       // (e.g. gr%C3%BCp → gr%25C3%25BCp). Use it verbatim.
       val webUrl: String get() = "$instanceUrl/${remote.namespaceWithPath}"
+
+      fun projectInfo(repo: Repository) = GitLabProjectInfo(
+        gitDir = repo.directory,
+        workTree = repo.workTree,
+        namespaceWithPath = remote.namespaceWithPath,
+        instanceUrl = instanceUrl,
+        webUrl = webUrl,
+        remoteName = remoteName,
+      )
     }
 
     data class Miss(val message: String) : RemoteMatch

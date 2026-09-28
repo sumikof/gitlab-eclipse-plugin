@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.navigation
 
+import com.gitlab.eclipse.assignments.AssignedProjectLookup
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import io.kotest.core.spec.style.DescribeSpec
@@ -7,8 +8,12 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.jgit.api.Git
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.osgi.framework.Bundle
 import java.io.File
 import java.nio.file.Files
 
@@ -160,6 +165,89 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       createdTempPaths += loose
       val r = GitLabProjectUrlResolver(store("https://gitlab.com")).resolveBlobUrl(loose, null, null)
       r shouldBe GitLabProjectUrlResolver.Resolution.Warn("The current file is not in the project repository.")
+    }
+  }
+
+  describe("resolveProjectForFile") {
+    fun lookup(result: AssignedProjectLookup.Result): () -> AssignedProjectLookup = {
+      mockk { every { forRepository(any()) } returns result }
+    }
+
+    it("resolves a file under a matching remote to its project") {
+      val (dir, file) = tempRepo("https://gitlab.com/gr%C3%BCp/proj.git", "src/a.txt", commit = false)
+      val r = GitLabProjectUrlResolver(store("https://gitlab.com/")).resolveProjectForFile(file)
+      val project = (r as ProjectResolution.Resolved).project
+      project.namespaceWithPath shouldBe "gr%C3%BCp/proj"
+      project.instanceUrl shouldBe "https://gitlab.com"
+      project.workTree.canonicalFile shouldBe dir.canonicalFile
+    }
+    it("maps a null location to NotInRepository") {
+      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(null) shouldBe
+        ProjectResolution.NotInRepository
+    }
+    it("maps a file outside any repository to NotInRepository") {
+      val loose = Files.createTempFile("loose", ".txt").toFile()
+      createdTempPaths += loose
+      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(loose) shouldBe
+        ProjectResolution.NotInRepository
+    }
+    it("maps a bare repository to NotInRepository") {
+      val dir = Files.createTempDirectory("nav-bare").toFile()
+      createdTempPaths += dir
+      Git.init().setBare(true).setDirectory(dir).call().use { git ->
+        git.repository.config.apply {
+          setString("remote", "origin", "url", "git@gitlab.com:group/proj.git")
+          save()
+        }
+      }
+      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(File(dir, "x.txt")) shouldBe
+        ProjectResolution.NotInRepository
+    }
+    it("maps a repository whose remotes are not GitLab-shaped to NoGitLabRemote") {
+      val (_, file) = tempRepo("/srv/git/mirror.git", "a.txt", commit = false)
+      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(file) shouldBe
+        ProjectResolution.NoGitLabRemote
+    }
+    it("maps a remote on another host (MISMATCH) to NoGitLabRemote") {
+      val (_, file) = tempRepo("https://github.com/x/y.git", "a.txt", commit = false)
+      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(file) shouldBe
+        ProjectResolution.NoGitLabRemote
+    }
+    it("maps a missing instance URL (NO_INSTANCE) to Failed") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
+      GitLabProjectUrlResolver(store("")).resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+    }
+    it("maps an assignment that must not be used to Failed") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
+      val resolver = GitLabProjectUrlResolver(
+        store("https://gitlab.com"),
+        lookup(AssignedProjectLookup.Result.Warn("assignment is stale")),
+      )
+      resolver.resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+    }
+    it("lets a usable assignment win, even for another instance (preflight refuses that later)") {
+      val (dir, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
+      val other = "https://gitlab.example.com"
+      val assigned = GitLabProjectInfo(dir, dir, "other/proj", other, "$other/other/proj", "origin")
+      val resolver = GitLabProjectUrlResolver(
+        store("https://gitlab.com"),
+        lookup(AssignedProjectLookup.Result.Use(assigned)),
+      )
+      resolver.resolveProjectForFile(file) shouldBe ProjectResolution.Resolved(assigned)
+    }
+    it("maps an exception during resolution to Failed and logs only the exception class, never the path") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "secret-name.txt", commit = false)
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val failing = mockk<ScopedPreferenceStore> {
+        every { getString(PreferenceConstants.GITLAB_INSTANCE_URL) } throws IllegalStateException(file.path)
+      }
+      GitLabProjectUrlResolver(failing).resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+      val messages = mutableListOf<String>()
+      verify(atLeast = 1) { log.warn(capture(messages)) }
+      messages.any { "IllegalStateException" in it } shouldBe true
+      messages.none { file.name in it || file.parent in it } shouldBe true
+      verify(exactly = 0) { log.warn(any(), any()) }
     }
   }
 })
