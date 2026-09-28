@@ -2,12 +2,21 @@ package com.gitlab.eclipse.chat
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
+import com.gitlab.eclipse.chat.quickchat.ApiClientQuickChatConnections
+import com.gitlab.eclipse.chat.quickchat.GraphQlQuickChatApi
+import com.gitlab.eclipse.chat.quickchat.QuickChatApi
+import com.gitlab.eclipse.chat.quickchat.QuickChatConnections
+import com.gitlab.eclipse.chat.quickchat.QuickChatPoller
+import com.gitlab.eclipse.chat.quickchat.QuickChatPreflight
+import com.gitlab.eclipse.chat.quickchat.QuickChatRuntime
+import com.gitlab.eclipse.chat.quickchat.QuickChatService
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewController
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewController
 import com.gitlab.eclipse.lsp.plugins.PluginController
+import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
 import com.gitlab.eclipse.utils.NotificationUtils
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.services.ISourceProviderService
@@ -46,4 +55,16 @@ val chatModule = module {
   single<AgenticChatWebViewController> {
     AgenticChatWebViewController(get(), get(), get(), get())
   } bind PluginController::class
+
+  // Quick Chat (design §8.1, §17): one runtime per activation, shared by every window's popup.
+  // Its abandoned-job count is deliberately not here but in the QuickChatDetachedJobs object.
+  single<QuickChatRuntime> { QuickChatRuntime() }
+  single<QuickChatApi> { GraphQlQuickChatApi(get()) }
+  single<QuickChatConnections> { ApiClientQuickChatConnections(get()) }
+  single<QuickChatPreflight> {
+    val resolver = GitLabProjectUrlResolver()
+    QuickChatPreflight(get(), resolver::resolveProjectForFile)
+  }
+  single<QuickChatPoller> { QuickChatPoller(get(), get()) }
+  single<QuickChatService> { QuickChatService(get(), get(), get(), get()) }
 }
