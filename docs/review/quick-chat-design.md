@@ -209,13 +209,13 @@ UI スレッド:
    1. `DuoChatStateService` を確認。無効なら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
    2. 文脈を固定する(§9.2.1)。サイズ上限を超えたら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
    3. 会話欄に「質問」と「回答を待っています」を足し、`surface.refresh()`。
-   4. `conversation.begin(ticket)` で実行中の送信を記録し、その時点の世代番号 `gen` を得る。
+   4. `conversation.begin(ticket)` で実行中の送信を記録し、その時点の世代番号 `gen` を得る。送信全体の期限 `deadline = 現在時刻 + ANSWER_DEADLINE` を**この UI の処理の中で**単調時計で決め、要求に入れる(Codex round 5 #2。背景処理の開始待ちも期限に含めるため)。
    5. 要求 `QuickChatRequest` を作る。内容は不変の値だけ: 文脈(`QuickChatContext`)、アンカーのファイルの場所、会話の不変スナップショット `ConversationBinding?`(§12.1: 結び付いたインスタンス、`threadId`、preflight の結果)。
-   6. 共有 scope で `QuickChatService.ask(request)` を起動し、`Job` を会話に保持する。
+   6. Quick Chat 専用の scope(§17)で `QuickChatService.ask(request)` を起動し、`Job` を会話に保持する。
 
 バックグラウンド(`QuickChatService.ask`)。会話オブジェクトには触れず、要求の値だけを読む:
 
-4. 送信全体の期限 `deadline = 開始時刻 + ANSWER_DEADLINE` を単調時計(`System.nanoTime` 相当。注入可能)で決める(§15)。
+4. 要求の `deadline`(手順 3-4 で UI スレッドが決めた単調時計の絶対時刻。時計は注入可能)を使う。開始時点ですでに過ぎていれば、何もせずに `TimedOut(beforeSend = true)` を返す(§15)。
 5. 接続を得る(§9.2.3)。`binding` があれば、そのインスタンスと一致する接続だけを受け入れる。一致しなければ `ConnectionChanged` で終わる(何も送らない)。
 6. `binding` に preflight の結果が無ければ preflight を行う(§9.2.2)。結果が「送信不可」なら、その結果で終わる(`aiAction` は送らない)。
 7. `aiAction` を送る(§11.2 M1)。`threadId` は `binding` にあれば付ける(R4)。`resourceId` は preflight の結果の値。
@@ -502,10 +502,10 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 - ポーリングの待ちの前後でも残り時間を確認し、待ちは残り時間を超えない。
 - **ブロックする処理はすべて期限の内側で待つ**(Codex round 2 #1): 接続の取得(`captureConnection` / `captureConnectionIf`。OAuth トークンの更新 `refreshAccessToken()` を同期で走らせうる。E `authentication/OAuthTokenProvider.kt:25-33, 69-110`)、アンカーのプロジェクト解決(JGit のローカル I/O)、各 HTTP。
 - **止まりうる処理は structured concurrency の外へ隔離する**(Codex round 3 #3)。コルーチンの子(`withContext(Dispatchers.IO) { … }` や `async`)で実行すると、処理が割り込みを無視した場合に親が子の完了を待ってしまい、期限を守れないため。
-  - 実行場所: Quick Chat 専用の有界な executor(スレッド数 `BLOCKING_THREADS`、既定 4。待ち行列なし = `SynchronousQueue` 相当)。`CompletableFuture.supplyAsync(block, executor)` で起動する。
+  - 実行場所: Quick Chat 専用の有界な executor(スレッド数 `BLOCKING_THREADS`、既定 4。**有界の待ち行列** `BLOCKING_QUEUE`、既定 16)。`CompletableFuture.supplyAsync(block, executor)` で起動する。正常な処理が並行してスレッドが埋まっていても、新しい処理は待ち行列で待ち、待ち時間も含めて残り時間で `await` する(Codex round 5 #3)。期限で `cancel` された待ち行列中の処理は、実行の順番が来ても本体を実行しない(`CompletableFuture` の非同期処理は完了済みなら本体を実行しない)。
   - 待ち方: `withTimeoutOrNull(残り時間) { future.await() }`(`kotlinx.coroutines.future.await`。取り消し可能な待ちで、future の完了を join しない。既存の使用例 E `preferences/healthcheck/ConfigurationValidationService.kt:12, 51`)。期限が来たら `future.cancel(true)` を呼んで(割り込みの試み)、**待たずに**戻る。
   - 放置した future の結果と例外: `whenComplete` で例外のクラス名だけをログに残し、結果は捨てる。共有 scope には例外を流さない。
-  - 未完了の上限: executor のスレッドがすべて止まった処理で埋まっていると、新しい処理は起動できず `RejectedExecutionException` になる。この場合は即座に失敗にする(無制限にスレッドを増やさない)。**分類は期限切れと同じく段階で決める**(Codex round 4 #1): `aiAction` の投入前なら `TimedOut(beforeSend = true)`、`aiAction` の投入が拒否された場合も送っていないので同じ、`aiAction` の後(ポーリングの投入)なら `TimedOut(beforeSend = false)`。実装段階でテストに固定する(A28)。
+  - 未完了の上限: 止まった処理がスレッドを占め、待ち行列(16)も埋まったときだけ、新しい処理は `RejectedExecutionException` になる。この場合は即座に失敗にする(無制限にスレッドや待ちを増やさない)。**分類は期限切れと同じく段階で決める**(Codex round 4 #1): `aiAction` の投入前なら `TimedOut(beforeSend = true)`、`aiAction` の投入が拒否された場合も送っていないので同じ、`aiAction` の後(ポーリングの投入)なら `TimedOut(beforeSend = false)`。実装段階でテストに固定する(A28)。
   - executor はバンドル停止時に `shutdownNow()` する。
 - **`/clear` `/reset` の背景送信(§9.4)も同じ隔離の下に置く**(Codex round 4 #3):
   - 通常の送信とは**別の** executor(スレッド 1、待ち行列なし)で実行する。止まった M2 が通常の送信のスレッドを奪わないため。
@@ -532,7 +532,9 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 - 古い結果は、UI スレッドでの照合 `surface.isOpen && conversation.isCurrent(ticket, gen)` で捨てる。照合と反映は同じ `asyncExec` の中で行うので、閉じる / 置き換え / `/clear` との順序はすべて UI スレッド上で決まる。
 - 送信は会話ごとに 1 本だけ(busy)。ウィンドウごとに会話は 1 つ。ウィンドウが違えば独立して並行できる。
 - キャンセル: 閉じる・置き換えで `Job.cancel()`。待ちの間はすぐ止まる。実行中の HTTP は完了まで走るが、結果は照合で捨てる。
-- 共有 scope は `SupervisorJob` でないので、`QuickChatService` は `CancellationException` 以外のすべての例外を結果に変換する(E4)。`asyncExec` に渡す処理の中の例外も捕まえてログに記録する。
+- **Quick Chat 専用の scope**(Codex round 5 #1): 既存の共有 scope は `SupervisorJob` でなく、他の機能の例外で失効しうる(E4)。Quick Chat は `QuickChatPopups` が所有する `CoroutineScope(SupervisorJob() + Dispatchers.IO)` を使い、バンドル停止時にだけ取り消す。
+- **チケットは必ず解放する**: 起動した `Job` に `invokeOnCompletion` を付け、結果を UI に届けずに終わった場合(起動前の取り消し、実行中の取り消し、捕まえ損ねた例外)は、`asyncExec` で「送信は中断された」失敗として手順 11〜14 と同じ照合・反映を行う。照合に通らない(閉じた・置き換えた・`/clear`)なら何もしない。結果を届けた場合は二重に反映しない(1 回だけ反映する印を持つ)。
+- `QuickChatService` は `CancellationException` 以外のすべての例外を結果に変換する。`asyncExec` に渡す処理の中の例外も捕まえてログに記録する。
 - バンドル停止時: すべての popup を `discard()` し、すべての `Job` を取り消す。
 
 ## 18. 認証と認可
@@ -602,6 +604,8 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A25 | 非 ASCII の名前を percent-encoded の HTTP remote で clone したプロジェクトで、Q1 の `fullPath` がデコード済みになり、プロジェクトを確かめられる | preflight のテスト |
 | A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない。区切り「New chat」はその送信の質問の前に表示される | preflight・サービス・会話のテスト |
 | A27 | 256 KiB を超える回答、31 個以上のコードブロック、41 項目目の追加で、それぞれ §9.7 の上限表のとおりになる | 分割・会話のテスト |
+| A30 | `BLOCKING_THREADS + 1` 個の正常な処理が同時に投入されても拒否されず、残り時間内に完了する。`aiAction` 後のポーリングの投入が他の処理と重なっても拒否されない | executor のテスト |
+| A31 | 背景処理の開始を遅らせても期限は `beginSubmit` の時点から数えられ、開始時に期限切れなら即座に `TimedOut(beforeSend = true)`。scope が取り消されている / 実行中に取り消されても、popup は失敗表示に戻り Send が戻る | サービス・ホストのテスト |
 | A28 | `aiAction` の後でポーリングの投入が executor の枯渇で拒否されると `TimedOut(beforeSend = false)` になり、「何も送っていない」とは表示しない | サービスのテスト |
 | A29 | M2 の接続取得や HTTP が割り込みを無視して止まっても、`CLEAR_DEADLINE` で待ちが終わり、M2 用のスレッドは 1 本を超えず、通常の送信は影響を受けない | 止まる偽物を使ったテスト |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
@@ -711,3 +715,11 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | 1 | P1 executor 枯渇を常に「送信前」と分類すると、`aiAction` 後の枯渇で二重送信を誘う | 実装段階へ(純ロジック。段階の分類規則だけ設計で 1 行) | §15 の分類規則、A28 |
 | 2 | P1 GraphQL 応答をバッファリング前に制限する | 不採用(本サイクル)・後続候補 | HTTP 層の横断的な性質で、既存の全 API 呼び出しに共通する。回答は LLM 出力でサーバ側で長さが限られる。§27 にリスクと後続候補として記録 |
 | 3 | P1 `/clear` `/reset` の背景送信に期限・所有者・資源の上限が無い | 採用・設計(並行処理・資源) | §15 に別 executor(1 スレッド)、`CLEAR_DEADLINE`、所有者、枯渇時の扱い。A29 |
+
+### round 5(`4393428` に対する指摘 3 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 失効しうる共有 scope で起動すると、取り消し時に busy のまま残る | 採用・設計(並行処理) | §17 に Quick Chat 専用の `SupervisorJob` scope と、`invokeOnCompletion` による必ずのチケット解放。A31 |
+| 2 | P1 期限の起点が背景処理の開始で、開始待ちが含まれない | 採用(規則のみ。純ロジック) | §9.2 手順 3-4 で UI スレッドが期限を決め、要求に入れる。A31 |
+| 3 | P1 待ち行列なしの executor は正常な同時処理まで拒否する | 採用・設計(並行処理) | §15 を有界の待ち行列(既定 16)に変更。A30 |
