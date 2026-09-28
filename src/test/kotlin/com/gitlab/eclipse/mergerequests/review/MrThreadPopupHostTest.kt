@@ -18,6 +18,9 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.collections.shouldNotContain
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -67,7 +70,13 @@ private class FakeSurface(model: InlineThreadModel) : InlineThreadSurface {
   override val state = InlineThreadState(model)
   override var isOpen = true
   val events = mutableListOf<String>()
-  override fun refresh() { events += "refresh(busy=${state.busy})" }
+
+  /** `canSubmit()` as each refresh saw it: what the real popup would render on the Send button. */
+  val submittableAtRefresh = mutableListOf<Boolean>()
+  override fun refresh() {
+    events += "refresh(busy=${state.busy})"
+    submittableAtRefresh += state.canSubmit()
+  }
   override fun close() {
     isOpen = false
     events += "close"
@@ -113,7 +122,6 @@ private class HostHarness(
   val writes = FakeWrites()
   val notifies = mutableListOf<String>()
   val retries = mutableListOf<Triple<String, String, (String) -> Unit>>()
-  val sendAgains = mutableListOf<String>()
   val copyTexts = mutableListOf<Pair<String, String>>()
   val launcherLogs = mutableListOf<String>()
   val hostLogs = mutableListOf<String>()
@@ -145,7 +153,6 @@ private class HostHarness(
         },
         notify = { notifies += it },
         promptRetry = { m, b, r -> retries += Triple(m, b, r) },
-        promptSendAgain = { m, _, _ -> sendAgains += m },
         promptCopyText = { m, b -> copyTexts += m to b },
         log = { launcherLogs += it },
         registryActive = { true },
@@ -209,7 +216,7 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.sidebarReloads shouldContainExactly listOf(OTHER_IDENTITY)
     }
 
-    it("Ambiguous: reload reports Skipped, so no [Send again], only copy-text, and the draft stays (A20, A24)") {
+    it("Ambiguous: reload reports Skipped, so the unconfirmed message and copy-text only; draft stays (A20, A24)") {
       val h = HostHarness(MrPopupKind.NewThread(SNAPSHOT))
       h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
       val s = FakeSurface(NEW_MODEL)
@@ -218,13 +225,18 @@ class MrThreadPopupHostTest : DescribeSpec({
       h.host.onSubmit(s, s.submit())
 
       h.reloadOutcomes shouldContainExactly listOf(LoadOutcome.Skipped)
-      h.sendAgains.shouldBeEmpty()
       h.copyTexts shouldContainExactly listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to BODY)
       h.refreshed shouldContainExactly listOf(IDENTITY to REF)
       h.sidebarReloads shouldContainExactly listOf(IDENTITY)
       s.state.busy shouldBe false
       s.isOpen shouldBe true
       s.state.draft(NEW_THREAD_ID) shouldBe BODY
+      // #96: the kept draft must not be one Send click away from a duplicate post.
+      s.state.canSubmit() shouldBe false
+      // Busy release and the lock land in the same UI turn: no refresh ever shows Send enabled.
+      s.submittableAtRefresh.shouldNotBeEmpty()
+      s.submittableAtRefresh shouldNotContain true
+      s.state.beginSubmit().shouldBeNull()
     }
 
     it("Ambiguous with an empty target (failed before G6): neither establishes nor reloads, still Skipped") {
@@ -451,7 +463,61 @@ class MrThreadPopupHostTest : DescribeSpec({
       s.state.busy shouldBe false
     }
 
-    it("Ambiguous on a reply never offers [Send again] either (A20)") {
+    it("a submit racing ahead of the UI lock is refused before sending once the thread went unconfirmed (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      val deferred = ArrayDeque<() -> Unit>()
+      h.runOnUi = { deferred += it } // the lock hop has not landed yet
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      // A click queued ahead of the lock hop: the guard is already free again.
+      h.host.onSubmit(s, SubmitTicket("d1", BODY, s.state.editGeneration("d1")))
+
+      h.writes.replies shouldHaveSize 1
+      h.copyTexts.last() shouldBe (MrThreadPopupHost.UNCONFIRMED_RESEND_MESSAGE to BODY)
+      while (deferred.isNotEmpty()) deferred.removeFirst().invoke()
+      s.state.canSubmit() shouldBe false
+      s.state.draft("d1") shouldBe BODY
+    }
+
+    it("Definite, then an Ambiguous [Retry], then a racing submit: the retry's thread is refused too (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      h.writes.outcome = DiscussionWriteOutcome.Definite(java.io.IOException("rejected"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      s.state.busy shouldBe false // the retry below never re-arms busy
+      val deferred = ArrayDeque<() -> Unit>()
+      h.runOnUi = { deferred += it }
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      h.retries.single().third(BODY)
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      h.host.onSubmit(s, s.submit())
+
+      h.writes.replies shouldHaveSize 2 // the first attempt and the retry, never a third
+      h.copyTexts.last() shouldBe (MrThreadPopupHost.UNCONFIRMED_RESEND_MESSAGE to BODY)
+      while (deferred.isNotEmpty()) deferred.removeFirst().invoke()
+      s.state.canSubmit() shouldBe false
+    }
+
+    it("the refusal is per thread: another thread of the same popup still sends (#96 r3)") {
+      val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
+      h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
+      val s = FakeSurface(REPLY_MODEL)
+      s.type("d1", BODY)
+      h.host.onSubmit(s, s.submit())
+      h.writes.outcome = DiscussionWriteOutcome.Success
+
+      h.host.onSubmit(s, SubmitTicket("d2", "other", 1L))
+
+      h.writes.replies shouldHaveSize 2
+    }
+
+    it("Ambiguous on a reply never re-sends either (A20, #96)") {
       val h = HostHarness(MrPopupKind.ExistingThreads(SESSION))
       h.writes.outcome = DiscussionWriteOutcome.Ambiguous(java.io.IOException("timeout"))
       val s = FakeSurface(REPLY_MODEL)
@@ -459,12 +525,15 @@ class MrThreadPopupHostTest : DescribeSpec({
 
       h.host.onSubmit(s, s.submit())
 
-      h.sendAgains.shouldBeEmpty()
       h.reloadOutcomes shouldContainExactly listOf(LoadOutcome.Skipped)
       h.copyTexts shouldHaveSize 1
       h.refreshed shouldContainExactly listOf(IDENTITY to REF)
       s.state.busy shouldBe false
       s.state.draft("d1") shouldBe BODY
+      s.state.canSubmit() shouldBe false
+      s.submittableAtRefresh shouldNotContain true
+      s.state.beginSubmit().shouldBeNull()
+      h.writes.replies shouldHaveSize 1
     }
 
     it("GateRejected and Aborted release busy and keep the draft (A29)") {

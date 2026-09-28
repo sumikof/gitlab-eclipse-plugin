@@ -9,8 +9,6 @@ import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.mergerequests.discussions.actions.DiscussionWriteTarget
 import com.gitlab.eclipse.mergerequests.discussions.actions.RETRY_LABEL
 import com.gitlab.eclipse.mergerequests.discussions.actions.RETRY_PROMPT
-import com.gitlab.eclipse.mergerequests.discussions.actions.SEND_AGAIN_LABEL
-import com.gitlab.eclipse.mergerequests.discussions.actions.SEND_AGAIN_PROMPT
 import com.gitlab.eclipse.mergerequests.discussions.actions.promptForBody
 import com.gitlab.eclipse.mergerequests.discussions.actions.reloadDiscussionsFor
 import com.gitlab.eclipse.mergerequests.discussions.actions.showCopyTextDialog
@@ -195,9 +193,6 @@ object MrThreadPopups {
     notify = { message -> NotificationUtils.showOnUiThread(message) },
     promptRetry = { message, body, onRetry ->
       promptForBody(window, DIALOG_TITLE, RETRY_PROMPT, body, message, RETRY_LABEL, onRetry)
-    },
-    promptSendAgain = { message, body, onSendAgain ->
-      promptForBody(window, DIALOG_TITLE, SEND_AGAIN_PROMPT, body, message, SEND_AGAIN_LABEL, onSendAgain)
     },
     promptCopyText = { message, body -> showCopyTextDialog(window, DIALOG_TITLE, message, body) },
     log = { message -> logger.info(message) },

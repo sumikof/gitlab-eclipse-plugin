@@ -12,7 +12,7 @@ import org.eclipse.swt.widgets.Text
 
 /**
  * Multi-line comment editor shared by every text-entering discussion flow: create, reply, edit,
- * retry, and send-again (design §7.5). JFace's `InputDialog` hosts a single-line `Text`, which is
+ * retry, and the copy-text dialog (design §7.5). JFace's `InputDialog` hosts a single-line `Text`, which is
  * unusable for a code-review comment, hence this small [Dialog] subclass.
  *
  * The dialog is a pure input surface: it never logs, notifies, or touches the network. The caller
@@ -24,7 +24,7 @@ import org.eclipse.swt.widgets.Text
  *   the caret is placed at the end so the user can keep typing.
  * @param errorMessage when non-null, rendered as a label above the prompt — how a failed send
  *   explains itself while keeping the user's text (design §9.2 / §9.3).
- * @param okLabel label for the OK button, so callers can render `Retry`, `Send again`, or `Save`
+ * @param okLabel label for the OK button, so callers can render `Retry` or `Save`
  *   without a second dialog class.
  */
 class CommentInputDialog(

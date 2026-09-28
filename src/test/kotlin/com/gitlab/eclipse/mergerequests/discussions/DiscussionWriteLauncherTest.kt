@@ -41,8 +41,8 @@ private fun throwRuntime(message: String): Nothing = throw RuntimeException(mess
 
 /**
  * Records every body **and every startEpoch** passed to `write`, and returns [results] in order,
- * repeating the last. The epochs are recorded because a `[Retry]` / `[Send again]` must send with
- * the epoch re-frozen at re-entry time, not the one the first attempt started with.
+ * repeating the last. The epochs are recorded because a `[Retry]` must send with the
+ * epoch re-frozen at re-entry time, not the one the first attempt started with.
  */
 private class WriteSpy(vararg results: DiscussionWriteOutcome) {
   val bodies = mutableListOf<String>()
@@ -69,12 +69,18 @@ private class LauncherHarness(deferUi: Boolean = false) {
 
   /** Each entry is `message to body` as the prompt received them. */
   val retryPrompts = mutableListOf<Pair<String, String>>()
-  val sendAgainPrompts = mutableListOf<Pair<String, String>>()
   val copyTextPrompts = mutableListOf<Pair<String, String>>()
   var lastRetryCallback: ((String) -> Unit)? = null
     private set
-  var lastSendAgainCallback: ((String) -> Unit)? = null
-    private set
+
+  /**
+   * Every UI effect in the order it happened, as `kind:message` — so a test can assert that a
+   * terminal produced exactly one effect, not merely that one expected effect is present.
+   */
+  val effects = mutableListOf<String>()
+
+  /** Every re-send callback any prompt handed out, so a test can press them all (#96). */
+  val resendCallbacks = mutableListOf<(String) -> Unit>()
 
   var reloadCount = 0
     private set
@@ -103,16 +109,20 @@ private class LauncherHarness(deferUi: Boolean = false) {
       reloadCount++
       reloadOutcome?.let { onOutcome(it) }
     },
-    notify = { notifications += it },
+    notify = {
+      notifications += it
+      effects += "notify:$it"
+    },
     promptRetry = { message, body, onRetry ->
       retryPrompts += message to body
       lastRetryCallback = onRetry
+      resendCallbacks += onRetry
+      effects += "retry:$message"
     },
-    promptSendAgain = { message, body, onSendAgain ->
-      sendAgainPrompts += message to body
-      lastSendAgainCallback = onSendAgain
+    promptCopyText = { message, body ->
+      copyTextPrompts += message to body
+      effects += "copyText:$message"
     },
-    promptCopyText = { message, body -> copyTextPrompts += message to body },
     log = { logs += it },
   )
 
@@ -128,7 +138,6 @@ private class LauncherHarness(deferUi: Boolean = false) {
     notifications.shouldBeEmpty()
     reloadCount shouldBe 0
     retryPrompts.shouldBeEmpty()
-    sendAgainPrompts.shouldBeEmpty()
     copyTextPrompts.shouldBeEmpty()
   }
 }
@@ -265,7 +274,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.reloadCount shouldBe 1
       h.notifications.shouldBeEmpty()
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
     }
 
@@ -278,7 +286,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.reloadCount shouldBe 1
       h.notifications.shouldBeEmpty()
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
     }
 
@@ -291,7 +298,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.retryPrompts shouldContainExactly listOf(DiscussionWriteLauncher.DEFINITE_MESSAGE to "my comment")
       h.notifications.shouldBeEmpty()
       h.reloadCount shouldBe 0
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
     }
 
@@ -317,20 +323,71 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.reloadCount shouldBe 1
     }
 
-    it("Ambiguous whose reload yields Applied prompts [Send again] once with the preserved body") {
+    it("Ambiguous whose reload yields Applied prompts copy-text once with the preserved body, never a re-send (#96)") {
       val key = keyFor("ambiguous-applied")
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.Applied
+      val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()))
 
-      h.launch(key, "my comment", WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException())).fn)
+      h.launch(key, "my comment", write.fn)
 
-      h.sendAgainPrompts shouldContainExactly
+      h.copyTextPrompts shouldContainExactly
         listOf(DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE to "my comment")
-      h.copyTextPrompts.shouldBeEmpty()
+      h.retryPrompts.shouldBeEmpty()
       h.notifications.shouldBeEmpty()
+      write.bodies shouldContainExactly listOf("my comment")
     }
 
-    it("Ambiguous whose reload yields Superseded prompts copy-text once and never [Send again]") {
+    // #96: a complete reload is not evidence that a timed-out mutation did not run — the server may
+    // still be processing it — so no reload result may lead to a second send from this terminal.
+    // Each row also pins the exact UI effects: one copy-text dialog (none when the reload callback is
+    // never invoked), and every re-send callback handed out is pressed — so a re-send prompt shown
+    // alongside copy-text, or any callback that re-launches, turns the row red.
+    val applied = "copyText:${DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE}"
+    val unconfirmed = "copyText:${DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE}"
+    listOf(
+      Triple("Applied", LoadOutcome.Applied, listOf(applied)),
+      Triple("Superseded", LoadOutcome.Superseded, listOf(unconfirmed)),
+      Triple("Failed", LoadOutcome.Failed(RuntimeException()), listOf(unconfirmed)),
+      Triple("GateRejected", LoadOutcome.GateRejected, listOf(unconfirmed)),
+      Triple("Skipped", LoadOutcome.Skipped, listOf(unconfirmed)),
+      Triple("never invoked", null, emptyList()),
+    ).forEach { (label, reloadOutcome, expectedEffects) ->
+      it("Ambiguous never re-sends the body when the reload result is $label (#96)") {
+        val key = keyFor("ambiguous-no-resend-$label")
+        val h = LauncherHarness()
+        h.reloadOutcome = reloadOutcome
+        val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
+
+        h.launch(key, "my comment", write.fn)
+        h.resendCallbacks.toList().forEach { it("edited comment") }
+
+        h.effects shouldContainExactly expectedEffects
+        h.resendCallbacks.shouldBeEmpty()
+        write.bodies shouldContainExactly listOf("my comment")
+        h.reloadCount shouldBe 1
+        assertGuardReleased(key)
+      }
+    }
+
+    it("the launcher's injected UI effects are exactly notify, [Retry] and copy-text — no re-send seam (#96)") {
+      // A re-send prompt could come back as a new constructor parameter with a default value, which
+      // no harness would wire and no behavioural test would see. Pinning the function-typed fields
+      // makes adding any new UI effect a deliberate, reviewed change to this list.
+      val effectFields = DiscussionWriteLauncher::class.java.declaredFields
+        .map { it.name }
+        .filter { it.startsWith("notify") || it.startsWith("prompt") }
+        .sorted()
+
+      effectFields shouldContainExactly listOf("notify", "promptCopyText", "promptRetry")
+    }
+
+    it("the Ambiguous-then-reloaded message sends the user to GitLab instead of inviting a re-send (#96)") {
+      DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE shouldContain "Check in GitLab"
+      DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE shouldNotContain "Send again"
+    }
+
+    it("Ambiguous whose reload yields Superseded prompts copy-text once and never re-sends") {
       val key = keyFor("ambiguous-superseded")
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.Superseded
@@ -339,10 +396,9 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
       h.copyTextPrompts shouldContainExactly
         listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to "my comment")
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
-    it("Ambiguous whose reload yields Failed prompts copy-text once and never [Send again]") {
+    it("Ambiguous whose reload yields Failed prompts copy-text once and never re-sends") {
       val key = keyFor("ambiguous-failed")
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.Failed(RuntimeException())
@@ -351,10 +407,9 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
       h.copyTextPrompts shouldContainExactly
         listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to "my comment")
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
-    it("Ambiguous whose reload yields GateRejected prompts copy-text once and never [Send again]") {
+    it("Ambiguous whose reload yields GateRejected prompts copy-text once and never re-sends") {
       val key = keyFor("ambiguous-gate-rejected")
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.GateRejected
@@ -363,10 +418,9 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
       h.copyTextPrompts shouldContainExactly
         listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to "my comment")
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
-    it("Ambiguous whose reload yields Skipped prompts copy-text once and never [Send again]") {
+    it("Ambiguous whose reload yields Skipped prompts copy-text once and never re-sends") {
       val key = keyFor("ambiguous-skipped")
       val h = LauncherHarness()
       h.reloadOutcome = LoadOutcome.Skipped
@@ -375,7 +429,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
       h.copyTextPrompts shouldContainExactly
         listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE to "my comment")
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
     it("Ambiguous with an empty body whose reload yields Applied notifies once, with no prompt") {
@@ -390,7 +443,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       // no text to preserve, but they must still be shown the refreshed thread before being told the
       // result is unconfirmed.
       h.reloadCount shouldBe 1
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
       h.retryPrompts.shouldBeEmpty()
     }
@@ -404,7 +456,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
       h.notifications shouldContainExactly listOf(DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE)
       h.reloadCount shouldBe 1
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
     }
 
@@ -418,7 +469,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.reloadCount shouldBe 1
       h.notifications.shouldBeEmpty()
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
       h.copyTextPrompts.shouldBeEmpty()
       assertGuardReleased(key)
     }
@@ -434,7 +484,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
         listOf(DiscussionWriteLauncher.CONNECTION_CHANGED_MESSAGE to "my comment")
       h.reloadCount shouldBe 0
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
     it("GateRejected with an empty body notifies once and shows no dialog (nothing to preserve)") {
@@ -456,7 +505,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.assertNoUiEffects()
     }
 
-    it("Rejected with a non-empty body prompts copy-text once; reload/retry/sendAgain/notify never called") {
+    it("Rejected with a non-empty body prompts copy-text once; reload/retry/notify never called") {
       val key = keyFor("terminal-rejected-body")
       val h = LauncherHarness()
 
@@ -466,7 +515,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.notifications.shouldBeEmpty()
       h.reloadCount shouldBe 0
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
     }
 
     it("Rejected with an empty body notifies once with the message; no copy-text and no reload") {
@@ -479,7 +527,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       h.copyTextPrompts.shouldBeEmpty()
       h.reloadCount shouldBe 0
       h.retryPrompts.shouldBeEmpty()
-      h.sendAgainPrompts.shouldBeEmpty()
     }
   }
 
@@ -537,7 +584,7 @@ class DiscussionWriteLauncherTest : DescribeSpec({
     }
   }
 
-  describe("re-entry from [Retry] and [Send again]") {
+  describe("re-entry from [Retry]") {
     it("the [Retry] callback re-sends with the edited body: write is called a second time with the new text") {
       val key = keyFor("retry-edited-body")
       val h = LauncherHarness()
@@ -583,26 +630,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       assertGuardReleased(key)
     }
 
-    it("the [Send again] callback behaves the same: edited body, guard re-acquired, epoch re-frozen") {
-      val key = keyFor("send-again-reentry")
-      val h = LauncherHarness()
-      h.reloadOutcome = LoadOutcome.Applied
-      val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
-
-      h.launch(key, "first draft", write.fn)
-      h.sendAgainPrompts shouldContainExactly
-        listOf(DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE to "first draft")
-      DiscussionGenerationRegistry.onDeactivate()
-      DiscussionGenerationRegistry.onActivate()
-      h.lastSendAgainCallback!!.invoke("edited draft")
-
-      write.bodies shouldContainExactly listOf("first draft", "edited draft")
-      // reload #1 was the Ambiguous refresh; reload #2 is the re-sent Success terminal, which
-      // only runs because the re-entry re-froze startEpoch from the current registry epoch.
-      h.reloadCount shouldBe 2
-      assertGuardReleased(key)
-    }
-
     it("the first attempt's write receives exactly the startEpoch passed to launch") {
       val key = keyFor("epoch-passed-through")
       val h = LauncherHarness()
@@ -637,42 +664,6 @@ class DiscussionWriteLauncherTest : DescribeSpec({
       write.epochs shouldContainExactly listOf(originalEpoch, newEpoch)
       assertGuardReleased(key)
     }
-
-    it("the [Send again] re-entry sends with the epoch frozen at click time, not the original one") {
-      val key = keyFor("send-again-sends-new-epoch")
-      val h = LauncherHarness()
-      h.reloadOutcome = LoadOutcome.Applied
-      val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
-      val originalEpoch = DiscussionGenerationRegistry.currentEpoch
-
-      h.launch(key, "first draft", write.fn)
-      DiscussionGenerationRegistry.onDeactivate()
-      DiscussionGenerationRegistry.onActivate()
-      val newEpoch = DiscussionGenerationRegistry.currentEpoch
-      h.lastSendAgainCallback!!.invoke("edited draft")
-
-      newEpoch shouldNotBe originalEpoch
-      write.epochs shouldContainExactly listOf(originalEpoch, newEpoch)
-      assertGuardReleased(key)
-    }
-
-    it("the [Send again] re-entry re-acquires the guard: a key held at click time rejects the re-send") {
-      val key = keyFor("send-again-reacquires")
-      val h = LauncherHarness()
-      h.reloadOutcome = LoadOutcome.Applied
-      val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
-
-      h.launch(key, "first draft", write.fn)
-      InFlightWriteGuard.tryAcquire(key) shouldBe true
-      try {
-        h.lastSendAgainCallback!!.invoke("edited draft")
-
-        write.bodies shouldContainExactly listOf("first draft")
-        h.notifications shouldContainExactly listOf(DiscussionWriteLauncher.ALREADY_IN_PROGRESS_MESSAGE)
-      } finally {
-        InFlightWriteGuard.release(key)
-      }
-    }
   }
 
   describe("cancellation and safety") {
@@ -692,14 +683,13 @@ class DiscussionWriteLauncherTest : DescribeSpec({
     it("a write that throws takes the Definite path, releases the key, and logs only the type") {
       val key = keyFor("escaped-throwable")
       val h = LauncherHarness()
-      h.reloadOutcome = LoadOutcome.Applied // would drive [Send again] if the outcome were wrongly Ambiguous
+      h.reloadOutcome = LoadOutcome.Applied // would reload and show copy-text if the outcome were wrongly Ambiguous
 
       h.launch(key, "my typed text") { _, _ -> throwRuntime("SECRET-MARKER boom") }
 
-      // Definite flow, not the Ambiguous reload-then-[Send again] flow:
+      // Definite flow, not the Ambiguous reload-then-copy-text flow:
       h.retryPrompts shouldContainExactly listOf(DiscussionWriteLauncher.DEFINITE_MESSAGE to "my typed text")
       h.reloadCount shouldBe 0
-      h.sendAgainPrompts.shouldBeEmpty()
       assertGuardReleased(key)
       h.logs.size shouldBe 1
       h.logs.single() shouldContain "exceptionType=RuntimeException"

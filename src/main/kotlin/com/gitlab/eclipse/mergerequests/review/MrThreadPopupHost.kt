@@ -17,6 +17,7 @@ import com.gitlab.eclipse.views.inlinethread.SubmitTicket
 import com.gitlab.eclipse.views.inlinethread.SuccessEffect
 import kotlinx.coroutines.CancellationException
 import org.eclipse.core.runtime.ILog
+import java.util.concurrent.ConcurrentHashMap
 
 /** What an MR thread popup is about: a new thread on a frozen line, or the threads of a loaded session's line. */
 sealed interface MrPopupKind {
@@ -98,7 +99,8 @@ class GitLabMrThreadWrites(
  * `write` so that busy is released on every terminal and the success effect is applied only for
  * a Success, and supplies the **editor-path `reload`**, which establishes or refreshes the review
  * session and asks the sidebar to reload but always reports [LoadOutcome.Skipped] — so an
- * Ambiguous write on this path never offers `[Send again]` (A20).
+ * Ambiguous write on this path never claims the thread was reloaded (A20), and its thread cannot be
+ * submitted again from the same popup (#96).
  *
  * SWT-free: thread hops and every effect are injected. [runOnUi] must schedule onto the UI thread
  * without blocking (`asyncExec`); a scheduling failure is swallowed with one log line, as in
@@ -142,6 +144,14 @@ class MrThreadPopupHost(
   private val notify: (String) -> Unit = {},
   private val newThreadEdited: () -> Boolean = { false },
 ) : InlineThreadHost {
+
+  /**
+   * Threads of this popup whose attempt ended Ambiguous (#96): they may already be posted, so any
+   * later attempt for them is refused in [wrapped] before sending. Written and read on background
+   * threads (the launcher's `write`), hence concurrent; never cleared — a deliberate re-send takes
+   * a new popup, which gets a new host.
+   */
+  private val unconfirmedThreads: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
   /** UI thread. [ticket] was frozen by the popup's `beginSubmit`; busy is released on every path from here. */
   override fun onSubmit(surface: InlineThreadSurface, ticket: SubmitTicket) {
@@ -239,18 +249,41 @@ class MrThreadPopupHost(
   /**
    * Background. Design §9.3.1 / §29 #20: whatever [attempt] returns or throws, the popup is told
    * the attempt finished (busy released); only a Success then applies the state's effect, and only
-   * if the ticket's thread is unedited since (the state decides).
+   * if the ticket's thread is unedited since (the state decides). An Ambiguous attempt releases busy
+   * through `state.onAttemptUnconfirmed` in the same UI hop, which also locks the thread
+   * against a re-send (#96): the kept draft must never sit behind an enabled Send button.
    */
   private fun wrapped(
     surface: InlineThreadSurface,
     ticket: SubmitTicket,
     attempt: () -> DiscussionWriteOutcome,
   ): DiscussionWriteOutcome {
+    // Checked here, in the background attempt and therefore AFTER the launcher acquired the write
+    // guard, never in onSubmit: an earlier Ambiguous attempt records its thread below before it
+    // returns, i.e. before the launcher releases the guard, so a submit that won the guard after
+    // that release is guaranteed to see the record — even when it was queued ahead of the UI lock
+    // hop, or came from a `[Retry]` that never re-armed busy (Codex r3). Nothing is sent.
+    if (ticket.threadId in unconfirmedThreads) {
+      hop("attemptRefused") {
+        surface.state.onAttemptUnconfirmed(ticket)
+        surface.refresh()
+      }
+      return DiscussionWriteOutcome.Rejected(UNCONFIRMED_RESEND_MESSAGE)
+    }
+    var unconfirmed = false
     val outcome = try {
-      attempt()
+      attempt().also {
+        if (it is DiscussionWriteOutcome.Ambiguous) {
+          unconfirmed = true
+          unconfirmedThreads += ticket.threadId
+        }
+      }
     } finally {
+      // A throw is not Ambiguous here: the launcher classifies an escaped throwable as Definite
+      // (nothing was transmitted), so only a returned Ambiguous locks the thread.
+      val lock = unconfirmed
       hop("attemptFinished") {
-        surface.state.onAttemptFinished(ticket)
+        if (lock) surface.state.onAttemptUnconfirmed(ticket) else surface.state.onAttemptFinished(ticket)
         surface.refresh()
       }
     }
@@ -294,7 +327,7 @@ class MrThreadPopupHost(
    * UI thread, the launcher's terminal (Success / Ambiguous). Establishes or refreshes the session
    * of the attempt's MR target and asks the sidebar to reload, then reports [LoadOutcome.Skipped]
    * **whatever happened** (design §9.3.1, FR-10): the mutation may still be committing server-side
-   * when a reload lands, so a reload can never prove "not posted", and `[Send again]` stays locked.
+   * when a reload lands, so a reload can never prove "not posted".
    * A target of `null` (the attempt failed before G6) does neither.
    */
   private fun editorPathReload(target: Pair<SessionIdentity, MergeRequestRef>?, onOutcome: (LoadOutcome) -> Unit) {
@@ -322,5 +355,10 @@ class MrThreadPopupHost(
     /** Fixed text, no path or body (design §19). */
     const val FILE_CHANGED_MESSAGE =
       "The file changed after you started this comment. Save or undo your changes, then start the comment again from the line."
+
+    /** Fixed text (design §19): an earlier send of this thread from this popup could not be confirmed (#96). */
+    const val UNCONFIRMED_RESEND_MESSAGE =
+      "An earlier send from this popup could not be confirmed and may already be posted. " +
+        "Check in GitLab, then close this popup and start again if it is missing."
   }
 }

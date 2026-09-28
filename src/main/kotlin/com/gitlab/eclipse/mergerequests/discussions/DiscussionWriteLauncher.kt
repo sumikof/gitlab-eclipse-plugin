@@ -11,7 +11,7 @@ import kotlinx.coroutines.CancellationException
  *
  * **SWT-free by construction**: this container cannot run SWT, so every thread hop
  * ([runInBackground], [runOnUi]) and every UI effect ([reload], [notify], [promptRetry],
- * [promptSendAgain], [promptCopyText], [log]) arrives as an injected function, which keeps the
+ * [promptCopyText], [log]) arrives as an injected function, which keeps the
  * invariants below directly unit-testable. Do not import anything from `org.eclipse.swt` or
  * `org.eclipse.ui` here. A later task supplies the real implementations.
  *
@@ -19,12 +19,12 @@ import kotlinx.coroutines.CancellationException
  * - [DiscussionWriteOutcome.Ambiguous] NEVER offers `[Retry]`: the mutation may have committed,
  *   GraphQL mutations carry no idempotency key, and the in-flight guard cannot help because the
  *   first request already completed. Instead the thread is reloaded first.
- * - `[Send again]` is reachable from exactly one of the six reload results:
- *   [LoadOutcome.Applied] — the only one that means "the refreshed thread is now on screen", so
- *   the user can actually check whether the comment already landed. `Superseded` / `Failed` /
- *   `GateRejected` / `Skipped` and the never-invoked callback all mean the current state was NOT
- *   shown, so re-sending could duplicate a comment that did get posted; those paths only offer
- *   a copy-text dialog (or a plain notification when there is no text to preserve).
+ * - Ambiguous NEVER re-sends either (#96): there is no `[Send again]`. The thread is reloaded so the
+ *   user can see the current state, but even an [LoadOutcome.Applied] reload is not evidence that
+ *   the comment was not posted — a timed-out mutation may still be committing server-side when the
+ *   reload lands. Every reload result therefore ends in the text-preserving copy dialog (or a plain
+ *   notification when there is no text to preserve) that points the user to GitLab; only the
+ *   message differs between "the thread was reloaded" and "the latest state could not be loaded".
  * - The terminal applies the **lifecycle** guard ([registryActive] / [registryEpoch] vs the
  *   frozen `startEpoch`) but deliberately NOT the freshness guard
  *   ([DiscussionGenerationRegistry.isLatest]): if the user refreshes the MR while a write is in
@@ -38,8 +38,6 @@ import kotlinx.coroutines.CancellationException
  *   view disposal), which must simply mean "no dialog appears".
  * @param promptRetry `[Retry]` dialog for a [DiscussionWriteOutcome.Definite] failure; its
  *   callback receives the (possibly edited) body to re-send.
- * @param promptSendAgain `[Send again]` dialog for an Ambiguous-then-Applied completion; its
- *   callback receives the (possibly edited) body to re-send.
  * @param promptCopyText text-preserving, non-resend dialog: the user can only copy what they
  *   typed, never re-send it from here.
  */
@@ -49,7 +47,6 @@ class DiscussionWriteLauncher(
   private val reload: (onOutcome: (LoadOutcome) -> Unit) -> Unit,
   private val notify: (String) -> Unit,
   private val promptRetry: (message: String, body: String, onRetry: (String) -> Unit) -> Unit,
-  private val promptSendAgain: (message: String, body: String, onSendAgain: (String) -> Unit) -> Unit,
   private val promptCopyText: (message: String, body: String) -> Unit,
   private val log: (String) -> Unit,
   private val registryActive: () -> Boolean = { DiscussionGenerationRegistry.active },
@@ -63,7 +60,7 @@ class DiscussionWriteLauncher(
    * dialogs, because there is nothing to preserve (design §11.2).
    *
    * [write] receives **both** the body and the epoch of the attempt that is running:
-   * - the body, so a `[Retry]` / `[Send again]` re-entry can send **edited** text;
+   * - the body, so a `[Retry]` re-entry can send **edited** text;
    * - the epoch, so the re-entry's pre-send lifecycle check compares against the epoch [relaunch]
    *   just re-froze rather than the one the first attempt started with. A callback that closed over
    *   its own epoch would, after a stop→restart while the dialog was open, always compare stale,
@@ -184,13 +181,13 @@ class DiscussionWriteLauncher(
         } else {
           promptRetry(DEFINITE_MESSAGE, body) { newBody -> relaunch(key, newBody, write) }
         }
-      is DiscussionWriteOutcome.Ambiguous -> applyAmbiguous(key, body, write)
+      is DiscussionWriteOutcome.Ambiguous -> applyAmbiguous(body)
       DiscussionWriteOutcome.GateRejected -> {
         notify(CONNECTION_CHANGED_MESSAGE)
         if (body.isNotEmpty()) promptCopyText(CONNECTION_CHANGED_MESSAGE, body)
       }
       DiscussionWriteOutcome.Aborted -> Unit // pre-send lifecycle rejection: no UI at all
-      // A local gate refused before send: no [Retry]/[Send again] (retrying re-evaluates the same
+      // A local gate refused before send: no [Retry] (retrying re-evaluates the same
       // stable condition), and no reload — nothing was sent, so there is nothing new to show
       // (design §9.3.1).
       is DiscussionWriteOutcome.Rejected ->
@@ -199,23 +196,15 @@ class DiscussionWriteLauncher(
   }
 
   /**
-   * The anti-duplicate-post core: reload first, and only an [LoadOutcome.Applied] reload — the
-   * refreshed thread is provably on screen — may offer `[Send again]`. Every other reload result
-   * (and a callback that is never invoked) leaves the user without the current state, so the
-   * text is only preserved, never re-sendable from here.
+   * The anti-duplicate-post core (#96): reload first so the user can see the current state, then
+   * only preserve the text — never offer a re-send. A reload, even an [LoadOutcome.Applied] one,
+   * cannot prove the mutation did not run: it may still be committing server-side. The message
+   * tells the user whether the thread was reloaded; a callback that is never invoked shows nothing.
    */
-  private fun applyAmbiguous(
-    key: DiscussionWriteKey,
-    body: String,
-    write: (String, Long) -> DiscussionWriteOutcome,
-  ) {
+  private fun applyAmbiguous(body: String) {
     reload { loadOutcome ->
       if (loadOutcome is LoadOutcome.Applied) {
-        if (body.isEmpty()) {
-          notify(AMBIGUOUS_APPLIED_MESSAGE)
-        } else {
-          promptSendAgain(AMBIGUOUS_APPLIED_MESSAGE, body) { newBody -> relaunch(key, newBody, write) }
-        }
+        if (body.isEmpty()) notify(AMBIGUOUS_APPLIED_MESSAGE) else promptCopyText(AMBIGUOUS_APPLIED_MESSAGE, body)
       } else {
         if (body.isEmpty()) {
           notify(AMBIGUOUS_UNCONFIRMED_MESSAGE)
@@ -227,7 +216,7 @@ class DiscussionWriteLauncher(
   }
 
   /**
-   * Re-entry from `[Retry]` / `[Send again]`: the same flow with the (possibly edited) new body.
+   * Re-entry from `[Retry]`: the same flow with the (possibly edited) new body.
    * The guard is re-acquired (never skipped on a second attempt), and `startEpoch` is re-frozen
    * from [registryEpoch] at this moment — the click happens in a new UI turn, possibly after a
    * stop→restart, and reusing the original epoch would get the new attempt's terminal discarded.
@@ -248,8 +237,8 @@ class DiscussionWriteLauncher(
     const val CONNECTION_CHANGED_MESSAGE = "GitLab connection changed. Nothing was sent."
     const val DEFINITE_MESSAGE = "GitLab rejected this comment. You can try again."
     const val AMBIGUOUS_APPLIED_MESSAGE =
-      "The result could not be confirmed. The thread has been reloaded. " +
-        "Send again only if your comment is not shown above."
+      "The result could not be confirmed. The thread has been reloaded, but a change that is still " +
+        "being processed may not be shown yet. Check in GitLab before trying again."
     const val AMBIGUOUS_UNCONFIRMED_MESSAGE =
       "The result could not be confirmed and the latest state could not be loaded. Check in GitLab."
   }

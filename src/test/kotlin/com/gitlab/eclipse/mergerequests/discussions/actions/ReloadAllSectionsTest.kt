@@ -10,9 +10,10 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 /**
  * The post-write re-fetch fan-out. One merge request can own TWO `DiscussionsSectionNode`s (it
  * appears under both "Merge requests assigned to me" and "For current branch"), so the reload must
- * refresh all of them and may only report [LoadOutcome.Applied] — the outcome that unlocks the
- * launcher's `[Send again]` — when every one of them actually applied. Reporting `Applied` while a
- * sibling section is still stale is what would make a user post the same comment twice.
+ * refresh all of them and may only report [LoadOutcome.Applied] — the outcome for which the
+ * launcher tells the user "the thread has been reloaded" — when every one of them actually applied.
+ * Reporting `Applied` while a sibling section is still stale invites a user to post the same comment
+ * twice.
  *
  * `GitLabSidebarView` cannot be instantiated in this headless container, so every part of the fix is
  * asserted on the pure functions the view path delegates to.
@@ -146,8 +147,8 @@ class ReloadAllSectionsTest : DescribeSpec({
     it("ignores a duplicate report that arrives before the sibling has reported") {
       // The dangerous ordering. Without the per-slot guard the duplicate decrements the pending
       // counter a second time, driving it to zero while section "b" is still stale, and the
-      // aggregate reports Applied — which is exactly what unlocks [Send again] and would invite a
-      // duplicate comment. The trailing-duplicate case above passes even without the guard, so it
+      // aggregate reports Applied — which makes the launcher claim the thread was reloaded and would
+      // invite a duplicate comment. The trailing-duplicate case above passes even without the guard, so it
       // does not pin this.
       val reported = mutableListOf<LoadOutcome>()
       val callbacks = mutableListOf<(LoadOutcome) -> Unit>()
@@ -208,7 +209,7 @@ class ReloadAllSectionsTest : DescribeSpec({
       reported shouldContainExactly listOf(LoadOutcome.Skipped)
     }
 
-    it("never reports Applied for an empty section list, so [Send again] stays locked") {
+    it("never reports Applied for an empty section list, so it is never reported as a reload") {
       val reported = mutableListOf<LoadOutcome>()
 
       reloadResolvedSections<String, String>("view", { emptyList() }, { _, _, _ -> }, { reported += it })
