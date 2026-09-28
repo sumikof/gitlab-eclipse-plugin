@@ -73,6 +73,15 @@ private class LauncherHarness(deferUi: Boolean = false) {
   var lastRetryCallback: ((String) -> Unit)? = null
     private set
 
+  /**
+   * Every UI effect in the order it happened, as `kind:message` — so a test can assert that a
+   * terminal produced exactly one effect, not merely that one expected effect is present.
+   */
+  val effects = mutableListOf<String>()
+
+  /** Every re-send callback any prompt handed out, so a test can press them all (#96). */
+  val resendCallbacks = mutableListOf<(String) -> Unit>()
+
   var reloadCount = 0
     private set
 
@@ -100,12 +109,20 @@ private class LauncherHarness(deferUi: Boolean = false) {
       reloadCount++
       reloadOutcome?.let { onOutcome(it) }
     },
-    notify = { notifications += it },
+    notify = {
+      notifications += it
+      effects += "notify:$it"
+    },
     promptRetry = { message, body, onRetry ->
       retryPrompts += message to body
       lastRetryCallback = onRetry
+      resendCallbacks += onRetry
+      effects += "retry:$message"
     },
-    promptCopyText = { message, body -> copyTextPrompts += message to body },
+    promptCopyText = { message, body ->
+      copyTextPrompts += message to body
+      effects += "copyText:$message"
+    },
     log = { logs += it },
   )
 
@@ -323,14 +340,19 @@ class DiscussionWriteLauncherTest : DescribeSpec({
 
     // #96: a complete reload is not evidence that a timed-out mutation did not run — the server may
     // still be processing it — so no reload result may lead to a second send from this terminal.
+    // Each row also pins the exact UI effects: one copy-text dialog (none when the reload callback is
+    // never invoked), and every re-send callback handed out is pressed — so a re-send prompt shown
+    // alongside copy-text, or any callback that re-launches, turns the row red.
+    val applied = "copyText:${DiscussionWriteLauncher.AMBIGUOUS_APPLIED_MESSAGE}"
+    val unconfirmed = "copyText:${DiscussionWriteLauncher.AMBIGUOUS_UNCONFIRMED_MESSAGE}"
     listOf(
-      "Applied" to LoadOutcome.Applied,
-      "Superseded" to LoadOutcome.Superseded,
-      "Failed" to LoadOutcome.Failed(RuntimeException()),
-      "GateRejected" to LoadOutcome.GateRejected,
-      "Skipped" to LoadOutcome.Skipped,
-      "never invoked" to null,
-    ).forEach { (label, reloadOutcome) ->
+      Triple("Applied", LoadOutcome.Applied, listOf(applied)),
+      Triple("Superseded", LoadOutcome.Superseded, listOf(unconfirmed)),
+      Triple("Failed", LoadOutcome.Failed(RuntimeException()), listOf(unconfirmed)),
+      Triple("GateRejected", LoadOutcome.GateRejected, listOf(unconfirmed)),
+      Triple("Skipped", LoadOutcome.Skipped, listOf(unconfirmed)),
+      Triple("never invoked", null, emptyList()),
+    ).forEach { (label, reloadOutcome, expectedEffects) ->
       it("Ambiguous never re-sends the body when the reload result is $label (#96)") {
         val key = keyFor("ambiguous-no-resend-$label")
         val h = LauncherHarness()
@@ -338,11 +360,26 @@ class DiscussionWriteLauncherTest : DescribeSpec({
         val write = WriteSpy(DiscussionWriteOutcome.Ambiguous(RuntimeException()), DiscussionWriteOutcome.Success)
 
         h.launch(key, "my comment", write.fn)
+        h.resendCallbacks.toList().forEach { it("edited comment") }
 
+        h.effects shouldContainExactly expectedEffects
+        h.resendCallbacks.shouldBeEmpty()
         write.bodies shouldContainExactly listOf("my comment")
-        h.retryPrompts.shouldBeEmpty()
+        h.reloadCount shouldBe 1
         assertGuardReleased(key)
       }
+    }
+
+    it("the launcher's injected UI effects are exactly notify, [Retry] and copy-text — no re-send seam (#96)") {
+      // A re-send prompt could come back as a new constructor parameter with a default value, which
+      // no harness would wire and no behavioural test would see. Pinning the function-typed fields
+      // makes adding any new UI effect a deliberate, reviewed change to this list.
+      val effectFields = DiscussionWriteLauncher::class.java.declaredFields
+        .map { it.name }
+        .filter { it.startsWith("notify") || it.startsWith("prompt") }
+        .sorted()
+
+      effectFields shouldContainExactly listOf("notify", "promptCopyText", "promptRetry")
     }
 
     it("the Ambiguous-then-reloaded message sends the user to GitLab instead of inviting a re-send (#96)") {

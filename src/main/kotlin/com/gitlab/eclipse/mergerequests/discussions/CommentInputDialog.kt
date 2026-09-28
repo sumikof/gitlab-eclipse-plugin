@@ -12,7 +12,7 @@ import org.eclipse.swt.widgets.Text
 
 /**
  * Multi-line comment editor shared by every text-entering discussion flow: create, reply, edit,
- * retry, and send-again (design §7.5). JFace's `InputDialog` hosts a single-line `Text`, which is
+ * retry, and the copy-text dialog (design §7.5). JFace's `InputDialog` hosts a single-line `Text`, which is
  * unusable for a code-review comment, hence this small [Dialog] subclass.
  *
  * The dialog is a pure input surface: it never logs, notifies, or touches the network. The caller
