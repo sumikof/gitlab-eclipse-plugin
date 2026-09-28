@@ -180,6 +180,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | `InlineThreadItem` | `submitLabel: String? = null`(null なら現行の Comment / Reply) | なし |
 | `InlineThreadEntry` | `codeBlocks: Boolean = false`(true の項目は §9.7 の分割表示) | なし |
 | `InlineThreadHost` | `fun onCodeAction(surface, action: CodeBlockAction, code: String) {}`(既定は何もしない)。`CodeBlockAction = COPY / INSERT` | なし |
+| `InlineThreadSurface` | `fun update(model: InlineThreadModel)` を契約に加える(既存の具象 `InlineThreadPopup.update` を公開するだけ。モデルの差し替え + 本文の再描画 + `refresh`)。E `views/inlinethread/InlineThreadPopup.kt:173-177` | なし(MR ホストは使わなくてよい) |
 | `MarkdownCodeBlocks`(新規・`views/inlinethread`) | Markdown の本文を「文章 / コード」の区切りに分ける純粋関数(§9.7) | なし |
 | `GitLabProjectUrlResolver` | 解決結果を 4 種類(`Resolved` / `NotInRepository` / `NoGitLabRemote` / `Failed`)で返す兄弟メソッドを追加(§9.2.2)。既存メソッドは変えない | なし |
 | `CodeFormatter` | 文書と選択を引数で受ける `format(snippet, document, selection)` を追加し、既存の `format(snippet)` はアクティブなエディタから読んでそれを呼ぶ | なし(既存経路は同じ結果) |
@@ -231,6 +232,8 @@ UI スレッドへ戻る(`asyncExec`):
 
 送信は会話ごとに 1 本だけ(busy)なので、preflight や `threadId` の更新が並行して競合することは無い。
 
+**表示の反映**(Codex round 3 #1): 会話の `entries` を変えるすべての経路(手順 3 の即時失敗・質問と待機表示の追加、手順 13・14、§9.4、区切りの追加)は、同じ UI スレッドの処理の最後に `surface.update(conversation.toInlineModel())` を呼ぶ。`refresh()` だけでは本文は再描画されない。
+
 #### 9.2.1 文脈の固定(UI スレッド)
 
 - 読む対象は **popup を付けたエディタ**(アクティブなエディタではない)。popup の Shell にフォーカスがあるときのアクティブなパートは実機でしか分からないため(S3/S4 調査)。
@@ -265,15 +268,15 @@ UI スレッドへ戻る(`asyncExec`):
    |---|---|---|
    | `Resolved` で、インスタンスが接続先と一致(正規化して比較) | Q1 を送る(手順 3) | Q1 の `project.id` |
    | `Resolved` で、インスタンスが接続先と異なる | **送らない**(`ProjectCheckFailed`)。別のインスタンスのプロジェクトの Duo 設定は確かめられないため | — |
-   | `NotInRepository` / `NoGitLabRemote` | プロジェクト外のファイルとして送る。Q1 は `project` なし版 | null |
+   | `NotInRepository` / `NoGitLabRemote` | プロジェクト外のファイルとして送る。Q1 はバージョンの問い合わせだけ | null |
    | `Failed` | **送らない**(`ProjectCheckFailed`) | — |
-3. Q1 の結果:
-   - `metadata.version` が 17.10 未満 → `Unsupported(version)`(確定事項 1)。
+3. Q1 の結果(Q1 = §11.2 の 2 つの問い合わせ。まずバージョン、次に必要なら project):
+   - `metadata.version` が 17.10 未満 → `Unsupported(version)`(確定事項 1)。project は問い合わせない。
    - `metadata` が null、またはバージョン文字列を解釈できない → バージョンについては続行する(参照実装も解釈できないときは最新扱い。REF `utils/if_version_gte.ts:26-32`)。17.10 未満のサーバなら M1 がスキーマエラーになり、§14 の表示になる。
    - `project` を問い合わせた場合: `project` が null(見つからない・権限が無い)→ **送らない**(`ProjectCheckFailed`)。`project.duoFeaturesEnabled == false` → **送らない**(`Unavailable`、「GitLab Duo is turned off for this project.」)。それ以外 → `project.id` を `resourceId` にする。`duoFeaturesEnabled` が null の場合はサーバ側の判定に任せて送る(`resourceId` を付けるので、サーバでもプロジェクトの設定が適用される)。
    - Q1 自体が失敗 → `TransportFailed`。preflight は未実施のまま(`bindingUpdate` に含めない)で、次の送信で再試行する。
 4. preflight の結果(`resourceId`、判定済み)と、その判定に使った**プロジェクトの対応キー**を `bindingUpdate` に入れて返し、§9.2 手順 12 で会話に保存する。対応キー = 解決結果の種類 + `Resolved` ならインスタンスと full path(手順 5 の GraphQL 用の形)。
-5. **アンカーの解決(手順 1)は送信のたびに行う**(Codex round 2 #2)。ファイルが同じでも、Git の remote やプロジェクトの割り当ては popup を開いたまま変えられるため。解決結果の対応キーが会話に保存されたものと同じなら、保存済みの preflight を再利用する(Q1 は送らない)。違えば、会話の `threadId` と preflight を使わずに(新しい会話として)手順 2〜3 をやり直し、結果を `bindingUpdate` で保存する。会話欄には区切り「New chat」を足す(UI スレッドで、手順 12 と同じ照合の中で)。
+5. **アンカーの解決(手順 1)は送信のたびに行う**(Codex round 2 #2)。ファイルが同じでも、Git の remote やプロジェクトの割り当ては popup を開いたまま変えられるため。解決結果の対応キーが会話に保存されたものと同じなら、保存済みの preflight を再利用する(Q1 は送らない)。違えば、会話の `threadId` と preflight を使わずに(新しい会話として)手順 2〜3 をやり直し、結果を `bindingUpdate` で保存する。会話欄には区切り「New chat」を**その送信の質問の直前**に挿入する(UI スレッドで、手順 12 と同じ照合の中で。`bindingUpdate` に「プロジェクトが変わった」を含めて返す)。挿入位置は実装段階でテストに固定する(A26)。
 - Q1 の `fullPath` は、各パス要素を 1 回だけ URL デコードした形にする(HTTP の remote から得た `namespaceWithPath` は percent-escape を保持している。E `navigation/GitLabProjectUrlResolverTest` が固定)。デコード規則は実装段階でテストに固定する(A25)。
 - LS の `duo_chat_enabled` はアクティブなプロジェクトについての判定なので、アンカーのファイルについての判定の代わりにはしない。上の preflight がアンカーについての判定である。
 
@@ -339,6 +342,13 @@ UI スレッドで行う。
 - 回答が長い場合に会話欄をスクロールできること(受け入れ条件 A15)。
 - ボタンは `host.onCodeAction(surface, COPY|INSERT, code)` を呼ぶ。`code` はその区切りのコード(フェンスを除いたもの)。
 - 質問・区切り・失敗の説明は `codeBlocks = false`(現行どおり 1 つの `Text`)。
+- **資源の上限**(Codex round 3 #4。値は既定値で、実装段階で調整してよい):
+  | 対象 | 上限 | 超えたとき |
+  |---|---|---|
+  | 1 つの回答の本文(UTF-8) | 256 KiB | 上限までを表示し、末尾に「(Answer truncated)」。切り詰めはコードポイント境界。コードブロックの途中で切れた場合、そのブロックは閉じられていないフェンスとして扱う |
+  | 1 つの回答のコードブロックのボタン | 30 ブロック | 31 個目以降は等幅表示のみ(ボタンなし) |
+  | 会話欄に保持する項目 | 直近 40 項目 | 古い項目から捨て、先頭に「(Earlier messages were removed)」。`threadId` は保つ(サーバ側の会話は続く) |
+  - GraphQL 応答の受信サイズ自体は既存の `GitLabGraphQlClient` の扱いに従う(本サイクルで HTTP 層は変えない)。
 
 ### 9.8 コピー(FR-10)
 
@@ -400,13 +410,14 @@ mutation quickChatClear($question: String!, $threadId: AiConversationThreadID, $
 **Q1 preflight**(K10、K11)
 
 ```graphql
-query quickChatPreflight($fullPath: ID!) {
-  metadata { version }
-  project(fullPath: $fullPath) { id duoFeaturesEnabled }
-}
+query quickChatVersion { metadata { version } }
 ```
 
-project が無い場合は `query quickChatPreflightNoProject { metadata { version } }`。
+```graphql
+query quickChatProject($fullPath: ID!) { project(fullPath: $fullPath) { id duoFeaturesEnabled } }
+```
+
+バージョンを先に単独で問い合わせ、17.10 以上(または解釈できない)の場合だけ project を問い合わせる(Codex round 3 #2)。`duoFeaturesEnabled` は 16.9 からのフィールドで、古いサーバでは文書全体がスキーマエラーになるため、同じ文書に入れない。
 
 **Q2 ポーリング**(K1、K7)
 
@@ -489,7 +500,13 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 - **送信全体の期限**: 送信の開始から `ANSWER_DEADLINE`(既定 120 秒。参照実装のポーリングの上限 5000 ms × 20 回 ≒ 100 秒に `aiAction` の時間を足した値。調整は実装段階)を単調時計で測る(Codex round 1 #4)。
 - 各 HTTP(preflight、`aiAction`、各ポーリング)のタイムアウト = min(1 リクエストの上限(既定 25000 ms。R2), 期限までの残り時間)。残り時間が 0 以下なら、その要求を送らずに終わる。
 - ポーリングの待ちの前後でも残り時間を確認し、待ちは残り時間を超えない。
-- **ブロックする処理はすべて期限の内側で待つ**(Codex round 2 #1): 接続の取得(`captureConnection` / `captureConnectionIf`。OAuth トークンの更新 `refreshAccessToken()` を同期で走らせうる。E `authentication/OAuthTokenProvider.kt:25-33, 69-110`)、アンカーのプロジェクト解決(JGit のローカル I/O)、各 HTTP。これらは `Dispatchers.IO` の子処理として起動し、呼び出し側は `withTimeoutOrNull(残り時間)` で待つ。期限が来たら呼び出し側は結果を確定して戻り、止まった子処理は取り消し(実際には止まらないことがある)、その後の結果は捨てる。
+- **ブロックする処理はすべて期限の内側で待つ**(Codex round 2 #1): 接続の取得(`captureConnection` / `captureConnectionIf`。OAuth トークンの更新 `refreshAccessToken()` を同期で走らせうる。E `authentication/OAuthTokenProvider.kt:25-33, 69-110`)、アンカーのプロジェクト解決(JGit のローカル I/O)、各 HTTP。
+- **止まりうる処理は structured concurrency の外へ隔離する**(Codex round 3 #3)。コルーチンの子(`withContext(Dispatchers.IO) { … }` や `async`)で実行すると、処理が割り込みを無視した場合に親が子の完了を待ってしまい、期限を守れないため。
+  - 実行場所: Quick Chat 専用の有界な executor(スレッド数 `BLOCKING_THREADS`、既定 4。待ち行列なし = `SynchronousQueue` 相当)。`CompletableFuture.supplyAsync(block, executor)` で起動する。
+  - 待ち方: `withTimeoutOrNull(残り時間) { future.await() }`(`kotlinx.coroutines.future.await`。取り消し可能な待ちで、future の完了を join しない。既存の使用例 E `preferences/healthcheck/ConfigurationValidationService.kt:12, 51`)。期限が来たら `future.cancel(true)` を呼んで(割り込みの試み)、**待たずに**戻る。
+  - 放置した future の結果と例外: `whenComplete` で例外のクラス名だけをログに残し、結果は捨てる。共有 scope には例外を流さない。
+  - 未完了の上限: executor のスレッドがすべて止まった処理で埋まっていると、新しい処理は起動できず `RejectedExecutionException` になる。この場合は即座に `TimedOut(beforeSend = true)` 相当の「前の要求がまだ応答していない」失敗にする(無制限にスレッドを増やさない)。
+  - executor はバンドル停止時に `shutdownNow()` する。
   - 期限切れの段階ごとの結果: `aiAction` を送り始める前(接続の取得・プロジェクト解決・preflight) → `TimedOut(beforeSend = true)`(「何も送っていない」と表示)。`aiAction` の実行中 → `MaybeSent`。`aiAction` の後 → `TimedOut(beforeSend = false)`。
   - `aiAction` の子処理が期限後に完了しても、その結果(`requestId` / `threadId`)は使わない。
 - どの段階で止まっても、Send は送信の開始から `ANSWER_DEADLINE` 以内に戻る(子処理が止まったままでも、呼び出し側は待たない)。
@@ -561,7 +578,7 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A5 | 2 回目の質問が同じ会話として扱われる(1 回目の内容を踏まえた回答になる。M1 の変数に `threadId` が入る) | 手動 + API のテスト |
 | A6 | 選択なしで送信すると `currentFile` を送らない | コンテキスト生成のテスト |
 | A7 | `/clear` で会話欄が空になり、`/reset` で「New chat」が入り、次の質問が新しい会話になる | テスト + 手動 |
-| A8 | 17.10 未満の GitLab では §14 のバージョン不足の表示になり、Send は戻る | preflight のテスト |
+| A8 | 17.10 未満の GitLab では §14 のバージョン不足の表示になり、Send は戻る。プロジェクト内のファイルでも(`duoFeaturesEnabled` を知らない 16.8 以下でも)汎用の通信エラーにならない | preflight のテスト |
 | A9 | どの失敗の後も Send が再び押せて、下書きが残っている | 会話・ホストのテスト + 手動(ネットワーク切断) |
 | A10 | 回答待ちの間に popup を閉じても、後から届いた結果で何も起きない(例外・ログのエラーなし) | 会話のテスト + 手動 |
 | A11 | 回答待ちの間に別の場所で開き直すと、古い回答が新しい popup に出ない | 会話・ホストのテスト + 手動 |
@@ -573,12 +590,13 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A17 | 失敗経路を通った後のログに質問・回答・コード・ファイル名・トークンが出ていない | 手動(ログの目視)+ テストで記録内容を検査 |
 | A18 | MR の popup の挙動が変わらない(タイトル、送信ボタンの文言、Ctrl+Enter で送信されないこと) | 既存テスト + 手動 |
 | A19 | popup の中の `Ctrl+Enter` で送信され、入力欄に改行が入らない。`canSubmit` が偽のときは何も起きない | 手動 |
-| A20 | 各要求がタイムアウト直前まで応答しない場合、また接続の取得(OAuth 更新)やプロジェクト解決が戻らない場合でも、送信の開始から `ANSWER_DEADLINE` を超えずに結果(段階に応じた `TimedOut` / `MaybeSent`)が返る | 偽の時計と、止まる偽の通信・偽のトークン取得・偽の解決を使ったサービスのテスト |
+| A20 | 各要求がタイムアウト直前まで応答しない場合、また接続の取得(OAuth 更新)やプロジェクト解決が**割り込みを無視して永久に戻らない**場合でも、送信の開始から `ANSWER_DEADLINE` を超えずに結果(段階に応じた `TimedOut` / `MaybeSent`)が返り、テスト本体も期限内に終わる。executor が止まった処理で埋まると次の送信は即座に失敗する | 偽の時計と、ラッチで止まる偽の通信・偽のトークン取得・偽の解決を使ったサービスのテスト |
 | A21 | 質問 16 KiB・選択 64 KiB の境界(ちょうど / 1 バイト超)、前後 32 KiB の切り詰め(近い側が残る、多バイト文字を割らない)、選択が 64 Ki 文字を超えると文字列を取らずに拒否 | コンテキスト生成のテスト |
 | A22 | プロジェクト解決の 4 種類(§9.2.2)と Q1 の結果(project null / `duoFeaturesEnabled` false / null / true)ごとに、送る・送らないと `resourceId` が表のとおり | preflight のテスト |
 | A23 | 1 回目の回答の後に接続先のインスタンスを変えて送ると、何も送らずに `ConnectionChanged` になり、次の送信は新しいインスタンスで新しい会話(`threadId` なし)になる。ポーリング中に変えた場合も同じ | サービス・会話のテスト |
 | A25 | 非 ASCII の名前を percent-encoded の HTTP remote で clone したプロジェクトで、Q1 の `fullPath` がデコード済みになり、プロジェクトを確かめられる | preflight のテスト |
-| A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない | preflight・サービスのテスト |
+| A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない。区切り「New chat」はその送信の質問の前に表示される | preflight・サービス・会話のテスト |
+| A27 | 256 KiB を超える回答、31 個以上のコードブロック、41 項目目の追加で、それぞれ §9.7 の上限表のとおりになる | 分割・会話のテスト |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
@@ -667,3 +685,13 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | 1 | P1 接続の取得(OAuth のトークン更新)が期限の外で止まりうる | 採用・設計(スレッド・期限の境界) | §15 に「ブロックする処理はすべて期限の内側で待つ」(子処理 + `withTimeoutOrNull`)と段階ごとの結果。§12.3 `TimedOut(beforeSend)`、A20 を拡張 |
 | 2 | P1 同じファイルのまま remote / 割り当てを変えると古いプロジェクトの preflight を使い続ける | 採用・設計(認可境界) | §9.2.2 手順 4〜5: 送信のたびにアンカーを解決し、プロジェクトの対応キーが変わったら preflight と `threadId` を捨てて新しい会話に。§12.1、A26 |
 | 3 | P2 Q1 の `fullPath` が percent-escape のままになる | 実装段階へ(純ロジック。テストで検出できる) | §9.2.2 に 1 行と A25 のみ |
+
+### round 3(`b5a4e11` に対する指摘 5 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 会話の変更を popup に反映する契約が無い(`refresh()` は本文を再描画しない) | 採用(再利用するインターフェースの契約) | §8.3 に `InlineThreadSurface.update(model)`、§9.2 に「表示の反映」 |
+| 2 | P1 Q1 が 16.9 のフィールドと同じ文書で、古いサーバではバージョン不足ではなく通信エラーになる | 採用・設計(実機の旧サーバでしか露見しない) | §11.2 をバージョン単独 → project の 2 段に分離。§9.2.2 手順 3、A8 |
+| 3 | P1 止まる処理を structured child で待つと期限を守れない | 採用・設計(並行処理) | §15 に専用の有界 executor + `CompletableFuture` + 取り消し可能な `await`、放置 future の扱い、スレッド枯渇時の即時失敗。A20 |
+| 4 | P2 回答と表示履歴に資源上限が無い | 採用(規則と既定値のみ) | §9.7 に上限表、A27 |
+| 5 | P2 プロジェクト変更時の区切りが質問の後ろに入る | 実装段階へ(純ロジック) | §9.2.2 手順 5 に挿入位置の 1 行、A26 に表示順 |
