@@ -95,6 +95,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | K8 | `AiConversationsThreadsConversationType` に `DUO_QUICK_CHAT` がある | gitlab.com スキーマ |
 | K9 | `AiCurrentFileInput{ fileName: String!, selectedText: String!, contentAboveCursor: String, contentBelowCursor: String }` | gitlab.com スキーマ |
 | K10 | `Metadata.version` と `Project.id`(GraphQL ID)がある | gitlab.com スキーマ |
+| K11 | `Project.duoFeaturesEnabled: Boolean`「Indicates whether GitLab Duo features are enabled for the project.」(16.9、Experiment) | gitlab.com スキーマ(2026-09-28 取得) |
 
 ### 6.4 参照実装の確定事実
 
@@ -152,9 +153,9 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | コンポーネント | 責務 |
 |---|---|
 | `QuickChatApi` | §11.2 の GraphQL 文書を `GitLabGraphQlClient` で送る。応答をデータ型に変換する。判断はしない |
-| `QuickChatPreflight` | 会話ごとに 1 回、GitLab のバージョン確認と Project gid の取得をまとめて行う(§9.2.2)。結果を会話に保持する |
+| `QuickChatPreflight` | 会話の結び付きごとに 1 回、GitLab のバージョン確認と、アンカーのプロジェクトの確認(gid・`duoFeaturesEnabled`)をまとめて行う(§9.2.2)。結果は値として返し、会話への保存は UI スレッドが行う |
 | `QuickChatPoller` | `requestId` と `threadId` で `aiMessages` を問い合わせ、ASSISTANT のメッセージが現れるまで待つ(§9.3)。時計と待ち合わせは注入できる |
-| `QuickChatService` | 1 回の送信を「利用可否 → preflight → aiAction → ポーリング」の順に実行し、結果を 1 つの `QuickChatOutcome`(§12.3)で返す。例外を外に出さない(`CancellationException` を除く) |
+| `QuickChatService` | 1 回の送信を「接続の取得 → preflight → aiAction → ポーリング」の順に、送信全体の期限の中で実行し、結果を 1 つの `QuickChatOutcome`(§12.3)と `bindingUpdate` で返す。会話オブジェクトには触れない。例外を外に出さない(`CancellationException` を除く) |
 | `QuickChatConversation` | 会話の状態(§12.1): 会話欄の項目、threadId、世代番号、実行中の送信。UI スレッド専用。`InlineThreadModel` を作る |
 | `QuickChatCommand` | 入力を `/clear` / `/reset` / 通常の質問に分類する純粋関数 |
 | `QuickChatContextBuilder` | 固定した文書テキストと選択範囲から `AiCurrentFileInput` 相当を作る純粋関数(§9.2.1) |
@@ -180,6 +181,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | `InlineThreadEntry` | `codeBlocks: Boolean = false`(true の項目は §9.7 の分割表示) | なし |
 | `InlineThreadHost` | `fun onCodeAction(surface, action: CodeBlockAction, code: String) {}`(既定は何もしない)。`CodeBlockAction = COPY / INSERT` | なし |
 | `MarkdownCodeBlocks`(新規・`views/inlinethread`) | Markdown の本文を「文章 / コード」の区切りに分ける純粋関数(§9.7) | なし |
+| `GitLabProjectUrlResolver` | 解決結果を 4 種類(`Resolved` / `NotInRepository` / `NoGitLabRemote` / `Failed`)で返す兄弟メソッドを追加(§9.2.2)。既存メソッドは変えない | なし |
 | `CodeFormatter` | 文書と選択を引数で受ける `format(snippet, document, selection)` を追加し、既存の `format(snippet)` はアクティブなエディタから読んでそれを呼ぶ | なし(既存経路は同じ結果) |
 | `plugin.xml` | コマンド 2 件、ハンドラ 2 件、キー 1 件、エディタのコンテキストメニュー 1 件 | なし |
 
@@ -204,25 +206,30 @@ UI スレッド:
 2. `QuickChatCommand.classify(ticket.body)`。`/clear` / `/reset` は §9.4 へ。
 3. 通常の質問:
    1. `DuoChatStateService` を確認。無効なら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
-   2. 文脈を固定する(§9.2.1)。
+   2. 文脈を固定する(§9.2.1)。サイズ上限を超えたら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
    3. 会話欄に「質問」と「回答を待っています」を足し、`surface.refresh()`。
    4. `conversation.begin(ticket)` で実行中の送信を記録し、その時点の世代番号 `gen` を得る。
-   5. 共有 scope で `QuickChatService.ask(request)` を起動し、`Job` を会話に保持する。
+   5. 要求 `QuickChatRequest` を作る。内容は不変の値だけ: 文脈(`QuickChatContext`)、アンカーのファイルの場所、会話の不変スナップショット `ConversationBinding?`(§12.1: 結び付いたインスタンス、`threadId`、preflight の結果)。
+   6. 共有 scope で `QuickChatService.ask(request)` を起動し、`Job` を会話に保持する。
 
-バックグラウンド(`QuickChatService.ask`):
+バックグラウンド(`QuickChatService.ask`)。会話オブジェクトには触れず、要求の値だけを読む:
 
-4. `captureConnection()` で接続 `c0` を得る。
-5. preflight(会話で未実施のときだけ。§9.2.2)。
-6. `aiAction` を送る(§11.2 M1)。`threadId` は会話が持っていれば付ける(R4)。
-7. 応答を検査する: `errors` が空でなければ `ServerRejected(errors)`。`requestId` が無ければ `ServerRejected`。`threadId` が無ければ `Unsupported`(K3: 17.10 未満相当。ポーリングできない)。
-8. `QuickChatPoller` で回答を待つ(§9.3)。
-9. 結果を `QuickChatOutcome`(§12.3)にして返す。例外はすべて結果に変換する(`CancellationException` だけは再送出。E4)。
+4. 送信全体の期限 `deadline = 開始時刻 + ANSWER_DEADLINE` を単調時計(`System.nanoTime` 相当。注入可能)で決める(§15)。
+5. 接続を得る(§9.2.3)。`binding` があれば、そのインスタンスと一致する接続だけを受け入れる。一致しなければ `ConnectionChanged` で終わる(何も送らない)。
+6. `binding` に preflight の結果が無ければ preflight を行う(§9.2.2)。結果が「送信不可」なら、その結果で終わる(`aiAction` は送らない)。
+7. `aiAction` を送る(§11.2 M1)。`threadId` は `binding` にあれば付ける(R4)。`resourceId` は preflight の結果の値。
+8. 応答を検査する: `errors` が空でなければ `ServerRejected(errors)`。`requestId` が無ければ `ServerRejected`。`threadId` が無ければ `Unsupported`(K3: 17.10 未満相当。ポーリングできない)。
+9. `QuickChatPoller` で回答を待つ(§9.3)。
+10. 結果を `QuickChatOutcome`(§12.3)にして返す。結果には、会話に保存すべき更新 `bindingUpdate`(結び付けるインスタンス、新しい `threadId`、preflight の結果)を含める。例外はすべて結果に変換する(`CancellationException` だけは再送出。E4)。
 
 UI スレッドへ戻る(`asyncExec`):
 
-10. `surface.isOpen` かつ `conversation.isCurrent(ticket, gen)`(同じチケット・同じ世代)でなければ何もしない(NFR-2)。
-11. 成功 → 「回答を待っています」を回答に置き換え、`threadId` を保存し、`onAttemptFinished(ticket)` → `onSucceeded(ticket)`(送信後に編集されていなければ下書きを消す)→ `surface.refresh()`。
-12. 失敗 → 「回答を待っています」を失敗の説明(§14)に置き換え、`onAttemptFinished(ticket)` → `surface.refresh()`。下書きは残す。応答で `threadId` が得られていれば保存する(次の質問が同じ会話に続くように)。
+11. `surface.isOpen` かつ `conversation.isCurrent(ticket, gen)`(同じチケット・同じ世代)でなければ何もしない。`bindingUpdate` も保存しない(NFR-2)。
+12. 照合に通った場合だけ、同じ `asyncExec` の中で `bindingUpdate` を会話に保存する。会話の `threadId` / preflight / 結び付いたインスタンスを書き換えるのは、この手順と §9.4・§9.5(UI スレッド)だけである。
+13. 成功 → 「回答を待っています」を回答に置き換え、`onAttemptFinished(ticket)` → `onSucceeded(ticket)`(送信後に編集されていなければ下書きを消す)→ `surface.refresh()`。
+14. 失敗 → 「回答を待っています」を失敗の説明(§14)に置き換え、`onAttemptFinished(ticket)` → `surface.refresh()`。下書きは残す。`ConnectionChanged` のときは会話の結び付き(インスタンス・`threadId`・preflight)を破棄し、区切り「New chat」を足す(次の送信は新しい接続先で新しい会話になる)。
+
+送信は会話ごとに 1 本だけ(busy)なので、preflight や `threadId` の更新が並行して競合することは無い。
 
 #### 9.2.1 文脈の固定(UI スレッド)
 
@@ -231,17 +238,49 @@ UI スレッドへ戻る(`asyncExec`):
 - 選択が空 → `currentFile` を送らない(R3)。
 - 選択が空でない → `selectedText` = 選択テキスト、`contentAboveCursor` = 選択より前、`contentBelowCursor` = 選択より後、`fileName` = 下記。
 - `fileName`: エディタ入力が `IFile` に適応できればワークスペースからの相対パス(`IFile.fullPath` の先頭 `/` を除いたもの。例 `project/src/Foo.java`)、そうでなければファイル名だけ(絶対パスはホームディレクトリ名などを含むため送らない)。
-- 前後の本文の大きさの上限は実装段階で決める(参照実装には上限が無い。§26)。
+- アンカーのファイルの場所(preflight 用、§9.2.2)もここで読む: `IFile.location`、または入力が `ILocationProvider` / `IURIEditorInput` ならそのファイルパス。取れなければ「場所なし」。
+- **サイズ上限**(参照実装には上限が無い。本設計の値): 大きさは UTF-8 のバイト数で測る。
+  | 項目 | 上限 | 超えたとき |
+  |---|---|---|
+  | 質問 | 16 KiB | 送信しない。「The question is too long.」 |
+  | `selectedText` | 64 KiB | 送信しない。「The selection is too large for Quick Chat. Select less code.」(ユーザーが選んだ範囲を黙って切ると意味が変わるため切らない) |
+  | `contentAboveCursor` | 32 KiB | 選択に**近い側を残す**(先頭側を捨てる) |
+  | `contentBelowCursor` | 32 KiB | 選択に**近い側を残す**(末尾側を捨てる) |
+  - 切り詰めはコードポイントの境界で行う(サロゲートペアや UTF-8 の多バイト文字を割らない)。
+  - UI スレッドで文書全体を文字列化しない。`IDocument.get(offset, length)` で必要な窓だけを取る(前後は選択の境界から 32 Ki 文字まで。UTF-8 は 1 文字 1 バイト以上なので、取った後にバイト数で切り詰めれば足りる)。選択の文字数が 64 Ki を超えれば、文字列を取らずに上限超過と判定する。
+  - これにより 1 回の要求の本文は最大でおよそ 144 KiB + GraphQL の固定部分になる。
 - 固定したデータは不変の値(`QuickChatContext`)として背景処理に渡す。背景処理は `IDocument` にも SWT にも触らない。
 
-#### 9.2.2 preflight(バックグラウンド・会話ごとに 1 回)
+#### 9.2.2 preflight(バックグラウンド・会話の結び付きごとに 1 回)
 
-- アンカーのファイル(`IFile.location` または `ILocationProvider`)から `GitLabProjectUrlResolver.resolveContextForFile` で `namespaceWithPath` を得る。解決できない、または解決したインスタンスが `c0.instanceUrl` と一致しない(正規化して比較)なら project は無し。ファイルの場所は §9.2.1 で UI スレッドで取得しておく。
-- §11.2 Q1 を 1 回送る(project が無ければ `project` を含まない版)。
-- `metadata.version` が 17.10 以上 → 続行。未満 → `Unsupported(version)` で終わる(確定事項 1)。
-- `metadata` が null、またはバージョン文字列を解釈できない → 続行する(参照実装も解釈できないときは最新扱い。REF `utils/if_version_gte.ts:26-32`)。17.10 未満のサーバなら M1 がスキーマエラーになり、`GraphQlException` として §14 の表示になる。
-- `project.id`(`gid://gitlab/Project/N`)があれば `resourceId` に使う。無ければ `resourceId = null`(参照実装も解決できなければ null。REF `chat/gitlab_chat_api.ts:410-433`)。
-- Q1 自体が失敗したら、その送信は失敗(`TransportFailed`)。preflight は未実施のまま残り、次の送信で再試行する。
+アンカーのファイルが、接続先の GitLab のどのプロジェクトに属するかを確かめ、プロジェクト単位の Duo 設定を守る(Codex round 1 #2)。**判定できないときは送らない(フェイルクローズ)。**
+
+1. アンカーのファイルの場所から、プロジェクトの解決結果を**型で**得る。既存の `GitLabProjectUrlResolver.resolveContextForFile` は失敗も「リポジトリ外」も同じ `Warn(NOT_IN_REPO)` にまとめる(E `navigation/GitLabProjectUrlResolver.kt:95` と `withRepo` の例外処理)ため、既存メソッドを変えずに、次の 4 種類を返す兄弟メソッドを追加する:
+   - `Resolved(info)`: GitLab のプロジェクトとして解決できた。
+   - `NotInRepository`: Git の作業ツリーの外(または場所なし)。
+   - `NoGitLabRemote`: Git の作業ツリーだが、GitLab のプロジェクトを指す remote / 割り当てが無い。
+   - `Failed`: 解決の途中で例外(I/O、JGit)が出た。
+2. 解決結果ごとの扱い:
+   | 解決結果 | 扱い | `resourceId` |
+   |---|---|---|
+   | `Resolved` で、インスタンスが接続先と一致(正規化して比較) | Q1 を送る(手順 3) | Q1 の `project.id` |
+   | `Resolved` で、インスタンスが接続先と異なる | **送らない**(`ProjectCheckFailed`)。別のインスタンスのプロジェクトの Duo 設定は確かめられないため | — |
+   | `NotInRepository` / `NoGitLabRemote` | プロジェクト外のファイルとして送る。Q1 は `project` なし版 | null |
+   | `Failed` | **送らない**(`ProjectCheckFailed`) | — |
+3. Q1 の結果:
+   - `metadata.version` が 17.10 未満 → `Unsupported(version)`(確定事項 1)。
+   - `metadata` が null、またはバージョン文字列を解釈できない → バージョンについては続行する(参照実装も解釈できないときは最新扱い。REF `utils/if_version_gte.ts:26-32`)。17.10 未満のサーバなら M1 がスキーマエラーになり、§14 の表示になる。
+   - `project` を問い合わせた場合: `project` が null(見つからない・権限が無い)→ **送らない**(`ProjectCheckFailed`)。`project.duoFeaturesEnabled == false` → **送らない**(`Unavailable`、「GitLab Duo is turned off for this project.」)。それ以外 → `project.id` を `resourceId` にする。`duoFeaturesEnabled` が null の場合はサーバ側の判定に任せて送る(`resourceId` を付けるので、サーバでもプロジェクトの設定が適用される)。
+   - Q1 自体が失敗 → `TransportFailed`。preflight は未実施のまま(`bindingUpdate` に含めない)で、次の送信で再試行する。
+4. preflight の結果(`resourceId`、判定済み)は `bindingUpdate` に入れて返し、§9.2 手順 12 で会話に保存する。会話の結び付き(インスタンス)が破棄されるまで再利用する。アンカーのファイルは popup の寿命の間変わらない(エディタの入力が変わると popup は閉じる。E7)ので、再利用してよい。
+- LS の `duo_chat_enabled` はアクティブなプロジェクトについての判定なので、アンカーのファイルについての判定の代わりにはしない。上の preflight がアンカーについての判定である。
+
+#### 9.2.3 接続の取得と会話の結び付き(Codex round 1 #1)
+
+- 会話は、最初に preflight が成功した送信の接続先インスタンス(正規化した URL)に**結び付く**。結び付き = インスタンス + preflight の結果 + `threadId`(得られていれば)。接続先の変更(`ConnectionChanged`)と会話の終了(§9.5)では結び付き全体を破棄する。`/clear` `/reset`(§9.4)は `threadId` だけを破棄する(インスタンスとアンカーは変わらないので preflight は再利用できる)。
+- 結び付いた会話の送信では `captureConnectionIf { normalize(it) == 結び付いたインスタンス }` を使う。null(設定が別のインスタンスに変わった)なら何も送らずに `ConnectionChanged` を返し、§9.2 手順 14 で結び付きを破棄する。古い `threadId` や Project gid を別のインスタンスへ送ることは無い。
+- 結び付いていない会話では `captureConnection()` を使う。
+- 同じインスタンスでアカウントだけが変わった場合、トークンの指紋(`authFingerprint`)はトークン更新でも変わるので区別できない(E2)。この場合、古い `threadId` はサーバで見つからずエラーになる(K1 の `find_thread` はユーザーのスレッドだけを探す)。Project gid は同じインスタンスの同じプロジェクトを指し、サーバが新しいアカウントの権限で判定する。したがって他人のデータは読めず、別プロジェクトへ送られることも無い。エラーの表示後、ユーザーは `/reset` か開き直しで新しい会話にできる(§20)。
 
 ### 9.3 ポーリング(T1)
 
@@ -250,10 +289,10 @@ UI スレッドへ戻る(`asyncExec`):
   - `errors` が空でない → `ServerRejected(errors)`(`content` があっても失敗扱い。表示は §14)。
   - `errors` が空で `content` が空または null → `EmptyAnswer`。
   - それ以外 → `Answered(content)`。
-- 間隔と回数: 参照実装の前例(R2: 5000 ms × 最大 20 回、1 リクエスト 25000 ms)を既定値とする。最初の問い合わせまでの待ち、間隔の調整は実装段階で決める(§26)。回数を使い切ったら `TimedOut`。
-- 1 回ごとに `captureConnectionIf { normalize(it) == normalize(c0.instanceUrl) }` で接続を取り直す(OAuth 更新でトークンが変わっても続けられるように。E2)。インスタンスの設定が変わっていたら(null)`ConnectionChanged` で終わる。同じインスタンスで別アカウントに変わった場合は、サーバが「Thread not found」系のエラーを返して失敗する(K1 の `find_thread`。他人のデータは返らない)。
+- 間隔: 参照実装の前例(R2: 5000 ms 間隔、1 リクエスト 25000 ms)を既定値とする。最初の問い合わせまでの待ちと間隔の調整は実装段階で決める(§26)。**待ち続ける上限は回数ではなく、§9.2 手順 4 の `deadline`(実時間)で決める**(§15)。
+- 1 回ごとに §9.2.3 と同じ条件(結び付いたインスタンスと一致)で接続を取り直す(OAuth 更新でトークンが変わっても続けられるように。E2)。一致しなければ `ConnectionChanged` で終わる。
 - 1 回の問い合わせが失敗したら(通信・HTTP・GraphQL のエラー)、その時点で送信を失敗にする。途中の失敗を読み飛ばして続けることはしない(再試行は §15)。
-- 各待ちの前後で `coroutineContext.isActive` を確認し、キャンセルされていたら即座に終わる。実行中の HTTP は止められない(E3)ので、結果は §9.2 の手順 10 で捨てる。
+- 各待ちの前後で `coroutineContext.isActive` を確認し、キャンセルされていたら即座に終わる。実行中の HTTP は止められない(E3)ので、結果は §9.2 の手順 11 で捨てる。
 
 ### 9.4 `/clear` と `/reset`(FR-7)
 
@@ -261,7 +300,7 @@ UI スレッドで処理し、チケットは即座に完了させる(`onAttempt
 
 - `/clear`: 会話欄を空にする。
 - `/reset`: 会話欄の末尾に区切り「New chat」を足す。
-- 共通: 世代番号を 1 つ進め(実行中の送信があれば結果を捨てる。ただし送信中は [Send] が無効なので通常は起きない)、`threadId` を破棄する。`threadId` を持っていた場合だけ、背景で `aiAction`(§11.2 M2: `question` = `/clear` または `/reset`、`threadId` のみ)を送る。結果は待たず、失敗はログ(§19)に記録するだけ(参照実装も表示しない。R5)。
+- 共通: 世代番号を 1 つ進め(実行中の送信があれば結果を捨てる。ただし送信中は [Send] が無効なので通常は起きない)、`threadId` を破棄する。`threadId` を持っていた場合だけ、背景で `aiAction`(§11.2 M2: `question` = `/clear` または `/reset`、`threadId` のみ)を送る。接続は §9.2.3 と同じく結び付いたインスタンスと一致するものだけを使い、一致しなければ送らない。結果は待たず、失敗はログ(§19)に記録するだけ(参照実装も表示しない。R5)。
 - 会話を持っていない(`threadId` が無い)場合は、サーバへは何も送らない。
 
 ### 9.5 閉じる・置き換え(FR-3、FR-9)
@@ -356,12 +395,12 @@ mutation quickChatClear($question: String!, $threadId: AiConversationThreadID, $
 }
 ```
 
-**Q1 preflight**(K10)
+**Q1 preflight**(K10、K11)
 
 ```graphql
 query quickChatPreflight($fullPath: ID!) {
   metadata { version }
-  project(fullPath: $fullPath) { id }
+  project(fullPath: $fullPath) { id duoFeaturesEnabled }
 }
 ```
 
@@ -388,17 +427,17 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | 項目 | 内容 |
 |---|---|
 | `entries` | 会話欄の項目の列。種類 = `Question(text)` / `Pending` / `Answer(markdown)` / `Failure(message)` / `Separator` |
-| `threadId` | サーバの会話 ID。初回の応答で得る。`/clear` `/reset` と終了で破棄 |
-| `generation` | 世代番号。`/clear` `/reset` と終了で進める |
+| `binding` | 会話の結び付き(§9.2.3)。`instanceUrl`(正規化済み)、`preflight`(バージョン判定済み・`resourceId`)、`threadId?`。未確立なら null。`ConnectionChanged` と終了で破棄 |
+| `generation` | 世代番号。`/clear` `/reset`、`ConnectionChanged`、終了で進める |
 | `inFlight` | 実行中の送信: チケット、開始時の世代番号、`Job` |
-| `preflight` | preflight の結果(バージョン判定済み、`resourceId`)。未実施なら null |
-| `anchorFile` | preflight に使うファイルの場所(開いた時点で固定) |
+
+- `binding` を書き換えるのは UI スレッドの 3 箇所だけ: §9.2 手順 12(照合済みの `bindingUpdate` の保存)、§9.2 手順 14 / §9.5(破棄)、§9.4(`threadId` の破棄)。背景処理は要求に入った `binding` の不変のコピーだけを読む。
 
 `toInlineModel()` は 1 項目の `InlineThreadModel` を作る。`Question` の author = 「You」、`Answer` / `Pending` / `Failure` の author = 「GitLab Duo」、`Answer` だけ `codeBlocks = true`。`createdAt` は表示しない(空文字)。
 
 ### 12.2 文脈(`QuickChatContext`、不変)
 
-`question`、`currentFile: CurrentFile?`(`fileName`、`selectedText`、`contentAboveCursor`、`contentBelowCursor`)。
+`question`、`currentFile: CurrentFile?`(`fileName`、`selectedText`、`contentAboveCursor`、`contentBelowCursor`。§9.2.1 の上限を満たす)。要求 `QuickChatRequest` = 文脈 + アンカーのファイルの場所(`java.io.File?`)+ `binding` の不変のコピー。
 
 ### 12.3 送信の結果(`QuickChatOutcome`)
 
@@ -408,11 +447,15 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | `EmptyAnswer(threadId)` | 回答が空 | 保存 |
 | `ServerRejected(messages, threadId?)` | `aiAction.errors` または回答の `errors` | 得られていれば保存 |
 | `Unsupported(version?)` | 17.10 未満、または応答に `threadId` が無い | 変更なし |
-| `Unavailable(reason)` | 利用不可(送信直前の確認) | 変更なし |
+| `Unavailable(reason)` | 利用不可(送信直前の確認、またはプロジェクトで Duo が無効) | 変更なし |
+| `ProjectCheckFailed(kind)` | アンカーのプロジェクトを確かめられない(別インスタンス、解決の失敗、プロジェクトが見つからない)。§9.2.2 | 変更なし |
+| `TooLarge(item)` | 質問または選択が §9.2.1 の上限を超えた(UI スレッドで判定し、背景処理は起動しない) | 変更なし |
 | `TransportFailed(kind, status?, correlationId?)` | 通信・HTTP・GraphQL のエラー | 得られていれば保存 |
 | `MaybeSent(threadId?)` | `aiAction` が送られたか分からない(応答前のタイムアウト・切断) | 得られていれば保存 |
 | `TimedOut(threadId)` | 回答を待ちきれなかった | 保存 |
-| `ConnectionChanged` | ポーリング中にインスタンス設定が変わった | 破棄 |
+| `ConnectionChanged` | 送信前またはポーリング中に、接続先が結び付いたインスタンスと異なった | 結び付きごと破棄 |
+
+「会話の `threadId`」列の「保存」は、`bindingUpdate` に入れて返し §9.2 手順 12 で保存することを意味する。preflight の結果も、成功した場合は同じく `bindingUpdate` で保存する(送信自体が後段で失敗しても)。
 
 ## 13. トランザクション境界
 
@@ -430,7 +473,10 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | HTTP エラー / GraphQL エラー / 解釈不能 | 「Failed to send the question to GitLab」+ HTTP ステータス、相関 ID(あれば) | 可 |
 | `MaybeSent` | 「The question may have been sent, but no answer could be retrieved.」 | 可(§16) |
 | タイムアウト | 「Timed out waiting for the answer.」 | 可 |
-| 接続先の変更 | 「The GitLab connection changed. Close Quick Chat and open it again.」 | 可(新しい会話になる) |
+| 接続先の変更 | 「The GitLab connection changed. Your next question starts a new chat.」+ 区切り「New chat」 | 可(新しい会話になる) |
+| プロジェクトを確かめられない | 「Quick Chat could not confirm the GitLab project of this file, so nothing was sent.」(別インスタンスの場合はその旨) | 可 |
+| プロジェクトで Duo が無効 | 「GitLab Duo is turned off for this project.」 | 可(同じ結果) |
+| サイズ超過 | §9.2.1 の文言 | 可(選択を変えて) |
 | 挿入先が編集不可 / 挿入失敗 | 通知(会話欄ではない) | — |
 
 - 失敗後も popup と会話は残る。入力欄は有効に戻り、下書きは残る(FR-8)。
@@ -438,8 +484,10 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 
 ## 15. タイムアウトとリトライ
 
-- `aiAction` 1 回、preflight 1 回、ポーリング 1 回のそれぞれに HTTP タイムアウトを付ける(値は実装段階。参照実装は 25000 ms。R2)。
-- 回答を待つ上限 = ポーリングの回数 × 間隔(既定 5000 ms × 20 回。§9.3)。
+- **送信全体の期限**: 送信の開始から `ANSWER_DEADLINE`(既定 120 秒。参照実装のポーリングの上限 5000 ms × 20 回 ≒ 100 秒に `aiAction` の時間を足した値。調整は実装段階)を単調時計で測る(Codex round 1 #4)。
+- 各 HTTP(preflight、`aiAction`、各ポーリング)のタイムアウト = min(1 リクエストの上限(既定 25000 ms。R2), 期限までの残り時間)。残り時間が 0 以下なら、その要求を送らずに終わる。
+- ポーリングの待ちの前後でも残り時間を確認し、待ちは残り時間を超えない。
+- 期限切れの結果: `aiAction` の応答前なら `MaybeSent`、`aiAction` の後なら `TimedOut`。どちらでも Send は期限から最大 1 回の HTTP タイムアウト分(実際には期限で切り詰めるので期限ちょうど)以内に戻る。
 - **自動の再送はしない。** `aiAction` は書き込みで冪等でない(§16)。ポーリング中の失敗も再試行せず、その送信を失敗にする(実装を単純に保つ。ユーザーが再送できる)。
 
 ## 16. 冪等性
@@ -464,7 +512,8 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 
 - 認証は既存の接続(`captureConnection`)と同じ。トークンは `ConnectionSnapshot` からリクエストヘッダにだけ入り、ログに出ない。
 - 認可はサーバが行う(Duo のライセンス、プロジェクトでの Duo 無効化、会話の所有者)。クライアントは LS の状態(`duo_chat_enabled`)で事前に止めるだけで、それを認可の代わりにしない。
-- プロジェクトで Duo が無効な場合: LS の `duo-disabled-for-project` でコマンドが無効になる(アクティブなプロジェクトについての判定)。それと別に、送信時には `resourceId` を付けるので、サーバ側でもプロジェクトの設定が適用される。
+- プロジェクトで Duo が無効な場合: LS の `duo-disabled-for-project` でコマンドが無効になるが、これはアクティブなプロジェクトについての判定である。アンカーのファイルについては §9.2.2 の preflight で確かめ(`duoFeaturesEnabled`)、確かめられなければ送らない(フェイルクローズ)。送信時には `resourceId` を付けるので、サーバ側でもプロジェクトの設定が適用される。
+- 接続先が変わった会話の `threadId` と Project gid を別のインスタンスへ送らない(§9.2.3)。
 - 会話(threadId)はユーザーに紐付く(K1 の `user.ai_conversation_threads`)。別アカウントのトークンでは読めない。
 
 ## 19. ログ、監視、監査
@@ -519,6 +568,11 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A17 | 失敗経路を通った後のログに質問・回答・コード・ファイル名・トークンが出ていない | 手動(ログの目視)+ テストで記録内容を検査 |
 | A18 | MR の popup の挙動が変わらない(タイトル、送信ボタンの文言、Ctrl+Enter で送信されないこと) | 既存テスト + 手動 |
 | A19 | popup の中の `Ctrl+Enter` で送信され、入力欄に改行が入らない。`canSubmit` が偽のときは何も起きない | 手動 |
+| A20 | 各要求がタイムアウト直前まで応答しない場合でも、送信の開始から `ANSWER_DEADLINE` を超えずに結果(`MaybeSent` / `TimedOut`)が返る | 偽の時計と遅い偽の通信を使ったサービスのテスト |
+| A21 | 質問 16 KiB・選択 64 KiB の境界(ちょうど / 1 バイト超)、前後 32 KiB の切り詰め(近い側が残る、多バイト文字を割らない)、選択が 64 Ki 文字を超えると文字列を取らずに拒否 | コンテキスト生成のテスト |
+| A22 | プロジェクト解決の 4 種類(§9.2.2)と Q1 の結果(project null / `duoFeaturesEnabled` false / null / true)ごとに、送る・送らないと `resourceId` が表のとおり | preflight のテスト |
+| A23 | 1 回目の回答の後に接続先のインスタンスを変えて送ると、何も送らずに `ConnectionChanged` になり、次の送信は新しいインスタンスで新しい会話(`threadId` なし)になる。ポーリング中に変えた場合も同じ | サービス・会話のテスト |
+| A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
 
@@ -531,8 +585,7 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | # | 事項 | 決め方 |
 |---|---|---|
 | I1 | `platformOrigin` の値(候補 `eclipse_plugin`) | 実装計画で決める。サーバは任意の文字列を受ける(K5) |
-| I2 | `currentFile` の前後の本文の上限 | 実装計画で値を決め、テストで固定する |
-| I3 | ポーリングの初回待ち・間隔・回数、各 HTTP タイムアウト | 参照実装の 5000 ms × 20 回 / 25000 ms を基準に実装計画で決める |
+| I3 | ポーリングの初回待ち・間隔、`ANSWER_DEADLINE` と 1 リクエストの上限の最終値 | 参照実装の 5000 ms 間隔 / 25000 ms と §15 の既定値を基準に実装計画で決める |
 | I4 | 表示文言(§14)、popup のタイトル、ボタン名 | 実装時 |
 | I5 | アンカー行の細部(行頭で終わる複数行選択など) | 実装時にテストで固定 |
 | I6 | 回答の表示後に会話欄を末尾へスクロールするか | 実装時 |
@@ -571,7 +624,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 |---|---|---|
 | T1 | `QuickChatCommand` / `QuickChatContextBuilder` / `GitLabVersion`(純粋関数 + テスト) | sonnet |
 | T2 | `QuickChatApi`(M1 / M2 / Q1 / Q2 + 応答の型 + テスト) | opus |
-| T3 | `QuickChatPoller` / `QuickChatPreflight` / `QuickChatService`(結果の写像、キャンセル、接続の取り直し + テスト) | opus |
+| T3 | `QuickChatPoller` / `QuickChatPreflight` / `QuickChatService`(結果の写像、送信全体の期限、キャンセル、会話の結び付きと接続の照合、`GitLabProjectUrlResolver` の 4 種類の兄弟メソッド + テスト) | opus |
 | T4 | `QuickChatConversation`(世代番号・チケット照合・`toInlineModel` + テスト) | opus |
 
 **PR-2 UI・コード操作**(`feat/quick-chat-ui`)
@@ -584,8 +637,18 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | T8 | Copy / Insert(`QuickChatSnippetInserter`、`CodeFormatter` の引数版) | opus |
 | T9 | ハンドラ 2 件と `plugin.xml` の配線 | opus |
 
-**実装レビュー(Codex)の重点確認項目**: UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、古い結果の破棄(§17 の照合がすべての経路にあるか)、共有 scope での例外の封じ込め、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
+**実装レビュー(Codex)の重点確認項目**: プロジェクト確認のフェイルクローズ(§9.2.2 の表)と接続先の結び付き(§9.2.3)、UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、古い結果の破棄(§17 の照合がすべての経路にあるか)、共有 scope での例外の封じ込め、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
 
 ## 29. Codex レビュー反映履歴
 
-(レビュー後に追記する)
+仕分けの基準は CLAUDE.md「設計レビューの深さと収束基準」(設計で解決 / 実装段階へ / 不採用)。
+
+### round 1(`d0fa281` に対する指摘 5 件、すべて P1)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | 会話を接続先に固定せず、インスタンス変更後に古い `threadId` と Project gid を別インスタンスへ送りうる | 採用・設計(データの送り先の境界) | §9.2.3 を新設。会話をインスタンスに結び付け、不一致なら何も送らず `ConnectionChanged` → 結び付きを破棄。§9.3、§9.4、§12.1、§12.3、§14、§18、A23 |
+| 2 | プロジェクトを解決できないと `resourceId = null` で送ってしまい、プロジェクト単位の Duo 無効化を回避しうる | 採用・設計(認可境界) | §9.2.2 を書き直し。解決結果を 4 種類に型で分け、同一インスタンスのプロジェクトは gid と `duoFeaturesEnabled` を確かめられた場合だけ送る。別インスタンス・解決失敗・プロジェクト不明は送らない。Q1 に `duoFeaturesEnabled`(K11)。§8.3 に resolver の兄弟メソッド。§12.3、§14、§18、A22 |
+| 3 | preflight の結果を誰がどのスレッドで保存するかが無く、背景処理が UI 専用の状態に触れる実装を誘う | 採用・設計(UI スレッド境界) | §9.2 手順 5〜14 を書き直し。要求に不変の `binding` を渡し、結果の `bindingUpdate` を照合済みの `asyncExec` の中でだけ保存。§8.1、§12.1〜12.3、A24 |
+| 4 | 回数 × 間隔の上限は HTTP タイムアウトと両立せず、最悪 10 分近く Send が戻らない | 採用(規則のみ設計で確定。値は実装段階) | §15 に単調時計の送信全体の期限、HTTP タイムアウトの残り時間への切り詰め。§9.3、A20 |
+| 5 | 文脈のサイズ上限と切り詰め規則が未確定 | 採用(規則と既定値を設計で確定) | §9.2.1 に UTF-8 バイトでの上限表、近い側を残す切り詰め、UI スレッドで窓だけを取る方法。§12.3 `TooLarge`、§14、A21。§26 の I2 を削除 |
