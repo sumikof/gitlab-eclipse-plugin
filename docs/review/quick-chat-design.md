@@ -115,7 +115,7 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 |---|---|---|
 | E1 | `GitLabGraphQlClient.execute(query, variables, type, connection, timeout)` は任意の GraphQL を送れる。2xx 以外は `GitLabApiException`、トップレベル `errors` は `GraphQlException`、`data` 欠落は `JsonSyntaxException` | E `api/GitLabGraphQlClient.kt:64-133` |
 | E2 | `captureConnection()` / `captureConnectionIf(pred)` はインスタンス URL とトークンの一貫した組を返す。`authFingerprint` はトークンの SHA-256 の先頭で、**OAuth のトークン更新で変わる** | E `api/GitLabApiClient.kt:37-40, 183-219` |
-| E3 | HTTP は JDK `HttpClient` の同期 `send`。実行中のリクエストは途中で止められない | E `api/http/GitLabHttpClient.kt:18-31`(S2 調査) |
+| E3 | HTTP は JDK `HttpClient` の同期 `send`(`BodyHandlers.ofString()`)。既存のコードには実行中のリクエストを止める仕組み(`runInterruptible` など)が無い | E `api/http/GitLabHttpClient.kt:18-19`、`grep runInterruptible` = 0 件 |
 | E4 | 共有のコルーチン scope は `SupervisorJob` ではない。取りこぼした例外は兄弟の処理まで止める | E `utils/WorkspaceModule.kt:34`、前例 `snippets/handlers/InsertSnippetHandler.kt:66-72` |
 | E5 | `DuoChatStateService` が LS の `chat` 機能状態から `duo_chat_enabled` を提供し、`getFirstEngagedCheck()?.details` で理由の文言を返す。`gitlab.duoChat.enabled` の設定は LS に渡り `chat-disabled-by-user` として反映される | E `chat/DuoChatStateService.kt:10-45`、`lsp/GitLabLanguageServerClient.kt:98-121`、`lsp/configuration/GitLabLanguageServerConfigurationService.kt:153` |
 | E6 | `InlineThreadState` は UI スレッド専用。`beginSubmit` / `onAttemptFinished` / `onSucceeded` のチケット方式で busy を管理する。`threadId == NEW_THREAD_ID` のときだけ成功で popup を閉じる | E `views/inlinethread/InlineThreadState.kt:9-11, 75-124` |
@@ -123,28 +123,39 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | E8 | 既定スキームで `M1+M3+C` は未使用(workbench / ide / editors / texteditor / JDT 3.39 / debug.ui 3.22 / search 3.19 / team.ui 3.12.200 / compare 3.12.200 / EGit 7.8 の plugin.xml を確認)。ESC は既に `rejectSuggestion` が `org.eclipse.ui.textEditorScope` で使う | E `src/main/resources/plugin.xml:497-502`、S5 調査 |
 | E9 | コピーには `ClipboardWriter.writeAndNotify(text, notify)` がある(書けた後にだけ通知) | E `navigation/ClipboardWriter.kt:60-107` |
 | E10 | Duo Chat の挿入 `InsertCodeSnippetService` と整形 `CodeFormatter` は**アクティブな**エディタと選択を読む。`CodeFormatter` は JDT の `K_COMPILATION_UNIT` で整形し、`IndexOutOfBoundsException` 以外の失敗(`format` が `null` を返す等)を扱わない | E `chat/services/InsertCodeSnippetService.kt:15-30`、`utils/CodeFormatter.kt:16-78` |
+| E12 | **実測(JDK 21.0.12、ループバックの偽サーバ)**: `HttpClient.send` は、応答が来ない場合も、ヘッダの後に本文が止まった場合も、スレッドの割り込みから約 10 ms で `InterruptedException` を投げて戻る。`HttpRequest.timeout(2s)` は応答が来ない場合は 2 秒で `HttpTimeoutException` になるが、ヘッダの後に本文が止まった場合は効かない(8 秒後もブロックしたまま) | 2026-09-28 に devcontainer で実行した検証プログラムの出力(PR #99 のコメントに記録) |
+| E13 | OAuth のトークン更新は `captureConnection` → `tokenManager.getToken()` → `OAuthTokenProvider.refreshTokenIfExpired()` → ScribeJava 8.3.3 の `refreshAccessToken` で同期に走る。ScribeJava の `JDKHttpClient` は `HttpURLConnection` を使い、接続・読み取りのタイムアウトは設定があるときだけ設定する。`GitLabOAuthService` は設定していない(= 無期限)。**実測**: タイムアウトなしの `HttpURLConnection` は割り込みでも戻らない | E `authentication/OAuthTokenProvider.kt:24-32, 69-87`、`authentication/GitLabOAuthService.kt:31-40, 75-83`、`scribejava-core-8.3.3.jar` の `JDKHttpClient`(`getConnectTimeout` が null でないときだけ `setConnectTimeout`)、同上の検証プログラム |
+| E14 | `kotlinx-coroutines-core` 1.10.2 に `runInterruptible` がある(コルーチンの取り消しでブロック中のスレッドを割り込む) | `build.gradle.kts:137`、jar 内 `kotlinx/coroutines/InterruptibleKt.class` |
 | E11 | リポジトリのファイルから `namespaceWithPath` と `instanceUrl` を得る `GitLabProjectUrlResolver.resolveContextForFile(file)` がある | E `navigation/GitLabProjectUrlResolver.kt:18-25, 94` |
 
 ## 7. システム構成
 
 ```
-[エディタ] --Open Quick Chat--> QuickChatPopups(ウィンドウごとに 1 つ)
+[エディタ] --Open Quick Chat--> QuickChatPopups(SWT。ウィンドウごとに popup を最大 1 つ)
                                      |
                                      +-- InlineThreadPopup(既存。一般化して再利用)
-                                     |        ^ UI スレッド
-                                     +-- QuickChatHost(InlineThreadHost の実装)
-                                              |  会話状態 QuickChatConversation(SWT 非依存)
-                                              |  文脈 QuickChatContext(送信時に UI スレッドで固定)
-                                              v  共有コルーチン scope(Dispatchers.IO)
-                                         QuickChatService
-                                              |-- QuickChatPreflight(version / project gid)
-                                              |-- QuickChatApi(aiAction / aiMessages)
-                                              +-- QuickChatPoller(待ち合わせ)
-                                                     v
-                                         GitLabGraphQlClient(既存。CA / mTLS / プロキシ)
+                                     +-- QuickChatHost(InlineThreadHost の実装。薄いアダプタ)
+                                              |
+                     ---------------- UI スレッド ----------------
+                                              v
+                                   QuickChatSession(SWT 非依存・UI スレッド専用)
+                                      | 会話状態 QuickChatConversation
+                                      | 期限の監視(UI タイマー)と唯一の終端 finishOnce
+                                      v 起動 / 取り消し          ^ runOnUi(asyncExec)
+                     ---------------- 背景 ----------------------
+                                   QuickChatRuntime(バンドルに 1 つ)
+                                      | 専用 scope = SupervisorJob + Dispatchers.IO
+                                      | 手放した処理の数の上限(DetachedJobs)
+                                      v
+                                   QuickChatService(1 回の送信。送信ゲート SendGate)
+                                      |-- QuickChatPreflight(version / project)
+                                      |-- QuickChatApi(aiAction / aiMessages)
+                                      +-- QuickChatPoller
+                                              v
+                                   GitLabGraphQlClient(既存。CA / mTLS / プロキシ)
 ```
 
-新規パッケージは `com.gitlab.eclipse.chat.quickchat`(SWT 非依存の通信・会話層)と `com.gitlab.eclipse.chat.quickchat.ui`(SWT 層・ハンドラ)。`views/inlinethread` には追加だけを行う。
+新規パッケージは `com.gitlab.eclipse.chat.quickchat`(SWT 非依存の通信・会話層)と `com.gitlab.eclipse.chat.quickchat.ui`(SWT 層・ハンドラ)。`views/inlinethread` には追加だけを行う。専用の executor は持たない(§15)。
 
 ## 8. コンポーネントの責務
 
@@ -155,8 +166,11 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 | `QuickChatApi` | §11.2 の GraphQL 文書を `GitLabGraphQlClient` で送る。応答をデータ型に変換する。判断はしない |
 | `QuickChatPreflight` | 会話の結び付きごとに 1 回、GitLab のバージョン確認と、アンカーのプロジェクトの確認(gid・`duoFeaturesEnabled`)をまとめて行う(§9.2.2)。結果は値として返し、会話への保存は UI スレッドが行う |
 | `QuickChatPoller` | `requestId` と `threadId` で `aiMessages` を問い合わせ、ASSISTANT のメッセージが現れるまで待つ(§9.3)。時計と待ち合わせは注入できる |
-| `QuickChatService` | 1 回の送信を「接続の取得 → preflight → aiAction → ポーリング」の順に、送信全体の期限の中で実行し、結果を 1 つの `QuickChatOutcome`(§12.3)と `bindingUpdate` で返す。会話オブジェクトには触れない。例外を外に出さない(`CancellationException` を除く) |
-| `QuickChatConversation` | 会話の状態(§12.1): 会話欄の項目、threadId、世代番号、実行中の送信。UI スレッド専用。`InlineThreadModel` を作る |
+| `QuickChatService` | 1 回の送信を「接続の取得 → プロジェクトの解決と preflight → 送信ゲート → aiAction → ポーリング」の順に実行し、結果を 1 つの `QuickChatOutcome`(§12.3)で返す。ブロックする呼び出しはすべて `runInterruptible` の中で行う。会話オブジェクトには触れない。例外を外に出さない(`CancellationException` を除く) |
+| `SendGate` | 「`aiAction` を送ったか」を表す、1 回の送信ごとの原子的な状態(§12.4)。UI スレッドと背景処理が共有する唯一の可変状態 |
+| `QuickChatRuntime` | バンドルに 1 つ(Koin の `single`)。Quick Chat 専用の scope(`SupervisorJob() + Dispatchers.IO`)、手放した処理の数 `DetachedJobs`(§15.3)、単調時計を持つ。バンドル停止時に scope を取り消す。全ウィンドウの会話がこの 1 つを共有する |
+| `QuickChatSession` | 1 つの popup の会話と送信の進行役。**UI スレッド専用**。`QuickChatConversation` を持ち、送信の開始(`submit`)、期限の監視、唯一の終端 `finishOnce`(§9.2.4)、会話の終了(`end`)を行う。UI への戻り(`runOnUi`)と UI タイマー(`scheduleOnUi`)は注入する。画面への反映は `QuickChatView`(`render(model)` / `released(ticket, succeeded)`)を通す |
+| `QuickChatConversation` | 会話の状態(§12.1): 会話欄の項目、結び付き、世代番号、実行中の送信。UI スレッド専用。`InlineThreadModel` を作る |
 | `QuickChatCommand` | 入力を `/clear` / `/reset` / 通常の質問に分類する純粋関数 |
 | `QuickChatContextBuilder` | 固定した文書テキストと選択範囲から `AiCurrentFileInput` 相当を作る純粋関数(§9.2.1) |
 | `GitLabVersion` | `Metadata.version` の文字列から (major, minor) を取り出し、17.10 以上かを判定する純粋関数 |
@@ -165,8 +179,8 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 
 | コンポーネント | 責務 |
 |---|---|
-| `QuickChatPopups` | ウィンドウごとに Quick Chat を最大 1 つ保持する。開く・前面に出す・置き換える・閉じる(§9.1、§9.5)。バンドル停止時にすべて破棄 |
-| `QuickChatHost` | `InlineThreadHost` を実装する。送信時に文脈を UI スレッドで固定し、`QuickChatService` を共有 scope で起動し、結果を `asyncExec` で会話に戻す。Copy / Insert を処理する |
+| `QuickChatPopups` | ウィンドウごとに Quick Chat を最大 1 つ保持する。開く・前面に出す・置き換える・閉じる(§9.1、§9.5)。バンドル停止時にすべて破棄。scope も executor も持たない(`QuickChatRuntime` を使う) |
+| `QuickChatHost` | `InlineThreadHost` と `QuickChatView` を実装する薄いアダプタ。`onSubmit` を `QuickChatSession.submit` に渡し、`released` を `InlineThreadState.onAttemptFinished` / `onSucceeded` に、`render` を `surface.update(model)` に写す。Copy / Insert を処理する |
 | `QuickChatContextCapture` | 送信時、UI スレッドで popup を付けたエディタから文書テキスト・選択範囲・ファイル名を読む |
 | `QuickChatSnippetInserter` | [Insert] の本体。popup を付けたエディタの現在の選択へ 1 回の置換で挿入する(§9.6) |
 | `OpenQuickChatHandler` / `CloseQuickChatHandler` | コマンドのハンドラ |
@@ -201,38 +215,33 @@ devcontainer は headless で、SWT の popup・フォーカス・キー操作�
 
 ### 9.2 送信(FR-4〜FR-6、FR-8)
 
-UI スレッド:
+**UI スレッド**(`QuickChatHost.onSubmit` → `QuickChatSession.submit`):
 
-1. [Send] または `Ctrl+Enter` → `InlineThreadPopup` が `state.beginSubmit()` でチケットを作り、`host.onSubmit(surface, ticket)` を呼ぶ(既存の流れ)。
-2. `QuickChatCommand.classify(ticket.body)`。`/clear` / `/reset` は §9.4 へ。
-3. 通常の質問:
-   1. `DuoChatStateService` を確認。無効なら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
-   2. 文脈を固定する(§9.2.1)。サイズ上限を超えたら会話欄に理由を足し、`onAttemptFinished(ticket)` して終わる(通信しない)。
-   3. 会話欄に「質問」と「回答を待っています」を足し、`surface.refresh()`。
-   4. `conversation.begin(ticket)` で実行中の送信を記録し、その時点の世代番号 `gen` を得る。送信全体の期限 `deadline = 現在時刻 + ANSWER_DEADLINE` を**この UI の処理の中で**単調時計で決め、要求に入れる(Codex round 5 #2。背景処理の開始待ちも期限に含めるため)。
-   5. 要求 `QuickChatRequest` を作る。内容は不変の値だけ: 文脈(`QuickChatContext`)、アンカーのファイルの場所、会話の不変スナップショット `ConversationBinding?`(§12.1: 結び付いたインスタンス、`threadId`、preflight の結果)。
-   6. Quick Chat 専用の scope(§17)で `QuickChatService.ask(request)` を起動し、`Job` を会話に保持する。
+1. [Send] または `Ctrl+Enter` → `InlineThreadPopup` が `state.beginSubmit()` でチケットを作り、同じ UI の処理の中で `host.onSubmit(surface, ticket)` を呼ぶ(既存の流れ)。
+2. `submit` の**最初の文**で期限を決める: `deadline = clock.now() + ANSWER_DEADLINE`(単調時計。§15.1)。続けて `conversation.begin(ticket)` で実行中の送信(チケット、世代番号 `gen`、新しい `SendGate`)を記録する。**これ以降、この送信はどの経路でも `finishOnce`(§9.2.4)で終わる。** `submit` の残りの処理で例外が出た場合も `finishOnce(…, Failed)` で終える。
+3. `QuickChatCommand.classify(ticket.body)`。`/clear` / `/reset` は §9.4 へ。
+4. 通常の質問。次のどれかに当たれば、通信せずに `finishOnce` で終える:
+   - `DuoChatStateService` が無効 → `Unavailable(reason)`。
+   - 手放した処理が上限に達している(§15.3)→ `Busy`。
+   - 文脈の固定(§9.2.1)でサイズ上限を超えた → `TooLarge`。
+5. 会話欄に「質問」と「回答を待っています」を足し、表示を更新する。
+6. 要求 `QuickChatRequest` を作る。内容は不変の値と送信ゲートだけ: 文脈(`QuickChatContext`)、アンカーのファイルの場所、会話の結び付きの不変のコピー `ConversationBinding?`(§12.1)、`deadline`、`SendGate`。
+7. `QuickChatRuntime` の scope で背景処理を起動し、`Job` を実行中の送信に記録する。`Job` に完了フック(§9.2.4 の (c))を付ける。
+8. UI タイマーで期限の監視を予約する: `scheduleOnUi(deadline - clock.now()) { onDeadline(ticket, gen) }`(残りが 0 以下ならすぐに実行する)。
 
-バックグラウンド(`QuickChatService.ask`)。会話オブジェクトには触れず、要求の値だけを読む:
+**背景**(`QuickChatService.ask`)。会話オブジェクトには触れず、要求の値だけを読む。ブロックする呼び出し(接続の取得、プロジェクトの解決、HTTP)はすべて `runInterruptible { … }` の中で行い、各段の前に「取り消されていないか」と「期限までの残り時間」を確かめる:
 
-4. 要求の `deadline`(手順 3-4 で UI スレッドが決めた単調時計の絶対時刻。時計は注入可能)を使う。開始時点ですでに過ぎていれば、何もせずに `TimedOut(beforeSend = true)` を返す(§15)。
-5. 接続を得る(§9.2.3)。`binding` があれば、そのインスタンスと一致する接続だけを受け入れる。一致しなければ `ConnectionChanged` で終わる(何も送らない)。
-6. `binding` に preflight の結果が無ければ preflight を行う(§9.2.2)。結果が「送信不可」なら、その結果で終わる(`aiAction` は送らない)。
-7. `aiAction` を送る(§11.2 M1)。`threadId` は `binding` にあれば付ける(R4)。`resourceId` は preflight の結果の値。
-8. 応答を検査する: `errors` が空でなければ `ServerRejected(errors)`。`requestId` が無ければ `ServerRejected`。`threadId` が無ければ `Unsupported`(K3: 17.10 未満相当。ポーリングできない)。
-9. `QuickChatPoller` で回答を待つ(§9.3)。
-10. 結果を `QuickChatOutcome`(§12.3)にして返す。結果には、会話に保存すべき更新 `bindingUpdate`(結び付けるインスタンス、新しい `threadId`、preflight の結果)を含める。例外はすべて結果に変換する(`CancellationException` だけは再送出。E4)。
-
-UI スレッドへ戻る(`asyncExec`):
-
-11. `surface.isOpen` かつ `conversation.isCurrent(ticket, gen)`(同じチケット・同じ世代)でなければ何もしない。`bindingUpdate` も保存しない(NFR-2)。
-12. 照合に通った場合だけ、同じ `asyncExec` の中で `bindingUpdate` を会話に保存する。会話の `threadId` / preflight / 結び付いたインスタンスを書き換えるのは、この手順と §9.4・§9.5(UI スレッド)だけである。
-13. 成功 → 「回答を待っています」を回答に置き換え、`onAttemptFinished(ticket)` → `onSucceeded(ticket)`(送信後に編集されていなければ下書きを消す)→ `surface.refresh()`。
-14. 失敗 → 「回答を待っています」を失敗の説明(§14)に置き換え、`onAttemptFinished(ticket)` → `surface.refresh()`。下書きは残す。`ConnectionChanged` のときは会話の結び付き(インスタンス・`threadId`・preflight)を破棄し、区切り「New chat」を足す(次の送信は新しい接続先で新しい会話になる)。
+- w1. 各段の前に残り時間が 0 以下なら、その段を実行せず、段階に応じた結果で終わる(`aiAction` の前 → `TimedOut(beforeSend = true)`、後 → `TimedOut(beforeSend = false)`)。通常は UI 側の監視が先に結果を出しており、この結果は `finishOnce` で捨てられる。
+- w2. 接続を得る(§9.2.3)。`binding` があれば、そのインスタンスと一致する接続だけを受け入れる。一致しなければ `ConnectionChanged`(何も送らない)。
+- w3. アンカーのプロジェクトを解決し、必要なら preflight を行う(§9.2.2)。結果が「送信不可」なら、その結果で終わる。
+- w4. **送信ゲートを通る**: `SendGate` を `Open → Sending` に原子的に進める。進められなければ(UI 側が先に `Closed` にした = この送信はすでに終わっている)、**`aiAction` を送らずに**、結果も出さずに終わる。
+- w5. `aiAction` を送る(§11.2 M1)。`threadId` は `binding` にあれば付ける(R4)。`resourceId` は preflight の結果の値。応答を検査する: `errors` が空でなければ `ServerRejected(errors)`。`requestId` が無ければ `ServerRejected`。`threadId` が無ければ `Unsupported`(K3)。成功したら `SendGate` を `Sent(bindingUpdate)` にする(`bindingUpdate` = 結び付けるインスタンス、`threadId`、preflight の結果)。
+- w6. `QuickChatPoller` で回答を待つ(§9.3)。
+- w7. 結果を `QuickChatOutcome`(§12.3)にし、`delivered` の印を立ててから `runOnUi { finishOnce(ticket, gen, outcome) }` で UI へ渡す。例外はすべて結果に変換する(`CancellationException` だけは再送出)。
 
 送信は会話ごとに 1 本だけ(busy)なので、preflight や `threadId` の更新が並行して競合することは無い。
 
-**表示の反映**(Codex round 3 #1): 会話の `entries` を変えるすべての経路(手順 3 の即時失敗・質問と待機表示の追加、手順 13・14、§9.4、区切りの追加)は、同じ UI スレッドの処理の最後に `surface.update(conversation.toInlineModel())` を呼ぶ。`refresh()` だけでは本文は再描画されない。
+**表示の反映**(Codex round 3 #1): 会話の `entries` を変えるすべての経路(手順 5、`finishOnce`、§9.4、区切りの追加)は、同じ UI スレッドの処理の最後に `view.render(conversation.toInlineModel())`(= `surface.update(model)`)を呼ぶ。`refresh()` だけでは本文は再描画されない。
 
 #### 9.2.1 文脈の固定(UI スレッド)
 
@@ -275,17 +284,51 @@ UI スレッドへ戻る(`asyncExec`):
    - `metadata` が null、またはバージョン文字列を解釈できない → バージョンについては続行する(参照実装も解釈できないときは最新扱い。REF `utils/if_version_gte.ts:26-32`)。17.10 未満のサーバなら M1 がスキーマエラーになり、§14 の表示になる。
    - `project` を問い合わせた場合: `project` が null(見つからない・権限が無い)→ **送らない**(`ProjectCheckFailed`)。`project.duoFeaturesEnabled == false` → **送らない**(`Unavailable`、「GitLab Duo is turned off for this project.」)。それ以外 → `project.id` を `resourceId` にする。`duoFeaturesEnabled` が null の場合はサーバ側の判定に任せて送る(`resourceId` を付けるので、サーバでもプロジェクトの設定が適用される)。
    - Q1 自体が失敗 → `TransportFailed`。preflight は未実施のまま(`bindingUpdate` に含めない)で、次の送信で再試行する。
-4. preflight の結果(`resourceId`、判定済み)と、その判定に使った**プロジェクトの対応キー**を `bindingUpdate` に入れて返し、§9.2 手順 12 で会話に保存する。対応キー = 解決結果の種類 + `Resolved` ならインスタンスと full path(手順 5 の GraphQL 用の形)。
-5. **アンカーの解決(手順 1)は送信のたびに行う**(Codex round 2 #2)。ファイルが同じでも、Git の remote やプロジェクトの割り当ては popup を開いたまま変えられるため。解決結果の対応キーが会話に保存されたものと同じなら、保存済みの preflight を再利用する(Q1 は送らない)。違えば、会話の `threadId` と preflight を使わずに(新しい会話として)手順 2〜3 をやり直し、結果を `bindingUpdate` で保存する。会話欄には区切り「New chat」を**その送信の質問の直前**に挿入する(UI スレッドで、手順 12 と同じ照合の中で。`bindingUpdate` に「プロジェクトが変わった」を含めて返す)。挿入位置は実装段階でテストに固定する(A26)。
+4. preflight の結果(`resourceId`、判定済み)と、その判定に使った**プロジェクトの対応キー**を `bindingUpdate` に入れて返し、`finishOnce`(§9.2.4)で会話に保存する。対応キー = 解決結果の種類 + `Resolved` ならインスタンスと full path(手順 5 の GraphQL 用の形)。
+5. **アンカーの解決(手順 1)は送信のたびに行う**(Codex round 2 #2)。ファイルが同じでも、Git の remote やプロジェクトの割り当ては popup を開いたまま変えられるため。解決結果の対応キーが会話に保存されたものと同じなら、保存済みの preflight を再利用する(Q1 は送らない)。違えば、会話の `threadId` と preflight を使わずに(新しい会話として)手順 2〜3 をやり直し、結果を `bindingUpdate` で保存する。会話欄には区切り「New chat」を**その送信の質問の直前**に挿入する(UI スレッドで、`finishOnce` の中で。`bindingUpdate` に「プロジェクトが変わった」を含めて返す)。挿入位置は実装段階でテストに固定する(A26)。
 - Q1 の `fullPath` は、各パス要素を 1 回だけ URL デコードした形にする(HTTP の remote から得た `namespaceWithPath` は percent-escape を保持している。E `navigation/GitLabProjectUrlResolverTest` が固定)。デコード規則は実装段階でテストに固定する(A25)。
 - LS の `duo_chat_enabled` はアクティブなプロジェクトについての判定なので、アンカーのファイルについての判定の代わりにはしない。上の preflight がアンカーについての判定である。
 
 #### 9.2.3 接続の取得と会話の結び付き(Codex round 1 #1)
 
 - 会話は、最初に preflight が成功した送信の接続先インスタンス(正規化した URL)に**結び付く**。結び付き = インスタンス + preflight の結果 + `threadId`(得られていれば)。接続先の変更(`ConnectionChanged`)と会話の終了(§9.5)では結び付き全体を破棄する。`/clear` `/reset`(§9.4)は `threadId` だけを破棄する(インスタンスとアンカーは変わらないので preflight は再利用できる)。
-- 結び付いた会話の送信では `captureConnectionIf { normalize(it) == 結び付いたインスタンス }` を使う。null(設定が別のインスタンスに変わった)なら何も送らずに `ConnectionChanged` を返し、§9.2 手順 14 で結び付きを破棄する。古い `threadId` や Project gid を別のインスタンスへ送ることは無い。
+- 結び付いた会話の送信では `captureConnectionIf { normalize(it) == 結び付いたインスタンス }` を使う。null(設定が別のインスタンスに変わった)なら何も送らずに `ConnectionChanged` を返し、`finishOnce` が結び付きを破棄して区切り「New chat」を足す。古い `threadId` や Project gid を別のインスタンスへ送ることは無い。
 - 結び付いていない会話では `captureConnection()` を使う。
 - 同じインスタンスでアカウントだけが変わった場合、トークンの指紋(`authFingerprint`)はトークン更新でも変わるので区別できない(E2)。この場合、古い `threadId` はサーバで見つからずエラーになる(K1 の `find_thread` はユーザーのスレッドだけを探す)。Project gid は同じインスタンスの同じプロジェクトを指し、サーバが新しいアカウントの権限で判定する。したがって他人のデータは読めず、別プロジェクトへ送られることも無い。エラーの表示後、ユーザーは `/reset` か開き直しで新しい会話にできる(§20)。
+
+#### 9.2.4 唯一の終端 `finishOnce`(UI スレッド。Codex round 6 #3)
+
+1 回の送信を終わらせる処理は `QuickChatSession.finishOnce(ticket, gen, outcome)` の 1 つだけで、必ず UI スレッドで実行する。呼び出し元は次の 4 つ。どれが先に来ても、最初の 1 回だけが効く。
+
+| | 呼び出し元 | 渡す結果 |
+|---|---|---|
+| (a) | 背景処理の結果(w7 の `runOnUi`) | 背景処理が作った結果 |
+| (b) | 期限の監視 `onDeadline`(UI タイマー) | `SendGate` を読んで決める(§12.4): 送信前 → `TimedOut(beforeSend = true)`、送信中 → `MaybeSent`、送信後 → `TimedOut(beforeSend = false)` |
+| (c) | `Job` の完了フック `invokeOnCompletion`。`delivered` の印が立っていないときだけ `runOnUi` で呼ぶ(起動前の取り消し、scope の取り消し、捕まえ損ねた例外) | `Interrupted` |
+| (d) | `submit` の中の即時失敗(手順 2・4) | その結果 |
+
+処理の内容:
+
+```
+fun finishOnce(ticket, gen, outcome) {            // UI スレッド
+  if (!conversation.isCurrent(ticket, gen)) return // 終了済み・閉じた・置き換えた・/clear 済み
+  val send = conversation.clearInFlight()          // ここで「終了済み」になる。以後の呼び出しは上の行で戻る
+  try {
+    apply(outcome)                                 // bindingUpdate の保存、会話欄の Pending → 回答 / 失敗
+  } catch (e: Exception) { log(クラス名のみ) } finally {
+    send.watchdog?.cancel()                        // 即時失敗 (d) では未予約
+    send.gate.closeIfOpen()                        // まだ送っていなければ、以後も送らせない
+    send.job?.let { it.cancel(); runtime.detached.track(it) }   // 完了済みの Job には何も起きない
+    guarded { view.released(ticket, succeeded = outcome is Answered) }
+    guarded { view.render(conversation.toInlineModel()) }
+  }
+}
+```
+
+- 状態の切り替え(`clearInFlight`)を最初に行うので、`apply` や表示の更新が例外を出しても、チケットの解放(`released`)は `finally` で必ず 1 回行われ、2 回目以降の呼び出しは何もしない。印を付ける時機による分岐(投入時 / 反映後)は無い。
+- すべて UI スレッドの上で順に実行されるので、(a)〜(d) の間の排他にロックは要らない。UI スレッドと背景処理の間で共有する可変状態は `SendGate` と `delivered` の印だけである。
+- `guarded { … }` は例外を捕まえてクラス名だけをログに残す。`released` の失敗が `render` を止めない。
+- 閉じる・置き換え・`/clear` `/reset`(§9.4、§9.5)は `finishOnce` を通らず、`session.end()` / 世代番号の更新で同じ後始末(`watchdog.cancel`、`gate.closeIfOpen`、`job.cancel`、`detached.track`)を行う。その後に届く (a)〜(c) は `isCurrent` で捨てられる。
 
 ### 9.3 ポーリング(T1)
 
@@ -294,18 +337,19 @@ UI スレッドへ戻る(`asyncExec`):
   - `errors` が空でない → `ServerRejected(errors)`(`content` があっても失敗扱い。表示は §14)。
   - `errors` が空で `content` が空または null → `EmptyAnswer`。
   - それ以外 → `Answered(content)`。
-- 間隔: 参照実装の前例(R2: 5000 ms 間隔、1 リクエスト 25000 ms)を既定値とする。最初の問い合わせまでの待ちと間隔の調整は実装段階で決める(§26)。**待ち続ける上限は回数ではなく、§9.2 手順 4 の `deadline`(実時間)で決める**(§15)。
+- 間隔: 参照実装の前例(R2: 5000 ms 間隔、1 リクエスト 25000 ms)を既定値とする。最初の問い合わせまでの待ちと間隔の調整は実装段階で決める(§26)。**待ち続ける上限は回数ではなく、§9.2 手順 2 の `deadline`(実時間)で決める**(§15)。
 - 1 回ごとに §9.2.3 と同じ条件(結び付いたインスタンスと一致)で接続を取り直す(OAuth 更新でトークンが変わっても続けられるように。E2)。一致しなければ `ConnectionChanged` で終わる。
 - 1 回の問い合わせが失敗したら(通信・HTTP・GraphQL のエラー)、その時点で送信を失敗にする。途中の失敗を読み飛ばして続けることはしない(再試行は §15)。
-- 各待ちの前後で `coroutineContext.isActive` を確認し、キャンセルされていたら即座に終わる。実行中の HTTP は止められない(E3)ので、結果は §9.2 の手順 11 で捨てる。
+- 待ちは `delay`。問い合わせは `runInterruptible` の中で行う。取り消されたら、待ちも実行中の HTTP もすぐ止まる(E12)。取り消しの後に届いた結果は `finishOnce` が捨てる(§9.2.4)。
 
 ### 9.4 `/clear` と `/reset`(FR-7)
 
-UI スレッドで処理し、チケットは即座に完了させる(`onAttemptFinished` → `onSucceeded` で下書きを消す)。
+UI スレッドで処理し、チケットは即座に完了させる(`finishOnce(ticket, gen, Cleared)` → `released(ticket, succeeded = true)` で下書きを消す)。
 
 - `/clear`: 会話欄を空にする。
 - `/reset`: 会話欄の末尾に区切り「New chat」を足す。
-- 共通: 世代番号を 1 つ進め(実行中の送信があれば結果を捨てる。ただし送信中は [Send] が無効なので通常は起きない)、`threadId` を破棄する。`threadId` を持っていた場合だけ、背景で `aiAction`(§11.2 M2: `question` = `/clear` または `/reset`、`threadId` のみ)を送る。接続は §9.2.3 と同じく結び付いたインスタンスと一致するものだけを使い、一致しなければ送らない。結果は待たず、失敗はログ(§19)に記録するだけ(参照実装も表示しない。R5)。
+- 共通: `threadId` を破棄する。`threadId` を持っていた場合だけ、背景で `aiAction`(§11.2 M2: `question` = `/clear` または `/reset`、`threadId` のみ)を送る(期限と資源の扱いは §15.4)。接続は §9.2.3 と同じく結び付いたインスタンスと一致するものだけを使い、一致しなければ送らない。結果は待たず、失敗はログ(§19)に記録するだけ(参照実装も表示しない。R5)。
+- 送信中は [Send] が無効なので、`/clear` `/reset` が実行中の通常の送信と重なることは無い。
 - 会話を持っていない(`threadId` が無い)場合は、サーバへは何も送らない。
 
 ### 9.5 閉じる・置き換え(FR-3、FR-9)
@@ -313,7 +357,7 @@ UI スレッドで処理し、チケットは即座に完了させる(`onAttempt
 どの閉じ方でも同じ終了処理を通す:
 
 1. `InlineThreadPopup.close()`(既存): 未送信の下書きを `preserveDrafts` に渡し(実行中のチケットの本文は除く。E7)、Shell を破棄し、`host.onClosed()` を呼ぶ。
-2. `QuickChatHost.onClosed()`: 世代番号を進め、実行中の `Job` を `cancel()` し、`threadId` を破棄し、`QuickChatPopups` から外す。
+2. `QuickChatHost.onClosed()` → `QuickChatSession.end()`: 世代番号を進め、実行中の送信があれば期限の監視を取り消し、`SendGate` を閉じ(まだ送っていなければ以後も送られない)、`Job` を取り消して `DetachedJobs` に渡す。結び付きを破棄し、`QuickChatPopups` から外す。
 3. サーバには何も送らない(`/clear` も送らない)。サーバ側の会話は GitLab の保持期限で消える。参照実装は次に開いたときに前の会話へ `/clear` を送る(REF `quick_chat/quick_chat_state.ts:394-418`)が、閉じる操作やウィンドウ終了のたびにネットワークへ書き込む副作用を避けるため採らない。
 - `preserveDrafts` はコピー用ダイアログを出す(MR 経路と同じ部品 `CommentInputDialog` + `COPY_TEXT_PROMPT`。E `mergerequests/discussions/actions/DiscussionActionSupport.kt:54, 267`)。ダイアログの親はウィンドウの Shell。置き換え(§9.1 手順 4)では、古い popup の下書きダイアログを閉じてから新しい popup を開く。
 - 「Close Quick Chat」はアクティブなウィンドウの Quick Chat を閉じる。開いていなければハンドラは無効。
@@ -442,15 +486,15 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | `entries` | 会話欄の項目の列。種類 = `Question(text)` / `Pending` / `Answer(markdown)` / `Failure(message)` / `Separator` |
 | `binding` | 会話の結び付き(§9.2.3)。`instanceUrl`(正規化済み)、`preflight`(バージョン判定済み・`resourceId`・プロジェクトの対応キー。§9.2.2)、`threadId?`。未確立なら null。`ConnectionChanged` と終了で破棄 |
 | `generation` | 世代番号。`/clear` `/reset`、`ConnectionChanged`、終了で進める |
-| `inFlight` | 実行中の送信: チケット、開始時の世代番号、`Job` |
+| `inFlight` | 実行中の送信: チケット、開始時の世代番号、`deadline`、`SendGate`、期限の監視の取り消し手段、`Job`(起動後)。`begin` で作り、`clearInFlight` で外す |
 
-- `binding` を書き換えるのは UI スレッドの 3 箇所だけ: §9.2 手順 12(照合済みの `bindingUpdate` の保存)、§9.2 手順 14 / §9.5(破棄)、§9.4(`threadId` の破棄)。背景処理は要求に入った `binding` の不変のコピーだけを読む。
+- `binding` を書き換えるのは UI スレッドの 3 箇所だけ: `finishOnce`(照合済みの `bindingUpdate` の保存、`ConnectionChanged` での破棄)、`end`(§9.5 の破棄)、§9.4(`threadId` の破棄)。背景処理は要求に入った `binding` の不変のコピーだけを読む。
 
 `toInlineModel()` は 1 項目の `InlineThreadModel` を作る。`Question` の author = 「You」、`Answer` / `Pending` / `Failure` の author = 「GitLab Duo」、`Answer` だけ `codeBlocks = true`。`createdAt` は表示しない(空文字)。
 
 ### 12.2 文脈(`QuickChatContext`、不変)
 
-`question`、`currentFile: CurrentFile?`(`fileName`、`selectedText`、`contentAboveCursor`、`contentBelowCursor`。§9.2.1 の上限を満たす)。要求 `QuickChatRequest` = 文脈 + アンカーのファイルの場所(`java.io.File?`)+ `binding` の不変のコピー。
+`question`、`currentFile: CurrentFile?`(`fileName`、`selectedText`、`contentAboveCursor`、`contentBelowCursor`。§9.2.1 の上限を満たす)。要求 `QuickChatRequest` = 文脈 + アンカーのファイルの場所(`java.io.File?`)+ `binding` の不変のコピー + `deadline` + `SendGate`。
 
 ### 12.3 送信の結果(`QuickChatOutcome`)
 
@@ -465,10 +509,33 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | `TooLarge(item)` | 質問または選択が §9.2.1 の上限を超えた(UI スレッドで判定し、背景処理は起動しない) | 変更なし |
 | `TransportFailed(kind, status?, correlationId?)` | 通信・HTTP・GraphQL のエラー | 得られていれば保存 |
 | `MaybeSent(threadId?)` | `aiAction` が送られたか分からない(応答前のタイムアウト・切断) | 得られていれば保存 |
-| `TimedOut(beforeSend, threadId?)` | 期限内に終わらなかった。`beforeSend` = `aiAction` を送り始める前だった(§15) | `aiAction` 後なら保存 |
+| `TimedOut(beforeSend, threadId?)` | 期限内に終わらなかった。`beforeSend` = `aiAction` を送る前に打ち切った(以後も送られない。§12.4) | `aiAction` 後なら保存 |
+| `Busy` | 手放した処理が上限に達していて、送信を受け付けなかった(§15.3)。何も送っていない | 変更なし |
+| `Interrupted` | 背景処理が結果を出さずに終わった(取り消し、想定外の例外)。§9.2.4 の (c) | 変更なし |
+| `Failed` | `submit` の中の想定外の例外。何も送っていない | 変更なし |
+| `Cleared` | `/clear` `/reset` を処理した(§9.4)。失敗ではない | `threadId` を破棄 |
 | `ConnectionChanged` | 送信前またはポーリング中に、接続先が結び付いたインスタンスと異なった | 結び付きごと破棄 |
 
-「会話の `threadId`」列の「保存」は、`bindingUpdate` に入れて返し §9.2 手順 12 で保存することを意味する。preflight の結果も、成功した場合は同じく `bindingUpdate` で保存する(送信自体が後段で失敗しても)。
+「会話の `threadId`」列の「保存」は、`bindingUpdate` に入れて返し `finishOnce` で保存することを意味する。preflight の結果も、成功した場合は同じく `bindingUpdate` で保存する(送信自体が後段で失敗しても)。
+
+### 12.4 送信ゲート(`SendGate`)
+
+1 回の送信ごとに 1 つ作る、原子的な参照(`AtomicReference`)。状態と遷移:
+
+| 状態 | 意味 |
+|---|---|
+| `Open` | まだ `aiAction` を送っていない(初期状態) |
+| `Sending` | `aiAction` を送り始めた。結果はまだ分からない |
+| `Sent(bindingUpdate)` | `aiAction` が成功した。会話に保存すべき更新(インスタンス、`threadId`、preflight の結果)を持つ |
+| `Closed` | 送る前に UI 側が打ち切った。以後この送信で `aiAction` を送ってはならない |
+
+| 操作 | 実行者 | 遷移 |
+|---|---|---|
+| `tryBeginSend()` | 背景(w4) | `Open → Sending` の比較交換。失敗したら送らない |
+| `markSent(update)` | 背景(w5) | `Sending → Sent(update)` |
+| `closeIfOpen()` | UI(`onDeadline`、`finishOnce`、`session.end()`、世代番号の更新) | `Open → Closed` の比較交換。戻り値 = 操作の直前の状態 |
+
+`onDeadline` は `closeIfOpen()` の戻り値で結果を決める: `Open` → `TimedOut(beforeSend = true)`(以後送られないことが保証される)、`Sending` → `MaybeSent`、`Sent(update)` → `TimedOut(beforeSend = false)` で、`update` を会話に保存する(次の質問が同じ会話に続く)。
 
 ## 13. トランザクション境界
 
@@ -485,7 +552,10 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | 空の回答 | 「GitLab Duo returned an empty answer.」 | 可 |
 | HTTP エラー / GraphQL エラー / 解釈不能 | 「Failed to send the question to GitLab」+ HTTP ステータス、相関 ID(あれば) | 可 |
 | `MaybeSent` | 「The question may have been sent, but no answer could be retrieved.」 | 可(§16) |
-| タイムアウト | 「Timed out waiting for the answer.」 | 可 |
+| タイムアウト(送信後) | 「Timed out waiting for the answer.」 | 可 |
+| タイムアウト(送信前) | 「GitLab did not respond in time. Nothing was sent.」 | 可 |
+| `Busy` | 「Earlier Quick Chat requests are still not responding. Try again later.」 | 可(後で) |
+| `Interrupted` / `Failed` | 「The request was interrupted.」 | 可 |
 | 接続先の変更 | 「The GitLab connection changed. Your next question starts a new chat.」+ 区切り「New chat」 | 可(新しい会話になる) |
 | プロジェクトを確かめられない | 「Quick Chat could not confirm the GitLab project of this file, so nothing was sent.」(別インスタンスの場合はその旨) | 可 |
 | プロジェクトで Duo が無効 | 「GitLab Duo is turned off for this project.」 | 可(同じ結果) |
@@ -497,45 +567,65 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 
 ## 15. タイムアウトとリトライ
 
-- **送信全体の期限**: 送信の開始から `ANSWER_DEADLINE`(既定 120 秒。参照実装のポーリングの上限 5000 ms × 20 回 ≒ 100 秒に `aiAction` の時間を足した値。調整は実装段階)を単調時計で測る(Codex round 1 #4)。
-- 各 HTTP(preflight、`aiAction`、各ポーリング)のタイムアウト = min(1 リクエストの上限(既定 25000 ms。R2), 期限までの残り時間)。残り時間が 0 以下なら、その要求を送らずに終わる。
-- ポーリングの待ちの前後でも残り時間を確認し、待ちは残り時間を超えない。
-- **ブロックする処理はすべて期限の内側で待つ**(Codex round 2 #1): 接続の取得(`captureConnection` / `captureConnectionIf`。OAuth トークンの更新 `refreshAccessToken()` を同期で走らせうる。E `authentication/OAuthTokenProvider.kt:25-33, 69-110`)、アンカーのプロジェクト解決(JGit のローカル I/O)、各 HTTP。
-- **止まりうる処理は structured concurrency の外へ隔離する**(Codex round 3 #3)。コルーチンの子(`withContext(Dispatchers.IO) { … }` や `async`)で実行すると、処理が割り込みを無視した場合に親が子の完了を待ってしまい、期限を守れないため。
-  - 実行場所: Quick Chat 専用の有界な executor(スレッド数 `BLOCKING_THREADS`、既定 4。**有界の待ち行列** `BLOCKING_QUEUE`、既定 16)。`CompletableFuture.supplyAsync(block, executor)` で起動する。正常な処理が並行してスレッドが埋まっていても、新しい処理は待ち行列で待ち、待ち時間も含めて残り時間で `await` する(Codex round 5 #3)。期限で `cancel` された待ち行列中の処理は、実行の順番が来ても本体を実行しない(`CompletableFuture` の非同期処理は完了済みなら本体を実行しない)。
-  - 待ち方: `withTimeoutOrNull(残り時間) { future.await() }`(`kotlinx.coroutines.future.await`。取り消し可能な待ちで、future の完了を join しない。既存の使用例 E `preferences/healthcheck/ConfigurationValidationService.kt:12, 51`)。期限が来たら `future.cancel(true)` を呼んで(割り込みの試み)、**待たずに**戻る。
-  - 放置した future の結果と例外: `whenComplete` で例外のクラス名だけをログに残し、結果は捨てる。共有 scope には例外を流さない。
-  - 未完了の上限: 止まった処理がスレッドを占め、待ち行列(16)も埋まったときだけ、新しい処理は `RejectedExecutionException` になる。この場合は即座に失敗にする(無制限にスレッドや待ちを増やさない)。**分類は期限切れと同じく段階で決める**(Codex round 4 #1): `aiAction` の投入前なら `TimedOut(beforeSend = true)`、`aiAction` の投入が拒否された場合も送っていないので同じ、`aiAction` の後(ポーリングの投入)なら `TimedOut(beforeSend = false)`。実装段階でテストに固定する(A28)。
-  - executor はバンドル停止時に `shutdownNow()` する。
-- **`/clear` `/reset` の背景送信(§9.4)も同じ隔離の下に置く**(Codex round 4 #3):
-  - 通常の送信とは**別の** executor(スレッド 1、待ち行列なし)で実行する。止まった M2 が通常の送信のスレッドを奪わないため。
-  - M2 の処理全体(接続の取得 + HTTP)に独自の期限 `CLEAR_DEADLINE`(既定 30 秒、単調時計)を設け、期限が来たら `future.cancel(true)` して待たない。結果は待たないが、期限切れ・失敗はログに記録する(§19)。
-  - M2 の executor が埋まっている(前の M2 が止まっている)ときは、新しい M2 を送らずにログに記録する。`/clear` `/reset` の画面上の効果(§9.4)とローカルの `threadId` の破棄は、送信の成否に関係なく行う。
-  - 所有者は `QuickChatPopups`(ウィンドウをまたいで 1 つ)。popup を閉じても M2 は期限まで続ける(サーバ上の会話の片付けなので、閉じたことで中断する理由が無い)。バンドル停止時に executor ごと `shutdownNow()` する。
-  - 期限切れの段階ごとの結果: `aiAction` を送り始める前(接続の取得・プロジェクト解決・preflight) → `TimedOut(beforeSend = true)`(「何も送っていない」と表示)。`aiAction` の実行中 → `MaybeSent`。`aiAction` の後 → `TimedOut(beforeSend = false)`。
-  - `aiAction` の子処理が期限後に完了しても、その結果(`requestId` / `threadId`)は使わない。
-- どの段階で止まっても、Send は送信の開始から `ANSWER_DEADLINE` 以内に戻る(子処理が止まったままでも、呼び出し側は待たない)。
-- **自動の再送はしない。** `aiAction` は書き込みで冪等でない(§16)。ポーリング中の失敗も再試行せず、その送信を失敗にする(実装を単純に保つ。ユーザーが再送できる)。
+### 15.1 方針: 期限は UI 側で 1 か所だけ守る(2026-09-28 方式変更)
+
+round 2〜6 の設計(止まりうる処理を 1 つずつ専用 executor に隔離し、それぞれを期限つきで待つ)は廃止した。理由と比較は §29「方式の再検討」。新しい方針は次の 3 点である。
+
+1. **Send を戻す責任は UI 側の期限の監視だけが持つ。** 期限は `submit` の最初の文で決め(§9.2 手順 2)、UI タイマーが期限に `finishOnce` を呼ぶ(§9.2.4 の (b))。背景処理が終わったかどうかを待たないので、背景処理がどこで止まっていても、Send は `ANSWER_DEADLINE` で戻る。
+2. **背景処理は割り込みで止める。** ブロックする呼び出しはすべて `runInterruptible` の中で行い、終了時・期限切れ・閉じる・置き換えで `Job.cancel()` する。HTTP は割り込みで止まる(E12)。
+3. **割り込みで止まらない処理は「手放す」。数に上限を設ける**(§15.3)。
+
+- `ANSWER_DEADLINE` の既定値は 120 秒(参照実装のポーリングの上限 5000 ms × 20 回 ≒ 100 秒に `aiAction` の時間を足した値。調整は実装段階)。
+- UI タイマーは UI スレッドが動いていることを前提にする。UI スレッドが止まっている間は画面全体が止まっており、Send だけを戻す意味が無い。
+- `scheduleOnUi` の実体は `Display.timerExec`(既存の使用例 E `chat/webview/AgenticChatWebViewClient.kt:30`)。テストでは偽物を注入する。
+
+### 15.2 背景処理の各段
+
+- 各 HTTP(preflight、`aiAction`、各ポーリング)の `HttpRequest.timeout` = min(1 リクエストの上限(既定 25000 ms。R2), 期限までの残り時間)。残り時間が 0 以下なら、その要求を送らずに終わる(§9.2 の w1)。
+- `HttpRequest.timeout` は応答ヘッダまでしか守らない(本文の途中で止まると戻らない。E12)。本文の途中で止まった場合は、期限での `Job.cancel()` による割り込みで止まる(E12)。
+- ポーリングの待ちは `delay`(取り消しですぐ止まる)。待ちは残り時間を超えない。
+- 期限切れの結果は `SendGate` の状態で決まる(§12.4)。`aiAction` の結果が期限の後に届いても使わない(`finishOnce` が捨てる)。
+
+### 15.3 手放した処理の上限(`DetachedJobs`)
+
+- 「手放した処理」= チケットを解放した(`finishOnce` / 終了)後も完了していない `Job`、および実行中の `/clear` `/reset` の背景送信(§9.4)。`QuickChatRuntime` が全ウィンドウを通じて 1 つの計数を持つ。`Job` の完了で 1 つ減る。
+- 割り込みで止まる処理(HTTP、`delay`)は取り消しから短時間で完了するので、数はすぐ 0 に戻る。残り続けるのは、割り込みで止まらない呼び出しの中にいる処理だけである。該当するのは OAuth のトークン更新(ScribeJava の `HttpURLConnection`。タイムアウト未設定で、割り込みでも止まらない。E13)と、JGit のローカル I/O。
+- 手放した処理が `MAX_DETACHED`(既定 4)以上のあいだ、新しい送信は通信せずに `Busy` で終える(§9.2 手順 4)。新しい `/clear` `/reset` の背景送信は行わずにログに記録する(画面上の効果とローカルの `threadId` の破棄は行う)。
+- **正常に実行中の送信は数えない**(会話ごとに 1 本なので、数はウィンドウの数で抑えられる)。したがって複数のウィンドウで同時に送信しても、互いを拒否しない。
+- これにより、Quick Chat が同時に占める背景の処理は「送信中のウィンドウの数 + `MAX_DETACHED` + 上限に達した時点で送信中だったもの」を超えない。スレッドは `Dispatchers.IO` のものを使い、専用のスレッドは作らない。
+- OAuth のトークン更新が止まっている状態では、`captureConnection` を使う他のすべての機能も同じ場所で止まる(既存の性質。§27)。Quick Chat はその状態でも Send を戻し、理由を表示する。
+
+### 15.4 `/clear` `/reset` の背景送信(§9.4)
+
+- `QuickChatRuntime` の scope で起動し、誰も完了を待たない。処理全体を `withTimeout(CLEAR_DEADLINE)`(既定 30 秒)と `runInterruptible` で囲む。HTTP のタイムアウト = min(25000 ms, 残り)。
+- 起動した時点から完了まで `DetachedJobs` に数える(§15.3)。popup を閉じても続ける(サーバ上の会話の片付けなので)。バンドル停止時に scope ごと取り消す。
+- 期限切れ・失敗はログに記録するだけ(§19)。
+
+### 15.5 リトライ
+
+**自動の再送はしない。** `aiAction` は書き込みで冪等でない(§16)。ポーリング中の失敗も再試行せず、その送信を失敗にする(実装を単純に保つ。ユーザーが再送できる)。
 
 ## 16. 冪等性
 
 - `aiAction` は冪等でない。同じ質問を 2 回送ると会話に 2 回入る。
 - 接続の確立前に失敗したと分かる場合(接続拒否・名前解決の失敗・プロキシの認証失敗など)は `TransportFailed`、リクエストを送り始めた後の失敗(応答待ちのタイムアウト・切断)は `MaybeSent` とする。どの例外をどちらに分けるかは実装段階でテストに固定する。
+- `MaybeSent` になるのは、`SendGate` が `Sending` のあいだに期限が来た場合と、`aiAction` の HTTP が送信開始後に失敗した場合である。
 - 応答前のタイムアウト・切断(`MaybeSent`)では、サーバに質問が届いたか分からない。**#96 と違い、再送をロックしない。** 理由: Quick Chat の質問は自分だけの会話に入り、他のユーザーに見える投稿ではない。重複しても回答が 1 つ余計に作られるだけで、取り消しの必要な外部への影響が無い。
 - 初回の送信が `MaybeSent` になった場合は `threadId` が得られないので、次の質問は新しい会話になる(前の文脈は引き継がれない)。会話欄にその旨は出さない(文言は実装段階で検討)。
 - `[Send]` の二重押しは `InlineThreadState` の busy で防ぐ(E6)。
 
 ## 17. 並行処理
 
-- 会話・popup・`InlineThreadState` は UI スレッドだけで触る(NFR-1)。背景処理が触るのは、UI スレッドで作った不変の `QuickChatContext` と接続だけ。
-- 背景から UI へは `Display.asyncExec` のみ。ディスプレイが破棄済みなら何もしない(既存の `hop` と同じ扱い。E `mergerequests/review/MrThreadPopupHost.kt:310-324`)。
-- 古い結果は、UI スレッドでの照合 `surface.isOpen && conversation.isCurrent(ticket, gen)` で捨てる。照合と反映は同じ `asyncExec` の中で行うので、閉じる / 置き換え / `/clear` との順序はすべて UI スレッド上で決まる。
-- 送信は会話ごとに 1 本だけ(busy)。ウィンドウごとに会話は 1 つ。ウィンドウが違えば独立して並行できる。
-- キャンセル: 閉じる・置き換えで `Job.cancel()`。待ちの間はすぐ止まる。実行中の HTTP は完了まで走るが、結果は照合で捨てる。
-- **Quick Chat 専用の scope**(Codex round 5 #1): 既存の共有 scope は `SupervisorJob` でなく、他の機能の例外で失効しうる(E4)。Quick Chat は `QuickChatPopups` が所有する `CoroutineScope(SupervisorJob() + Dispatchers.IO)` を使い、バンドル停止時にだけ取り消す。
-- **チケットは必ず解放する**: 起動した `Job` に `invokeOnCompletion` を付け、結果を UI に届けずに終わった場合(起動前の取り消し、実行中の取り消し、捕まえ損ねた例外)は、`asyncExec` で「送信は中断された」失敗として手順 11〜14 と同じ照合・反映を行う。照合に通らない(閉じた・置き換えた・`/clear`)なら何もしない。結果を届けた場合は二重に反映しない(1 回だけ反映する印を持つ)。
-- `QuickChatService` は `CancellationException` 以外のすべての例外を結果に変換する。`asyncExec` に渡す処理の中の例外も捕まえてログに記録する。
-- バンドル停止時: すべての popup を `discard()` し、すべての `Job` を取り消す。
+- **UI スレッド専用**: popup、`InlineThreadState`、`QuickChatSession`、`QuickChatConversation`(NFR-1)。
+- **背景処理が触るもの**: 要求に入った不変の値(`QuickChatContext`、`binding` のコピー、`deadline`)、`SendGate`、`delivered` の印、接続。UI スレッドと背景処理が共有する可変状態は `SendGate`(原子的な参照)と `delivered`(原子的な真偽値)だけである。
+- **背景から UI へ**は `runOnUi`(= `Display.asyncExec`)のみ。`syncExec` は使わない。ディスプレイが破棄済みで投入に失敗したら、何もしない(popup も存在しない)。投入の失敗と、投入した処理の中の例外は捕まえてクラス名だけをログに残す(既存の `hop` と同じ扱い。E `mergerequests/review/MrThreadPopupHost.kt:310-324`)。
+- **終端は 1 つ**: §9.2.4 の `finishOnce`。古い結果(閉じた後・置き換えた後・`/clear` `/reset` の後・期限切れの後)は `conversation.isCurrent(ticket, gen)` で捨てる。照合と反映は同じ UI の処理の中で行うので、順序はすべて UI スレッド上で決まる。
+- **送信ゲート**(§12.4): 「期限切れ・閉じる・置き換えが先か、`aiAction` の送信が先か」は `SendGate` の 1 回の原子的な更新で決まる。UI 側が先なら `aiAction` は送られない。背景側が先なら UI 側は「送信中」または「送信後」として扱う。「何も送っていない」と表示した質問が後から送られることは無い。
+- **scope**: `QuickChatRuntime` が持つ `CoroutineScope(SupervisorJob() + Dispatchers.IO)` を、全ウィンドウの送信と `/clear` `/reset` の背景送信が使う。既存の共有 scope(`SupervisorJob` でなく、他の機能の例外で失効しうる。E4)は使わない。`QuickChatRuntime` は Koin の `single` で、生成は 1 回だけ。
+- **送信は会話ごとに 1 本**(busy)。ウィンドウごとに会話は 1 つ。ウィンドウが違えば独立して並行できる(§15.3 のとおり、正常な同時送信は拒否しない)。
+- **キャンセル**: `finishOnce`・閉じる・置き換えで `Job.cancel()`。`runInterruptible` の中の HTTP と `delay` はすぐ止まる。割り込みで止まらない呼び出しは戻るまで残るが、誰も待たない(§15.3)。
+- **`QuickChatService` は `CancellationException` 以外のすべての例外を結果に変換する。** 捕まえ損ねた例外で `Job` が終わっても、scope は `SupervisorJob` なので他の送信に波及せず、完了フック(§9.2.4 の (c))がチケットを解放する。
+- **バンドル停止時の順序**: (1) UI スレッドで `QuickChatPopups` がすべての popup を `discard()` する(各 `session.end()` が `SendGate` を閉じ、`Job` を取り消す)。(2) `QuickChatRuntime.close()` が scope を取り消す。どちらも処理の完了を待たない(join しない)。
 
 ## 18. 認証と認可
 
@@ -570,8 +660,8 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 
 ## 23. テスト方針
 
-- **SWT 非依存層**(TDD、headless で実行): `QuickChatCommand`、`QuickChatContextBuilder`、`GitLabVersion`、`MarkdownCodeBlocks`、`QuickChatApi`(GraphQL クライアントを差し替えて、送る変数と応答の変換を検証)、`QuickChatPoller`(時計・待ち合わせ・問い合わせを差し替え: 即時応答 / 何回目かで応答 / 回数切れ / 途中のエラー / 他の requestId・role の混在 / `errors` あり / 空 / キャンセル / 接続先の変更)、`QuickChatService`(各段の失敗が `QuickChatOutcome` に写ること、`CancellationException` だけが外に出ること)、`QuickChatConversation`(世代番号・チケットの照合、`/clear` `/reset`、閉じた後の結果の破棄、`toInlineModel`)。
-- **SWT 層**: `QuickChatHost` は UI への戻りを注入して headless で検証する(MR の `MrThreadPopupHost` と同じ方式)。popup の見た目・キー・フォーカス・挿入は手動検証(§25)。
+- **SWT 非依存層**(TDD、headless で実行): `QuickChatCommand`、`QuickChatContextBuilder`、`GitLabVersion`、`MarkdownCodeBlocks`、`QuickChatApi`(GraphQL クライアントを差し替えて、送る変数と応答の変換を検証)、`QuickChatPoller`(時計・待ち合わせ・問い合わせを差し替え: 即時応答 / 何回目かで応答 / 回数切れ / 途中のエラー / 他の requestId・role の混在 / `errors` あり / 空 / キャンセル / 接続先の変更)、`QuickChatService`(各段の失敗が `QuickChatOutcome` に写ること、`CancellationException` だけが外に出ること、送信ゲートが閉じていたら `aiAction` を送らないこと)、`SendGate`、`DetachedJobs`、`QuickChatSession`(偽の時計・偽の UI タイマー・偽の `runOnUi` を注入。`finishOnce` の 1 回性、期限の監視、完了フック、`end`)、`QuickChatConversation`(世代番号・チケットの照合、`/clear` `/reset`、閉じた後の結果の破棄、`toInlineModel`)。
+- **SWT 層**: `QuickChatHost` は薄いアダプタで、`released` / `render` の写像を headless で検証する(MR の `MrThreadPopupHost` と同じ方式)。進行の論理は SWT 非依存の `QuickChatSession` にあり、PR-1 でテストする。popup の見た目・キー・フォーカス・挿入は手動検証(§25)。
 - **既存の回帰**: `views/inlinethread` と MR 経路の既存テストがすべて通ること、`FAILSET_IDENTICAL`、detekt がベースライン(main 17 / test 45)から増えないこと。
 
 ## 24. 受け入れ条件
@@ -597,17 +687,18 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A17 | 失敗経路を通った後のログに質問・回答・コード・ファイル名・トークンが出ていない | 手動(ログの目視)+ テストで記録内容を検査 |
 | A18 | MR の popup の挙動が変わらない(タイトル、送信ボタンの文言、Ctrl+Enter で送信されないこと) | 既存テスト + 手動 |
 | A19 | popup の中の `Ctrl+Enter` で送信され、入力欄に改行が入らない。`canSubmit` が偽のときは何も起きない | 手動 |
-| A20 | 各要求がタイムアウト直前まで応答しない場合、また接続の取得(OAuth 更新)やプロジェクト解決が**割り込みを無視して永久に戻らない**場合でも、送信の開始から `ANSWER_DEADLINE` を超えずに結果(段階に応じた `TimedOut` / `MaybeSent`)が返り、テスト本体も期限内に終わる。executor が止まった処理で埋まると次の送信は即座に失敗する | 偽の時計と、ラッチで止まる偽の通信・偽のトークン取得・偽の解決を使ったサービスのテスト |
+| A20 | 背景処理がどこで止まっていても(応答の来ない HTTP、ヘッダの後に止まる本文、**割り込みを無視して永久に戻らない**接続の取得・プロジェクトの解決)、期限の監視が `ANSWER_DEADLINE` で `finishOnce` を呼び、Send が戻る。テスト本体は止まった処理の完了を待たずに終わる | 偽の時計・偽の UI タイマーと、ラッチで止まる(割り込みを無視する)偽の通信・偽のトークン取得・偽の解決を使ったセッションのテスト |
 | A21 | 質問 16 KiB・選択 64 KiB の境界(ちょうど / 1 バイト超)、前後 32 KiB の切り詰め(近い側が残る、多バイト文字を割らない)、選択が 64 Ki 文字を超えると文字列を取らずに拒否 | コンテキスト生成のテスト |
 | A22 | プロジェクト解決の 4 種類(§9.2.2)と Q1 の結果(project null / `duoFeaturesEnabled` false / null / true)ごとに、送る・送らないと `resourceId` が表のとおり | preflight のテスト |
 | A23 | 1 回目の回答の後に接続先のインスタンスを変えて送ると、何も送らずに `ConnectionChanged` になり、次の送信は新しいインスタンスで新しい会話(`threadId` なし)になる。ポーリング中に変えた場合も同じ | サービス・会話のテスト |
 | A25 | 非 ASCII の名前を percent-encoded の HTTP remote で clone したプロジェクトで、Q1 の `fullPath` がデコード済みになり、プロジェクトを確かめられる | preflight のテスト |
 | A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない。区切り「New chat」はその送信の質問の前に表示される | preflight・サービス・会話のテスト |
 | A27 | 256 KiB を超える回答、31 個以上のコードブロック、41 項目目の追加で、それぞれ §9.7 の上限表のとおりになる | 分割・会話のテスト |
-| A30 | `BLOCKING_THREADS + 1` 個の正常な処理が同時に投入されても拒否されず、残り時間内に完了する。`aiAction` 後のポーリングの投入が他の処理と重なっても拒否されない | executor のテスト |
-| A31 | 背景処理の開始を遅らせても期限は `beginSubmit` の時点から数えられ、開始時に期限切れなら即座に `TimedOut(beforeSend = true)`。scope が取り消されている / 実行中に取り消されても、popup は失敗表示に戻り Send が戻る | サービス・ホストのテスト |
-| A28 | `aiAction` の後でポーリングの投入が executor の枯渇で拒否されると `TimedOut(beforeSend = false)` になり、「何も送っていない」とは表示しない | サービスのテスト |
-| A29 | M2 の接続取得や HTTP が割り込みを無視して止まっても、`CLEAR_DEADLINE` で待ちが終わり、M2 用のスレッドは 1 本を超えず、通常の送信は影響を受けない | 止まる偽物を使ったテスト |
+| A30 | 手放した処理が `MAX_DETACHED` 以上のあいだ、新しい送信は通信せずに `Busy` になり、`/clear` `/reset` の背景送信は行われない。止まっていた処理が完了すると数が減り、送信できるようになる。正常に実行中の送信は数えない(`MAX_DETACHED + 1` 個の会話が同時に送信しても拒否されない)。計数は全ウィンドウで 1 つ | `DetachedJobs`・セッションのテスト(複数の会話) |
+| A31 | 期限は `submit` の最初の文で決まり、文脈の固定や背景処理の開始の遅れを含めて数えられる。`finishOnce` は (a) 背景の結果・(b) 期限の監視・(c) 完了フック・(d) 即時失敗のどの順序・組み合わせでも 1 回だけ効き、`released` は 1 回だけ呼ばれる。結果の反映や表示の更新が例外を出しても `released` は呼ばれる。scope が取り消し済み / 実行中に取り消されても、Send が戻る | セッションのテスト(順序を入れ替えた組み合わせ、例外を出す偽の view) |
+| A28 | 送信ゲート: 期限切れ・閉じる・置き換えが `aiAction` の前に起きた場合、その後に背景処理が進んでも `aiAction` は送られない(`TimedOut(beforeSend = true)`)。`aiAction` の実行中の期限切れは `MaybeSent`、成功後は `TimedOut(beforeSend = false)` で `threadId` が会話に保存される。「何も送っていない」と表示した質問が送られることは無い | `SendGate`・サービス・セッションのテスト(w4 の直前で止めて UI 側を先に進める) |
+| A29 | `/clear` `/reset` の背景送信が止まっても、画面上の効果と `threadId` の破棄は行われ、Send は使える。背景送信は `CLEAR_DEADLINE` で取り消され、完了するまで `DetachedJobs` に数えられる | 止まる偽物を使ったテスト |
+| A32 | 取り消しで実行中の HTTP が止まる(`runInterruptible` + `HttpClient.send`)。ヘッダの後に本文が止まる偽サーバでも止まる | ループバックの偽サーバを使ったテスト(headless で実行可能) |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
@@ -650,6 +741,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | ポーリングの遅延(最大 5 秒) | 体感が遅い | I3 で間隔を調整する。ストリーミングは後続 |
 | GitLab の Experiment API(`aiAction` / `aiMessages` は Experiment 表記) | 将来の変更で壊れる | 17.10 版の形に固定し、失敗は §14 で表示する |
 | 異常に大きい GraphQL 応答 | 既存の HTTP 層は本文全体を文字列で受け取ってから解析する(E `api/http/GitLabHttpClient.kt:18-31`)。巨大な応答でヒープを圧迫しうる | 本サイクルでは HTTP 層を変えない(既存のすべての API 呼び出しに共通する性質で、回答は LLM の出力でサーバ側で長さが限られる)。表示側の上限(§9.7)だけを設ける。受信バイト数の上限を HTTP 層に入れるのは後続候補(Codex round 4 #2) |
+| OAuth のトークン更新が無期限に止まりうる(既存。E13) | `captureConnection` を使うすべての機能が同じ場所で止まる。Quick Chat では送信が期限で失敗し、4 回で `Busy` になる | Quick Chat は UI 側の期限の監視で Send を戻す(§15.1)ので、この欠陥に依存しない。認証コードは本サイクルで変えない。**後続候補**: `GitLabOAuthService` の ScribeJava に接続・読み取りのタイムアウトを設定する(`JDKHttpClientConfig.withConnectTimeout / withReadTimeout`)。全機能に効く修正で、更新失敗時の既存の挙動(通知と PAT への切り替え)に合流するため、別 issue で扱う |
 | `CodeFormatter` の既存の弱さ(`null` の結果を扱わない) | Java の Insert で例外 | Quick Chat 側で例外を捕まえて整形なしで挿入する(§9.6)。Duo Chat 側の修正は本サイクルの対象外(後続候補として記録) |
 | 置き換え時のコピー用ダイアログ | 新しい popup の前にモーダルが出る | 下書きがあるときだけ出る(既存の挙動)。手動で確認 |
 
@@ -661,8 +753,8 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 |---|---|---|
 | T1 | `QuickChatCommand` / `QuickChatContextBuilder` / `GitLabVersion`(純粋関数 + テスト) | sonnet |
 | T2 | `QuickChatApi`(M1 / M2 / Q1 / Q2 + 応答の型 + テスト) | opus |
-| T3 | `QuickChatPoller` / `QuickChatPreflight` / `QuickChatService`(結果の写像、送信全体の期限、キャンセル、会話の結び付きと接続の照合、`GitLabProjectUrlResolver` の 4 種類の兄弟メソッド + テスト) | opus |
-| T4 | `QuickChatConversation`(世代番号・チケット照合・`toInlineModel` + テスト) | opus |
+| T3 | `QuickChatPoller` / `QuickChatPreflight` / `QuickChatService` / `SendGate`(結果の写像、`runInterruptible`、送信ゲート、会話の結び付きと接続の照合、`GitLabProjectUrlResolver` の 4 種類の兄弟メソッド + テスト。A32 の偽サーバのテストを含む) | opus |
+| T4 | `QuickChatConversation` / `QuickChatSession` / `QuickChatRuntime` / `DetachedJobs`(世代番号・チケット照合・`finishOnce`・期限の監視・完了フック・`toInlineModel` + テスト) | opus |
 
 **PR-2 UI・コード操作**(`feat/quick-chat-ui`)
 
@@ -670,11 +762,11 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 |---|---|---|
 | T5 | `views/inlinethread` の一般化(`isSubmittable` 移設、タイトル・送信ラベル・`codeBlocks`・`onCodeAction`・`M1+Enter`)+ 既存テストの維持 | opus |
 | T6 | `MarkdownCodeBlocks`(+ テスト) | sonnet |
-| T7 | `QuickChatPopups` / `QuickChatHost` / `QuickChatContextCapture`(UI スレッド境界 + ホストのテスト) | opus |
+| T7 | `QuickChatPopups` / `QuickChatHost` / `QuickChatContextCapture`(`QuickChatView` の写像、`Display.asyncExec` / `timerExec` の注入、バンドル停止の順序 + ホストのテスト) | opus |
 | T8 | Copy / Insert(`QuickChatSnippetInserter`、`CodeFormatter` の引数版) | opus |
 | T9 | ハンドラ 2 件と `plugin.xml` の配線 | opus |
 
-**実装レビュー(Codex)の重点確認項目**: プロジェクト確認のフェイルクローズ(§9.2.2 の表)と接続先の結び付き(§9.2.3)、UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、古い結果の破棄(§17 の照合がすべての経路にあるか)、共有 scope での例外の封じ込め、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
+**実装レビュー(Codex)の重点確認項目**: プロジェクト確認のフェイルクローズ(§9.2.2 の表)と接続先の結び付き(§9.2.3)、UI スレッド境界(`asyncExec` のみ、背景処理から `IDocument` / SWT に触れていない)、`finishOnce` が唯一の終端であること(§9.2.4。チケットを解放する経路が他に無いか)、送信ゲートの比較交換(§12.4)、`runInterruptible` の外にブロックする呼び出しが無いこと、`DetachedJobs` の計数の増減、ポーリングの終了条件と接続の取り直し、ログに本文が出ないこと、MR popup の既定値が従来挙動のままであること、`/clear` `/reset` の判定と threadId の破棄、Insert の undo 単位と編集可否の確認。
 
 ## 29. Codex レビュー反映履歴
 
@@ -723,3 +815,30 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | 1 | P1 失効しうる共有 scope で起動すると、取り消し時に busy のまま残る | 採用・設計(並行処理) | §17 に Quick Chat 専用の `SupervisorJob` scope と、`invokeOnCompletion` による必ずのチケット解放。A31 |
 | 2 | P1 期限の起点が背景処理の開始で、開始待ちが含まれない | 採用(規則のみ。純ロジック) | §9.2 手順 3-4 で UI スレッドが期限を決め、要求に入れる。A31 |
 | 3 | P1 待ち行列なしの executor は正常な同時処理まで拒否する | 採用・設計(並行処理) | §15 を有界の待ち行列(既定 16)に変更。A30 |
+
+### round 6(`c0c4bf2` に対する指摘 5 件)と方式の再検討(2026-09-28、ユーザー指示)
+
+round 2〜6 の 19 件中 9 件が「期限・止まる処理の隔離・executor・scope」の同じ層に集中し、毎巡新しい欠陥が見つかった。これを「細部の詰め不足」ではなく「方式の形が悪い」兆候とみなし、実ソースと実測に基づいて方式を比較した。
+
+**確定した事実**: `HttpClient.send` は割り込みで止まる(本文の途中でも)。`HttpRequest.timeout` は本文の途中の停止を守らない。OAuth のトークン更新(ScribeJava の `HttpURLConnection`、タイムアウト未設定)は割り込みでも止まらない(E12〜E14)。
+
+| 観点 | A: 専用 executor で隔離(round 5 の設計 + 5 件修正) | C: 各処理をタイムアウト化(OAuth を含む) | **D: UI 側の期限の監視 + 割り込み + 送信ゲート(採用)** |
+|---|---|---|---|
+| Send が戻る保証 | 各段を個別に期限つきで待つ。段ごとに放置・拒否・分類の規則が要り、抜けが出やすい(round 3〜6) | 各タイムアウトの合計。本文の途中の停止と JGit は守れない(E12) | **1 か所(UI タイマー)。背景処理の状態に依存しない** |
+| 二重送信・誤表示の防止 | 段階の分類を executor の拒否・期限ごとに定義(round 4 #1) | 同左 | **送信ゲートの比較交換 1 回で「送っていない」を保証** |
+| 変更範囲 | Quick Chat 内。executor 2 つ・待ち行列・`CompletableFuture` | **認証コード(全機能に影響)** + HTTP 層 | Quick Chat 内のみ。executor なし |
+| 資源の上限 | スレッド 4 + 待ち 16 + M2 用 1。所有者・停止順の規則が要る(round 6 #4) | 上限は不要だが、止まる処理が残ると無制限 | 計数 1 つ(`MAX_DETACHED`)。スレッドは `Dispatchers.IO` |
+| テスト可能性 | executor・待ち行列・`cancel` の意味に依存(`CompletableFuture.cancel(true)` は割り込まない。round 6 #5) | 実時間のタイムアウトに依存 | 偽の時計・偽の UI タイマー・偽の `runOnUi` で決定的にテストできる |
+| Quick Chat 以外への影響 | なし | **あり**(OAuth 更新の失敗経路に合流) | なし |
+
+**結論: D を採用。** C の OAuth タイムアウトは単独では保証にならないが、全機能に有益なので後続候補として §27 に記録した(本サイクルでは認証コードを変えない)。
+
+| # | round 6 の指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 §7 / §8.2 の「共有 scope」が §17 の専用 scope と矛盾 | 採用 | §7、§8.1、§8.2、§17 を `QuickChatRuntime` の専用 scope に統一。所有者・生成数・停止順を明記 |
+| 2 | P1 期限の起点が `beginSubmit` の直後でない | 採用 | §9.2 手順 2: `submit` の最初の文で期限を決める。A31 |
+| 3 | P1 `asyncExec` と完了フックの終端処理が分かれている | 採用・設計(並行処理) | §9.2.4 に唯一の終端 `finishOnce`。状態の切り替えを先に行い、解放は `finally`。A31 |
+| 4 | P1 通常用 executor の所有者と個数が未定義 | 方式変更で解消 | executor を廃止。scope と計数は `QuickChatRuntime`(バンドルに 1 つ)。§15.3、A30 |
+| 5 | P2 `CompletableFuture.cancel(true)` は割り込まない | 方式変更で解消 | `CompletableFuture` を廃止。割り込みは `runInterruptible`(E14)、止まることは実測(E12)と A32 で確認。止まらない処理が残ることを §15.3 に明記 |
+
+round 2 #1、round 3 #3、round 4 #1・#3、round 5 #1〜#3 の反映内容(§15・§17 の旧記述)は、この方式変更で置き換えた。各指摘が求めた性質(期限の保証、段階に応じた分類、`/clear` `/reset` の資源の上限、scope の隔離、正常な同時処理を拒否しないこと)は、それぞれ §15.1、§12.4、§15.4、§17、§15.3 で満たす。
