@@ -173,22 +173,26 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       mockk { every { forRepository(any()) } returns result }
     }
 
+    // A working lookup with nothing assigned: the default factory cannot be built in a unit test,
+    // and resolveProjectForFile fails closed when it cannot consult the assignments.
+    fun resolver(url: String) = GitLabProjectUrlResolver(store(url), lookup(AssignedProjectLookup.Result.None))
+
     it("resolves a file under a matching remote to its project") {
       val (dir, file) = tempRepo("https://gitlab.com/gr%C3%BCp/proj.git", "src/a.txt", commit = false)
-      val r = GitLabProjectUrlResolver(store("https://gitlab.com/")).resolveProjectForFile(file)
+      val r = resolver("https://gitlab.com/").resolveProjectForFile(file)
       val project = (r as ProjectResolution.Resolved).project
       project.namespaceWithPath shouldBe "gr%C3%BCp/proj"
       project.instanceUrl shouldBe "https://gitlab.com"
       project.workTree.canonicalFile shouldBe dir.canonicalFile
     }
     it("maps a null location to NotInRepository") {
-      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(null) shouldBe
+      resolver("https://gitlab.com").resolveProjectForFile(null) shouldBe
         ProjectResolution.NotInRepository
     }
     it("maps a file outside any repository to NotInRepository") {
       val loose = Files.createTempFile("loose", ".txt").toFile()
       createdTempPaths += loose
-      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(loose) shouldBe
+      resolver("https://gitlab.com").resolveProjectForFile(loose) shouldBe
         ProjectResolution.NotInRepository
     }
     it("maps a bare repository to NotInRepository") {
@@ -200,22 +204,22 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
           save()
         }
       }
-      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(File(dir, "x.txt")) shouldBe
+      resolver("https://gitlab.com").resolveProjectForFile(File(dir, "x.txt")) shouldBe
         ProjectResolution.NotInRepository
     }
     it("maps a repository whose remotes are not GitLab-shaped to NoGitLabRemote") {
       val (_, file) = tempRepo("/srv/git/mirror.git", "a.txt", commit = false)
-      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(file) shouldBe
+      resolver("https://gitlab.com").resolveProjectForFile(file) shouldBe
         ProjectResolution.NoGitLabRemote
     }
     it("maps a remote on another host (MISMATCH) to NoGitLabRemote") {
       val (_, file) = tempRepo("https://github.com/x/y.git", "a.txt", commit = false)
-      GitLabProjectUrlResolver(store("https://gitlab.com")).resolveProjectForFile(file) shouldBe
+      resolver("https://gitlab.com").resolveProjectForFile(file) shouldBe
         ProjectResolution.NoGitLabRemote
     }
     it("maps a missing instance URL (NO_INSTANCE) to Failed") {
       val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
-      GitLabProjectUrlResolver(store("")).resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+      resolver("").resolveProjectForFile(file) shouldBe ProjectResolution.Failed
     }
     it("maps an assignment that must not be used to Failed") {
       val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
@@ -242,12 +246,41 @@ class GitLabProjectUrlResolverTest : DescribeSpec({
       val failing = mockk<ScopedPreferenceStore> {
         every { getString(PreferenceConstants.GITLAB_INSTANCE_URL) } throws IllegalStateException(file.path)
       }
-      GitLabProjectUrlResolver(failing).resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+      val resolver = GitLabProjectUrlResolver(failing, lookup(AssignedProjectLookup.Result.None))
+      resolver.resolveProjectForFile(file) shouldBe ProjectResolution.Failed
       val messages = mutableListOf<String>()
       verify(atLeast = 1) { log.warn(capture(messages)) }
       messages.any { "IllegalStateException" in it } shouldBe true
       messages.none { file.name in it || file.parent in it } shouldBe true
       verify(exactly = 0) { log.warn(any(), any()) }
+    }
+    it("fails closed when the assignment lookup cannot be built, even with a matching remote") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
+      val unbuildable: () -> AssignedProjectLookup = { throw IllegalStateException("no container") }
+      val resolver = GitLabProjectUrlResolver(store("https://gitlab.com"), unbuildable)
+      resolver.resolveProjectForFile(file) shouldBe ProjectResolution.Failed
+    }
+    it("fails closed when the assignment lookup throws, even with a matching remote") {
+      val (_, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = false)
+      val throwing: () -> AssignedProjectLookup = {
+        mockk { every { forRepository(any()) } throws IllegalStateException("store unreadable") }
+      }
+      GitLabProjectUrlResolver(store("https://gitlab.com"), throwing).resolveProjectForFile(file) shouldBe
+        ProjectResolution.Failed
+    }
+    it("leaves the navigation methods degrading to the remote when the lookup fails") {
+      val (dir, file) = tempRepo("git@gitlab.com:group/proj.git", "a.txt", commit = true)
+      val throwing: () -> AssignedProjectLookup = {
+        mockk { every { forRepository(any()) } throws IllegalStateException("store unreadable") }
+      }
+      val unbuildable: () -> AssignedProjectLookup = { throw IllegalStateException("no container") }
+      listOf(unbuildable, throwing).forEach { factory ->
+        val nav = GitLabProjectUrlResolver(store("https://gitlab.com"), factory)
+        nav.resolveWebUrlForFile(file) shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+        nav.resolveWebUrlForRepo(dir) shouldBe GitLabProjectUrlResolver.Resolution.Ok("https://gitlab.com/group/proj")
+        (nav.resolveContextForFile(file) is GitLabProjectUrlResolver.ContextResolution.Ok) shouldBe true
+        (nav.resolveBlobUrl(file, null, null) is GitLabProjectUrlResolver.Resolution.Ok) shouldBe true
+      }
     }
   }
 })

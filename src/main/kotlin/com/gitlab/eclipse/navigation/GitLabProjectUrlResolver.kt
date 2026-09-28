@@ -39,26 +39,37 @@ class GitLabProjectUrlResolver(
 ) {
   private val logger by lazy { logger<GitLabProjectUrlResolver>() }
 
+  /** The assignment lookup, built once; null when it cannot be built (e.g. outside a running container). */
+  private val assignmentLookup: AssignedProjectLookup? by lazy {
+    try {
+      assignmentLookupFactory()
+    } catch (e: Exception) {
+      logger.warn("Project assignments unavailable: ${e.javaClass.name}")
+      null
+    }
+  }
+
   /**
    * Consults the user's assignments, never throwing: any failure here — including not being able
    * to build the lookup at all, as outside a running container — means "no assignment", never
    * "resolution failed". Assignments are an override, so one that is unavailable has to degrade to
    * the ordinary resolution instead of breaking project resolution everywhere (A8 / §22's risk).
    */
-  private val assignedProject: (Repository) -> AssignedProjectLookup.Result by lazy {
-    val lookup = try {
-      assignmentLookupFactory()
+  private val assignedProject: (Repository) -> AssignedProjectLookup.Result = { repo ->
+    strictAssignedProject(repo) ?: AssignedProjectLookup.Result.None
+  }
+
+  /**
+   * Like [assignedProject], but null when the assignments could not be consulted at all. Quick Chat
+   * must fail closed then (design §9.2.2): falling back to a remote could pick another project than
+   * the one the user assigned.
+   */
+  private val strictAssignedProject: (Repository) -> AssignedProjectLookup.Result? = { repo ->
+    try {
+      assignmentLookup?.forRepository(repo)
     } catch (e: Exception) {
-      logger.warn("Project assignments unavailable: ${e.javaClass.name}")
+      logger.warn("Project assignment lookup failed: ${e.javaClass.name}")
       null
-    }
-    { repo: Repository ->
-      try {
-        lookup?.forRepository(repo) ?: AssignedProjectLookup.Result.None
-      } catch (e: Exception) {
-        logger.warn("Project assignment lookup failed: ${e.javaClass.name}")
-        AssignedProjectLookup.Result.None
-      }
     }
   }
 
@@ -186,10 +197,12 @@ class GitLabProjectUrlResolver(
   private fun projectFor(repo: Repository): ProjectResolution {
     // A bare repository has no work tree, so no editor file can belong to it.
     if (repo.isBare) return ProjectResolution.NotInRepository
-    when (val assigned = assignedProject(repo)) {
+    when (val assigned = strictAssignedProject(repo)) {
       is AssignedProjectLookup.Result.Use -> return ProjectResolution.Resolved(assigned.project)
       // The user chose a project we cannot use; guessing another one would defeat that choice.
       is AssignedProjectLookup.Result.Warn -> return ProjectResolution.Failed
+      // Assignments could not be consulted: an assigned project may exist, so do not guess from remotes.
+      null -> return ProjectResolution.Failed
       AssignedProjectLookup.Result.None -> Unit
     }
     return when (val match = matchRemote(repo)) {
