@@ -11,7 +11,7 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * Decides, once per conversation binding, whether a question about the anchor file may be sent and
  * with which `resourceId` (design §9.2.2): resolves the file's project on every send, reuses the
- * bound preflight when the project key is unchanged, and otherwise asks GitLab for its version and
+ * bound preflight when the project identity is unchanged, and otherwise asks GitLab for its version and
  * — for a project file — the project's id and Duo setting. Fails closed: when the project cannot be
  * confirmed, nothing is sent.
  *
@@ -39,11 +39,11 @@ class QuickChatPreflight(
     binding: ConversationBinding?,
     budget: RequestBudget,
   ): Result {
-    val key = when (val k = projectKey(connection, resolve(anchorFile))) {
-      is KeyOrStop.Key -> k.key
-      is KeyOrStop.Stop -> return k.stop
+    val identity = when (val k = identityOf(connection, resolve(anchorFile))) {
+      is IdentityOrStop.Resolved -> k.identity
+      is IdentityOrStop.Stop -> return k.stop
     }
-    if (binding != null && binding.preflight.projectKey == key) {
+    if (binding != null && binding.preflight.project == identity) {
       return Result.Proceed(binding.preflight, projectChanged = false)
     }
     val projectChanged = binding != null
@@ -55,7 +55,7 @@ class QuickChatPreflight(
       return Result.Stop(QuickChatOutcome.Unsupported(version))
     }
 
-    val fullPath = key.fullPath ?: return Result.Proceed(Preflight(null, key), projectChanged)
+    val fullPath = identity.fullPath ?: return Result.Proceed(Preflight(null, identity), projectChanged)
     val projectTimeout = budget.nextTimeout() ?: return timedOut()
     val project = runInterruptible { api.project(connection, fullPath, projectTimeout) }
       ?: return Result.Stop(QuickChatOutcome.ProjectCheckFailed(ProjectCheckKind.PROJECT_NOT_FOUND))
@@ -63,7 +63,7 @@ class QuickChatPreflight(
       return Result.Stop(QuickChatOutcome.Unavailable(QuickChatOutcome.Unavailable.DUO_DISABLED_FOR_PROJECT))
     }
     // null duoFeaturesEnabled: the server enforces the project setting itself, since resourceId is sent.
-    return Result.Proceed(Preflight(project.id, key), projectChanged)
+    return Result.Proceed(Preflight(project.id, identity), projectChanged)
   }
 
   private suspend fun resolve(anchorFile: File?): ProjectResolution = try {
@@ -75,20 +75,20 @@ class QuickChatPreflight(
     ProjectResolution.Failed
   }
 
-  private fun projectKey(connection: ConnectionSnapshot, resolution: ProjectResolution): KeyOrStop = when (resolution) {
-    ProjectResolution.NotInRepository -> KeyOrStop.Key(ProjectKey.NOT_IN_REPOSITORY)
-    ProjectResolution.NoGitLabRemote -> KeyOrStop.Key(ProjectKey.NO_GITLAB_REMOTE)
-    ProjectResolution.Failed -> KeyOrStop.Stop(projectCheckFailed(ProjectCheckKind.RESOLUTION_FAILED))
+  private fun identityOf(connection: ConnectionSnapshot, resolution: ProjectResolution): IdentityOrStop = when (resolution) {
+    ProjectResolution.NotInRepository -> IdentityOrStop.Resolved(ProjectIdentity.NOT_IN_REPOSITORY)
+    ProjectResolution.NoGitLabRemote -> IdentityOrStop.Resolved(ProjectIdentity.NO_GITLAB_REMOTE)
+    ProjectResolution.Failed -> IdentityOrStop.Stop(projectCheckFailed(ProjectCheckKind.RESOLUTION_FAILED))
     is ProjectResolution.Resolved -> {
       val instanceUrl = normalizeInstanceUrl(resolution.project.instanceUrl)
       val fullPath = decodeFullPath(resolution.project.namespaceWithPath)
       when {
         // Another instance's project setting cannot be checked through this connection.
         instanceUrl != normalizeInstanceUrl(connection.instanceUrl) ->
-          KeyOrStop.Stop(projectCheckFailed(ProjectCheckKind.OTHER_INSTANCE))
+          IdentityOrStop.Stop(projectCheckFailed(ProjectCheckKind.OTHER_INSTANCE))
         // A malformed escape must not be guessed at: it could name a different project (A25).
-        fullPath == null -> KeyOrStop.Stop(projectCheckFailed(ProjectCheckKind.RESOLUTION_FAILED))
-        else -> KeyOrStop.Key(ProjectKey.resolved(instanceUrl, fullPath))
+        fullPath == null -> IdentityOrStop.Stop(projectCheckFailed(ProjectCheckKind.RESOLUTION_FAILED))
+        else -> IdentityOrStop.Resolved(ProjectIdentity.resolved(instanceUrl, fullPath))
       }
     }
   }
@@ -97,8 +97,8 @@ class QuickChatPreflight(
 
   private fun timedOut() = Result.Stop(QuickChatOutcome.TimedOut(beforeSend = true, update = null))
 
-  private sealed interface KeyOrStop {
-    data class Key(val key: ProjectKey) : KeyOrStop
-    data class Stop(val stop: Result.Stop) : KeyOrStop
+  private sealed interface IdentityOrStop {
+    data class Resolved(val identity: ProjectIdentity) : IdentityOrStop
+    data class Stop(val stop: Result.Stop) : IdentityOrStop
   }
 }

@@ -23,8 +23,8 @@ internal const val INSTANCE = "https://gitlab.com"
 
 internal fun snapshot(url: String = INSTANCE) = ConnectionSnapshot(url, "tok", "fp", 0L)
 
-internal val PROJECT_KEY = ProjectKey.resolved(INSTANCE, "group/proj")
-internal val PROJECT_PREFLIGHT = Preflight("gid://gitlab/Project/1", PROJECT_KEY)
+internal val PROJECT_IDENTITY = ProjectIdentity.resolved(INSTANCE, "group/proj")
+internal val PROJECT_PREFLIGHT = Preflight("gid://gitlab/Project/1", PROJECT_IDENTITY)
 
 /** A [QuickChatConnections] answering from mutable fields; counts every call. */
 internal class FakeConnections(

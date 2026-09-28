@@ -44,13 +44,13 @@ class QuickChatPreflightTest : DescribeSpec({
   describe("project resolution kinds (A22)") {
     it("sends a file outside any repository without a project, asking only the version") {
       val result = preflight(ProjectResolution.NotInRepository).check(snapshot(), file, null, budget())
-      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectKey.NOT_IN_REPOSITORY), false)
+      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectIdentity.NOT_IN_REPOSITORY), false)
       verify(exactly = 1) { api.version(any(), any()) }
       verify(exactly = 0) { api.project(any(), any(), any()) }
     }
     it("sends a file without a GitLab remote without a project, asking only the version") {
       val result = preflight(ProjectResolution.NoGitLabRemote).check(snapshot(), file, null, budget())
-      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectKey.NO_GITLAB_REMOTE), false)
+      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectIdentity.NO_GITLAB_REMOTE), false)
       verify(exactly = 0) { api.project(any(), any(), any()) }
     }
     it("refuses a failed resolution without any request") {
@@ -134,7 +134,7 @@ class QuickChatPreflightTest : DescribeSpec({
       val result = preflight(resolved).check(snapshot(), file, null, budget())
       verify { api.project(any(), "grüp/pr oj", any()) }
       result shouldBe QuickChatPreflight.Result.Proceed(
-        Preflight("gid://gitlab/Project/1", ProjectKey.resolved(INSTANCE, "grüp/pr oj")),
+        Preflight("gid://gitlab/Project/1", ProjectIdentity.resolved(INSTANCE, "grüp/pr oj")),
         false,
       )
     }
@@ -159,14 +159,14 @@ class QuickChatPreflightTest : DescribeSpec({
       val resolved = ProjectResolution.Resolved(project("group/other"))
       val result = preflight(resolved).check(snapshot(), file, binding, budget())
       result shouldBe QuickChatPreflight.Result.Proceed(
-        Preflight("gid://gitlab/Project/2", ProjectKey.resolved(INSTANCE, "group/other")),
+        Preflight("gid://gitlab/Project/2", ProjectIdentity.resolved(INSTANCE, "group/other")),
         true,
       )
     }
     it("treats a project file becoming a loose file as a project change") {
       val binding = ConversationBinding(INSTANCE, PROJECT_PREFLIGHT, "thread-1")
       val result = preflight(ProjectResolution.NotInRepository).check(snapshot(), file, binding, budget())
-      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectKey.NOT_IN_REPOSITORY), true)
+      result shouldBe QuickChatPreflight.Result.Proceed(Preflight(null, ProjectIdentity.NOT_IN_REPOSITORY), true)
     }
   }
 

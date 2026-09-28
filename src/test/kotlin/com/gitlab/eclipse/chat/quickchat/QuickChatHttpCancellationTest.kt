@@ -84,7 +84,7 @@ class QuickChatHttpCancellationTest : DescribeSpec({
     // Bound with a passed preflight for a loose file: the send goes straight to aiAction.
     val binding = ConversationBinding(
       connections.current.instanceUrl,
-      Preflight(null, ProjectKey.NOT_IN_REPOSITORY),
+      Preflight(null, ProjectIdentity.NOT_IN_REPOSITORY),
       null,
     )
     val gate = SendGate()

@@ -142,7 +142,7 @@ class QuickChatServiceTest : DescribeSpec({
       val binding = ConversationBinding(INSTANCE, PROJECT_PREFLIGHT, "old-thread")
       val outcome = h.service.ask(h.request(binding))
       verify { api.ask(any(), any(), any(), "gid://gitlab/Project/2", null, any(), any()) }
-      val newPreflight = Preflight("gid://gitlab/Project/2", ProjectKey.resolved(INSTANCE, "group/other"))
+      val newPreflight = Preflight("gid://gitlab/Project/2", ProjectIdentity.resolved(INSTANCE, "group/other"))
       outcome shouldBe QuickChatOutcome.Answered("The answer", BindingUpdate(INSTANCE, newPreflight, THREAD, true))
     }
     it("keeps the project change in the update when the send then fails") {
@@ -153,7 +153,7 @@ class QuickChatServiceTest : DescribeSpec({
         TransportKind.CONNECT,
         null,
         null,
-        BindingUpdate(INSTANCE, Preflight(null, ProjectKey.NOT_IN_REPOSITORY), null, true),
+        BindingUpdate(INSTANCE, Preflight(null, ProjectIdentity.NOT_IN_REPOSITORY), null, true),
       )
     }
   }

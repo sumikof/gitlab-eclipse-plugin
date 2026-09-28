@@ -2,17 +2,17 @@ package com.gitlab.eclipse.chat.quickchat
 
 /**
  * Which project a preflight judged (design §9.2.2 step 4). Two sends may share a preflight only
- * when their keys are equal; a different key means a different project, hence a new conversation.
+ * when their identities are equal; a different one means a different project, hence a new conversation.
  */
-data class ProjectKey(val kind: Kind, val instanceUrl: String?, val fullPath: String?) {
+data class ProjectIdentity(val kind: Kind, val instanceUrl: String?, val fullPath: String?) {
   enum class Kind { RESOLVED, NOT_IN_REPOSITORY, NO_GITLAB_REMOTE }
 
   companion object {
-    val NOT_IN_REPOSITORY = ProjectKey(Kind.NOT_IN_REPOSITORY, null, null)
-    val NO_GITLAB_REMOTE = ProjectKey(Kind.NO_GITLAB_REMOTE, null, null)
+    val NOT_IN_REPOSITORY = ProjectIdentity(Kind.NOT_IN_REPOSITORY, null, null)
+    val NO_GITLAB_REMOTE = ProjectIdentity(Kind.NO_GITLAB_REMOTE, null, null)
 
     /** [instanceUrl] normalized, [fullPath] decoded (the form sent to the project query). */
-    fun resolved(instanceUrl: String, fullPath: String) = ProjectKey(Kind.RESOLVED, instanceUrl, fullPath)
+    fun resolved(instanceUrl: String, fullPath: String) = ProjectIdentity(Kind.RESOLVED, instanceUrl, fullPath)
   }
 }
 
@@ -21,7 +21,7 @@ data class ProjectKey(val kind: Kind, val instanceUrl: String?, val fullPath: St
  * project was found with Duo not turned off. [resourceId] is the project's GraphQL id, or null for
  * a file outside any project.
  */
-data class Preflight(val resourceId: String?, val projectKey: ProjectKey)
+data class Preflight(val resourceId: String?, val project: ProjectIdentity)
 
 /**
  * The immutable copy of a conversation's binding handed to the background (design §9.2.3, §12.1).
