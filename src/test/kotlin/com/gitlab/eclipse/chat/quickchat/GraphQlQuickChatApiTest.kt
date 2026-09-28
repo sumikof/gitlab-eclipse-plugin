@@ -66,9 +66,19 @@ class GraphQlQuickChatApiTest : DescribeSpec({
     val file = CurrentFile("src/Main.kt", "val x = 1", "above", "below")
 
     it("sends the M1 document verbatim with every variable on a follow-up question") {
-      val r = stub("""{"aiAction":{"requestId":"req-1","errors":[],"threadId":"gid://gitlab/Ai::Conversation::Thread/9"}}""")
+      val r = stub(
+        """{"aiAction":{"requestId":"req-1","errors":[],"threadId":"gid://gitlab/Ai::Conversation::Thread/9"}}""",
+      )
 
-      val response = api.ask(connection, "What?", file, "gid://gitlab/Project/42", "gid://gitlab/Ai::Conversation::Thread/9", "sub-1", timeout)
+      val response = api.ask(
+        connection,
+        "What?",
+        file,
+        "gid://gitlab/Project/42",
+        "gid://gitlab/Ai::Conversation::Thread/9",
+        "sub-1",
+        timeout,
+      )
 
       r.query.captured shouldBe GraphQlQuickChatApi.ASK_MUTATION
       r.query.captured shouldContain "mutation quickChatAsk("
