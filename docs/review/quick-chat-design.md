@@ -505,8 +505,13 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
   - 実行場所: Quick Chat 専用の有界な executor(スレッド数 `BLOCKING_THREADS`、既定 4。待ち行列なし = `SynchronousQueue` 相当)。`CompletableFuture.supplyAsync(block, executor)` で起動する。
   - 待ち方: `withTimeoutOrNull(残り時間) { future.await() }`(`kotlinx.coroutines.future.await`。取り消し可能な待ちで、future の完了を join しない。既存の使用例 E `preferences/healthcheck/ConfigurationValidationService.kt:12, 51`)。期限が来たら `future.cancel(true)` を呼んで(割り込みの試み)、**待たずに**戻る。
   - 放置した future の結果と例外: `whenComplete` で例外のクラス名だけをログに残し、結果は捨てる。共有 scope には例外を流さない。
-  - 未完了の上限: executor のスレッドがすべて止まった処理で埋まっていると、新しい処理は起動できず `RejectedExecutionException` になる。この場合は即座に `TimedOut(beforeSend = true)` 相当の「前の要求がまだ応答していない」失敗にする(無制限にスレッドを増やさない)。
+  - 未完了の上限: executor のスレッドがすべて止まった処理で埋まっていると、新しい処理は起動できず `RejectedExecutionException` になる。この場合は即座に失敗にする(無制限にスレッドを増やさない)。**分類は期限切れと同じく段階で決める**(Codex round 4 #1): `aiAction` の投入前なら `TimedOut(beforeSend = true)`、`aiAction` の投入が拒否された場合も送っていないので同じ、`aiAction` の後(ポーリングの投入)なら `TimedOut(beforeSend = false)`。実装段階でテストに固定する(A28)。
   - executor はバンドル停止時に `shutdownNow()` する。
+- **`/clear` `/reset` の背景送信(§9.4)も同じ隔離の下に置く**(Codex round 4 #3):
+  - 通常の送信とは**別の** executor(スレッド 1、待ち行列なし)で実行する。止まった M2 が通常の送信のスレッドを奪わないため。
+  - M2 の処理全体(接続の取得 + HTTP)に独自の期限 `CLEAR_DEADLINE`(既定 30 秒、単調時計)を設け、期限が来たら `future.cancel(true)` して待たない。結果は待たないが、期限切れ・失敗はログに記録する(§19)。
+  - M2 の executor が埋まっている(前の M2 が止まっている)ときは、新しい M2 を送らずにログに記録する。`/clear` `/reset` の画面上の効果(§9.4)とローカルの `threadId` の破棄は、送信の成否に関係なく行う。
+  - 所有者は `QuickChatPopups`(ウィンドウをまたいで 1 つ)。popup を閉じても M2 は期限まで続ける(サーバ上の会話の片付けなので、閉じたことで中断する理由が無い)。バンドル停止時に executor ごと `shutdownNow()` する。
   - 期限切れの段階ごとの結果: `aiAction` を送り始める前(接続の取得・プロジェクト解決・preflight) → `TimedOut(beforeSend = true)`(「何も送っていない」と表示)。`aiAction` の実行中 → `MaybeSent`。`aiAction` の後 → `TimedOut(beforeSend = false)`。
   - `aiAction` の子処理が期限後に完了しても、その結果(`requestId` / `threadId`)は使わない。
 - どの段階で止まっても、Send は送信の開始から `ANSWER_DEADLINE` 以内に戻る(子処理が止まったままでも、呼び出し側は待たない)。
@@ -597,6 +602,8 @@ query quickChatMessages($requestIds: [ID!], $roles: [AiMessageRole!], $threadId:
 | A25 | 非 ASCII の名前を percent-encoded の HTTP remote で clone したプロジェクトで、Q1 の `fullPath` がデコード済みになり、プロジェクトを確かめられる | preflight のテスト |
 | A26 | 同じファイルを開いたまま remote / プロジェクトの割り当てを変えると、次の送信で新しいプロジェクトについて preflight をやり直し、古い `resourceId` と `threadId` を送らない。区切り「New chat」はその送信の質問の前に表示される | preflight・サービス・会話のテスト |
 | A27 | 256 KiB を超える回答、31 個以上のコードブロック、41 項目目の追加で、それぞれ §9.7 の上限表のとおりになる | 分割・会話のテスト |
+| A28 | `aiAction` の後でポーリングの投入が executor の枯渇で拒否されると `TimedOut(beforeSend = false)` になり、「何も送っていない」とは表示しない | サービスのテスト |
+| A29 | M2 の接続取得や HTTP が割り込みを無視して止まっても、`CLEAR_DEADLINE` で待ちが終わり、M2 用のスレッドは 1 本を超えず、通常の送信は影響を受けない | 止まる偽物を使ったテスト |
 | A24 | 背景処理が `QuickChatConversation` に触れず、`bindingUpdate` は照合に通った `asyncExec` の中でだけ保存される(閉じた後・置き換え後の結果では保存されない) | 会話・ホストのテスト |
 
 ## 25. 手動検証手順(実装 PR の本文に転記)
@@ -638,6 +645,7 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | 参照実装に前例の無い組み合わせ(Quick Chat + ポーリング)| 実機で回答が取れない | K1・K2 をソースで確認済み。PR-1 の完了時点で、実機で API を叩く確認を依頼する(PR-2 の前) |
 | ポーリングの遅延(最大 5 秒) | 体感が遅い | I3 で間隔を調整する。ストリーミングは後続 |
 | GitLab の Experiment API(`aiAction` / `aiMessages` は Experiment 表記) | 将来の変更で壊れる | 17.10 版の形に固定し、失敗は §14 で表示する |
+| 異常に大きい GraphQL 応答 | 既存の HTTP 層は本文全体を文字列で受け取ってから解析する(E `api/http/GitLabHttpClient.kt:18-31`)。巨大な応答でヒープを圧迫しうる | 本サイクルでは HTTP 層を変えない(既存のすべての API 呼び出しに共通する性質で、回答は LLM の出力でサーバ側で長さが限られる)。表示側の上限(§9.7)だけを設ける。受信バイト数の上限を HTTP 層に入れるのは後続候補(Codex round 4 #2) |
 | `CodeFormatter` の既存の弱さ(`null` の結果を扱わない) | Java の Insert で例外 | Quick Chat 側で例外を捕まえて整形なしで挿入する(§9.6)。Duo Chat 側の修正は本サイクルの対象外(後続候補として記録) |
 | 置き換え時のコピー用ダイアログ | 新しい popup の前にモーダルが出る | 下書きがあるときだけ出る(既存の挙動)。手動で確認 |
 
@@ -695,3 +703,11 @@ wss 接続のプロキシ CONNECT、WebSocket への CA / mTLS、`Origin` と認
 | 3 | P1 止まる処理を structured child で待つと期限を守れない | 採用・設計(並行処理) | §15 に専用の有界 executor + `CompletableFuture` + 取り消し可能な `await`、放置 future の扱い、スレッド枯渇時の即時失敗。A20 |
 | 4 | P2 回答と表示履歴に資源上限が無い | 採用(規則と既定値のみ) | §9.7 に上限表、A27 |
 | 5 | P2 プロジェクト変更時の区切りが質問の後ろに入る | 実装段階へ(純ロジック) | §9.2.2 手順 5 に挿入位置の 1 行、A26 に表示順 |
+
+### round 4(`bc188fa` に対する指摘 3 件)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | P1 executor 枯渇を常に「送信前」と分類すると、`aiAction` 後の枯渇で二重送信を誘う | 実装段階へ(純ロジック。段階の分類規則だけ設計で 1 行) | §15 の分類規則、A28 |
+| 2 | P1 GraphQL 応答をバッファリング前に制限する | 不採用(本サイクル)・後続候補 | HTTP 層の横断的な性質で、既存の全 API 呼び出しに共通する。回答は LLM 出力でサーバ側で長さが限られる。§27 にリスクと後続候補として記録 |
+| 3 | P1 `/clear` `/reset` の背景送信に期限・所有者・資源の上限が無い | 採用・設計(並行処理・資源) | §15 に別 executor(1 スレッド)、`CLEAR_DEADLINE`、所有者、枯渇時の扱い。A29 |
