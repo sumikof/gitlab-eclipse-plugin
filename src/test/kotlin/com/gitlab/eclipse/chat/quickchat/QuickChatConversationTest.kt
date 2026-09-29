@@ -152,5 +152,33 @@ class QuickChatConversationTest : DescribeSpec({
       )
       item.entries.map { it.createdAt }.toSet() shouldBe setOf("")
     }
+
+    it("renders only answers as code-block entries and labels the submit button Send") {
+      val conversation = QuickChatConversation()
+      conversation.add(Entry.Question("q"))
+      conversation.add(Entry.Answer("a"))
+      conversation.add(Entry.Separator)
+      conversation.add(Entry.Failure("f"))
+      conversation.add(Entry.Pending)
+      repeat(QuickChatConversation.MAX_ENTRIES) { conversation.add(Entry.Question("q$it")) }
+      conversation.add(Entry.Answer("last"))
+      val item = conversation.toInlineModel().items.single()
+      item.submitLabel shouldBe QuickChatTexts.SEND
+      QuickChatTexts.SEND shouldBe "Send"
+      item.entries.first().body shouldBe QuickChatTexts.EARLIER_REMOVED
+      item.entries.first().codeBlocks shouldBe false
+      item.entries.filter { it.codeBlocks }.map { it.body } shouldContainExactly listOf("last")
+    }
+
+    it("marks exactly the Answer entries as code-block entries") {
+      val conversation = QuickChatConversation()
+      conversation.add(Entry.Question("q"))
+      conversation.add(Entry.Answer("a"))
+      conversation.add(Entry.Separator)
+      conversation.add(Entry.Failure("f"))
+      conversation.add(Entry.Pending)
+      conversation.toInlineModel().items.single().entries.map { it.codeBlocks } shouldContainExactly
+        listOf(false, true, false, false, false)
+    }
   }
 })
