@@ -14,6 +14,7 @@ import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.inlinethread.InlineThreadPopup
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.texteditor.ITextEditor
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** What [decidePlacement] does with an open request (design §9.1 step 4). */
 enum class PopupPlacement {
@@ -38,6 +39,36 @@ fun decidePlacement(existing: OpenPlacement?, editor: Any, oneBasedLine: Int): P
 }
 
 /**
+ * A thread-safe snapshot of the windows that show a Quick Chat, for readers that may run off the
+ * UI thread (the close command's enablement, design §11.1). [publish] runs on the UI thread
+ * whenever the popups change, and tells the listeners there — only when the set really changed.
+ * A failing listener is reported to [onListenerFailure] and does not stop the others.
+ */
+class OpenWindows<W : Any>(private val onListenerFailure: (Throwable) -> Unit = {}) {
+  @Volatile
+  var current: Set<W> = emptySet()
+    private set
+
+  private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+  fun addListener(listener: () -> Unit) {
+    listeners += listener
+  }
+
+  fun removeListener(listener: () -> Unit) {
+    listeners.remove(listener)
+  }
+
+  /** UI thread. Stores an immutable copy of [windows]. */
+  fun publish(windows: Set<W>) {
+    val next = windows.toSet()
+    if (next == current) return
+    current = next
+    listeners.forEach { listener -> runCatching(listener).onFailure(onListenerFailure) }
+  }
+}
+
+/**
  * The Quick Chat popups of the workbench (design §8.2, §9.1, §9.5): **at most one per workbench
  * window**, each with its own conversation and [QuickChatSession]. Holds no scope or executor — the
  * sessions use the Koin [QuickChatRuntime]. **UI thread only.**
@@ -51,6 +82,11 @@ object QuickChatPopups {
   private class Open(val popup: InlineThreadPopup, val editor: ITextEditor)
 
   private val open = HashMap<IWorkbenchWindow, Open>()
+
+  /** The windows of [open], readable from any thread; republished on every change of [open]. */
+  val openWindows = OpenWindows<IWorkbenchWindow> { e ->
+    logger.error("Quick Chat open-windows listener failed: exceptionType=${e.javaClass.name}")
+  }
 
   /**
    * UI thread. Opens the Quick Chat of [editor]'s window at [oneBasedLine], re-activates it when it
@@ -88,6 +124,7 @@ object QuickChatPopups {
     try {
       val popups = open.values.map { it.popup }
       open.clear()
+      publish()
       popups.forEach { popup -> guarded("discard") { popup.discard() } }
       if (popups.isNotEmpty()) logger.info("Quick Chat popups discarded: count=${popups.size}")
     } catch (e: Exception) {
@@ -104,7 +141,7 @@ object QuickChatPopups {
       preserveDraft = { draft ->
         showCopyTextDialog(window, QuickChatUiTexts.DIALOG_TITLE, QuickChatUiTexts.UNSENT_DRAFT_MESSAGE, draft)
       },
-      onPopupClosed = { if (open[window]?.popup === popup) open.remove(window) },
+      onPopupClosed = { removeIfCurrent(window, popup) },
       // Design §9.6: Insert goes into this popup's editor, never the active one.
       codeAction = { action, code -> codeActions.perform(editor, action, code) },
     )
@@ -129,15 +166,26 @@ object QuickChatPopups {
     )
     host.bind(session, popup)
     open[window] = Open(popup, editor)
+    publish()
     try {
       popup.open(conversation.toInlineModel())
     } catch (e: Exception) {
       // A half-built shell must not stay in the map or keep a session.
       logger.error("Quick Chat popup open failed: exceptionType=${e.javaClass.name}")
       guarded("discard") { popup.discard() }
-      if (open[window]?.popup === popup) open.remove(window)
+      removeIfCurrent(window, popup)
       guarded("end") { session.end() }
     }
+  }
+
+  private fun removeIfCurrent(window: IWorkbenchWindow, popup: InlineThreadPopup) {
+    if (open[window]?.popup !== popup) return
+    open.remove(window)
+    publish()
+  }
+
+  private fun publish() {
+    openWindows.publish(open.keys)
   }
 
   private inline fun guarded(step: String, block: () -> Unit) {

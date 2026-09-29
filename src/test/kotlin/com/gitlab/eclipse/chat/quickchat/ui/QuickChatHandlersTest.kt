@@ -60,14 +60,62 @@ class QuickChatHandlersTest : DescribeSpec({
   }
 
   describe("closeQuickChatEnabled (design §9.5)") {
-    it("is false without an active window") {
-      closeQuickChatEnabled(null) { true } shouldBe false
+    val window = mockk<IWorkbenchWindow>()
+    val other = mockk<IWorkbenchWindow>()
+
+    it("on the UI thread follows whether the active window shows a Quick Chat") {
+      closeQuickChatEnabled(onUiThread = true, activeWindow = { window }, openWindows = setOf(window)) shouldBe true
+      closeQuickChatEnabled(onUiThread = true, activeWindow = { window }, openWindows = setOf(other)) shouldBe false
+      closeQuickChatEnabled(onUiThread = true, activeWindow = { window }, openWindows = emptySet()) shouldBe false
     }
 
-    it("follows whether the active window shows a Quick Chat") {
-      val window = mockk<IWorkbenchWindow>()
-      closeQuickChatEnabled(window) { it === window } shouldBe true
-      closeQuickChatEnabled(window) { false } shouldBe false
+    it("on the UI thread is false without an active window") {
+      closeQuickChatEnabled(onUiThread = true, activeWindow = { null }, openWindows = setOf(window)) shouldBe false
+    }
+
+    it("off the UI thread never asks for the active window and follows whether any window shows one") {
+      var asked = false
+      val activeWindow = {
+        asked = true
+        window
+      }
+      closeQuickChatEnabled(onUiThread = false, activeWindow = activeWindow, openWindows = setOf(other)) shouldBe true
+      closeQuickChatEnabled(onUiThread = false, activeWindow = activeWindow, openWindows = emptySet()) shouldBe false
+      asked shouldBe false
+    }
+  }
+
+  describe("OpenWindows (the thread-safe snapshot of QuickChatPopups)") {
+    it("starts empty and publishes an immutable copy") {
+      val snapshot = OpenWindows<String>()
+      snapshot.current.shouldBeEmpty()
+      val source = mutableSetOf("w1")
+      snapshot.publish(source)
+      source += "w2"
+      snapshot.current shouldBe setOf("w1")
+    }
+
+    it("tells its listeners when the set changes, and only then") {
+      val snapshot = OpenWindows<String>()
+      val calls = mutableListOf<Set<String>>()
+      val listener = { calls += snapshot.current }
+      snapshot.addListener(listener)
+      snapshot.publish(setOf("w1"))
+      snapshot.publish(setOf("w1"))
+      snapshot.publish(emptySet())
+      calls shouldContainExactly listOf(setOf("w1"), emptySet())
+    }
+
+    it("stops telling a removed listener, and one failing listener does not stop the others") {
+      val snapshot = OpenWindows<String>()
+      val calls = mutableListOf<String>()
+      val removed = { calls += "removed" }
+      snapshot.addListener { error("broken") }
+      snapshot.addListener(removed)
+      snapshot.addListener { calls += "kept" }
+      snapshot.removeListener(removed)
+      snapshot.publish(setOf("w1"))
+      calls shouldContainExactly listOf("kept")
     }
   }
 })
