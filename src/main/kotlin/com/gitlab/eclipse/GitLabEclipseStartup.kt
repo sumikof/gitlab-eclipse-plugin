@@ -6,6 +6,7 @@ import com.gitlab.eclipse.api.http.relaxTunnelBasicAuthScheme
 import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
+import com.gitlab.eclipse.chat.quickchat.QuickChatRuntimeLifecycle
 import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
@@ -124,6 +125,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun stop(context: BundleContext) {
     uninstallDiagnosticsLogTap(context)
     shutdownJobLog()
+    // PR-2: discard every Quick Chat popup (each session.end()) on the UI thread before this step.
+    // Cancels the Quick Chat scope without joining (design §17); never throws.
+    QuickChatRuntimeLifecycle.closeIfCreated()
     // Step 1 of the diagnostics shutdown: stopping the language server runs the connection teardown
     // (advance the epoch, cancel the waiting commands, remove the dead connection's markers) through
     // the same SecurityScanLifecycle.onServerStopped() the crash path uses. It has to happen BEFORE
