@@ -62,7 +62,7 @@ object QuickChatPopups {
     val existing = current?.let { OpenPlacement(it.editor, it.popup.oneBasedLine) }
     when (decidePlacement(existing, editor, oneBasedLine)) {
       PopupPlacement.ACTIVATE -> {
-        // setActive gives the focus back to the shell's last focused control, the input.
+        // FR-2: to the front with the focus in the input (activate() focuses it explicitly).
         current?.popup?.activate()
         return
       }

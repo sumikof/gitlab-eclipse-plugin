@@ -217,9 +217,14 @@ class InlineThreadPopup(
     refresh()
   }
 
-  /** Brings the shell to the front (a second request for the same line). */
+  /**
+   * Brings the shell to the front (a second request for the same line) and puts the focus in the
+   * input when there is one to type in (Quick Chat FR-2); `setActive` alone does not promise that.
+   */
   fun activate() {
-    shell?.takeUnless { it.isDisposed }?.setActive()
+    val current = shell?.takeUnless { it.isDisposed } ?: return
+    current.setActive()
+    input?.takeIf { !it.isDisposed && it.isEnabled }?.setFocus()
   }
 
   /**
