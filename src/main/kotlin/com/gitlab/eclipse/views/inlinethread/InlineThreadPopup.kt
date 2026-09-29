@@ -1,10 +1,16 @@
 package com.gitlab.eclipse.views.inlinethread
 
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.jface.resource.JFaceResources
 import org.eclipse.jface.text.ITextViewer
 import org.eclipse.jface.text.JFaceTextUtil
 import org.eclipse.swt.SWT
+import org.eclipse.swt.custom.ScrolledComposite
 import org.eclipse.swt.custom.StyledText
+import org.eclipse.swt.events.ControlAdapter
+import org.eclipse.swt.events.ControlEvent
+import org.eclipse.swt.events.KeyAdapter
+import org.eclipse.swt.events.KeyEvent
 import org.eclipse.swt.events.SelectionAdapter
 import org.eclipse.swt.events.SelectionEvent
 import org.eclipse.swt.events.ShellAdapter
@@ -27,13 +33,17 @@ import org.eclipse.ui.texteditor.ITextEditor
 
 /**
  * What a host may do with its popup once it is open, SWT-free so hosts are testable: the state
- * machine, whether the shell is still there, a re-sync of the widgets from the state, and a close
- * (which preserves unsent drafts, see [InlineThreadPopup.close]). UI thread only.
+ * machine, whether the shell is still there, a re-sync of the widgets from the state, a swap of
+ * the display model, and a close (which preserves unsent drafts, see [InlineThreadPopup.close]).
+ * UI thread only.
  */
 interface InlineThreadSurface {
   val state: InlineThreadState
   val isOpen: Boolean
   fun refresh()
+
+  /** Swaps the display model (drafts and busy are kept by the state); a no-op once closed. */
+  fun update(model: InlineThreadModel)
   fun close()
 }
 
@@ -55,15 +65,26 @@ interface InlineThreadHost {
 
   /** The shell is gone (after any [preserveDrafts]). */
   fun onClosed()
+
+  /**
+   * A Copy / Insert button of a rendered code block ([InlineThreadEntry.codeBlocks]) was pressed
+   * with that block's [code]. Hosts without code-block entries (the MR layer) never see it.
+   */
+  fun onCodeAction(surface: InlineThreadSurface, action: CodeBlockAction, code: String) {}
 }
 
 /**
  * The drafts to offer for copying when the popup closes (§29 #22): every submittable draft except
  * the one an in-flight [SubmitTicket] is sending — the launcher's terminal already preserves that
  * body — and only while that thread is still unedited since the ticket (an edited draft is new text).
+ *
+ * [keepInFlight] is for a host with no such terminal (Quick Chat: closing ends the send and drops
+ * its result): the in-flight body is offered too. It is still the thread's draft while unedited, and
+ * an edit replaced it, so every draft appears once either way.
  */
-fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?): List<String> {
+fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?, keepInFlight: Boolean = false): List<String> {
   val drafts = unsentDrafts().toMutableList()
+  if (keepInFlight) return drafts
   if (inFlight != null && busy && editGeneration(inFlight.threadId) == inFlight.generation) drafts.remove(inFlight.body)
   return drafts
 }
@@ -75,6 +96,7 @@ private const val POPUP_WIDTH = 520
 private const val POPUP_HEIGHT = 380
 private const val INPUT_HEIGHT = 72
 private const val MARGIN = 8
+private const val ENTRY_SPACING = 6
 
 /**
  * The non-modal, line-anchored thread popup (design §8.2, §9.2, §11.3, FR-5, E7, E8): a
@@ -86,7 +108,12 @@ private const val MARGIN = 8
  * **UI thread only.** Closing through Esc, the title-bar close button, the editor's close or input
  * change (own [EditorGoneListener], so it holds for editors no session ever tracked) or [close]
  * first hands the unsent drafts to [InlineThreadHost.preserveDrafts] (§29 #22), except the body of
- * the ticket in flight, which the launcher's terminal keeps. [discard] closes without that (bundle stop).
+ * the ticket in flight, which the launcher's terminal keeps (offered too with [preserveInFlightDraft]).
+ * [discard] closes without that (bundle stop), and so does a dispose of the shell by anything else
+ * (its parent window closing, design §9.5).
+ *
+ * The defaults of [title], [submitOnModEnter] and [preserveInFlightDraft], and entries without
+ * [InlineThreadEntry.codeBlocks], keep the MR popup exactly as it was before Quick Chat (A18).
  *
  * `@Suppress("TooManyFunctions")`: a widget class — the §11.3 API plus one builder per control
  * and the E8 placement steps; splitting it would scatter one shell's lifecycle.
@@ -96,6 +123,11 @@ class InlineThreadPopup(
   private val editor: ITextEditor,
   val oneBasedLine: Int,
   private val host: InlineThreadHost,
+  private val title: String = "Merge Request Thread — line $oneBasedLine",
+  /** `M1+Enter` in the input submits like the button (see [isSubmitChord]). */
+  private val submitOnModEnter: Boolean = false,
+  /** [close] offers the in-flight body too, for a host that does not keep it ([draftsToPreserve]'s `keepInFlight`). */
+  private val preserveInFlightDraft: Boolean = false,
 ) : InlineThreadSurface {
   private val logger by lazy { logger<InlineThreadPopup>() }
 
@@ -112,6 +144,9 @@ class InlineThreadPopup(
   private var content: Composite? = null
   private var input: Text? = null
   private var submitButton: Button? = null
+
+  /** The entries scroller of the rich rendering ([InlineThreadEntry.codeBlocks]); null for plain text. */
+  private var entriesScroller: ScrolledComposite? = null
   private val actionButtons = HashMap<InlineThreadAction, Button>()
   private var syncingInput = false
 
@@ -130,7 +165,7 @@ class InlineThreadPopup(
     val parent = editor.site.workbenchWindow.shell
     val newShell = Shell(parent, SWT.TOOL or SWT.RESIZE or SWT.TITLE or SWT.CLOSE)
     shell = newShell
-    newShell.text = "Merge Request Thread — line $oneBasedLine"
+    newShell.text = title
     newShell.layout = GridLayout(1, false).apply {
       marginWidth = MARGIN
       marginHeight = MARGIN
@@ -143,6 +178,9 @@ class InlineThreadPopup(
       }
     })
     newShell.addTraverseListener(::onTraverse)
+    // Disposed without discard() (the parent window closed): still release the listeners and tell
+    // the host, but there is no shell left to prompt from, so drafts are not offered (§9.5).
+    newShell.addDisposeListener { if (shell === newShell) release(newShell, disposeShell = false) }
     selector = Combo(newShell, SWT.DROP_DOWN or SWT.READ_ONLY).apply {
       layoutData = GridData(SWT.FILL, SWT.CENTER, true, false)
       addSelectionListener(object : SelectionAdapter() {
@@ -159,6 +197,11 @@ class InlineThreadPopup(
     render()
     val bounds = anchoredBounds(newShell)
     newShell.setBounds(bounds.x, bounds.y, bounds.width, bounds.height)
+    // The first render ran before the shell had a size: scroll the rich entries again now (I6).
+    entriesScroller?.let {
+      newShell.layout(true, true)
+      scrollToBottom(it)
+    }
     editor.site.page.let { editorPage ->
       page = editorPage
       val listener = EditorGoneListener(editor, editorPage.getReference(editor), ::close)
@@ -170,7 +213,7 @@ class InlineThreadPopup(
   }
 
   /** Swaps the display model (a reload landed); drafts and busy are kept by the state. */
-  fun update(model: InlineThreadModel) {
+  override fun update(model: InlineThreadModel) {
     if (!isOpen) return
     state.replaceModel(model)
     render()
@@ -182,9 +225,14 @@ class InlineThreadPopup(
     refresh()
   }
 
-  /** Brings the shell to the front (a second request for the same line). */
+  /**
+   * Brings the shell to the front (a second request for the same line) and puts the focus in the
+   * input when there is one to type in (Quick Chat FR-2); `setActive` alone does not promise that.
+   */
   fun activate() {
-    shell?.takeUnless { it.isDisposed }?.setActive()
+    val current = shell?.takeUnless { it.isDisposed } ?: return
+    current.setActive()
+    input?.takeIf { !it.isDisposed && it.isEnabled }?.setFocus()
   }
 
   /**
@@ -218,7 +266,7 @@ class InlineThreadPopup(
   override fun close() {
     val current = shell ?: return
     if (current.isDisposed) return
-    val drafts = state.draftsToPreserve(inFlight)
+    val drafts = state.draftsToPreserve(inFlight, keepInFlight = preserveInFlightDraft)
     if (drafts.isNotEmpty()) {
       try {
         host.preserveDrafts(drafts)
@@ -229,9 +277,20 @@ class InlineThreadPopup(
     discard()
   }
 
-  /** Disposes the shell without offering the drafts (bundle stop, §29 #22's known limitation). */
+  /**
+   * Disposes the shell without offering the drafts (bundle stop, §29 #22's known limitation).
+   * Idempotent: [InlineThreadHost.onClosed] runs once, whether this or the shell's dispose came first.
+   */
   fun discard() {
-    val current = shell ?: return
+    release(shell ?: return, disposeShell = true)
+  }
+
+  /**
+   * The one teardown path. [disposeShell] is false when called from the shell's own dispose
+   * listener: re-entering `dispose()` from inside the Dispose event is not safe.
+   */
+  private fun release(current: Shell, disposeShell: Boolean) {
+    // Cleared before dispose() so the dispose listener sees the popup already released.
     shell = null
     try {
       partListener?.let { page?.removePartListener(it) }
@@ -240,7 +299,7 @@ class InlineThreadPopup(
     }
     page = null
     partListener = null
-    if (!current.isDisposed) current.dispose()
+    if (disposeShell && !current.isDisposed) current.dispose()
     try {
       host.onClosed()
     } catch (e: Exception) {
@@ -269,10 +328,18 @@ class InlineThreadPopup(
     actionButtons.clear()
     val item = items.first { it.threadId == state.selectedThreadId }
     createHeader(area, item)
-    if (item.entries.isNotEmpty() || item.moreEntriesOnServer) createEntries(area, item)
+    entriesScroller = null
+    if (item.entries.isNotEmpty() || item.moreEntriesOnServer) {
+      if (item.entries.any { it.codeBlocks }) {
+        entriesScroller = createRichEntries(area, item)
+      } else {
+        createEntries(area, item)
+      }
+    }
     if (item.inputPlaceholder != null) createInput(area, item.inputPlaceholder)
     createButtons(area, item)
     current.layout(true, true)
+    entriesScroller?.let(::scrollToBottom)
     refresh()
     if (inputHadFocus) input?.setFocus()
   }
@@ -294,7 +361,8 @@ class InlineThreadPopup(
     val text = buildString {
       item.entries.forEachIndexed { index, entry ->
         if (index > 0) append("\n\n")
-        append(entry.author).append(" · ").append(entry.createdAt).append('\n').append(entry.body)
+        entryHeader(entry)?.let { append(it).append('\n') }
+        append(entry.body)
       }
       if (item.moreEntriesOnServer) {
         if (isNotEmpty()) append("\n\n")
@@ -308,6 +376,91 @@ class InlineThreadPopup(
     }
   }
 
+  /**
+   * The entries as one widget per part inside a vertical scroller (design §9.7): a header label,
+   * then the body as plain text, or — for [InlineThreadEntry.codeBlocks] — its prose and fenced
+   * code blocks, each actionable block with Copy / Insert buttons above a monospace view.
+   */
+  private fun createRichEntries(parent: Composite, item: InlineThreadItem): ScrolledComposite {
+    val scroller = ScrolledComposite(parent, SWT.V_SCROLL or SWT.BORDER).apply {
+      layoutData = GridData(SWT.FILL, SWT.FILL, true, true)
+      expandHorizontal = true
+      expandVertical = true
+    }
+    val column = Composite(scroller, SWT.NONE).apply {
+      layout = GridLayout(1, false).apply { verticalSpacing = ENTRY_SPACING }
+    }
+    scroller.content = column
+    item.entries.forEach { entry ->
+      entryHeader(entry)?.let { header ->
+        Label(column, SWT.NONE).apply {
+          text = header
+          layoutData = GridData(SWT.FILL, SWT.CENTER, true, false)
+        }
+      }
+      if (entry.codeBlocks) createSegments(column, entry.body) else createProse(column, entry.body)
+    }
+    if (item.moreEntriesOnServer) createProse(column, MORE_ENTRIES_NOTE)
+    // Wrapped text only knows its height for a given width: recompute on every resize.
+    scroller.addControlListener(object : ControlAdapter() {
+      override fun controlResized(e: ControlEvent) = fitScrolledContent(scroller)
+    })
+    fitScrolledContent(scroller)
+    return scroller
+  }
+
+  private fun createSegments(parent: Composite, body: String) {
+    MarkdownCodeBlocks.splitForDisplay(body).forEach { segment ->
+      when (segment) {
+        is Segment.Prose -> createProse(parent, segment.text)
+        is Segment.Code -> createCode(parent, segment)
+      }
+    }
+  }
+
+  private fun createProse(parent: Composite, body: String) {
+    Text(parent, SWT.MULTI or SWT.READ_ONLY or SWT.WRAP).apply {
+      text = body
+      layoutData = GridData(SWT.FILL, SWT.TOP, true, false).apply { widthHint = 1 }
+      addTraverseListener(::onTraverse)
+    }
+  }
+
+  private fun createCode(parent: Composite, segment: Segment.Code) {
+    if (segment.actionable) {
+      val bar = Composite(parent, SWT.NONE).apply {
+        layoutData = GridData(SWT.END, SWT.CENTER, true, false)
+        layout = RowLayout(SWT.HORIZONTAL).apply {
+          marginWidth = 0
+          marginHeight = 0
+        }
+      }
+      button(bar, "Copy") { host.onCodeAction(this, CodeBlockAction.COPY, segment.code) }
+      button(bar, "Insert") { host.onCodeAction(this, CodeBlockAction.INSERT, segment.code) }
+    }
+    StyledText(parent, SWT.MULTI or SWT.READ_ONLY or SWT.H_SCROLL or SWT.BORDER).apply {
+      text = segment.code
+      font = JFaceResources.getTextFont()
+      layoutData = GridData(SWT.FILL, SWT.TOP, true, false).apply { widthHint = 1 }
+      addTraverseListener(::onTraverse)
+    }
+  }
+
+  /** Sizes the scrolled column to the scroller's width, so wrapped text gets its real height. */
+  private fun fitScrolledContent(scroller: ScrolledComposite) {
+    if (scroller.isDisposed) return
+    val column = scroller.content ?: return
+    val width = scroller.clientArea.width
+    scroller.setMinSize(column.computeSize(if (width > 0) width else SWT.DEFAULT, SWT.DEFAULT))
+  }
+
+  /** I6: after a render the newest entry (an answer or failure) is in view. Best effort. */
+  private fun scrollToBottom(scroller: ScrolledComposite) {
+    fitScrolledContent(scroller)
+    val column = scroller.content ?: return
+    scroller.setOrigin(0, (column.size.y - scroller.clientArea.height).coerceAtLeast(0))
+  }
+
   private fun createInput(parent: Composite, placeholder: String) {
     input = Text(parent, SWT.MULTI or SWT.WRAP or SWT.V_SCROLL or SWT.BORDER).apply {
       message = placeholder
@@ -319,6 +472,16 @@ class InlineThreadPopup(
         }
       }
       addTraverseListener(::onTraverse)
+      if (submitOnModEnter) addKeyListener(SubmitChordListener())
+    }
+  }
+
+  /** `M1+Enter` in the input: no newline, and the button's submit when the button would be enabled. */
+  private inner class SubmitChordListener : KeyAdapter() {
+    override fun keyPressed(e: KeyEvent) {
+      if (!isSubmitChord(e.stateMask, e.keyCode)) return
+      e.doit = false
+      if (!externalBusy && state.canSubmit()) submit()
     }
   }
 
@@ -331,11 +494,7 @@ class InlineThreadPopup(
         pack = false
       }
     }
-    val submitLabel = when {
-      InlineThreadAction.CREATE in item.actions -> "Comment"
-      InlineThreadAction.REPLY in item.actions -> "Reply"
-      else -> null
-    }
+    val submitLabel = submitLabelOf(item)
     val labels = listOf(InlineThreadAction.RESOLVE to "Resolve", InlineThreadAction.UNRESOLVE to "Unresolve")
     for ((action, label) in labels) {
       if (action in item.actions) actionButtons[action] = button(bar, label) { host.onAction(this, action) }

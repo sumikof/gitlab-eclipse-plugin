@@ -150,6 +150,7 @@ fun QuickChatConversation.toInlineModel(): InlineThreadModel {
     moreEntriesOnServer = false,
     actions = setOf(InlineThreadAction.REPLY),
     inputPlaceholder = QuickChatTexts.INPUT_PLACEHOLDER,
+    submitLabel = QuickChatTexts.SEND,
   )
   return InlineThreadModel(listOf(item))
 }
@@ -157,7 +158,7 @@ fun QuickChatConversation.toInlineModel(): InlineThreadModel {
 private fun Entry.toInlineEntry(): InlineThreadEntry = when (this) {
   is Entry.Question -> InlineThreadEntry(QuickChatTexts.AUTHOR_YOU, "", text)
   Entry.Pending -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", QuickChatTexts.WAITING)
-  is Entry.Answer -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", markdown)
+  is Entry.Answer -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", markdown, codeBlocks = true)
   is Entry.Failure -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", message)
   Entry.Separator -> InlineThreadEntry("", "", QuickChatTexts.NEW_CHAT)
 }

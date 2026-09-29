@@ -21,6 +21,16 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
     val document = platformUtils.getActiveDocument()
       ?: return snippet
 
+    return format(snippet, document, selection)
+  }
+
+  /**
+   * Formats [snippet] for insertion at [selection] in [document]: the body of [format] once it has
+   * the active editor's selection and document. Quick Chat passes its popup's editor instead of the
+   * active one (design §9.6). Still returns what JDT's formatter gives, so a caller that must not
+   * fail on it (Quick Chat) catches exceptions itself.
+   */
+  fun format(snippet: String, document: IDocument, selection: ITextSelection): String {
     val startOffset = selection.startOffset()
     val endOffset = selection.endOffset()
 
@@ -102,11 +112,7 @@ class CodeFormatter(val platformUtils: PlatformUtils) {
     return lineContent.trim().isEmpty()
   }
 
-  private fun ITextSelection?.startOffset(): Int {
-    return this?.offset ?: 0
-  }
+  private fun ITextSelection.startOffset(): Int = offset
 
-  private fun ITextSelection?.endOffset(): Int {
-    return this?.let { it.offset + it.length } ?: 0
-  }
+  private fun ITextSelection.endOffset(): Int = offset + length
 }

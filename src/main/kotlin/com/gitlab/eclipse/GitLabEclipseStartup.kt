@@ -7,6 +7,7 @@ import com.gitlab.eclipse.authentication.OAuthTokenProvider
 import com.gitlab.eclipse.authentication.authModule
 import com.gitlab.eclipse.chat.chatModule
 import com.gitlab.eclipse.chat.quickchat.QuickChatRuntimeLifecycle
+import com.gitlab.eclipse.chat.quickchat.ui.QuickChatPopups
 import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
@@ -125,8 +126,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   override fun stop(context: BundleContext) {
     uninstallDiagnosticsLogTap(context)
     shutdownJobLog()
-    // PR-2: discard every Quick Chat popup (each session.end()) on the UI thread before this step.
-    // Cancels the Quick Chat scope without joining (design §17); never throws.
+    // Design §17 step 2: shutdownJobLog() above already discarded every Quick Chat popup on the UI
+    // thread (each session.end() closed its send gate and cancelled its job); only now is the Quick
+    // Chat scope cancelled, without joining. Never throws.
     QuickChatRuntimeLifecycle.closeIfCreated()
     // Step 1 of the diagnostics shutdown: stopping the language server runs the connection teardown
     // (advance the epoch, cancel the waiting commands, remove the dead connection's markers) through
@@ -167,6 +169,8 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
             // sessions. Editor review sessions gate on the same flag; with it down, release their
             // annotations, ruler and part listeners in this same UI turn (FR-11). Never throws.
             MrThreadPopups.discardAll()
+            // Design §17 step 1: the Quick Chat popups too, before stop() cancels their scope. Never throws.
+            QuickChatPopups.discardAll()
             ReviewSessionRegistry.clear()
             // No-op internally if the workbench is closing (editors die with it).
             JobLogEditorOpener.disposeAtShutdown()

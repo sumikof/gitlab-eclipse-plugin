@@ -476,6 +476,19 @@
                 name="Open Merge Request Thread"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- Quick Chat design §11.1: a chat popup anchored on the editor's line. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.OpenQuickChat"
+                name="Open Quick Chat"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.CloseQuickChat"
+                name="Close Quick Chat"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -539,6 +552,14 @@
         <key
                 sequence="M3+D"
                 commandId="gitlab-eclipse-plugin.commands.OpenDuoChat"
+                contextId="org.eclipse.ui.textEditorScope"
+                schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
+        </key>
+
+        <!-- Quick Chat design §11.1 / E8: M1+M3+C is unused in the default scheme. -->
+        <key
+                sequence="M1+M3+C"
+                commandId="gitlab-eclipse-plugin.commands.OpenQuickChat"
                 contextId="org.eclipse.ui.textEditorScope"
                 schemeId="org.eclipse.ui.defaultAcceleratorConfiguration">
         </key>
@@ -1069,6 +1090,23 @@
                 commandId="gitlab-eclipse-plugin.openMergeRequestLineThread"
                 class="com.gitlab.eclipse.mergerequests.review.OpenLineThreadHandler"
         />
+
+        <!-- Quick Chat design §11.1: Open is enabled while Duo Chat is (re-checked when it runs, §9.1);
+             Close decides its own enablement (the active window shows a Quick Chat, §9.5). -->
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.OpenQuickChat"
+                class="com.gitlab.eclipse.chat.quickchat.ui.OpenQuickChatHandler">
+            <enabledWhen>
+                <with variable="duo_chat_enabled">
+                    <equals value="true"/>
+                </with>
+            </enabledWhen>
+        </handler>
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.CloseQuickChat"
+                class="com.gitlab.eclipse.chat.quickchat.ui.CloseQuickChatHandler"
+        />
     </extension>
 
     <extension point="org.eclipse.core.expressions.propertyTesters">
@@ -1231,6 +1269,18 @@
                         commandId="gitlab-eclipse-plugin.commands.NewChatConversation"
                         label="New Conversation"
                         tooltip="Start a new Duo Chat conversation"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.OpenQuickChat"
+                        label="Open Quick Chat"
+                        tooltip="Ask GitLab Duo about this line in a popup"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="duo_chat_enabled">

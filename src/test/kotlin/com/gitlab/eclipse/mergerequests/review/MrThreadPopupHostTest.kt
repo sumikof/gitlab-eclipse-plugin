@@ -77,6 +77,10 @@ private class FakeSurface(model: InlineThreadModel) : InlineThreadSurface {
     events += "refresh(busy=${state.busy})"
     submittableAtRefresh += state.canSubmit()
   }
+  override fun update(model: InlineThreadModel) {
+    state.replaceModel(model)
+    events += "update"
+  }
   override fun close() {
     isOpen = false
     events += "close"

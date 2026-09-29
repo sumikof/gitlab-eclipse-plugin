@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mergerequests.discussions
 
+import com.gitlab.eclipse.views.inlinethread.isSubmittable
 import org.eclipse.jface.dialogs.Dialog
 import org.eclipse.jface.dialogs.IDialogConstants
 import org.eclipse.swt.SWT
@@ -111,12 +112,3 @@ class CommentInputDialog(
     const val TEXT_WIDTH_IN_CHARS = 80
   }
 }
-
-/**
- * A comment body is submittable when it has non-whitespace content. Whitespace-only input is not
- * a comment: GitLab would reject it and the round trip is wasted. Trimming follows Kotlin's
- * [String.trim] ([Char.isWhitespace]), which is `Character.isWhitespace(c) || Character.isSpaceChar(c)`
- * — so U+00A0 NO-BREAK SPACE is trimmed too, and an NBSP-only body is not submittable. That is the
- * behaviour we want: GitLab renders such a comment as blank.
- */
-internal fun isSubmittable(body: String): Boolean = body.trim().isNotEmpty()

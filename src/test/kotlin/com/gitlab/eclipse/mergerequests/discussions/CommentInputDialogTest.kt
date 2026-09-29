@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mergerequests.discussions
 
+import com.gitlab.eclipse.views.inlinethread.isSubmittable
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 
