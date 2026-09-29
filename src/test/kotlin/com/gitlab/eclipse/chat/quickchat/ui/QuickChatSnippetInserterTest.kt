@@ -27,9 +27,12 @@ import org.eclipse.jface.text.TextSelection
 import org.eclipse.jface.viewers.ISelectionProvider
 import org.eclipse.text.undo.IDocumentUndoManager
 import org.eclipse.ui.IEditorInput
+import org.eclipse.ui.IURIEditorInput
 import org.eclipse.ui.texteditor.IDocumentProvider
 import org.eclipse.ui.texteditor.ITextEditor
 import org.eclipse.ui.texteditor.ITextEditorExtension2
+import java.io.File
+import java.net.URI
 
 private interface EditableEditor : ITextEditor, ITextEditorExtension2
 
@@ -70,6 +73,60 @@ class QuickChatSnippetInserterTest : DescribeSpec({
     it("is not Java otherwise") {
       isJavaSource("kt", listOf("org.eclipse.core.runtime.text")) shouldBe false
       isJavaSource(null, emptyList()) shouldBe false
+    }
+  }
+
+  describe("fileExtensionOf (inputs without a workspace file)") {
+    it("takes the location provider's path first") {
+      fileExtensionOf(File("/tmp/A.java"), URI("file:/tmp/B.kt"), "C.txt") shouldBe "java"
+    }
+
+    it("then the URI's last path segment") {
+      fileExtensionOf(null, URI("file:/tmp/dir.d/B.java"), "C.txt") shouldBe "java"
+      fileExtensionOf(null, URI("jar:file:/x.jar!/p/B.java"), "C.txt") shouldBe "txt" // opaque URI: no path
+    }
+
+    it("then the input's name") {
+      fileExtensionOf(null, null, "Main.JAVA") shouldBe "JAVA"
+    }
+
+    it("is null without a dot in the chosen name or without any name") {
+      fileExtensionOf(File("/tmp/Makefile"), null, "C.java") shouldBe null
+      fileExtensionOf(null, null, "name.") shouldBe null
+      fileExtensionOf(null, null, null) shouldBe null
+    }
+  }
+
+  describe("isJavaEditor") {
+    fun editorWith(input: IEditorInput): ITextEditor = mockk { every { editorInput } returns input }
+
+    it("decides a non-workspace input by its name's extension") {
+      val input = mockk<IURIEditorInput> {
+        every { getAdapter(any<Class<*>>()) } returns null
+        every { uri } returns URI("file:/tmp/Outside.java")
+        every { name } returns "Outside.java"
+      }
+      isJavaEditor(editorWith(input)) shouldBe true
+    }
+
+    it("is not Java for a non-workspace input with another extension") {
+      val input = mockk<IEditorInput> {
+        every { getAdapter(any<Class<*>>()) } returns null
+        every { name } returns "notes.md"
+      }
+      isJavaEditor(editorWith(input)) shouldBe false
+    }
+
+    it("prefers the workspace file when there is one") {
+      val file = mockk<IFile> {
+        every { fileExtension } returns "kt"
+        every { contentDescription } returns null
+      }
+      val input = mockk<IEditorInput> {
+        every { getAdapter(IFile::class.java) } returns file
+        every { name } returns "Looks.java"
+      }
+      isJavaEditor(editorWith(input)) shouldBe false
     }
   }
 

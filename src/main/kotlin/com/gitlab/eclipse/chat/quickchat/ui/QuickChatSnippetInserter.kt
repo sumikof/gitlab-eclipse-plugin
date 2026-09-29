@@ -13,6 +13,8 @@ import org.eclipse.text.undo.DocumentUndoManagerRegistry
 import org.eclipse.text.undo.IDocumentUndoManager
 import org.eclipse.ui.texteditor.ITextEditor
 import org.eclipse.ui.texteditor.ITextEditorExtension2
+import java.io.File
+import java.net.URI
 
 /** JDT's content type for Java source files. */
 const val JAVA_SOURCE_CONTENT_TYPE = "org.eclipse.jdt.core.javaSource"
@@ -44,9 +46,27 @@ fun snippetToInsert(code: String, formatted: String?): String =
 private fun documentUndoManagerOf(document: IDocument): IDocumentUndoManager? =
   DocumentUndoManagerRegistry.getDocumentUndoManager(document)
 
-/** Whether [editor]'s input is a workspace file that [isJavaSource] takes for Java. */
+/**
+ * The extension of a non-workspace input's file name, from the same sources as context capture
+ * (`captureContext`): the location provider's path, else the URI's last path segment (an opaque URI
+ * has none), else the input's name. Null when the chosen name has no extension. No file I/O.
+ */
+fun fileExtensionOf(providerPath: File?, uri: URI?, inputName: String?): String? {
+  val name = providerPath?.name
+    ?: uri?.path?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
+    ?: inputName?.let { File(it).name }
+    ?: return null
+  return name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
+}
+
+/**
+ * Whether [editor] holds Java: a workspace file by its extension and content type; any other input
+ * (external file, URI-backed) by its file name's extension only ([fileExtensionOf]).
+ */
 fun isJavaEditor(editor: ITextEditor): Boolean {
-  val file = editor.editorInput?.getAdapter(IFile::class.java) ?: return false
+  val input = editor.editorInput ?: return false
+  val file = input.getAdapter(IFile::class.java)
+    ?: return isJavaSource(fileExtensionOf(providerPathOf(input), uriOf(input), input.name), emptyList())
   return isJavaSource(file.fileExtension, contentTypeIdsOf(file))
 }
 

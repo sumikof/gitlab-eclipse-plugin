@@ -95,9 +95,9 @@ private fun localFileOf(uri: URI): File? {
   }
 }
 
-private fun uriOf(input: IEditorInput): URI? = (input as? IURIEditorInput)?.uri
+internal fun uriOf(input: IEditorInput): URI? = (input as? IURIEditorInput)?.uri
 
-private fun providerPathOf(input: IEditorInput): File? =
+internal fun providerPathOf(input: IEditorInput): File? =
   input.getAdapter(ILocationProvider::class.java)?.getPath(input)?.toFile()
 
 /** PR-1's [TextWindow] over an `IDocument`: only the requested window is copied out. */
