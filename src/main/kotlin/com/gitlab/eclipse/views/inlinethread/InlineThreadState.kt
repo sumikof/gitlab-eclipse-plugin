@@ -1,7 +1,5 @@
 package com.gitlab.eclipse.views.inlinethread
 
-import com.gitlab.eclipse.mergerequests.discussions.isSubmittable
-
 /**
  * The SWT-free state of one inline thread popup: which thread is selected, each thread's draft
  * and edit generation, and whether a submit is in flight (design §9.2, §9.3.1, §29 #20–#22).
