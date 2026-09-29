@@ -9,6 +9,7 @@ import com.gitlab.eclipse.chat.quickchat.duoChatAvailability
 import com.gitlab.eclipse.chat.quickchat.toInlineModel
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.mergerequests.discussions.actions.showCopyTextDialog
+import com.gitlab.eclipse.utils.CodeFormatter
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.inlinethread.InlineThreadPopup
 import org.eclipse.ui.IWorkbenchWindow
@@ -97,14 +98,15 @@ object QuickChatPopups {
   private fun create(window: IWorkbenchWindow, editor: ITextEditor, oneBasedLine: Int) {
     val scheduler = DisplayUiScheduler(editor.site.shell.display)
     val conversation = QuickChatConversation()
+    val codeActions = QuickChatCodeActions(insert = QuickChatSnippetInserter(service<CodeFormatter>())::insert)
     lateinit var popup: InlineThreadPopup
     val host = QuickChatHost(
       preserveDraft = { draft ->
         showCopyTextDialog(window, QuickChatUiTexts.DIALOG_TITLE, QuickChatUiTexts.UNSENT_DRAFT_MESSAGE, draft)
       },
       onPopupClosed = { if (open[window]?.popup === popup) open.remove(window) },
-      // Copy / Insert (design §9.6, §9.8) are handled by the code-action handler that replaces this no-op.
-      codeAction = { _, _ -> },
+      // Design §9.6: Insert goes into this popup's editor, never the active one.
+      codeAction = { action, code -> codeActions.perform(editor, action, code) },
     )
     val session = QuickChatSession(
       conversation = conversation,
