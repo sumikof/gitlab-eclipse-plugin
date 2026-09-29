@@ -18,6 +18,8 @@ sealed interface Segment {
 /**
  * Splits a Quick Chat answer's Markdown body into [Segment.Prose] and [Segment.Code] pieces so the
  * popup can render each fenced code block with its own Copy/Insert affordance (design §9.7, F3).
+ * [splitForDisplay] additionally caps how many of those pieces the popup renders as their own
+ * control.
  *
  * Follows the CommonMark fence rules used by the reference implementation
  * (`quick_chat/utils.ts`), except the language tag is not restricted to `\w+`: a fence's info
@@ -32,6 +34,14 @@ object MarkdownCodeBlocks {
    * (design §9.7 resource limit; the value is a default that may be tuned during implementation).
    */
   const val MAX_ACTION_BLOCKS = 30
+
+  /**
+   * Only the first this many segments of a body are rendered as their own control by
+   * [splitForDisplay]; the rest collapse into one trailing plain-text [Segment.Prose] (Codex
+   * review P2: an answer made of thousands of repeated fences must not create thousands of native
+   * SWT controls).
+   */
+  const val MAX_RENDERED_SEGMENTS = 64
 
   private const val MAX_FENCE_INDENT = 3
 
@@ -89,6 +99,28 @@ object MarkdownCodeBlocks {
     flushProse()
 
     return segments
+  }
+
+  /**
+   * [split], capped for rendering (design §9.7, Codex review P2): when [split] would yield more
+   * than [MAX_RENDERED_SEGMENTS] segments, the first `MAX_RENDERED_SEGMENTS - 1` are returned
+   * unchanged and everything after them is coalesced into one final [Segment.Prose] that
+   * re-serializes the remainder as Markdown source (a code segment becomes a fenced block again),
+   * so no text is lost — only the per-block Copy/Insert affordance of the blocks past the cap.
+   * [Segment.Code.actionable] is unaffected: it is already decided by [split] before this caps.
+   */
+  fun splitForDisplay(body: String): List<Segment> {
+    val segments = split(body)
+    if (segments.size <= MAX_RENDERED_SEGMENTS) return segments
+
+    val kept = segments.take(MAX_RENDERED_SEGMENTS - 1)
+    val remainder = segments.drop(MAX_RENDERED_SEGMENTS - 1).joinToString("\n") { it.toMarkdownSource() }
+    return kept + Segment.Prose(remainder)
+  }
+
+  private fun Segment.toMarkdownSource(): String = when (this) {
+    is Segment.Prose -> text
+    is Segment.Code -> "```${language.orEmpty()}\n$code\n```"
   }
 
   private fun isValidFenceOpen(open: MatchResult): Boolean {

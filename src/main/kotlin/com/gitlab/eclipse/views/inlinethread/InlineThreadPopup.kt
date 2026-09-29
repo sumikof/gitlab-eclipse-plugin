@@ -410,7 +410,7 @@ class InlineThreadPopup(
   }
 
   private fun createSegments(parent: Composite, body: String) {
-    MarkdownCodeBlocks.split(body).forEach { segment ->
+    MarkdownCodeBlocks.splitForDisplay(body).forEach { segment ->
       when (segment) {
         is Segment.Prose -> createProse(parent, segment.text)
         is Segment.Code -> createCode(parent, segment)

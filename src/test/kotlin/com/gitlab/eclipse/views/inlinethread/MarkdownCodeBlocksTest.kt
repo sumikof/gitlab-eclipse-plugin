@@ -3,6 +3,7 @@ package com.gitlab.eclipse.views.inlinethread
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 
 class MarkdownCodeBlocksTest : DescribeSpec({
   describe("split (design §9.7, A16)") {
@@ -138,6 +139,48 @@ class MarkdownCodeBlocksTest : DescribeSpec({
         Segment.Code("kotlin", "val x = 1", actionable = true),
         Segment.Prose("after"),
       )
+    }
+  }
+
+  describe("splitForDisplay (MAX_RENDERED_SEGMENTS cap, Codex round 2 P2)") {
+    fun codeBlocksBody(count: Int) = (1..count).joinToString("\n") { "```\ncode $it\n```" }
+
+    it("returns split() unchanged when the body has exactly MAX_RENDERED_SEGMENTS segments") {
+      val body = codeBlocksBody(MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS)
+      val split = MarkdownCodeBlocks.split(body)
+      split.size shouldBe MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS
+      MarkdownCodeBlocks.splitForDisplay(body) shouldBe split
+    }
+
+    it("caps 65 code-block segments to 64, coalescing the remainder into one trailing Prose") {
+      val body = codeBlocksBody(MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS + 1)
+      val full = MarkdownCodeBlocks.split(body)
+      full.size shouldBe MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS + 1
+
+      val displayed = MarkdownCodeBlocks.splitForDisplay(body)
+
+      displayed.size shouldBe MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS
+      displayed.dropLast(1) shouldBe full.take(MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS - 1)
+      displayed.last() shouldBe Segment.Prose("```\ncode 64\n```\n```\ncode 65\n```")
+    }
+
+    it("caps 10 000 empty fences to 64 segments") {
+      val body = (1..10_000).joinToString("\n") { "```\n```" }
+      val displayed = MarkdownCodeBlocks.splitForDisplay(body)
+
+      displayed.size shouldBe MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS
+      displayed.dropLast(1).forEach { it shouldBe Segment.Code(null, "", actionable = false) }
+      displayed.last().shouldBeInstanceOf<Segment.Prose>()
+    }
+
+    it("preserves the actionable flags of the segments kept under the cap") {
+      val body = codeBlocksBody(MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS + 1) // 65 non-blank code blocks
+      val displayed = MarkdownCodeBlocks.splitForDisplay(body)
+      val kept = displayed.dropLast(1).filterIsInstance<Segment.Code>()
+
+      kept.size shouldBe MarkdownCodeBlocks.MAX_RENDERED_SEGMENTS - 1 // 63
+      kept.take(MarkdownCodeBlocks.MAX_ACTION_BLOCKS).forEach { it.actionable shouldBe true } // blocks 1-30
+      kept.drop(MarkdownCodeBlocks.MAX_ACTION_BLOCKS).forEach { it.actionable shouldBe false } // blocks 31-63
     }
   }
 })
