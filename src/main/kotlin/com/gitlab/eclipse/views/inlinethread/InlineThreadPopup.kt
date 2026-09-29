@@ -77,9 +77,14 @@ interface InlineThreadHost {
  * The drafts to offer for copying when the popup closes (§29 #22): every submittable draft except
  * the one an in-flight [SubmitTicket] is sending — the launcher's terminal already preserves that
  * body — and only while that thread is still unedited since the ticket (an edited draft is new text).
+ *
+ * [keepInFlight] is for a host with no such terminal (Quick Chat: closing ends the send and drops
+ * its result): the in-flight body is offered too. It is still the thread's draft while unedited, and
+ * an edit replaced it, so every draft appears once either way.
  */
-fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?): List<String> {
+fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?, keepInFlight: Boolean = false): List<String> {
   val drafts = unsentDrafts().toMutableList()
+  if (keepInFlight) return drafts
   if (inFlight != null && busy && editGeneration(inFlight.threadId) == inFlight.generation) drafts.remove(inFlight.body)
   return drafts
 }
@@ -103,10 +108,11 @@ private const val ENTRY_SPACING = 6
  * **UI thread only.** Closing through Esc, the title-bar close button, the editor's close or input
  * change (own [EditorGoneListener], so it holds for editors no session ever tracked) or [close]
  * first hands the unsent drafts to [InlineThreadHost.preserveDrafts] (§29 #22), except the body of
- * the ticket in flight, which the launcher's terminal keeps. [discard] closes without that (bundle stop),
- * and so does a dispose of the shell by anything else (its parent window closing, design §9.5).
+ * the ticket in flight, which the launcher's terminal keeps (offered too with [preserveInFlightDraft]).
+ * [discard] closes without that (bundle stop), and so does a dispose of the shell by anything else
+ * (its parent window closing, design §9.5).
  *
- * The defaults of [title] and [submitOnModEnter], and entries without
+ * The defaults of [title], [submitOnModEnter] and [preserveInFlightDraft], and entries without
  * [InlineThreadEntry.codeBlocks], keep the MR popup exactly as it was before Quick Chat (A18).
  *
  * `@Suppress("TooManyFunctions")`: a widget class — the §11.3 API plus one builder per control
@@ -120,6 +126,8 @@ class InlineThreadPopup(
   private val title: String = "Merge Request Thread — line $oneBasedLine",
   /** `M1+Enter` in the input submits like the button (see [isSubmitChord]). */
   private val submitOnModEnter: Boolean = false,
+  /** [close] offers the in-flight body too, for a host that does not keep it ([draftsToPreserve]'s `keepInFlight`). */
+  private val preserveInFlightDraft: Boolean = false,
 ) : InlineThreadSurface {
   private val logger by lazy { logger<InlineThreadPopup>() }
 
@@ -258,7 +266,7 @@ class InlineThreadPopup(
   override fun close() {
     val current = shell ?: return
     if (current.isDisposed) return
-    val drafts = state.draftsToPreserve(inFlight)
+    val drafts = state.draftsToPreserve(inFlight, keepInFlight = preserveInFlightDraft)
     if (drafts.isNotEmpty()) {
       try {
         host.preserveDrafts(drafts)

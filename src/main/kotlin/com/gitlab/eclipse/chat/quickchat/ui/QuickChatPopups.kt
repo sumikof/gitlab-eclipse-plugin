@@ -124,6 +124,8 @@ object QuickChatPopups {
       host,
       title = QuickChatUiTexts.popupTitle(oneBasedLine),
       submitOnModEnter = true,
+      // Closing ends the send and drops its result: nothing else would keep the question (design §9.5).
+      preserveInFlightDraft = true,
     )
     host.bind(session, popup)
     open[window] = Open(popup, editor)
