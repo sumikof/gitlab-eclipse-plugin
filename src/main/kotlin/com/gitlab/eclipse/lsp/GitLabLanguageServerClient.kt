@@ -4,6 +4,7 @@ import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
+import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.codesuggestions.StreamingCodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.diagnostics.FeatureStateStore
@@ -111,6 +112,7 @@ class GitLabLanguageServerClient(
         }
 
         "agentic_chat" -> service<ChatAvailabilityService>().updateAgentic(change)
+        TerminalContextSourceProvider.FEATURE_ID -> service<TerminalContextSourceProvider>().update(change, session)
         "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
         else -> return@forEach
       }

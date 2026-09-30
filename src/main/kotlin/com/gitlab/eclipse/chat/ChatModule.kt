@@ -12,6 +12,7 @@ import com.gitlab.eclipse.chat.quickchat.QuickChatRuntime
 import com.gitlab.eclipse.chat.quickchat.QuickChatRuntimeLifecycle
 import com.gitlab.eclipse.chat.quickchat.QuickChatService
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
+import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewController
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
@@ -39,6 +40,15 @@ val chatModule = module {
       .getWorkbench()
       .getService(ISourceProviderService::class.java)
       .getSourceProvider(ChatAvailabilityService.DUO_CHAT_AVAILABLE_KEY) as ChatAvailabilityService
+  }
+
+  // Same as above: the Koin singleton must be the workbench-created provider, or its source
+  // changes would reach no one.
+  single<TerminalContextSourceProvider> {
+    PlatformUI
+      .getWorkbench()
+      .getService(ISourceProviderService::class.java)
+      .getSourceProvider(TerminalContextSourceProvider.ENABLED_KEY) as TerminalContextSourceProvider
   }
 
   single<CurrentFileContextProvider> { CurrentFileContextProvider() }

@@ -2,6 +2,7 @@ package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.AuthenticationStateService
+import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
 import com.gitlab.eclipse.diagnostics.LanguageServerVersionState
 import com.gitlab.eclipse.inject.service
@@ -229,6 +230,7 @@ class GitLabLanguageServerProcessProvider(
           handleRef.get()?.let { languageServerWrapper.unregisterLanguageServer(it) }
           SecurityScanLifecycle.onServerStopped()
           resetAuthenticationState(logger)
+          resetTerminalContextState(logger)
         }
       }
     }
@@ -264,6 +266,7 @@ class GitLabLanguageServerProcessProvider(
       // lock, so the exit notification that follows fails its identity guard and never runs.
       SecurityScanLifecycle.onServerStopped()
       resetAuthenticationState(logger)
+      resetTerminalContextState(logger)
     }
   }
 
@@ -376,4 +379,13 @@ class GitLabLanguageServerProcessProvider(
 private fun resetAuthenticationState(logger: ILog) {
   runCatching { service<AuthenticationStateService>().resetForConnectionChange() }
     .onFailure { logger.warn("Skipped the authentication state reset: ${it.javaClass.simpleName}") }
+}
+
+/**
+ * Hides "Explain Terminal Output with Duo" as soon as the connection is gone, instead of when a new
+ * connection reports. Contained for the same reasons as [resetAuthenticationState].
+ */
+private fun resetTerminalContextState(logger: ILog) {
+  runCatching { service<TerminalContextSourceProvider>().reset() }
+    .onFailure { logger.warn("Skipped the terminal context state reset: ${it.javaClass.simpleName}") }
 }

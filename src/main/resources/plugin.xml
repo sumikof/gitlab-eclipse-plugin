@@ -489,6 +489,13 @@
                 name="Close Quick Chat"
                 categoryId="gitlab-eclipse-plugin">
         </command>
+
+        <!-- D3: the reference extension's gl.webview.explainSelectedTerminalOutput. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                name="Explain Terminal Output with Duo"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
     </extension>
 
     <extension point="org.eclipse.ui.contexts">
@@ -588,6 +595,10 @@
 
         <sourceProvider provider="com.gitlab.eclipse.authentication.AuthenticationSourceProvider">
             <variable name="gitlab_sign_in_required" priorityLevel="workbench"/>
+        </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider">
+            <variable name="duo_chat_terminal_context_enabled" priorityLevel="workbench"/>
         </sourceProvider>
     </extension>
 
@@ -721,6 +732,11 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.ExplainCode"
                 class="com.gitlab.eclipse.chat.commands.ExplainCodeCommandHandler"
+        />
+
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                class="com.gitlab.eclipse.chat.terminal.ExplainTerminalOutputHandler"
         />
 
         <handler
@@ -1907,6 +1923,79 @@
                     label="GitLab Duo Tutorial">
                 <visibleWhen checkEnabled="false">
                     <with variable="duo_chat_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+
+        <!--
+          D3 "Explain Terminal Output with Duo". The Terminal registers its menu under its view id with
+          the tab as the selection; each console page registers "<console type>.#ContextMenu" with its
+          text viewer. There is no key binding: the Terminal turns workbench key bindings off while it
+          has focus. Contribution ids must not start with org.eclipse.ui.edit or org.eclipse.cdt, which
+          the Terminal strips from its menu.
+        -->
+        <!-- Terminal view, org.eclipse.terminal.* generation (Eclipse 2025-09 and later). -->
+        <menuContribution locationURI="popup:org.eclipse.terminal.view.ui.TerminalsView?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                    id="gitlab-eclipse-plugin.menus.explainTerminalOutput.1"
+                    label="Explain Terminal Output with Duo">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_terminal_context_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Terminal view, org.eclipse.tm.terminal.* generation (CDT, before 2025-09). -->
+        <menuContribution locationURI="popup:org.eclipse.tm.terminal.view.ui.TerminalsView?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                    id="gitlab-eclipse-plugin.menus.explainTerminalOutput.2"
+                    label="Explain Terminal Output with Duo">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_terminal_context_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Console: process (Run / Debug) consoles. -->
+        <menuContribution locationURI="popup:org.eclipse.debug.ui.ProcessConsoleType.#ContextMenu?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                    id="gitlab-eclipse-plugin.menus.explainTerminalOutput.3"
+                    label="Explain Terminal Output with Duo">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_terminal_context_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Console: message consoles. -->
+        <menuContribution locationURI="popup:org.eclipse.ui.MessageConsole.#ContextMenu?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                    id="gitlab-eclipse-plugin.menus.explainTerminalOutput.4"
+                    label="Explain Terminal Output with Duo">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_terminal_context_enabled">
+                        <equals value="true"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <!-- Console: IO consoles without a type. -->
+        <menuContribution locationURI="popup:#ContextMenu?after=additions">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ExplainTerminalOutput"
+                    id="gitlab-eclipse-plugin.menus.explainTerminalOutput.5"
+                    label="Explain Terminal Output with Duo">
+                <visibleWhen checkEnabled="false">
+                    <with variable="duo_chat_terminal_context_enabled">
                         <equals value="true"/>
                     </with>
                 </visibleWhen>
