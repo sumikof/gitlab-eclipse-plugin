@@ -3,6 +3,7 @@ package com.gitlab.eclipse.lsp
 import com.gitlab.eclipse.chat.ChatAvailabilityService
 import com.gitlab.eclipse.chat.DuoChatStateService
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
+import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -64,6 +65,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   val duoChatStateService = mockk<DuoChatStateService>(relaxUnitFun = true)
   val chatAvailabilityService = mockk<ChatAvailabilityService>(relaxUnitFun = true)
   val codeSuggestionsStateService = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
+  val terminalContextSourceProvider = mockk<TerminalContextSourceProvider>(relaxUnitFun = true)
 
   val editorSelectionContextProvider = mockk<EditorSelectionContextProvider>()
 
@@ -88,6 +90,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
           single<DuoChatStateService> { duoChatStateService }
           single<ChatAvailabilityService> { chatAvailabilityService }
           single<CodeSuggestionsStateService> { codeSuggestionsStateService }
+          single<TerminalContextSourceProvider> { terminalContextSourceProvider }
           single<DidChangeWatchedFileCapability> { didChangeWatchedFilesCapability }
           single<GitDiffService> { gitDiffService }
           single<EditorSelectionContextProvider> { editorSelectionContextProvider }
@@ -143,6 +146,35 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       client.gitlabFeatureStateChange(arrayOf(featureState)).join()
 
       verify { codeSuggestionsStateService.update(featureState) }
+    }
+
+    it("should update the terminal context state with this connection's session") {
+      val featureState = FeatureStateChange(featureId = "chat_terminal_context", allChecks = emptyList())
+
+      client.gitlabFeatureStateChange(arrayOf(featureState)).join()
+
+      verify { terminalContextSourceProvider.update(featureState, client.session, any()) }
+    }
+
+    it("numbers terminal context notifications in the order they arrive, not the order they run") {
+      val first = FeatureStateChange(featureId = "chat_terminal_context", allChecks = emptyList())
+      val second = FeatureStateChange(
+        featureId = "chat_terminal_context",
+        allChecks = listOf(FeatureStateChangeCheck("chat-include-terminal-context-unavailable", true))
+      )
+      val queued = mutableListOf<Runnable>()
+      val ordered = GitLabLanguageServerClient(pluginMessageService) { queued += it }
+      val sequences = mutableMapOf<FeatureStateChange, Long>()
+      every { terminalContextSourceProvider.update(any(), any(), any()) } answers {
+        sequences[firstArg()] = thirdArg()
+      }
+
+      ordered.gitlabFeatureStateChange(arrayOf(first))
+      ordered.gitlabFeatureStateChange(arrayOf(second))
+      // The workers run in the reverse order of arrival.
+      queued.reversed().forEach { it.run() }
+
+      (sequences.getValue(first) < sequences.getValue(second)) shouldBe true
     }
   }
 
