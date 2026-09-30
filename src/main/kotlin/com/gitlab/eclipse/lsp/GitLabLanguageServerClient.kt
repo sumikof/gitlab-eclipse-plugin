@@ -40,11 +40,15 @@ import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import org.eclipse.lsp4j.services.LanguageClient
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 @Suppress("UnusedParameter", "TooManyFunctions", "ForbiddenVoid")
 class GitLabLanguageServerClient(
-  private val pluginMessageService: PluginMessageService = service()
+  private val pluginMessageService: PluginMessageService = service(),
+  /** Test seam for the workers that run `$/gitlab/featureStateChange`; null keeps `runAsync`'s default pool. */
+  private val featureStateExecutor: Executor? = null,
 ) : LanguageClient {
   companion object {
     private const val TIMEOUT_IN_SECONDS = 10L
@@ -96,28 +100,41 @@ class GitLabLanguageServerClient(
   fun getEditorSelection(): CompletableFuture<EditorSelectionContext?> =
     service<EditorSelectionContextProvider>().provide()
 
+  /**
+   * Arrival order of `$/gitlab/featureStateChange`. lsp4j calls [gitlabFeatureStateChange] on its
+   * reader thread in the order the notifications arrive, but the body runs on independent workers,
+   * so the number is taken before handing off, and a consumer that must not go back in time compares it.
+   */
+  private val featureStateSequence = AtomicLong()
+
   @JsonNotification("$/gitlab/featureStateChange")
   fun gitlabFeatureStateChange(
     changes: Array<FeatureStateChange>
-  ): CompletableFuture<Void> = CompletableFuture.runAsync {
-    changes.forEach { change ->
-      // Recorded before the dispatch below narrows it: the diagnostics report wants every feature
-      // the server talks about, including the ones this `when` has no case for.
-      FeatureStateStore.record(change)
-      when (change.featureId) {
-        "authentication" -> service<AuthenticationStateService>().update(change, session)
-        "chat" -> {
-          service<DuoChatStateService>().update(change)
-          service<ChatAvailabilityService>().updateClassic(change)
-        }
+  ): CompletableFuture<Void> {
+    val sequence = featureStateSequence.incrementAndGet()
+    val body = Runnable {
+      changes.forEach { change ->
+        // Recorded before the dispatch below narrows it: the diagnostics report wants every feature
+        // the server talks about, including the ones this `when` has no case for.
+        FeatureStateStore.record(change)
+        when (change.featureId) {
+          "authentication" -> service<AuthenticationStateService>().update(change, session)
+          "chat" -> {
+            service<DuoChatStateService>().update(change)
+            service<ChatAvailabilityService>().updateClassic(change)
+          }
 
-        "agentic_chat" -> service<ChatAvailabilityService>().updateAgentic(change)
-        TerminalContextSourceProvider.FEATURE_ID -> service<TerminalContextSourceProvider>().update(change, session)
-        "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
-        else -> return@forEach
+          "agentic_chat" -> service<ChatAvailabilityService>().updateAgentic(change)
+          TerminalContextSourceProvider.FEATURE_ID ->
+            service<TerminalContextSourceProvider>().update(change, session, sequence)
+          "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
+          else -> return@forEach
+        }
       }
     }
-  }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+    val run = featureStateExecutor?.let { CompletableFuture.runAsync(body, it) } ?: CompletableFuture.runAsync(body)
+    return run.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+  }
 
   /**
    * A remote security scan came back.

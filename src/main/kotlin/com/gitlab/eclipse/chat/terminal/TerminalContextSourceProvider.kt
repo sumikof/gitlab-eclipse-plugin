@@ -25,6 +25,10 @@ import java.util.concurrent.atomic.AtomicReference
  * connection reports. A late report from a replaced connection is dropped by compare-and-set, so it
  * cannot overwrite the new connection's value.
  *
+ * Within one connection the notifications are ordered by the sequence number the client assigns on
+ * arrival: they are processed on independent workers, so a revocation could otherwise be overtaken
+ * by the enablement it followed. A notification older than the held one is dropped.
+ *
  * Instantiated by the workbench from `plugin.xml`; the parameters are seams for headless tests.
  *
  * @param currentSession the session of the current connection, or null when there is none.
@@ -41,7 +45,7 @@ class TerminalContextSourceProvider(
     const val FEATURE_ID = "chat_terminal_context"
   }
 
-  private class Held(val session: LanguageServerSession, val enabled: Boolean)
+  private class Held(val session: LanguageServerSession, val sequence: Long, val enabled: Boolean)
 
   private val held = AtomicReference<Held?>(null)
 
@@ -52,15 +56,19 @@ class TerminalContextSourceProvider(
       return current.enabled && current.session === currentSession()
     }
 
-  /** Stores [change] as reported by [session], unless [session] is no longer the current connection. */
-  fun update(change: FeatureStateChange, session: LanguageServerSession) {
+  /**
+   * Stores [change] as reported by [session] with the arrival [sequence], unless [session] is no
+   * longer the current connection or the same connection already holds a later notification.
+   */
+  fun update(change: FeatureStateChange, session: LanguageServerSession, sequence: Long) {
     val checks = change.allChecks ?: return
-    val next = Held(session, checks.none { it.engaged })
+    val next = Held(session, sequence, checks.none { it.engaged })
     while (true) {
       // Read first, check second: a write from the new connection that lands between the two makes
       // the compare-and-set fail, and the re-check then drops this one.
       val current = held.get()
       if (session !== currentSession()) return
+      if (current != null && current.session === session && current.sequence >= sequence) return
       if (held.compareAndSet(current, next)) break
     }
     fire()

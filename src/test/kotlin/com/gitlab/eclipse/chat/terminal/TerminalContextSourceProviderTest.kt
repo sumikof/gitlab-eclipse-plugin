@@ -64,22 +64,22 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val connection = Connection()
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
 
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 1L)
       provider.isEnabled shouldBe true
 
-      provider.update(noTerminalContext, connection.session!!)
+      provider.update(noTerminalContext, connection.session!!, 2L)
       provider.isEnabled shouldBe false
 
-      provider.update(noLicense, connection.session!!)
+      provider.update(noLicense, connection.session!!, 3L)
       provider.isEnabled shouldBe false
     }
 
     it("ignores a change without checks") {
       val connection = Connection()
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 4L)
 
-      provider.update(FeatureStateChange("chat_terminal_context", null), connection.session!!)
+      provider.update(FeatureStateChange("chat_terminal_context", null), connection.session!!, 5L)
 
       provider.isEnabled shouldBe true
     }
@@ -89,7 +89,7 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
       evaluate(provider) shouldBe EvaluationResult.FALSE
 
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 6L)
 
       evaluate(provider) shouldBe EvaluationResult.TRUE
     }
@@ -99,7 +99,7 @@ class TerminalContextSourceProviderTest : DescribeSpec({
     it("stops answering true once the connection that reported it is replaced") {
       val connection = Connection()
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 7L)
 
       connection.session = LanguageServerSession()
 
@@ -109,7 +109,7 @@ class TerminalContextSourceProviderTest : DescribeSpec({
     it("is false while there is no connection") {
       val connection = Connection()
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 8L)
 
       connection.session = null
 
@@ -121,9 +121,9 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val old = connection.session!!
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
       connection.session = LanguageServerSession()
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 9L)
 
-      provider.update(noTerminalContext, old)
+      provider.update(noTerminalContext, old, 10L)
 
       provider.isEnabled shouldBe true
     }
@@ -135,10 +135,10 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
       connection.beforeReturn = {
         connection.session = fresh
-        provider.update(available, fresh)
+        provider.update(available, fresh, 11L)
       }
 
-      provider.update(noTerminalContext, old)
+      provider.update(noTerminalContext, old, 12L)
 
       provider.isEnabled shouldBe true
     }
@@ -148,12 +148,57 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val provider = TerminalContextSourceProvider(connection.read) { it.run() }
       val fired = Fired()
       provider.addSourceProviderListener(fired)
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 13L)
 
       provider.reset()
 
       provider.isEnabled shouldBe false
       fired.values shouldContainExactly listOf(true, false)
+    }
+  }
+
+  describe("ordering within one connection") {
+    it("keeps the later notification when an earlier one is applied after it") {
+      val connection = Connection()
+      val provider = TerminalContextSourceProvider(connection.read) { it.run() }
+
+      provider.update(noTerminalContext, connection.session!!, 2L)
+      provider.update(available, connection.session!!, 1L)
+
+      provider.isEnabled shouldBe false
+    }
+
+    it("keeps a later enablement over an earlier revocation applied after it") {
+      val connection = Connection()
+      val provider = TerminalContextSourceProvider(connection.read) { it.run() }
+
+      provider.update(available, connection.session!!, 5L)
+      provider.update(noTerminalContext, connection.session!!, 4L)
+
+      provider.isEnabled shouldBe true
+    }
+
+    it("does not fire for a dropped out-of-order notification") {
+      val connection = Connection()
+      val provider = TerminalContextSourceProvider(connection.read) { it.run() }
+      val fired = Fired()
+      provider.addSourceProviderListener(fired)
+
+      provider.update(available, connection.session!!, 2L)
+      provider.update(noTerminalContext, connection.session!!, 1L)
+
+      fired.values shouldContainExactly listOf(true)
+    }
+
+    it("accepts any sequence from a new connection") {
+      val connection = Connection()
+      val provider = TerminalContextSourceProvider(connection.read) { it.run() }
+      provider.update(noTerminalContext, connection.session!!, 9L)
+
+      connection.session = LanguageServerSession()
+      provider.update(available, connection.session!!, 1L)
+
+      provider.isEnabled shouldBe true
     }
   }
 
@@ -165,7 +210,7 @@ class TerminalContextSourceProviderTest : DescribeSpec({
       val fired = Fired()
       provider.addSourceProviderListener(fired)
 
-      provider.update(available, connection.session!!)
+      provider.update(available, connection.session!!, 14L)
       fired.values shouldBe emptyList()
       connection.session = LanguageServerSession()
       held.forEach { it.run() }
