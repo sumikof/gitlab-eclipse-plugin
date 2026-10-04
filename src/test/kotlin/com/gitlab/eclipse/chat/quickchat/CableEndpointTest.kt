@@ -29,6 +29,26 @@ class CableEndpointTest : DescribeSpec({
     val endpoint = CableEndpoint.of("https://user:secret@example.com/gl?x=1#y")
     endpoint shouldBe CableEndpoint(URI("wss://example.com/gl/-/cable"), "https://example.com")
   }
+  it("keeps the instance host when the path starts with // (no network-path reference)") {
+    val endpoint = CableEndpoint.of("https://gitlab.example.com//attacker.example")
+    endpoint.uri.host shouldBe "gitlab.example.com"
+    endpoint.uri.port shouldBe -1
+    endpoint.uri.scheme shouldBe "wss"
+    endpoint.uri.rawPath shouldBe "//attacker.example/-/cable"
+    endpoint.uri.toString() shouldBe "wss://gitlab.example.com//attacker.example/-/cable"
+    endpoint.origin shouldBe "https://gitlab.example.com"
+  }
+  it("keeps the instance host and port when the path starts with ///") {
+    val endpoint = CableEndpoint.of("https://gitlab.example.com:8443///x")
+    endpoint.uri.host shouldBe "gitlab.example.com"
+    endpoint.uri.port shouldBe 8443
+    endpoint.uri.rawPath.endsWith("/-/cable") shouldBe true
+    endpoint.uri.rawPath shouldBe "///x/-/cable"
+  }
+  it("does not double-encode a percent-encoded sub path") {
+    CableEndpoint.of("https://example.com/my%20gitlab").uri.rawPath shouldBe "/my%20gitlab/-/cable"
+    CableEndpoint.of("https://example.com/my%20gitlab/").uri.rawPath shouldBe "/my%20gitlab/-/cable"
+  }
   it("lets nothing but IllegalArgumentException escape for exotic hosts, without echoing the input") {
     listOf(
       "https://[fe80::1%25eth0]/gl",
