@@ -5,7 +5,6 @@ import com.gitlab.eclipse.inject.service
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.nio.ByteBuffer
-import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 
@@ -59,6 +58,7 @@ class JdkCableSocketFactory(
     val source = httpClient()
       .newWebSocketBuilder()
       .subprotocols(SUBPROTOCOL)
+      .connectTimeout(QuickChatStreamLimits.HANDSHAKE_TIMEOUT)
       .header("Authorization", "Bearer $token")
       .header("Origin", endpoint.origin)
       .buildAsync(endpoint.uri, Adapter(listener))
@@ -66,9 +66,14 @@ class JdkCableSocketFactory(
   }
 
   /**
-   * Returns a future the caller may cancel (time-out or cancel while waiting for the handshake,
-   * §15.1, §17) without leaving the handshake behind: cancelling it cancels [source], and a
-   * WebSocket that still arrives after the caller gave up is aborted. These callbacks never throw.
+   * Returns a separate future the caller may cancel or fail (time-out or cancel while waiting for
+   * the handshake, §15.1, §17). [source] is deliberately never cancelled: the JDK's `buildAsync`
+   * future is a dependent stage (`send().thenApply(newWebSocket)`), and `CompletableFuture.cancel`
+   * does not propagate upstream, so cancelling it would not stop the exchange — and a handshake that
+   * later succeeds would skip `newWebSocket`, dropping its open connection without ever closing it.
+   * The public API cannot abort an in-flight handshake, so it is left running (bounded by
+   * [QuickChatStreamLimits.HANDSHAKE_TIMEOUT]); a WebSocket that arrives after the caller gave up is
+   * aborted on arrival, and a late failure is ignored. These callbacks never throw.
    */
   private fun linkCancellation(source: CompletableFuture<WebSocket>): CompletableFuture<CableSocket> {
     val result = CompletableFuture<CableSocket>()
@@ -77,9 +82,6 @@ class JdkCableSocketFactory(
         error != null -> result.completeExceptionally(error)
         !result.complete(JdkCableSocket(webSocket)) -> runCatching { webSocket.abort() }
       }
-    }
-    result.whenComplete { _, error ->
-      if (result.isCancelled || error is CancellationException) runCatching { source.cancel(true) }
     }
     return result
   }

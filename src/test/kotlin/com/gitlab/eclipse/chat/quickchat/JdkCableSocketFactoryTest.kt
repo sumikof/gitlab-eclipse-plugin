@@ -16,6 +16,7 @@ class JdkCableSocketFactoryTest : DescribeSpec({
     val builder = mockk<WebSocket.Builder>()
     every { builder.subprotocols(any(), *anyVararg()) } returns builder
     every { builder.header(any(), any()) } returns builder
+    every { builder.connectTimeout(any()) } returns builder
     every { builder.buildAsync(any(), any()) } returns CompletableFuture()
     val client = mockk<HttpClient>()
     every { client.newWebSocketBuilder() } returns builder
@@ -44,6 +45,8 @@ class JdkCableSocketFactoryTest : DescribeSpec({
     verify { builder.header("Authorization", "Bearer tok") }
     verify { builder.header("Origin", "https://gitlab.com") }
     verify(exactly = 0) { builder.header("User-Agent", any()) }
+    verify(exactly = 2) { builder.connectTimeout(QuickChatStreamLimits.HANDSHAKE_TIMEOUT) }
+    QuickChatStreamLimits.HANDSHAKE_TIMEOUT shouldBe java.time.Duration.ofSeconds(30)
     verify { builder.buildAsync(URI("wss://gitlab.com/-/cable"), any()) }
   }
   it("adapts the JDK listener without the default request(1) and forwards every callback") {
@@ -51,6 +54,7 @@ class JdkCableSocketFactoryTest : DescribeSpec({
     val builder = mockk<WebSocket.Builder>()
     every { builder.subprotocols(any(), *anyVararg()) } returns builder
     every { builder.header(any(), any()) } returns builder
+    every { builder.connectTimeout(any()) } returns builder
     every { builder.buildAsync(any(), capture(captured)) } returns CompletableFuture()
     val client = mockk<HttpClient>()
     every { client.newWebSocketBuilder() } returns builder
@@ -104,6 +108,7 @@ class JdkCableSocketFactoryTest : DescribeSpec({
       val builder = mockk<WebSocket.Builder>()
       every { builder.subprotocols(any(), *anyVararg()) } returns builder
       every { builder.header(any(), any()) } returns builder
+      every { builder.connectTimeout(any()) } returns builder
       every { builder.buildAsync(any(), any()) } returns source
       val client = mockk<HttpClient>()
       every { client.newWebSocketBuilder() } returns builder
@@ -114,28 +119,36 @@ class JdkCableSocketFactoryTest : DescribeSpec({
       )
     }
 
-    it("cancels the source handshake when the returned future is cancelled") {
+    // The JDK's buildAsync future is a dependent stage (send().thenApply(newWebSocket)): cancelling
+    // it cannot stop the exchange and would drop a late-opened connection unclosed. So the source is
+    // never cancelled; a WebSocket arriving after the caller gave up is aborted instead.
+    it("does not cancel the source when the returned future is cancelled") {
       val source = CompletableFuture<WebSocket>()
       val returned = connectWith(source)
       returned.cancel(true)
-      source.isCancelled shouldBe true
+      source.isCancelled shouldBe false
+      source.isDone shouldBe false
     }
-    it("cancels the source handshake when the returned future fails with a cancellation") {
+    it("does not cancel the source when the returned future fails with a cancellation") {
       val source = CompletableFuture<WebSocket>()
       val returned = connectWith(source)
       returned.completeExceptionally(java.util.concurrent.CancellationException("gave up"))
-      source.isCancelled shouldBe true
+      source.isCancelled shouldBe false
     }
-    it("aborts a WebSocket that arrives after the returned future was cancelled") {
-      // Model a source that ignores cancel and completes anyway.
-      val late = object : CompletableFuture<WebSocket>() {
-        override fun cancel(mayInterruptIfRunning: Boolean) = false
-      }
-      val returnedLate = connectWith(late)
-      returnedLate.cancel(true)
+    it("aborts exactly once a WebSocket that arrives after the returned future was cancelled") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      returned.cancel(true)
       val ws = mockk<WebSocket>(relaxed = true)
-      late.complete(ws)
+      source.complete(ws)
       verify(exactly = 1) { ws.abort() }
+    }
+    it("does nothing when the source fails after the returned future was cancelled") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      returned.cancel(true)
+      source.completeExceptionally(java.io.IOException("x"))
+      returned.isCancelled shouldBe true
     }
     it("maps a normal completion to a CableSocket without aborting") {
       val source = CompletableFuture<WebSocket>()

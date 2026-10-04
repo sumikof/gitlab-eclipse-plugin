@@ -95,7 +95,9 @@ class AiCompletionStreamOpener(
 
   /**
    * Step 6–7: the handshake and `confirm_subscription`. On every other path the stream is closed and
-   * the handshake [future] cancelled, even when the wait was already over before it started.
+   * the factory's [future] cancelled, even when the wait was already over before it started. That
+   * cancel only releases this caller's interest: the factory keeps the real handshake running
+   * (bounded by its own timeout) and aborts a socket that still arrives.
    */
   private suspend fun awaitConfirmation(
     stream: AiCompletionStream,
@@ -127,7 +129,7 @@ class AiCompletionStreamOpener(
     return failed(reason)
   }
 
-  /** Stops the client and cancels a handshake still in flight; never throws. */
+  /** Stops the client and gives up the factory's future (not the underlying handshake); never throws. */
   private fun giveUp(stream: AiCompletionStream, future: CompletableFuture<CableSocket>) {
     stream.close()
     try {
@@ -136,7 +138,7 @@ class AiCompletionStreamOpener(
       @Suppress("TooGenericExceptionCaught") // The future may be a foreign subclass; giving up must not throw.
       e: Exception,
     ) {
-      log("Quick Chat stream handshake cancel failed: ${e.javaClass.name}")
+      log("Quick Chat stream connect future cancel failed: ${e.javaClass.name}")
     }
   }
 
