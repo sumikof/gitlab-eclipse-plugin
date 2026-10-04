@@ -47,8 +47,8 @@ GitLab は `aiAction` に付けた `clientSubscriptionId` ごとに、回答の�
 | # | 要件 |
 |---|---|
 | FR-S1 | 回答の生成中、届いたチャンクを先頭から連続している範囲だけ待機中の欄に表示する。 |
-| FR-S2 | 最終メッセージ(`chunkId` 無し)が届いたら、途中経過を**最終メッセージの内容で置き換える**(後処理で内容が変わるため。GL `react_executor.rb:60,187-194`)。 |
-| FR-S3 | 送信の完了は、**ストリームの最終メッセージとポーリングの回答のうち先に届いた方**で確定する。どちらも `requestId` が一致し、role が ASSISTANT のものだけを採る。 |
+| FR-S2 | ストリームの最終メッセージ(`chunkId` 無し、`errors` 無し)が届いたら、途中経過の**表示**を最終メッセージの内容で置き換える(後処理で内容が変わるため。GL `react_executor.rb:60,187-194`)。これも表示だけで、送信は完了させない。 |
+| FR-S3 | **送信の完了・回答・エラーはポーリング(`aiMessages`)の結果だけで確定する**(Codex round 1 #1)。ストリームは途中経過の表示にだけ使い、送信の終わり方・表示される最終の回答・エラーの判定に一切影響しない。完了時の表示はポーリングで得た回答で置き換える。 |
 | FR-S4 | ストリームの失敗(接続不可・購読拒否・切断・不正なフレーム・上限超過)は**利用者に通知しない**。その送信のストリームを閉じるだけで、ポーリングが回答を届ける。 |
 | FR-S5 | 購読の確認が取れない場合は、上限時間だけ待ってからストリーム無しで `aiAction` を送る(購読より前の配信は受け取れないため。GL Redis pub/sub)。 |
 | FR-S6 | 送信が終わったとき(回答・失敗・期限切れ・置き換え・閉じる・バンドル停止)は、必ずソケットを閉じる。 |
@@ -60,7 +60,7 @@ GitLab は `aiAction` に付けた `clientSubscriptionId` ごとに、回答の�
 | NFR-S1 | トークン・ユーザー ID・質問本文・回答本文・チャンク本文をログに出さない(QC 設計 NFR-4 を継承)。ログはイベントの種類・件数・例外クラス名・`requestId` のみ。 |
 | NFR-S2 | WebSocket にも HTTP と同じ TLS(CA / mTLS / 証明書エラーの無視)とプロキシを適用する(REF は適用していない欠陥がある。`gitlab/api/api_client.ts:64-72`)。 |
 | NFR-S3 | UI スレッドで WebSocket の待ち・`syncExec`・ネットワーク I/O をしない。 |
-| NFR-S4 | 受信データの量に上限を設ける(§15.3)。サーバの異常で IDE のメモリや UI スレッドを使い潰さない。 |
+| NFR-S4 | 受信データの量に上限を設ける(§15.3、保持データ全体のバイト上限を含む)。サーバの異常で IDE のメモリや UI スレッドを使い潰さない。 |
 | NFR-S5 | ストリームの有無で、完了判定・エラー表示・期限(120 s)・`SendGate` の意味が変わらない。 |
 
 ## 6. 前提条件と制約
@@ -123,8 +123,8 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
                                               ├ ActionCableClient: connect → welcome → subscribe
                                               └ confirm を最大 SUBSCRIBE_WAIT 待つ(取れなければ stream=null)
                                      w4-w5  SendGate → aiAction(既存。同じ clientSubscriptionId)
-                                     w6'    並走: poller.await(既存)  ‖  stream.awaitFinal(requestId)
-                                              先に届いた方で Outcome を確定、他方を cancel
+                                     w6     poller.await(既存・無変更)が Outcome を確定する唯一の経路
+                                              その間 stream は途中経過だけを流す(結果は出さない)
                                      finally stream.close()(abort)
    ◀── ResultSink.progress(text) ─── ChunkAssembler の表示可能テキスト(間引き)  ※新規
    ◀── ResultSink.deliver(outcome) ─ (既存・1 回だけ)
@@ -143,15 +143,15 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
 | `CableEndpoint` | インスタンス URL から WebSocket URL と `Origin` を作る純関数。`https→wss` / `http→ws`、パスは `<instanceUrl の末尾 / 付き>-/cable`(サブパス対応。REF `gitlab/api/action_cable.ts:7-12`)、`Origin` = `scheme://host[:port]`(既定ポートは省略)。 |
 | `CableSocketFactory`(interface)/ `JdkCableSocketFactory` | `HttpClient.newWebSocketBuilder()` で接続する唯一の場所。ヘッダは `Authorization: Bearer` / `Origin` / `User-Agent`(既存 HTTP と同じ値)の 3 つ、サブプロトコル `actioncable-v1-json`。`HttpClient` は `GitLabHttpClient.rebuildIfNeeded()` から取る(NFR-S2)。テストでは偽ソケットに差し替える。 |
 | `ActionCableClient` | ActionCable プロトコル(`welcome` / `ping` / `confirm_subscription` / `reject_subscription` / `disconnect` / チャネルメッセージ)の状態機械。1 接続 1 購読。テキストフレームの分割受信の連結、フレーム長の上限、`subscribe` / `unsubscribe` の組み立て。受信コールバックは例外を投げない。 |
-| `AiCompletionStream` | 1 回の送信のストリーム。`open` は接続と購読確認までを `SUBSCRIBE_WAIT` 以内に行い、確認できなければ閉じて null を返す。`awaitFinal(requestId)` は最終メッセージを待つ(ストリームが死んだら永久に待つのではなく null を返す)。`close()` は冪等で即時(`abort`)。 |
-| `ChunkAssembler` | 純ロジック。`requestId` ごとにチャンクを保持し、先頭から連続する範囲を表示用テキストとして返す。`chunkId` の振り直し(既に 2 以上まで来ていて 1 が来たら、その `requestId` のバッファを破棄して最初から)、空チャンク、重複 `chunkId`(後勝ちではなく先勝ち)、順不同(欠番の後ろは保持のみ)を扱う。`requestId` 未確定の間のフレームは保持し、確定後は他の `requestId` を捨てる。 |
+| `AiCompletionStream` | 1 回の送信のストリーム。`open` は接続と購読確認までを `SUBSCRIBE_WAIT` 以内に行い、確認できなければ閉じて null を返す。確認後は受信を `ChunkAssembler` に渡し、表示可能テキストが変わるたびに登録されたコールバック(`onProgress(text)`)を呼ぶだけで、**結果(完了・エラー)を返す API を持たない**。`close()` は冪等で即時(`abort`)。 |
+| `ChunkAssembler` | 純ロジック。`requestId` ごとにチャンクを保持し、先頭から連続する範囲を表示用テキストとして返す。系列(振り直し)・順不同・空チャンク・最終メッセージの規則は §9.2。`requestId` 未確定の間のフレームは保持し、確定後は他の `requestId` を捨てる。保持データ全体を `MAX_BUFFERED_BYTES` で制限する(§15.3)。 |
 | `QuickChatApi.currentUserId`(追加) | `query { currentUser { id } }`。`userId` の取得。null または失敗ならストリーム無し。 |
 
 ### 8.2 配線(PR-2)
 
 | 対象 | 変更 |
 |---|---|
-| `QuickChatService.send` | w3 の後、w4 の前に s1(`AiCompletionStream.open`)。`aiAction` には同じ `clientSubscriptionId` を渡す。w6 を並走(§9.3)に。`finally` で `stream.close()`。 |
+| `QuickChatService.send` | w3 の後、w4 の前に s1(`AiCompletionStream.open`)。`aiAction` には同じ `clientSubscriptionId` を渡す。w5 の後に `requestId` をストリームへ確定させる。w6(ポーリング)は無変更。`finally` で `stream.close()`。 |
 | `ResultSink` | `progress(text)` を追加。背景から途中経過を UI へ渡す。最新値だけを保持し、UI 側に未処理の投函が 1 件あれば新たに投函しない(洪水防止)。`detach` 後は何もしない。 |
 | `QuickChatSession` | `onProgress(ticket, gen, text)` を追加(UI スレッド)。`isCurrent` でなければ捨てる。待機中の欄に途中経過を入れ、`RENDER_INTERVAL` で間引いて `view.render`。`finishOnce` で予約済みの描画を取り消す。 |
 | `QuickChatConversation` | 待機中の欄に途中経過を持たせる(`Entry.Pending` → 途中経過付きの形)。`resolvePending` の探索を新しい形に合わせる。途中経過は Markdown のコード分割をしない(`codeBlocks = false`)。完成した回答で置き換えたときに初めてコードブロックのボタンが出る。 |
@@ -170,27 +170,27 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
    - 時間切れ・拒否・例外・`Origin` 不一致(K-S4)はすべて「ストリーム無し」(null)。ソケットは閉じる。利用者には何も見せない(FR-S4)。
 3. w4(`SendGate.tryBeginSend`)が false(UI が既に終えた)なら、ストリームを閉じて null を返す(既存どおり)。
 4. w5 `aiAction`(既存。s1 と同じ `clientSubscriptionId`)。
-5. **w6'(変更)**: `requestId` を `ChunkAssembler` に確定させ、次の 2 つを同じコルーチンスコープで並走させる。
-   - (P) `poller.await(...)`(既存、無変更)
-   - (S) `stream.awaitFinal(requestId)`。ストリームが無い・死んだときは結果を出さずに終わる(P を待つ)。
-   - **先に「結果」を返した方**で `QuickChatPoller.Result` 相当を確定し、他方を cancel する。S の最終メッセージの解釈は P と同じ規則(`errors` 有り → `Rejected`、`content` が空 → `EmptyAnswer`、それ以外 → `Answered`)を共有関数で行う。
-   - P が `TimedOut` / `ConnectionChanged` / 例外を返したら、それが結果になる(S の待ちは打ち切り)。**S は P の結果を上書きしない**(先着のみ)。
-6. 途中経過: (S) が動いている間、`ChunkAssembler` の表示可能テキストが変わるたびに `ResultSink.progress(text)`。
-7. `finally`: `stream.close()`。cancel(放棄・バンドル停止)でも必ず通る。`close` は `WebSocket.abort()` で待たない。
-8. w7 `ResultSink.deliver`(既存)。
+5. w5 の応答で得た `requestId` をストリームに確定させる(`aiAction` が `errors` 付き・`requestId` 無しで終わった場合は、ストリームを閉じて既存どおりの結果を返す)。
+6. **w6(無変更)**: `poller.await(...)` が結果を確定する唯一の経路(FR-S3)。ポーリングの間隔・初回待ち・期限・判定は一切変えない。ストリームの最終メッセージが先に届いても、送信は完了させない(ポーリングが同じ回答を拾うまで最大 1 間隔の表示差が出るだけ)。
+7. 途中経過: ストリームが動いている間、`ChunkAssembler` の表示可能テキストが変わるたびに `ResultSink.progress(text)`(ストリームのコールバックから。背景スレッド)。
+8. `finally`: `stream.close()`。cancel(放棄・バンドル停止)でも必ず通る。`close` は `WebSocket.abort()` で待たない。
+9. w7 `ResultSink.deliver`(既存)。`deliver` の時点でストリームは閉じている(`finally` が先)ので、以後 `progress` は来ない。
 
 ### 9.2 チャンクの組み立て(`ChunkAssembler`)
 
 - 入力はチャネルメッセージの `aiCompletionResponse`(null はスキップ。K-S3)。
 - `role` が ASSISTANT 以外(SYSTEM 等)は表示にも完了にも使わない(REF は SYSTEM を別扱い。完了判定は P に任せる)。
 - `chunkId` 有り → 途中経過。`content` が null は空文字として扱い、**欠番を作らない**(REF の「空チャンクで止まる」欠陥 `quick_chat/response_processor.ts:41-50` を引き継がない)。
-- `chunkId` 無し → 最終メッセージ。`requestId` 一致なら `awaitFinal` を解決し、表示は最終の `content` で置き換え(FR-S2)。
+- **系列の判定(Codex round 1 #3)**: サーバは再試行の世代を示す項目を送らない(K-S7)。1 系列の中では各 `chunkId` は最大 1 回しか配信されない(K-S9: 最大 1 回配信・再送なし)。したがって **既に保持している `chunkId` がもう一度届いたら、それは新しい系列の断片**とみなし、その時点の保持分をすべて破棄して、届いた断片から新しい系列を始める。
+  - 例: 旧 1, 2 を保持 → 新 2 → 重複なので破棄して {新 2} → 新 1 → {新 1, 新 2} を表示。旧 1, 2 → 新 1 → 破棄して {新 1} → 新 2 → {新 1, 新 2}。
+  - 新系列が始まった後に旧系列の未着の断片(例: 旧 3)が遅れて届くと、新系列に混ざりうる。**表示だけの問題で、送信の結果はポーリングで確定し置き換わる**(FR-S3)ため許容する(§27)。
+- `chunkId` 無し → 最終メッセージ。`requestId` 一致かつ `errors` 無しなら、表示を最終の `content` で置き換え(FR-S2)、以後のチャンクは無視する。`errors` 有りなら表示を変えない(エラーの表示はポーリングの結果で行う)。
 - 表示可能テキスト = `chunkId` 1 から連続する範囲の連結。
 
-### 9.3 並走の終わらせ方
+### 9.3 ストリームと送信の終わり
 
-- 片方が結果を出したら他方を cancel。P の HTTP は `runInterruptible` なので即座に止まる(既存)。S は `awaitFinal` の待ちが cancel されるだけ。
-- 送信全体の期限は従来どおり UI 側の `onDeadline` が守る(QC 設計 §15.1)。背景の並走が期限を延ばすことはない。
+- 送信の終わりはポーリング(または UI 側の期限・放棄)だけが決める。ストリームは結果を返さないので、ストリームの状態で送信が早く終わることも、長引くこともない。
+- 送信全体の期限は従来どおり UI 側の `onDeadline` が守る(QC 設計 §15.1)。
 
 ### 9.4 UI への途中経過の反映
 
@@ -208,10 +208,10 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
 | VSCode | Eclipse | 備考 |
 |---|---|---|
 | `@anycable/core` の購読 1 本/1 ソケット | `ActionCableClient` 1 本/送信 | 同等 |
-| ストリームのみで回答を取得 | ストリーム + ポーリング(ポーリングが正) | 改善(K-S9 の欠落対策) |
+| ストリームのみで回答を取得 | 回答の確定はポーリングのみ、ストリームは途中経過の表示のみ | 改善(K-S9 の欠落対策) |
 | TLS / プロキシ未適用 | 適用 | 改善 |
 | 順不同チャンクを 1 件しか排出しない / 空チャンクで止まる | 連続範囲をすべて表示 / 空チャンクは欠番にしない | 欠陥を引き継がない |
-| `errors` を無視 | 最終メッセージの `errors` は `Rejected` | 改善 |
+| `errors` を無視 | エラーはポーリングの結果で既存どおり表示 | 改善 |
 | 旧ソケットを切断しない | 送信の終わりで必ず閉じる | 改善 |
 
 ## 11. API / インターフェース
@@ -238,7 +238,7 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
 ## 12. データモデル
 
 - `StreamFrame`(パース結果): `requestId?`, `role?`, `content?`, `errors?`, `chunkId?`。Gson の DTO は既存方針どおり全項目 nullable。
-- `ChunkAssembler` の状態: 確定 `requestId?`、`requestId` → (`chunkId` → 断片)、最終メッセージ。上限は §15.3。
+- `ChunkAssembler` の状態: 確定 `requestId?`、`requestId` → (`chunkId` → 断片)、最終メッセージの表示テキスト、保持バイト数の合計。上限は §15.3。
 - 待機中の欄: 途中経過テキスト(空 = 従来の「待機中」表示)。
 
 ## 13. トランザクション境界
@@ -256,7 +256,7 @@ JDK 21 `HttpClient.newWebSocketBuilder()` で `wss://gitlab.com/-/cable` に接�
 | `disconnect` / 切断 / onError | ストリーム停止。途中経過はそのまま残し、ポーリングの結果で置き換わる |
 | 不正な JSON / 想定外の形 | そのフレームを捨てる。連続で上限を超えたらストリーム停止 |
 | 上限超過(§15.3) | ストリーム停止 |
-| 最終メッセージに `errors` | `Rejected`(ポーリングと同じ) |
+| ストリームの最終メッセージに `errors` | 表示を変えない。エラーの表示はポーリングの結果で行う |
 | ポーリングの失敗・期限切れ | 既存どおり(ストリームの途中経過は `Failure` で置き換わる) |
 
 いずれも利用者への新しい通知は無い(FR-S4)。表示される結果の種類は QC 設計 §14 と同一。
@@ -275,10 +275,13 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 
 | 項目 | 上限(値は実装段階で確定) |
 |---|---|
-| 1 フレームの文字数 | 例: 1 MiB 相当。超過でストリーム停止 |
+| **保持データ全体 `MAX_BUFFERED_BYTES`**(Codex round 1 #2) | `requestId` 確定前のフレーム・欠番の後ろのチャンク・連結済みテキスト・最終メッセージの表示テキストの**合計**(UTF-8 換算、または文字数 × 2 の保守的な見積もり)。**追加する前に**超過を判定し、超過するならその断片を保持せずストリームを停止する。値は `MAX_ANSWER_BYTES` の数倍(例: 1 MiB)。 |
+| 1 フレームの文字数 | `MAX_BUFFERED_BYTES` 以下。分割受信の連結中も同じ判定。超過でストリーム停止 |
 | 保持するチャンク数(欠番の後ろを含む) | 例: 4096。超過でストリーム停止 |
 | 表示テキスト | `MAX_ANSWER_BYTES`(既存、256 KiB) |
 | `requestId` 確定前に保持するフレーム数 | 例: 256 |
+
+ストリームが停止しても、それまでの途中経過の表示は残り、ポーリングの結果で置き換わる。
 
 ### 15.4 リトライ
 
@@ -286,7 +289,7 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 
 ## 16. 冪等性
 
-`aiAction` は 1 回だけ送る(既存の `SendGate` が保証)。ストリームの成否で再送しない。最終メッセージが S と P の両方から来ても、§9.1 手順 5 の先着 1 件だけが `deliver` され、さらに `finishOnce` が 1 回だけ効く。
+`aiAction` は 1 回だけ送る(既存の `SendGate` が保証)。ストリームの成否で再送しない。結果を確定するのはポーリングだけなので、`deliver` は従来どおり 1 回で、`finishOnce` も 1 回だけ効く。
 
 ## 17. 並行処理
 
@@ -305,7 +308,7 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 
 ## 19. ログ、監視、監査
 
-1 送信につき 1 行の要約を INFO で出す: ストリームの結果(`none` / `confirmed` / `rejected` / `handshake_failed:<例外クラス>` / `timeout` / `dropped:<理由>`)、受信チャンク数、完了経路(`stream` / `poll`)、`requestId`。本文・トークン・ユーザー ID・URL のクエリは出さない。既存の「Quick Chat send ended」ログに追記する形でもよい(実装段階)。
+1 送信につき 1 行の要約を INFO で出す: ストリームの結果(`none` / `confirmed` / `rejected` / `handshake_failed:<例外クラス>` / `timeout` / `dropped:<理由>`)、受信チャンク数、系列の破棄回数、ストリームの最終メッセージを受けたか、`requestId`。完了経路は常にポーリング。本文・トークン・ユーザー ID・URL のクエリは出さない。既存の「Quick Chat send ended」ログに追記する形でもよい(実装段階)。
 
 ## 20. 障害時の復旧方法
 
@@ -323,8 +326,8 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 
 ## 23. テスト方針
 
-- PR-1(headless TDD、偽ソケット): `CableEndpoint`(https/http、サブパス、ポート)/ `ActionCableClient`(welcome → subscribe、confirm、reject、disconnect、分割フレーム、上限、identifier 不一致、リスナーが例外を投げない)/ `AiCompletionStream`(確認待ちの時間切れ、`close` の冪等、cancel 時の `abort`、ログに本文・トークンが出ない)/ `ChunkAssembler`(順不同、欠番、振り直し、空チャンク、重複、最終メッセージでの置き換え、`requestId` 確定前後、上限)。
-- PR-2: `QuickChatService` の並走(S 先着、P 先着、S 無し、S が途中で死ぬ、P の `TimedOut` を S が上書きしない、w4 で拒否されたらストリームを閉じる)/ `ResultSink.progress`(洪水防止、`detach` 後)/ `QuickChatSession.onProgress`(`isCurrent`、間引き、`finishOnce` での予約取り消し)。
+- PR-1(headless TDD、偽ソケット): `CableEndpoint`(https/http、サブパス、ポート)/ `ActionCableClient`(welcome → subscribe、confirm、reject、disconnect、分割フレーム、上限、identifier 不一致、リスナーが例外を投げない)/ `AiCompletionStream`(確認待ちの時間切れ、`close` の冪等、cancel 時の `abort`、ログに本文・トークンが出ない)/ `ChunkAssembler`(順不同、欠番、振り直し、空チャンク、**振り直しと順不同の複合(§9.2 の 2 例、新 2 が新 1 より先)**、最終メッセージでの置き換え、`errors` 付き最終で表示不変、`requestId` 確定前後、**`MAX_BUFFERED_BYTES` の境界: ちょうど上限は保持・1 超過で停止、欠番が埋まらないまま大きな断片が続く場合、`requestId` 確定前のフレームが合計で超える場合**)。
+- PR-2: `QuickChatService`(ストリームの最終メッセージが先に届いても送信は終わらずポーリングの結果で確定する、ストリーム無し、ストリームが途中で死ぬ、ストリームの `errors` 付き最終でも結果はポーリングどおり、w4 で拒否されたらストリームを閉じる、`aiAction` が失敗したらストリームを閉じる)/ `ResultSink.progress`(洪水防止、`detach` 後)/ `QuickChatSession.onProgress`(`isCurrent`、間引き、`finishOnce` での予約取り消し)。
 - 既存テストはすべて無変更で通ること。全体回帰は `verify.sh` → `FAILSET_IDENTICAL`、detektMain / detektTest はベースライン。
 
 ## 24. 受け入れ条件
@@ -333,7 +336,8 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 |---|---|---|
 | A-S1 | ストリーム無し(購読失敗)でも、回答・失敗・期限切れの表示が現行と同一 | 単体テスト(PR-2) |
 | A-S2 | チャンク到着で途中経過が表示され、最終メッセージで置き換わる | 単体テスト + 手動(利用権のあるアカウント) |
-| A-S3 | 最終メッセージが S と P の両方から来ても結果の確定は 1 回 | 単体テスト |
+| A-S3 | 送信の結果(回答・エラー・期限切れ)はポーリングの結果だけで決まり、ストリームの最終メッセージの有無・内容で変わらない | 単体テスト |
+| A-S8 | ストリームの保持データが `MAX_BUFFERED_BYTES` を超えない(超える入力でストリームが停止し、送信はポーリングで完了する) | 単体テスト |
 | A-S4 | 送信の終わり方すべて(回答・失敗・期限・置き換え・閉じる・バンドル停止)でソケットが閉じる | 単体テスト + 手動(ログ) |
 | A-S5 | TLS / プロキシ設定が WebSocket に適用される | 単体テスト(`HttpClient` の出所)+ 手動(社内プロキシ環境があれば) |
 | A-S6 | ログに本文・トークン・ユーザー ID が出ない | 単体テスト + 手動 |
@@ -373,7 +377,9 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 | サーバの `aiCompletionResponse` 仕様変更(Experiment) | ストリームは補助。壊れてもポーリングで従来どおり |
 | 確認待ちによる送出遅延 | `SUBSCRIBE_WAIT` を短く。確認が速い通常時は数百 ms |
 | 逐次描画の負荷(`render` が全再構築、E-4) | 間引き + 途中経過はコード分割しない + 上限 |
-| S の最終メッセージと保存内容の不一致 | GL では同一内容(K-S8)。不一致でも次回の会話には影響しない(会話はサーバのスレッドで継続) |
+| ストリームの内容と保存内容の不一致 | 結果はポーリング(保存内容)で確定し置き換わる(FR-S3)。不一致は途中経過の表示に限られる |
+| 振り直し後に旧系列の断片が遅れて届き、途中経過に混ざる(§9.2) | 表示のみ。ポーリングの結果で置き換わる |
+| ストリームの最終が先に届いてから完了までの表示差(最大 1 ポーリング間隔) | 表示は最終の内容になっているので利用者の不利益は小さい。送信中の状態(入力不可)が最大 3 s 長く見える |
 | 実機未検証のまま入る | 「実装済み・実機未検証」として台帳・PR に明記。手動検証 M-S3 を利用権取得後に実施 |
 
 ## 28. 実装タスク分割案(モデルは CLAUDE.md の選定基準に従う)
@@ -387,4 +393,10 @@ ping の監視はしない(§6.3 の注: 未確認)。ストリームは送信�
 
 ## 29. Codex レビュー反映履歴
 
-(レビュー後に追記する)
+### round 1(`eafa21a` に対する指摘 3 件、すべて P1)
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| 1 | ストリームの先着で結果を確定すると「ポーリングが正」と矛盾する | **採用(設計)**: 方式の根幹 | FR-S3 を「結果はポーリングだけで確定」に変更。`awaitFinal` と並走を削除(§7、§8.1、§8.2、§9.1、§9.3、§10、§14、§16、§19、§23、§24 A-S3、§27) |
+| 2 | 保持データ全体のバイト上限が無い | **採用(設計)**: 資源の上限(IDE の停止) | §15.3 に `MAX_BUFFERED_BYTES`(追加前判定)、§23 に境界テスト、§24 A-S8 |
+| 3 | 振り直しと順不同が重なると新系列が欠落する | **採用(設計)**: 規則の定義 | §9.2 に「同じ `chunkId` の再着 = 新系列」の規則と例、残る混入は表示のみで許容(§27)、§23 に複合ケース |
