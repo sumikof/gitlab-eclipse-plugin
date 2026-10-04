@@ -23,6 +23,6 @@ object QuickChatStreamLimits {
   /** Everything one connection may receive, dropped frames included (§15.3, Codex round 2 #1). */
   const val MAX_RECEIVED_CHARS: Long = 4L * 1024 * 1024
 
-  /** Frames one connection may receive, pings and dropped frames included (§15.3). */
+  /** Frames one connection may receive, pings and dropped frames included; also caps the received parts, empty ones included (§15.3). */
   const val MAX_RECEIVED_FRAMES: Int = 20_000
 }

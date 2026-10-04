@@ -186,8 +186,14 @@ class AiCompletionStreamOpener(
 
 /**
  * One send's answer stream (design `quick-chat-streaming` §9.2, FR-S3): display only — it exposes
- * the text to show while the answer streams and never a result. [onProgress] is called on a
- * transport thread, outside this stream's lock, whenever the display text changes.
+ * the text to show while the answer streams and never a result.
+ *
+ * [onProgress] is called, always outside this stream's lock, whenever the display text may have
+ * changed. It has two callers that are not serialized with each other: the transport thread
+ * delivering channel messages, and whichever thread calls [confirmRequestId]. Two invocations may
+ * therefore overlap, and one may still run after [close] when it races a concurrent stop. Consumers
+ * must tolerate concurrent and late calls — e.g. coalesce and re-read [displayText] (PR-2's
+ * `ResultSink.progress` keeps only the latest).
  */
 class AiCompletionStream internal constructor(
   identifier: String,
@@ -215,7 +221,11 @@ class AiCompletionStream internal constructor(
 
   fun displayText(): String = synchronized(lock) { assembler.displayText() }
 
-  /** Fixes the send's requestId; held chunks of it become visible. */
+  /**
+   * Fixes the send's requestId; held chunks of it become visible. May call [onProgress] on the
+   * calling thread, concurrently with a transport-thread call (see the class KDoc); an [onProgress]
+   * failure propagates to the caller here.
+   */
   fun confirmRequestId(requestId: String) {
     val change = synchronized(lock) { assembler.confirmRequestId(requestId) }
     react(change)

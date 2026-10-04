@@ -128,6 +128,24 @@ class ActionCableClientTest : DescribeSpec({
     s.aborted shouldBe 1
     s.requested shouldBe 4
   }
+  it("stops on endless empty non-final text parts") {
+    val (c, s) = open(frames = 3)
+    repeat(3) { c.onText("", false) }
+    c.stopReason shouldBe null
+    c.onText("", false)
+    c.stopReason shouldBe CableStop.OVERFLOW
+    s.aborted shouldBe 1
+    s.requested shouldBe 4
+  }
+  it("stops on endless empty non-final binary parts") {
+    val (c, s) = open(frames = 3)
+    repeat(3) { c.onBinary(0, false) }
+    c.stopReason shouldBe null
+    c.onBinary(0, false)
+    c.stopReason shouldBe CableStop.OVERFLOW
+    s.aborted shouldBe 1
+    s.requested shouldBe 4
+  }
   it("counts binary bytes toward the char limit, partial parts included") {
     val (c, _) = open(chars = 100)
     c.onBinary(60, false)

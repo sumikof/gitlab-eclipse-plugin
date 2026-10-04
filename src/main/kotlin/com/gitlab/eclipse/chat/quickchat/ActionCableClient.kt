@@ -51,7 +51,7 @@ class ActionCableClient(
     if (alreadyStopped) socket.abort() else socket.request(1)
   }
 
-  /** Rule 2: count, join and bound frames; handle a complete frame; then ask for the next one. */
+  /** Rule 2: count every part (empty ones too), join and bound frames; handle a complete frame; then ask for the next one. */
   override fun onText(data: CharSequence, last: Boolean) = guarded {
     var overflow = false
     val complete: String? = synchronized(lock) {
@@ -76,7 +76,7 @@ class ActionCableClient(
 
   /**
    * Binary parts are never parsed but count toward the receive limits (§15.3): their bytes are added
-   * as-is to the received chars, and a frame is counted on `last`.
+   * as-is to the received chars, the part is counted (even when empty), and a frame is counted on `last`.
    */
   override fun onBinary(size: Int, last: Boolean) = guarded {
     val overflow = synchronized(lock) {
@@ -222,17 +222,23 @@ class ActionCableClient(
 
 /**
  * Everything one connection received, dropped frames included (§15.3). Text parts add chars, binary
- * parts add bytes as-is; a frame is counted on its last part. Not thread-safe: the owner's lock
- * guards it.
+ * parts add bytes as-is; a frame is counted on its last part. Every part — text or binary, of any
+ * length, final or not — is also counted against [maxFrames], so a server streaming endless empty
+ * non-final parts (which add no chars and complete no frame) still trips a limit. A dedicated part
+ * counter is used rather than redefining frames, keeping "frames" meaning complete messages; with
+ * the same cap it is the stricter of the two whenever frames arrive in several parts. Not
+ * thread-safe: the owner's lock guards it.
  */
 private class ReceiveCounter(private val maxChars: Long, private val maxFrames: Int) {
   private var chars = 0L
   private var frames = 0
+  private var parts = 0
 
   /** Adds one received part; `true` when a receive limit is exceeded. */
   fun add(size: Int, last: Boolean): Boolean {
     chars += size
+    parts++
     if (last) frames++
-    return chars > maxChars || frames > maxFrames
+    return chars > maxChars || frames > maxFrames || parts > maxFrames
   }
 }
