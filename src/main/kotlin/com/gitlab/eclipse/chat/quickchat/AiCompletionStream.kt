@@ -93,7 +93,10 @@ class AiCompletionStreamOpener(
     return if (id.isNullOrEmpty()) UserQuery.Failed(failed(StreamOpenFailure.NO_USER)) else UserQuery.Found(id)
   }
 
-  /** Step 6–7: the handshake and `confirm_subscription`; the stream is closed on every other path. */
+  /**
+   * Step 6–7: the handshake and `confirm_subscription`. On every other path the stream is closed and
+   * the handshake [future] cancelled, even when the wait was already over before it started.
+   */
   private suspend fun awaitConfirmation(
     stream: AiCompletionStream,
     future: CompletableFuture<CableSocket>,
@@ -105,13 +108,13 @@ class AiCompletionStreamOpener(
         stream.client.confirmation.await()
       }
     } catch (e: CancellationException) {
-      stream.close()
+      giveUp(stream, future)
       throw e
     } catch (
       @Suppress("TooGenericExceptionCaught") // A failed handshake (401/403/TLS/proxy) only means "no stream".
       e: Exception,
     ) {
-      stream.close()
+      giveUp(stream, future)
       return failed(StreamOpenFailure.CONNECT_FAILED, unwrap(e))
     }
     if (confirmed == true) return StreamOpenResult.Opened(stream)
@@ -120,8 +123,21 @@ class AiCompletionStreamOpener(
       stream.client.stopReason == CableStop.REJECTED -> StreamOpenFailure.REJECTED
       else -> StreamOpenFailure.STOPPED
     }
-    stream.close()
+    giveUp(stream, future)
     return failed(reason)
+  }
+
+  /** Stops the client and cancels a handshake still in flight; never throws. */
+  private fun giveUp(stream: AiCompletionStream, future: CompletableFuture<CableSocket>) {
+    stream.close()
+    try {
+      future.cancel(true)
+    } catch (
+      @Suppress("TooGenericExceptionCaught") // The future may be a foreign subclass; giving up must not throw.
+      e: Exception,
+    ) {
+      log("Quick Chat stream handshake cancel failed: ${e.javaClass.name}")
+    }
   }
 
   private fun remaining(deadline: Long): Duration = (deadline - clock.nanoTime()).nanoseconds

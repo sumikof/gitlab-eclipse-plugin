@@ -59,9 +59,11 @@ class AiCompletionStreamTest : DescribeSpec({
     var endpoint: CableEndpoint? = null
     var socket: FakeSocket? = null
     var connectFailure: RuntimeException? = null
+    var onConnect: () -> Unit = {}
 
     override fun connect(endpoint: CableEndpoint, token: String, listener: CableListener): CompletableFuture<CableSocket> {
       connectFailure?.let { throw it }
+      onConnect()
       this.listener = listener
       this.token = token
       this.endpoint = endpoint
@@ -155,6 +157,7 @@ class AiCompletionStreamTest : DescribeSpec({
 
       val stream = result.await().shouldBeInstanceOf<StreamOpenResult.Opened>().stream
       stream.stopReason shouldBe null
+      h.sockets.future.isCancelled shouldBe false
       h.sockets.token shouldBe "tok"
       h.sockets.endpoint shouldBe CableEndpoint.of(INSTANCE)
       val identifier = JsonParser.parseString(h.sockets.identifier()).asJsonObject
@@ -252,6 +255,7 @@ class AiCompletionStreamTest : DescribeSpec({
       result.await() shouldBe StreamOpenResult.Failed(StreamOpenFailure.CONNECT_FAILED, "java.io.IOException")
       h.sockets.socket shouldBe null
       h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
+      h.sockets.future.isDone shouldBe true
     }
   }
 
@@ -265,6 +269,8 @@ class AiCompletionStreamTest : DescribeSpec({
 
       result.await() shouldBe StreamOpenResult.Failed(StreamOpenFailure.REJECTED)
       socket.aborted shouldBe 1
+      h.sockets.future.isCancelled shouldBe false // already completed with the socket
+      h.sockets.future.isDone shouldBe true
       h.sockets.client.stopReason shouldBe CableStop.REJECTED
     }
   }
@@ -280,6 +286,7 @@ class AiCompletionStreamTest : DescribeSpec({
 
       result.await() shouldBe StreamOpenResult.Failed(StreamOpenFailure.STOPPED)
       socket.aborted shouldBe 1
+      h.sockets.future.isDone shouldBe true
     }
   }
 
@@ -292,9 +299,22 @@ class AiCompletionStreamTest : DescribeSpec({
       result.await() shouldBe StreamOpenResult.Failed(StreamOpenFailure.TIMED_OUT)
       testScheduler.currentTime shouldBe 1_000L
       h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
+      h.sockets.future.isCancelled shouldBe true
       val late = h.sockets.accept()
       late.aborted shouldBe 1
       late.sent.shouldBeEmpty()
+    }
+  }
+
+  it("cancels the handshake when connect returns after the wait is already over") {
+    runTest {
+      val h = Harness()
+      every { h.api.currentUserId(any(), any()) } returns userId
+      h.sockets.onConnect = { h.clock.advanceNanos(3.seconds.inWholeNanoseconds) }
+
+      start(h).await() shouldBe StreamOpenResult.Failed(StreamOpenFailure.TIMED_OUT)
+      h.sockets.future.isCancelled shouldBe true
+      h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
     }
   }
 
@@ -334,6 +354,7 @@ class AiCompletionStreamTest : DescribeSpec({
       runCurrent()
       outcome shouldBe "rethrown"
       socket.aborted shouldBe 1
+      h.sockets.future.isDone shouldBe true
       h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
     }
   }
@@ -347,6 +368,7 @@ class AiCompletionStreamTest : DescribeSpec({
       runCurrent()
 
       h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
+      h.sockets.future.isCancelled shouldBe true
       h.sockets.accept().aborted shouldBe 1
     }
   }
