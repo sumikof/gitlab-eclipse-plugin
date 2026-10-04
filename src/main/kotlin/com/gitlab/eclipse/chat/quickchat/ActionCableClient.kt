@@ -24,8 +24,8 @@ class ActionCableClient(
   private val identifier: String,
   private val onMessage: (JsonObject) -> Unit,
   private val maxFrameChars: Int = QuickChatStreamLimits.MAX_BUFFERED_CHARS,
-  private val maxReceivedChars: Long = QuickChatStreamLimits.MAX_RECEIVED_CHARS,
-  private val maxReceivedFrames: Int = QuickChatStreamLimits.MAX_RECEIVED_FRAMES,
+  maxReceivedChars: Long = QuickChatStreamLimits.MAX_RECEIVED_CHARS,
+  maxReceivedFrames: Int = QuickChatStreamLimits.MAX_RECEIVED_FRAMES,
 ) : CableListener {
   /** `true` once `confirm_subscription` arrives; `false` if the client stopped first. */
   val confirmation: CompletableDeferred<Boolean> = CompletableDeferred()
@@ -37,8 +37,7 @@ class ActionCableClient(
   private var stopped: CableStop? = null
   private var subscribeSent = false
   private val frame = StringBuilder()
-  private var receivedChars = 0L
-  private var receivedFrames = 0
+  private val received = ReceiveCounter(maxReceivedChars, maxReceivedFrames)
 
   val stopReason: CableStop?
     get() = synchronized(lock) { stopped }
@@ -57,11 +56,7 @@ class ActionCableClient(
     var overflow = false
     val complete: String? = synchronized(lock) {
       if (stopped != null) return@guarded
-      receivedChars += data.length
-      if (last) receivedFrames++
-      overflow = receivedChars > maxReceivedChars ||
-        receivedFrames > maxReceivedFrames ||
-        frame.length.toLong() + data.length > maxFrameChars
+      overflow = received.add(data.length, last) || frame.length.toLong() + data.length > maxFrameChars
       when {
         overflow -> null
         !last -> {
@@ -77,6 +72,22 @@ class ActionCableClient(
     }
     if (complete != null) parse(complete)?.let(::handle)
     synchronized(lock) { socket.takeIf { stopped == null } }?.request(1)
+  }
+
+  /**
+   * Binary parts are never parsed but count toward the receive limits (§15.3): their bytes are added
+   * as-is to the received chars, and a frame is counted on `last`.
+   */
+  override fun onBinary(size: Int, last: Boolean) = guarded {
+    val overflow = synchronized(lock) {
+      if (stopped != null) return@guarded
+      received.add(size, last)
+    }
+    if (overflow) {
+      stop(CableStop.OVERFLOW)
+    } else {
+      synchronized(lock) { socket.takeIf { stopped == null } }?.request(1)
+    }
   }
 
   /** Rule 5. */
@@ -120,7 +131,8 @@ class ActionCableClient(
     when (frame.stringOrNull("type")) {
       "welcome" -> subscribe()
       "ping" -> Unit
-      "confirm_subscription" -> if (ownIdentifier) confirm()
+      "confirm_subscription" ->
+        if (ownIdentifier && synchronized(lock) { stopped == null }) confirmation.complete(true)
       "reject_subscription" -> if (ownIdentifier) stop(CableStop.REJECTED)
       "disconnect" -> stop(CableStop.DISCONNECTED)
       null -> {
@@ -142,10 +154,6 @@ class ActionCableClient(
       addProperty("identifier", identifier)
     }
     target?.sendText(GSON.toJson(command))
-  }
-
-  private fun confirm() {
-    if (synchronized(lock) { stopped == null }) confirmation.complete(true)
   }
 
   /**
@@ -209,5 +217,22 @@ class ActionCableClient(
     private fun log(text: String) {
       runCatching { logger<ActionCableClient>().info(text) }
     }
+  }
+}
+
+/**
+ * Everything one connection received, dropped frames included (§15.3). Text parts add chars, binary
+ * parts add bytes as-is; a frame is counted on its last part. Not thread-safe: the owner's lock
+ * guards it.
+ */
+private class ReceiveCounter(private val maxChars: Long, private val maxFrames: Int) {
+  private var chars = 0L
+  private var frames = 0
+
+  /** Adds one received part; `true` when a receive limit is exceeded. */
+  fun add(size: Int, last: Boolean): Boolean {
+    chars += size
+    if (last) frames++
+    return chars > maxChars || frames > maxFrames
   }
 }

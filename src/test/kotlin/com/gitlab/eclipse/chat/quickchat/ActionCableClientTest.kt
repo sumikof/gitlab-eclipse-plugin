@@ -117,6 +117,30 @@ class ActionCableClientTest : DescribeSpec({
     repeat(20) { msg("""{"type":"ping"}""", c) }
     c.stopReason shouldBe CableStop.OVERFLOW
   }
+  it("counts binary frames toward the frame limit without parsing them") {
+    val (c, s) = open(frames = 3)
+    repeat(3) { c.onBinary(1, true) }
+    c.stopReason shouldBe null
+    s.requested shouldBe 4
+    s.sent.shouldBeEmpty()
+    c.onBinary(1, true)
+    c.stopReason shouldBe CableStop.OVERFLOW
+    s.aborted shouldBe 1
+    s.requested shouldBe 4
+  }
+  it("counts binary bytes toward the char limit, partial parts included") {
+    val (c, _) = open(chars = 100)
+    c.onBinary(60, false)
+    c.stopReason shouldBe null
+    c.onBinary(41, false)
+    c.stopReason shouldBe CableStop.OVERFLOW
+  }
+  it("counts binary and text together") {
+    val (c, _) = open(chars = 20)
+    c.onBinary(10, true)
+    msg("""{"type":"ping"}""", c)
+    c.stopReason shouldBe CableStop.OVERFLOW
+  }
   it("stops on an oversized single frame while still joining it") {
     val (c, _) = open(frame = 10)
     c.onText("12345", false)

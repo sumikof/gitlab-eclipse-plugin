@@ -32,6 +32,7 @@ class JdkCableSocketFactoryTest : DescribeSpec({
       object : CableListener {
         override fun onOpen(socket: CableSocket) = Unit
         override fun onText(data: CharSequence, last: Boolean) = Unit
+        override fun onBinary(size: Int, last: Boolean) = Unit
         override fun onClosed() = Unit
         override fun onError(error: Throwable) = Unit
       },
@@ -66,6 +67,9 @@ class JdkCableSocketFactoryTest : DescribeSpec({
         override fun onText(data: CharSequence, last: Boolean) {
           events += "text:$data:$last"
         }
+        override fun onBinary(size: Int, last: Boolean) {
+          events += "binary:$size:$last"
+        }
         override fun onClosed() {
           events += "closed"
         }
@@ -80,13 +84,16 @@ class JdkCableSocketFactoryTest : DescribeSpec({
     adapter.onOpen(ws)
     verify(exactly = 0) { ws.request(any()) }
     adapter.onText(ws, "abc", false) shouldBe null
+    val buffer = java.nio.ByteBuffer.allocate(16).apply { position(4) }
+    adapter.onBinary(ws, buffer, true) shouldBe null
+    verify(exactly = 0) { ws.request(any()) }
     adapter.onClose(ws, 1000, "bye") shouldBe null
     adapter.onError(ws, java.io.IOException("x"))
     opened!!.sendText("hi")
     opened!!.request(1)
     opened!!.abort()
 
-    events shouldBe listOf("open", "text:abc:false", "closed", "error:IOException")
+    events shouldBe listOf("open", "text:abc:false", "binary:12:true", "closed", "error:IOException")
     verify { ws.sendText("hi", true) }
     verify { ws.request(1) }
     verify { ws.abort() }

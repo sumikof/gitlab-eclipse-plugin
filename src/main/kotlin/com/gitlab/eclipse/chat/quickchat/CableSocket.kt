@@ -26,6 +26,12 @@ interface CableListener {
 
   fun onText(data: CharSequence, last: Boolean)
 
+  /**
+   * A binary part of [size] bytes. ActionCable JSON never sends binary frames, but they still count
+   * toward the receive limits (§15.3); the listener owns flow control as for text.
+   */
+  fun onBinary(size: Int, last: Boolean)
+
   fun onClosed()
 
   fun onError(error: Throwable)
@@ -72,8 +78,7 @@ class JdkCableSocketFactory(
     }
 
     override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
-      // ActionCable JSON never sends binary frames; keep the flow going without reading them.
-      webSocket.request(1)
+      listener.onBinary(data.remaining(), last)
       return null
     }
 
