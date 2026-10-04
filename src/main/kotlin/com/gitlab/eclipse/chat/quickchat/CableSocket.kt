@@ -5,6 +5,7 @@ import com.gitlab.eclipse.inject.service
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.nio.ByteBuffer
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 
@@ -54,14 +55,34 @@ class JdkCableSocketFactory(
     endpoint: CableEndpoint,
     token: String,
     listener: CableListener,
-  ): CompletableFuture<CableSocket> =
-    httpClient()
+  ): CompletableFuture<CableSocket> {
+    val source = httpClient()
       .newWebSocketBuilder()
       .subprotocols(SUBPROTOCOL)
       .header("Authorization", "Bearer $token")
       .header("Origin", endpoint.origin)
       .buildAsync(endpoint.uri, Adapter(listener))
-      .thenApply { JdkCableSocket(it) }
+    return linkCancellation(source)
+  }
+
+  /**
+   * Returns a future the caller may cancel (time-out or cancel while waiting for the handshake,
+   * §15.1, §17) without leaving the handshake behind: cancelling it cancels [source], and a
+   * WebSocket that still arrives after the caller gave up is aborted. These callbacks never throw.
+   */
+  private fun linkCancellation(source: CompletableFuture<WebSocket>): CompletableFuture<CableSocket> {
+    val result = CompletableFuture<CableSocket>()
+    source.whenComplete { webSocket, error ->
+      when {
+        error != null -> result.completeExceptionally(error)
+        !result.complete(JdkCableSocket(webSocket)) -> runCatching { webSocket.abort() }
+      }
+    }
+    result.whenComplete { _, error ->
+      if (result.isCancelled || error is CancellationException) runCatching { source.cancel(true) }
+    }
+    return result
+  }
 
   /**
    * Forwards JDK callbacks. `onOpen` deliberately does not call the JDK default `request(1)`: the

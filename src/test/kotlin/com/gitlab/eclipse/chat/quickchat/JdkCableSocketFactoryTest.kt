@@ -98,4 +98,62 @@ class JdkCableSocketFactoryTest : DescribeSpec({
     verify { ws.request(1) }
     verify { ws.abort() }
   }
+
+  describe("handshake cancellation") {
+    fun connectWith(source: CompletableFuture<WebSocket>): CompletableFuture<CableSocket> {
+      val builder = mockk<WebSocket.Builder>()
+      every { builder.subprotocols(any(), *anyVararg()) } returns builder
+      every { builder.header(any(), any()) } returns builder
+      every { builder.buildAsync(any(), any()) } returns source
+      val client = mockk<HttpClient>()
+      every { client.newWebSocketBuilder() } returns builder
+      return JdkCableSocketFactory { client }.connect(
+        CableEndpoint.of("https://gitlab.com"),
+        "tok",
+        ActionCableClient("x", {}),
+      )
+    }
+
+    it("cancels the source handshake when the returned future is cancelled") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      returned.cancel(true)
+      source.isCancelled shouldBe true
+    }
+    it("cancels the source handshake when the returned future fails with a cancellation") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      returned.completeExceptionally(java.util.concurrent.CancellationException("gave up"))
+      source.isCancelled shouldBe true
+    }
+    it("aborts a WebSocket that arrives after the returned future was cancelled") {
+      // Model a source that ignores cancel and completes anyway.
+      val late = object : CompletableFuture<WebSocket>() {
+        override fun cancel(mayInterruptIfRunning: Boolean) = false
+      }
+      val returnedLate = connectWith(late)
+      returnedLate.cancel(true)
+      val ws = mockk<WebSocket>(relaxed = true)
+      late.complete(ws)
+      verify(exactly = 1) { ws.abort() }
+    }
+    it("maps a normal completion to a CableSocket without aborting") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      val ws = mockk<WebSocket>(relaxed = true)
+      source.complete(ws)
+      returned.isDone shouldBe true
+      returned.get().sendText("hi")
+      verify { ws.sendText("hi", true) }
+      verify(exactly = 0) { ws.abort() }
+      source.isCancelled shouldBe false
+    }
+    it("propagates a failed handshake without cancelling") {
+      val source = CompletableFuture<WebSocket>()
+      val returned = connectWith(source)
+      source.completeExceptionally(java.io.IOException("x"))
+      returned.isCompletedExceptionally shouldBe true
+      returned.isCancelled shouldBe false
+    }
+  }
 })
