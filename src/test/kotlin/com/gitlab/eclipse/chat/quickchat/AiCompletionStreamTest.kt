@@ -26,6 +26,7 @@ import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -306,7 +307,7 @@ class AiCompletionStreamTest : DescribeSpec({
     }
   }
 
-  it("cancels the handshake when connect returns after the wait is already over") {
+  it("gives up the connect future when connect returns after the wait is already over") {
     runTest {
       val h = Harness()
       every { h.api.currentUserId(any(), any()) } returns userId
@@ -455,6 +456,45 @@ class AiCompletionStreamTest : DescribeSpec({
       h.sockets.chunk(1, "a")
       stream.stopReason shouldBe CableStop.LISTENER_FAILED
       h.sockets.socket!!.aborted shouldBe 1
+    }
+  }
+
+  it("contains an onProgress failure during confirmRequestId and stops with LISTENER_FAILED") {
+    runTest {
+      val h = Harness()
+      val stream = opened(h) { throw IllegalStateException("boom") }
+      h.sockets.chunk(1, "a")
+
+      stream.confirmRequestId("req-1") // must not throw
+      stream.stopReason shouldBe CableStop.LISTENER_FAILED
+      h.sockets.socket!!.aborted shouldBe 1
+    }
+  }
+
+  it("fails with TIMED_OUT without querying when no time is left before the user query") {
+    runTest {
+      val api = mockk<QuickChatApi>()
+      val sockets = FakeSockets()
+      var now = 0L
+      val opener = AiCompletionStreamOpener(api, sockets, MonotonicClock { now++ })
+      opener.open(connection, "sub-1", 1.nanoseconds) {} shouldBe StreamOpenResult.Failed(StreamOpenFailure.TIMED_OUT)
+      verify(exactly = 0) { api.currentUserId(any(), any()) }
+      sockets.listener shouldBe null
+    }
+  }
+
+  it("reports a connect future cancelled by someone else as CONNECT_FAILED without cancelling the caller") {
+    runTest {
+      val h = Harness()
+      every { h.api.currentUserId(any(), any()) } returns userId
+      val result = start(h)
+      h.sockets.future.cancel(true)
+
+      result.await() shouldBe StreamOpenResult.Failed(
+        StreamOpenFailure.CONNECT_FAILED,
+        "java.util.concurrent.CancellationException",
+      )
+      h.sockets.client.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
     }
   }
 

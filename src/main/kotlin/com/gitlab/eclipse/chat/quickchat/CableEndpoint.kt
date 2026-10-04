@@ -12,6 +12,7 @@ data class CableEndpoint(val uri: URI, val origin: String) {
   companion object {
     private const val HTTPS_PORT = 443
     private const val HTTP_PORT = 80
+    private const val NOT_AN_ENDPOINT = "Instance URL does not form a cable endpoint"
 
     fun of(instanceUrl: String): CableEndpoint {
       val base = parseUri(instanceUrl)
@@ -19,10 +20,31 @@ data class CableEndpoint(val uri: URI, val origin: String) {
       val host = base.host ?: throw IllegalArgumentException("Instance URL has no host")
       val port = base.port.takeIf { it != -1 && it != defaultPort } ?: -1
       val path = base.rawPath.orEmpty().trimEnd('/') + "/-/cable"
-      val uri = URI(wsScheme, null, host, port, null, null, null).resolve(path)
-      val origin = URI(base.scheme.lowercase(), null, host, port, null, null, null).toString()
-      return CableEndpoint(uri, origin)
+      return build(wsScheme, base.scheme.lowercase(), host, port, path)
     }
+
+    /**
+     * Re-serialises the parts. Exotic hosts the first parse accepts could still be rejected here
+     * (`URISyntaxException` from the constructors, `IllegalArgumentException` from `resolve`); both
+     * messages embed the input, so they are replaced by a constant one and only
+     * [IllegalArgumentException] ever leaves [of].
+     */
+    private fun build(wsScheme: String, scheme: String, host: String, port: Int, path: String): CableEndpoint =
+      try {
+        val uri = URI(wsScheme, null, host, port, null, null, null).resolve(path)
+        val origin = URI(scheme, null, host, port, null, null, null).toString()
+        CableEndpoint(uri, origin)
+      } catch (
+        @Suppress("SwallowedException") // Dropped on purpose: its message embeds the instance URL.
+        e: URISyntaxException,
+      ) {
+        throw IllegalArgumentException(NOT_AN_ENDPOINT)
+      } catch (
+        @Suppress("SwallowedException") // Dropped on purpose: its message embeds the instance URL.
+        e: IllegalArgumentException,
+      ) {
+        throw IllegalArgumentException(NOT_AN_ENDPOINT)
+      }
 
     private fun parseUri(instanceUrl: String): URI =
       try {

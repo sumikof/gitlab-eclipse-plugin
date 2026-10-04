@@ -2,6 +2,7 @@ package com.gitlab.eclipse.chat.quickchat
 
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.toJavaDuration
 
 /**
  * Limits of the Quick Chat answer stream (design `quick-chat-streaming` §15). The stream is only a
@@ -17,7 +18,7 @@ object QuickChatStreamLimits {
    * `HttpClient` connect timeout covers only the TCP connect. On expiry the JDK fails the handshake
    * itself and closes its connection. Matches the HTTP connect timeout (30 s).
    */
-  val HANDSHAKE_TIMEOUT: java.time.Duration = java.time.Duration.ofSeconds(30)
+  val HANDSHAKE_TIMEOUT: java.time.Duration = 30.seconds.toJavaDuration()
 
   /** Everything the assembler holds, counted in UTF-16 chars (≈ 2 bytes each, so ~1 MiB) (§15.3). */
   const val MAX_BUFFERED_CHARS: Int = 512 * 1024

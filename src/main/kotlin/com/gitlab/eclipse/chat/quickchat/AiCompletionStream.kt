@@ -6,6 +6,8 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParseException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
@@ -40,7 +42,7 @@ class AiCompletionStreamOpener(
 ) {
   /**
    * §9.1 s1. Waits at most [waitLimit] for `confirm_subscription`. Never throws except
-   * [CancellationException]; on every non-[StreamOpenResult.Opened] path, and on cancellation, the
+   * [CancellationException] when the caller is cancelled; on every non-[StreamOpenResult.Opened] path, and on cancellation, the
    * client is stopped so its socket is aborted, now or when it opens later.
    */
   suspend fun open(
@@ -51,7 +53,10 @@ class AiCompletionStreamOpener(
   ): StreamOpenResult {
     if (!waitLimit.isPositive()) return failed(StreamOpenFailure.TIMED_OUT)
     val deadline = clock.nanoTime() + waitLimit.inWholeNanoseconds
-    val userId = when (val user = queryUser(connection, remaining(deadline))) {
+    // Never hand a non-positive timeout to the API (a negative java Duration is rejected there).
+    val queryTimeout = remaining(deadline)
+    if (!queryTimeout.isPositive()) return failed(StreamOpenFailure.TIMED_OUT)
+    val userId = when (val user = queryUser(connection, queryTimeout)) {
       is UserQuery.Failed -> return user.result
       is UserQuery.Found -> user.id
     }
@@ -111,7 +116,10 @@ class AiCompletionStreamOpener(
       }
     } catch (e: CancellationException) {
       giveUp(stream, future)
-      throw e
+      // Our own cancellation propagates here; a future cancelled by someone else is only a failed
+      // connect and must not cancel the caller (Ruling 8).
+      currentCoroutineContext().ensureActive()
+      return failed(StreamOpenFailure.CONNECT_FAILED, e)
     } catch (
       @Suppress("TooGenericExceptionCaught") // A failed handshake (401/403/TLS/proxy) only means "no stream".
       e: Exception,
@@ -225,12 +233,21 @@ class AiCompletionStream internal constructor(
 
   /**
    * Fixes the send's requestId; held chunks of it become visible. May call [onProgress] on the
-   * calling thread, concurrently with a transport-thread call (see the class KDoc); an [onProgress]
-   * failure propagates to the caller here.
+   * calling thread, concurrently with a transport-thread call (see the class KDoc). Never throws: an
+   * [onProgress] failure is contained as on the transport path — the stream stops with
+   * `LISTENER_FAILED` and only the exception class is logged — so the stream cannot break the send.
    */
   fun confirmRequestId(requestId: String) {
     val change = synchronized(lock) { assembler.confirmRequestId(requestId) }
-    react(change)
+    try {
+      react(change)
+    } catch (
+      @Suppress("TooGenericExceptionCaught") // onProgress is foreign code; the send must not see its failure.
+      e: Exception,
+    ) {
+      runCatching { logger<AiCompletionStream>().info("Quick Chat stream progress failed: ${e.javaClass.name}") }
+      client.stop(CableStop.LISTENER_FAILED)
+    }
   }
 
   /** Idempotent and non-blocking: stops the client, which aborts the socket. */

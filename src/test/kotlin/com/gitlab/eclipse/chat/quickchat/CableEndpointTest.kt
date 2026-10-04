@@ -29,6 +29,25 @@ class CableEndpointTest : DescribeSpec({
     val endpoint = CableEndpoint.of("https://user:secret@example.com/gl?x=1#y")
     endpoint shouldBe CableEndpoint(URI("wss://example.com/gl/-/cable"), "https://example.com")
   }
+  it("lets nothing but IllegalArgumentException escape for exotic hosts, without echoing the input") {
+    listOf(
+      "https://[fe80::1%25eth0]/gl",
+      "https://[fe80::1%eth0]",
+      "https://[fe80::1%25]:8443",
+      "https://[::ffff:1.2.3.4%x]/",
+      "https://[fe80::1%e_t-h~0]/",
+      "https://[v1.x]/",
+      "https://a_b.example/",
+      "https://ho%41st/",
+    ).forEach { url ->
+      val failure = runCatching { CableEndpoint.of(url) }.exceptionOrNull()
+      if (failure != null) {
+        failure.javaClass shouldBe IllegalArgumentException::class.java
+        failure.message.orEmpty() shouldNotContain url
+        failure.cause shouldBe null
+      }
+    }
+  }
   it("rejects other schemes and garbage without echoing the input") {
     listOf("ftp://example.com", "example.com", "https://", "::").forEach { url ->
       val e = shouldThrow<IllegalArgumentException> { CableEndpoint.of(url) }
