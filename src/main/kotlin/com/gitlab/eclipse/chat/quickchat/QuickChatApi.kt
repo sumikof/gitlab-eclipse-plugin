@@ -62,6 +62,9 @@ interface QuickChatApi {
     timeout: Duration,
   ): List<AiMessageNode>
 
+  /** Streaming §11.2. The signed-in user's global id (`gid://gitlab/User/N`), or null when the server says none. */
+  fun currentUserId(connection: ConnectionSnapshot, timeout: Duration): String?
+
   companion object {
     /** Any string is accepted by the server (K5); identifies this client in GitLab's own telemetry. */
     const val PLATFORM_ORIGIN = "eclipse_plugin"
@@ -88,6 +91,8 @@ internal data class AiMessageDto(
 )
 internal data class AiMessageConnectionDto(val nodes: List<AiMessageDto?>?)
 internal data class AiMessagesData(val aiMessages: AiMessageConnectionDto?)
+internal data class CurrentUserDto(val id: String?)
+internal data class CurrentUserData(val currentUser: CurrentUserDto?)
 
 /**
  * [QuickChatApi] over [GitLabGraphQlClient]. This class logs nothing: questions, answers, file
@@ -162,6 +167,9 @@ class GraphQlQuickChatApi(
     }
   }
 
+  override fun currentUserId(connection: ConnectionSnapshot, timeout: Duration): String? =
+    graphQl.execute(CURRENT_USER_QUERY, emptyMap(), CurrentUserData::class.java, connection, timeout).currentUser?.id
+
   private fun currentFileVariable(file: CurrentFile): Map<String, Any?> = mapOf(
     "fileName" to file.fileName,
     "selectedText" to file.selectedText,
@@ -211,6 +219,11 @@ query quickChatVersion { metadata { version } }
     /** Design §11.2 Q1, second document (K10, K11). */
     const val PROJECT_QUERY = """
 query quickChatProject(${'$'}fullPath: ID!) { project(fullPath: ${'$'}fullPath) { id duoFeaturesEnabled } }
+"""
+
+    /** Streaming design §11.2: the user id the answer stream subscribes with. */
+    const val CURRENT_USER_QUERY = """
+query quickChatCurrentUser { currentUser { id } }
 """
 
     /** Design §11.2 Q2 (K1, K7). */

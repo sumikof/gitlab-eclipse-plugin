@@ -198,6 +198,29 @@ class GraphQlQuickChatApiTest : DescribeSpec({
     }
   }
 
+  describe("currentUserId (streaming §11.2)") {
+    it("sends the currentUser document with no variables and returns the global id") {
+      val r = stub("""{"currentUser":{"id":"gid://gitlab/User/7"}}""")
+
+      api.currentUserId(connection, timeout) shouldBe "gid://gitlab/User/7"
+      r.query.captured shouldBe GraphQlQuickChatApi.CURRENT_USER_QUERY
+      r.query.captured.trim() shouldBe "query quickChatCurrentUser { currentUser { id } }"
+      r.variables.captured shouldBe emptyMap()
+      r.connection.captured shouldBeSameInstanceAs connection
+      r.timeout.captured shouldBe timeout
+    }
+
+    it("returns null when currentUser is null") {
+      stub("""{"currentUser":null}""")
+      api.currentUserId(connection, timeout) shouldBe null
+    }
+
+    it("returns null when the id is absent") {
+      stub("""{"currentUser":{}}""")
+      api.currentUserId(connection, timeout) shouldBe null
+    }
+  }
+
   describe("project (Q1b)") {
     it("sends the project document with fullPath and decodes id and duoFeaturesEnabled") {
       val r = stub("""{"project":{"id":"gid://gitlab/Project/42","duoFeaturesEnabled":false}}""")
