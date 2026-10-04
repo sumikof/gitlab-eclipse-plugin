@@ -27,12 +27,10 @@ class ChunkAssembler(
   private val pending = ArrayList<StreamFrame>()
   private var pendingChars = 0
 
-  /** Chunks after the contiguous prefix, by chunkId. */
+  /** Chunks after the contiguous prefix, by chunkId; at most [maxChunks] of them. */
   private val ahead = HashMap<Int, String>()
   private var aheadChars = 0
 
-  /** Every chunkId of the current series (prefix and [ahead]). */
-  private val seen = HashSet<Int>()
   private val prefix = StringBuilder()
   private var next = 1
   private var finalText: String? = null
@@ -96,13 +94,15 @@ class ChunkAssembler(
   }
 
   private fun addChunk(id: Int, text: String): Change {
-    val reset = id in seen
+    // Already seen in this series: the prefix is exactly 1..next-1, the rest is in [ahead].
+    val reset = id < next || id in ahead
     if (reset) {
       clearSeries()
       seriesResets++
     }
-    if (buffered() + text.length > maxBufferedChars || seen.size + 1 > maxChunks) return overflow()
-    seen += id
+    // Only chunks held after a gap count toward [maxChunks]; the prefix is bounded by the char cap.
+    val held = id != next
+    if (buffered() + text.length > maxBufferedChars || (held && ahead.size + 1 > maxChunks)) return overflow()
     chunksAccepted++
     val before = prefix.length
     if (id == next) {
@@ -122,7 +122,6 @@ class ChunkAssembler(
   private fun clearSeries() {
     ahead.clear()
     aheadChars = 0
-    seen.clear()
     prefix.setLength(0)
     next = 1
   }

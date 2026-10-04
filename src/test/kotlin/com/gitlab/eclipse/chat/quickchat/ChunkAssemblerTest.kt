@@ -128,11 +128,27 @@ class ChunkAssemblerTest : DescribeSpec({
       a.accept(chunk(2, "ab")) shouldBe Change.NONE
       a.accept(chunk(3, "cde")) shouldBe Change.OVERFLOW
     }
-    it("overflows on the chunk count") {
+    it("overflows on the count of chunks held after a gap, not on the contiguous prefix") {
       val a = confirmed(1000, 2)
-      a.accept(chunk(2, "a"))
-      a.accept(chunk(3, "b"))
-      a.accept(chunk(4, "c")) shouldBe Change.OVERFLOW
+      (1..5).forEach { a.accept(chunk(it, "x")) shouldBe Change.DISPLAY }
+      a.accept(chunk(7, "a")) shouldBe Change.NONE
+      a.accept(chunk(8, "b")) shouldBe Change.NONE
+      a.accept(chunk(9, "c")) shouldBe Change.OVERFLOW
+    }
+    it("frees the held-chunk count when the gap fills") {
+      val a = confirmed(1000, 2)
+      a.accept(chunk(2, "b")) shouldBe Change.NONE
+      a.accept(chunk(3, "c")) shouldBe Change.NONE
+      a.accept(chunk(1, "a")) shouldBe Change.DISPLAY
+      a.accept(chunk(5, "e")) shouldBe Change.NONE
+      a.accept(chunk(6, "f")) shouldBe Change.NONE
+      a.displayText() shouldBe "abc"
+    }
+    it("does not overflow on 5000 in-order chunks under the char cap") {
+      val a = confirmed()
+      (1..5000).forEach { a.accept(chunk(it, "ab")) shouldBe Change.DISPLAY }
+      a.displayText().length shouldBe 10_000
+      a.chunksAccepted shouldBe 5000
     }
     it("overflows on pending frames before the requestId is known") {
       val a = ChunkAssembler(1000, 4096, 2)

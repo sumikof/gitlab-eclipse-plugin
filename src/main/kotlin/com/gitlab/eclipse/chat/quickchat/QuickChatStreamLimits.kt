@@ -23,7 +23,10 @@ object QuickChatStreamLimits {
   /** Everything the assembler holds, counted in UTF-16 chars (≈ 2 bytes each, so ~1 MiB) (§15.3). */
   const val MAX_BUFFERED_CHARS: Int = 512 * 1024
 
-  /** Chunks held for one series, including those after a gap (§15.3). */
+  /**
+   * Chunks held after a gap in one series (§15.3). The contiguous prefix does not count — it is
+   * bounded by [MAX_BUFFERED_CHARS] — so a long answer of many small chunks never trips this.
+   */
   const val MAX_CHUNKS: Int = 4096
 
   /** Frames held before the send's `requestId` is known (§15.3). */
