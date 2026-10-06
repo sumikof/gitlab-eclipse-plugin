@@ -1,0 +1,135 @@
+package com.gitlab.eclipse.chat.quickchat
+
+import com.gitlab.eclipse.api.http.GitLabHttpClient
+import com.gitlab.eclipse.inject.service
+import java.net.http.HttpClient
+import java.net.http.WebSocket
+import java.nio.ByteBuffer
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
+
+/** The send side of one ActionCable WebSocket (design `quick-chat-streaming` §11.1). */
+interface CableSocket {
+  fun sendText(text: String)
+
+  fun request(n: Long)
+
+  fun abort()
+}
+
+/**
+ * Receives the events of one ActionCable WebSocket (§11.1, §17). Called on transport threads:
+ * implementations must not throw, block or touch the UI.
+ */
+interface CableListener {
+  fun onOpen(socket: CableSocket)
+
+  fun onText(data: CharSequence, last: Boolean)
+
+  /**
+   * A binary part of [size] bytes. ActionCable JSON never sends binary frames, but they still count
+   * toward the receive limits (§15.3); the listener owns flow control as for text.
+   */
+  fun onBinary(size: Int, last: Boolean)
+
+  fun onClosed()
+
+  fun onError(error: Throwable)
+}
+
+/** Opens an ActionCable WebSocket (§11.1, §18). */
+fun interface CableSocketFactory {
+  fun connect(endpoint: CableEndpoint, token: String, listener: CableListener): CompletableFuture<CableSocket>
+}
+
+/**
+ * Opens the ActionCable WebSocket through the shared egress [HttpClient] so proxy and TLS settings
+ * apply (§11.1, §18). The client is fetched on every [connect] so a settings change is picked up.
+ * Only the subprotocol, `Authorization` and `Origin` are set (K-S4); the token is never logged.
+ */
+class JdkCableSocketFactory(
+  private val httpClient: () -> HttpClient = { service<GitLabHttpClient>().rebuildIfNeeded() },
+) : CableSocketFactory {
+  override fun connect(
+    endpoint: CableEndpoint,
+    token: String,
+    listener: CableListener,
+  ): CompletableFuture<CableSocket> {
+    val source = httpClient()
+      .newWebSocketBuilder()
+      .subprotocols(SUBPROTOCOL)
+      .connectTimeout(QuickChatStreamLimits.HANDSHAKE_TIMEOUT)
+      .header("Authorization", "Bearer $token")
+      .header("Origin", endpoint.origin)
+      .buildAsync(endpoint.uri, Adapter(listener))
+    return linkCancellation(source)
+  }
+
+  /**
+   * Returns a separate future the caller may cancel or fail (time-out or cancel while waiting for
+   * the handshake, §15.1, §17). [source] is deliberately never cancelled: the JDK's `buildAsync`
+   * future is a dependent stage (`send().thenApply(newWebSocket)`), and `CompletableFuture.cancel`
+   * does not propagate upstream, so cancelling it would not stop the exchange — and a handshake that
+   * later succeeds would skip `newWebSocket`, dropping its open connection without ever closing it.
+   * The public API cannot abort an in-flight handshake, so it is left running (bounded by
+   * [QuickChatStreamLimits.HANDSHAKE_TIMEOUT]); a WebSocket that arrives after the caller gave up is
+   * aborted on arrival, and a late failure is ignored. These callbacks never throw.
+   */
+  private fun linkCancellation(source: CompletableFuture<WebSocket>): CompletableFuture<CableSocket> {
+    val result = CompletableFuture<CableSocket>()
+    source.whenComplete { webSocket, error ->
+      when {
+        error != null -> result.completeExceptionally(error)
+        !result.complete(JdkCableSocket(webSocket)) -> runCatching { webSocket.abort() }
+      }
+    }
+    return result
+  }
+
+  /**
+   * Forwards JDK callbacks. `onOpen` deliberately does not call the JDK default `request(1)`: the
+   * [CableListener] owns flow control (§15.3).
+   */
+  private class Adapter(private val listener: CableListener) : WebSocket.Listener {
+    override fun onOpen(webSocket: WebSocket) {
+      listener.onOpen(JdkCableSocket(webSocket))
+    }
+
+    override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+      listener.onText(data, last)
+      return null
+    }
+
+    override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+      listener.onBinary(data.remaining(), last)
+      return null
+    }
+
+    override fun onClose(webSocket: WebSocket, statusCode: Int, reason: String): CompletionStage<*>? {
+      listener.onClosed()
+      return null
+    }
+
+    override fun onError(webSocket: WebSocket, error: Throwable) {
+      listener.onError(error)
+    }
+  }
+
+  private class JdkCableSocket(private val webSocket: WebSocket) : CableSocket {
+    override fun sendText(text: String) {
+      webSocket.sendText(text, true)
+    }
+
+    override fun request(n: Long) {
+      webSocket.request(n)
+    }
+
+    override fun abort() {
+      webSocket.abort()
+    }
+  }
+
+  private companion object {
+    const val SUBPROTOCOL = "actioncable-v1-json"
+  }
+}
