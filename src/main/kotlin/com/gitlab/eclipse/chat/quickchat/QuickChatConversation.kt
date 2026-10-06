@@ -60,6 +60,10 @@ class QuickChatConversation {
     var resultSink: ResultSink? = null
     var job: Job? = null
     var completionHandle: DisposableHandle? = null
+
+    /** The latest streamed text's reader and the scheduled partial render (streaming design §9.4). */
+    var progressSource: (() -> String)? = null
+    var renderTimer: Cancellable? = null
   }
 
   private val items = ArrayList<Entry>()

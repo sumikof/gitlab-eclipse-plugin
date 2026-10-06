@@ -22,7 +22,12 @@ import kotlin.time.Duration
  * What goes to the background is only the immutable request and a [ResultSink] (§9.2.5): the lambdas
  * handed to the runtime scope are built by top-level functions so they cannot capture this session.
  * Logs carry outcome kinds and exception class names only (NFR-4).
+ *
+ * TooManyFunctions is suppressed: every send-ending path (result, deadline, close, replacement) and
+ * the streamed partial render must share one UI-thread state and the single [finishOnce]/`abandon`
+ * cleanup; splitting them across classes would spread that state and its cleanup order.
  */
+@Suppress("TooManyFunctions")
 class QuickChatSession(
   private val conversation: QuickChatConversation,
   private val runtime: QuickChatRuntime,
@@ -35,6 +40,7 @@ class QuickChatSession(
   private val clock: MonotonicClock = runtime.clock,
   private val answerDeadline: Duration = QuickChatLimits.ANSWER_DEADLINE,
   private val maxDetached: Int = QuickChatLimits.MAX_DETACHED,
+  private val renderInterval: Duration = QuickChatStreamLimits.RENDER_INTERVAL,
 ) {
   private val logger by lazy { logger<QuickChatSession>() }
 
@@ -72,9 +78,17 @@ class QuickChatSession(
     conversation.add(Entry.Pending)
     view.render(conversation.toInlineModel())
     // Steps 6–7: the background gets immutable values, the gate and the sink — nothing else.
-    val request = QuickChatRequest(context, captured.anchorFile, conversation.binding, send.deadlineNanos, send.gate)
+    // The bound reference `sink::progress` captures the sink only, never this session (§17).
     val sink = ResultSink(this, ticket, gen, runOnUi)
     send.resultSink = sink
+    val request = QuickChatRequest(
+      context,
+      captured.anchorFile,
+      conversation.binding,
+      send.deadlineNanos,
+      send.gate,
+      onProgress = sink::progress,
+    )
     val job = launchSend(runtime.scope, service, request, sink)
     send.job = job
     send.completionHandle = watchCompletion(job, sink)
@@ -113,6 +127,32 @@ class QuickChatSession(
       is SendGate.State.Sent -> QuickChatOutcome.TimedOut(beforeSend = false, update = state.update)
     }
     finishOnce(ticket, gen, outcome)
+  }
+
+  /**
+   * A streamed partial answer (streaming design §9.4 step 2): display only. Dropped unless [ticket]
+   * is still the current send; otherwise remembered, and one render is scheduled per
+   * [renderInterval]. The text is read only when that render runs. Should [scheduleOnUi] throw, the
+   * exception goes to the posting sink's UI hop: the display is not updated, the send is unaffected.
+   */
+  fun onProgress(ticket: SubmitTicket, gen: Long, source: () -> String) {
+    if (!conversation.isCurrent(ticket, gen)) return
+    val send = conversation.inFlight ?: return
+    send.progressSource = source
+    if (send.renderTimer == null) {
+      send.renderTimer = scheduleOnUi(renderInterval.inWholeMilliseconds) { renderProgress(ticket, gen) }
+    }
+  }
+
+  private fun renderProgress(ticket: SubmitTicket, gen: Long) {
+    if (!conversation.isCurrent(ticket, gen)) return
+    val send = conversation.inFlight ?: return
+    send.renderTimer = null
+    val source = send.progressSource ?: return
+    guarded("show the partial answer") {
+      conversation.showPartial(source())
+      view.render(conversation.toInlineModel())
+    }
   }
 
   /**
@@ -166,6 +206,10 @@ class QuickChatSession(
 
   /** Lets go of a send's background (design §9.2.4 `finally`): nothing of it may reach this session. */
   private fun abandon(send: InFlight) {
+    // The final render is finishOnce's alone: no partial render may follow it (streaming design §9.5).
+    guarded("cancel the progress render") { send.renderTimer?.cancel() }
+    send.renderTimer = null
+    send.progressSource = null
     guarded("cancel the deadline") { send.watchdog?.cancel() }
     send.gate.closeIfOpen()
     send.completionHandle?.dispose()

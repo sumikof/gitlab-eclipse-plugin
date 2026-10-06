@@ -22,6 +22,8 @@ class ResultSink(
 ) {
   private val session = AtomicReference<QuickChatSession?>(session)
   private val delivered = AtomicBoolean(false)
+  private val latest = AtomicReference<(() -> String)?>(null)
+  private val progressPosted = AtomicBoolean(false)
 
   /** Background (w7): hands [outcome] to the UI. */
   fun deliver(outcome: QuickChatOutcome) {
@@ -34,6 +36,34 @@ class ResultSink(
     if (!delivered.get()) post(QuickChatOutcome.Interrupted)
   }
 
+  /**
+   * Background, from the stream (streaming design §9.4 step 1): keeps only the latest [source] and
+   * posts at most one UI action at a time, so a flood of chunks never floods the UI queue. May be
+   * called concurrently and after the send ended; never throws.
+   */
+  fun progress(source: () -> String) {
+    if (session.get() == null) return
+    latest.set(source)
+    if (progressPosted.compareAndSet(false, true)) {
+      try {
+        runOnUi { onProgressUi() }
+      } catch (e: Exception) {
+        progressPosted.set(false)
+        logger<ResultSink>().info("Quick Chat progress not posted to the UI: ${e.javaClass.name}")
+      }
+    }
+  }
+
+  /**
+   * UI thread: re-reads the session; the text itself is read later, once per render. The flag is
+   * reset before [latest] is read, so a progress arriving in between posts again instead of being lost.
+   */
+  private fun onProgressUi() {
+    progressPosted.set(false)
+    val source = latest.get() ?: return
+    session.get()?.onProgress(ticket, gen, source)
+  }
+
   /** UI thread: the body of every posted action. */
   fun onUi(outcome: QuickChatOutcome) {
     session.get()?.finishOnce(ticket, gen, outcome)
@@ -42,6 +72,7 @@ class ResultSink(
   /** UI thread (`finishOnce`, `end`): nothing reaches the session from here on. */
   fun detach() {
     session.set(null)
+    latest.set(null) // lets go of the stream's text reader
   }
 
   // Runs on a background thread or inside a completion handler: it must never throw.
