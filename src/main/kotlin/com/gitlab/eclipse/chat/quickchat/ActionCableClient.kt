@@ -114,7 +114,8 @@ class ActionCableClient(
       socket = null
     }
     confirmation.complete(false)
-    log("Quick Chat stream stopped: $reason")
+    // A client-requested stop is the normal end of every send; the send's summary line reports it (§19).
+    if (reason != CableStop.CLOSED_BY_CLIENT) log("Quick Chat stream stopped: $reason")
     try {
       toAbort?.abort()
     } catch (

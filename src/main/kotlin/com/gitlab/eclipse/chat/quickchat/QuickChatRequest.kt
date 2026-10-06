@@ -28,7 +28,10 @@ fun interface MonotonicClock {
 /**
  * Everything the background needs for one send (design §9.2 step 6), and nothing that reaches the UI:
  * immutable values plus the shared [gate]. [anchorFile] is null when the editor input has no
- * location; [deadlineNanos] is on the [MonotonicClock] the UI used to fix it.
+ * location; [deadlineNanos] is on the [MonotonicClock] the UI used to fix it. [onProgress] receives the
+ * answer in progress and reaches the UI only through `ResultSink`; it is for display only (streaming
+ * design §9.4). It may be called from background threads, concurrently, and after the stream closed;
+ * each call of `source()` returns the display text at that moment.
  */
 data class QuickChatRequest(
   val context: QuickChatContext,
@@ -36,6 +39,7 @@ data class QuickChatRequest(
   val binding: ConversationBinding?,
   val deadlineNanos: Long,
   val gate: SendGate,
+  val onProgress: (source: () -> String) -> Unit = {},
 )
 
 /**

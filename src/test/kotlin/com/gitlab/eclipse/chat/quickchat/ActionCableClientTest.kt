@@ -6,7 +6,12 @@ import com.google.gson.JsonParser
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
+import org.osgi.framework.Bundle
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ActionCableClientTest : DescribeSpec({
@@ -200,5 +205,17 @@ class ActionCableClientTest : DescribeSpec({
     s.aborted shouldBe 1
     s.sent.shouldBeEmpty()
     c.confirmation.getCompleted() shouldBe false
+  }
+  it("a client-requested stop is not logged (the send's stream summary covers it)") {
+    val log = mockk<ILog>(relaxUnitFun = true)
+    val messages = mutableListOf<String>()
+    every { log.info(capture(messages)) } returns Unit
+    every { Platform.getLog(any<Bundle>()) } returns log
+    val (client, _) = open()
+    client.stop(CableStop.CLOSED_BY_CLIENT)
+    messages.none { "Quick Chat stream stopped" in it } shouldBe true
+    val (client2, _) = open()
+    client2.stop(CableStop.OVERFLOW)
+    messages.any { "Quick Chat stream stopped: OVERFLOW" in it } shouldBe true
   }
 })

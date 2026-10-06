@@ -15,8 +15,10 @@ import java.net.http.HttpConnectTimeoutException
 import java.net.http.HttpTimeoutException
 import java.nio.channels.UnresolvedAddressException
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 
 /** The first HTTP status of the server-error class (5xx). */
 private const val FIRST_SERVER_ERROR_STATUS = 500
@@ -33,7 +35,12 @@ enum class ClearResult { NO_THREAD, SENT, REJECTED, CONNECTION_CHANGED, TIMED_OU
  * cancelling the coroutine interrupts it (E12, E14). Every exception except [CancellationException]
  * becomes a [QuickChatOutcome]. Logs only outcome kinds, HTTP status, correlation ids, requestIds,
  * counts and exception class names — never the question, answer, file or server text (NFR-4).
+ *
+ * TooManyFunctions is suppressed: the answer stream (streaming design §9.1 s1, §19) adds an open
+ * and a summary step that share the send's private [Progress] and budget; moving them out would
+ * expose that per-send state.
  */
+@Suppress("TooManyFunctions")
 class QuickChatService(
   private val api: QuickChatApi,
   private val connections: QuickChatConnections,
@@ -43,6 +50,7 @@ class QuickChatService(
   private val requestTimeout: Duration = QuickChatLimits.REQUEST_TIMEOUT,
   private val clearDeadline: Duration = QuickChatLimits.CLEAR_DEADLINE,
   private val newSubscriptionId: () -> String = { UUID.randomUUID().toString() },
+  private val streams: QuickChatStreams? = null,
 ) {
   private val logger by lazy { logger<QuickChatService>() }
 
@@ -54,6 +62,9 @@ class QuickChatService(
     var stage = Stage.BEFORE_SEND
     var update: BindingUpdate? = null
     var requestId: String? = null
+
+    /** The summary's `open=` part (streaming design §19); null when no stream was tried. */
+    var stream: String? = null
   }
 
   /**
@@ -94,23 +105,80 @@ class QuickChatService(
     val base = BindingUpdate(instanceUrl, proceed.preflight, threadId, proceed.projectChanged)
     progress.update = base
 
-    // w1 before the gate: passing the gate and then not sending would leave it Sending for nothing.
-    val timeout = budget.nextTimeout() ?: return QuickChatOutcome.TimedOut(beforeSend = true, update = base)
-    // w4
-    if (!request.gate.tryBeginSend()) return null
-    progress.stage = Stage.SENDING
-    val response = runInterruptible {
-      api.ask(
-        connection,
-        request.context.question,
-        request.context.currentFile,
-        proceed.preflight.resourceId,
-        threadId,
-        newSubscriptionId(),
-        timeout,
-      )
+    // s1 (streaming design §9.1): subscribe before aiAction, with the same clientSubscriptionId.
+    val subscriptionId = newSubscriptionId()
+    val stream = openStream(connection, subscriptionId, budget, request.onProgress, progress)
+    try {
+      // w1 after s1, which spends time, and before the gate: passing the gate and then not sending
+      // would leave it Sending for nothing.
+      val timeout = budget.nextTimeout() ?: return QuickChatOutcome.TimedOut(beforeSend = true, update = base)
+      // w4
+      if (!request.gate.tryBeginSend()) return null
+      progress.stage = Stage.SENDING
+      val response = runInterruptible {
+        api.ask(
+          connection,
+          request.context.question,
+          request.context.currentFile,
+          proceed.preflight.resourceId,
+          threadId,
+          subscriptionId,
+          timeout,
+        )
+      }
+      return afterAsk(response, base, request, progress, stream)
+    } finally {
+      stream?.close()
+      progress.stream?.let { logStream(it, stream, progress.requestId) }
     }
-    return afterAsk(response, base, request, progress)
+  }
+
+  /**
+   * s1: the stream, or null for none. Never throws except [CancellationException]: the stream is a
+   * display aid only (FR-S4), so every failure is "no stream" and the send goes on.
+   */
+  private suspend fun openStream(
+    connection: ConnectionSnapshot,
+    subscriptionId: String,
+    budget: RequestBudget,
+    onProgress: (() -> String) -> Unit,
+    progress: Progress,
+  ): AiCompletionStream? {
+    val opener = streams ?: return null
+    val wait = minOf(QuickChatStreamLimits.SUBSCRIBE_WAIT, budget.remainingNanos().nanoseconds)
+    if (!wait.isPositive()) return null
+    // Set only once open returned: progress before that has no stream to read from.
+    val holder = AtomicReference<AiCompletionStream?>()
+    val result = try {
+      opener.open(connection, subscriptionId, wait) { holder.get()?.let { onProgress(it::displayText) } }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (
+      @Suppress("TooGenericExceptionCaught") // A foreign opener; the stream must never break the send.
+      e: Exception,
+    ) {
+      progress.stream = "OPEN_THREW:${e.javaClass.name}"
+      return null
+    }
+    return when (result) {
+      is StreamOpenResult.Opened -> result.stream.also {
+        holder.set(it)
+        progress.stream = "CONFIRMED"
+      }
+      is StreamOpenResult.Failed -> {
+        progress.stream = result.reason.name
+        null
+      }
+    }
+  }
+
+  /** §19: one line per send that tried a stream — kinds and counts only, never text, token or user id. */
+  private fun logStream(open: String, stream: AiCompletionStream?, requestId: String?) {
+    logger.info(
+      "Quick Chat stream ended: open=$open stop=${stream?.stopReason ?: "none"} " +
+        "chunks=${stream?.chunksAccepted ?: 0} seriesResets=${stream?.seriesResets ?: 0} " +
+        "final=${stream?.finalReceived ?: false} requestId=$requestId",
+    )
   }
 
   private suspend fun afterAsk(
@@ -118,6 +186,7 @@ class QuickChatService(
     base: BindingUpdate,
     request: QuickChatRequest,
     progress: Progress,
+    stream: AiCompletionStream?,
   ): QuickChatOutcome {
     // w5
     val returned = response.threadId?.let { base.copy(threadId = it) } ?: base
@@ -126,6 +195,8 @@ class QuickChatService(
     if (response.errors.isNotEmpty()) return QuickChatOutcome.ServerRejected(response.errors, returned)
     val requestId = response.requestId ?: return QuickChatOutcome.ServerRejected(emptyList(), returned)
     val threadId = response.threadId ?: return QuickChatOutcome.Unsupported(null, returned)
+    // The stream shows only this send's chunks from here on (§9.1 step 5); display only (FR-S3).
+    stream?.confirmRequestId(requestId)
     request.gate.markSent(returned)
     progress.stage = Stage.AFTER_SEND
 
