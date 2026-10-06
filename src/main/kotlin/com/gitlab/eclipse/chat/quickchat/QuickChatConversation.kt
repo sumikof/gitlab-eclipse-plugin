@@ -18,7 +18,12 @@ const val QUICK_CHAT_ITEM_ID = "quick-chat"
 /**
  * One popup's conversation (design §12.1). UI thread only; the background never sees it — it gets an
  * immutable copy of [binding] inside the request, and results come back through `finishOnce`.
+ *
+ * TooManyFunctions is suppressed: the conversation's small UI-thread operations (in-flight
+ * bookkeeping, entry list edits, streamed-partial display) stay together in one class, since they
+ * all read and write the same private entry list and in-flight state.
  */
+@Suppress("TooManyFunctions")
 class QuickChatConversation {
   /** One line of the conversation pane. */
   sealed interface Entry {
@@ -141,8 +146,7 @@ class QuickChatConversation {
     earlierRemoved = false
   }
 
-  /** Drops the oldest entries while there are more than [MAX_ENTRIES] (design §9.7). */
-  private val trim: () -> Unit = {
+  private fun trim() {
     while (items.size > MAX_ENTRIES) {
       items.removeAt(0)
       earlierRemoved = true
