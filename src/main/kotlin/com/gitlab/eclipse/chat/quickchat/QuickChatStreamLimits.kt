@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.quickchat
 
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
@@ -11,6 +12,9 @@ import kotlin.time.toJavaDuration
 object QuickChatStreamLimits {
   /** How long a send waits for `confirm_subscription` before sending without a stream (§15.1). */
   val SUBSCRIBE_WAIT: Duration = 3.seconds
+
+  /** How often the popup re-renders while an answer streams (§9.4, §26.1): `render` rebuilds the whole pane. */
+  val RENDER_INTERVAL: Duration = 150.milliseconds
 
   /**
    * Bounds the WebSocket opening handshake (the Upgrade response, §15.1, §18). The JDK applies no

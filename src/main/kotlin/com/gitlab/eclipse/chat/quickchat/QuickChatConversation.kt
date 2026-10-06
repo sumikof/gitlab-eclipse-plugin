@@ -27,6 +27,12 @@ class QuickChatConversation {
     /** The answer being waited for; replaced by the send's result. */
     data object Pending : Entry
 
+    /**
+     * The answer being waited for, with the text streamed so far (streaming design §9.4). Display
+     * only: the send's result replaces it exactly like [Pending].
+     */
+    data class Streaming(val text: String) : Entry
+
     data class Answer(val markdown: String) : Entry
 
     data class Failure(val message: String) : Entry
@@ -93,9 +99,9 @@ class QuickChatConversation {
     trim()
   }
 
-  /** Replaces the [Entry.Pending] entry with [entry], or appends it when nothing is pending. */
+  /** Replaces the waiting entry ([Entry.Pending] or [Entry.Streaming]) with [entry], or appends it when nothing is waiting. */
   fun resolvePending(entry: Entry) {
-    val index = items.lastIndexOf(Entry.Pending)
+    val index = lastWaitingIndex
     if (index >= 0) items[index] = entry else add(entry)
   }
 
@@ -106,21 +112,37 @@ class QuickChatConversation {
     resolvePending(Entry.Answer(stored))
   }
 
+  /**
+   * Shows [text] streamed so far in the waiting entry (streaming design §9.4 step 4), cut to
+   * [MAX_ANSWER_BYTES]; an empty text shows the plain waiting entry. Does nothing when no entry is
+   * waiting: a late partial must never come back after the result.
+   */
+  fun showPartial(text: String) {
+    val index = lastWaitingIndex
+    if (index < 0) return
+    items[index] = if (text.isEmpty()) Entry.Pending else Entry.Streaming(Utf8.keepPrefix(text, MAX_ANSWER_BYTES))
+  }
+
   /** Puts "New chat" right before the pending send's question (design §9.2.2 step 5, A26). */
   fun insertSeparatorBeforePendingQuestion() {
-    val pending = items.lastIndexOf(Entry.Pending)
+    val pending = lastWaitingIndex
     if (pending >= 1 && items[pending - 1] is Entry.Question) {
       items.add(pending - 1, Entry.Separator)
       trim()
     }
   }
 
+  /** Index of the entry still waiting for a result ([Entry.Pending] or [Entry.Streaming]), or -1. */
+  private val lastWaitingIndex: Int
+    get() = items.indexOfLast { it == Entry.Pending || it is Entry.Streaming }
+
   fun clearEntries() {
     items.clear()
     earlierRemoved = false
   }
 
-  private fun trim() {
+  /** Drops the oldest entries while there are more than [MAX_ENTRIES] (design §9.7). */
+  private val trim: () -> Unit = {
     while (items.size > MAX_ENTRIES) {
       items.removeAt(0)
       earlierRemoved = true
@@ -158,6 +180,8 @@ fun QuickChatConversation.toInlineModel(): InlineThreadModel {
 private fun Entry.toInlineEntry(): InlineThreadEntry = when (this) {
   is Entry.Question -> InlineThreadEntry(QuickChatTexts.AUTHOR_YOU, "", text)
   Entry.Pending -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", QuickChatTexts.WAITING)
+  is Entry.Streaming ->
+    InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", "$text\n\n${QuickChatTexts.ANSWER_IN_PROGRESS}")
   is Entry.Answer -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", markdown, codeBlocks = true)
   is Entry.Failure -> InlineThreadEntry(QuickChatTexts.AUTHOR_DUO, "", message)
   Entry.Separator -> InlineThreadEntry("", "", QuickChatTexts.NEW_CHAT)

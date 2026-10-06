@@ -10,6 +10,7 @@ object QuickChatTexts {
   const val NEW_CHAT = "New chat"
   const val EARLIER_REMOVED = "(Earlier messages were removed)"
   const val ANSWER_TRUNCATED = "(Answer truncated)"
+  const val ANSWER_IN_PROGRESS = "(Answering…)"
   const val SEND = "Send"
 
   const val UNAVAILABLE_DEFAULT = "GitLab Duo Chat is not available."
