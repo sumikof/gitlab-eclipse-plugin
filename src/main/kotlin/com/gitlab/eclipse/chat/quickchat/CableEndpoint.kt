@@ -20,24 +20,27 @@ data class CableEndpoint(val uri: URI, val origin: String) {
       val (wsScheme, defaultPort) = wsSchemeAndDefaultPort(base.scheme)
       val host = base.host ?: throw IllegalArgumentException("Instance URL has no host")
       val port = base.port.takeIf { it != -1 && it != defaultPort } ?: -1
-      // Decoded, because the 7-arg constructor quotes it again; an explicit path component, never
-      // `resolve`, so a path starting with `//` cannot become a network-path reference to another host.
-      val path = base.path.orEmpty().trimEnd('/') + "/-/cable"
-      val endpoint = build(wsScheme, base.scheme.lowercase(), host, port, path)
-      // Defence in depth: the token is sent to this URI, so its authority must be the instance's.
+      // Raw, so escapes such as `%2F` reach the same route as the GraphQL client; never `resolve`d, so a
+      // path starting with `//` cannot become a network-path reference to another host.
+      val rawPath = base.rawPath.orEmpty().trimEnd('/') + "/-/cable"
+      val endpoint = build(wsScheme, base.scheme.lowercase(), host, port, rawPath)
+      // The guard against a path changing the authority: the token is sent to this URI.
       require(endpoint.uri.host.equals(host, ignoreCase = true) && endpoint.uri.port == port) { HOST_CHANGED }
       return endpoint
     }
 
     /**
-     * Re-serialises the parts. Exotic hosts the first parse accepts could still be rejected here
-     * (`URISyntaxException`, or `IllegalArgumentException` from the constructors); both messages
-     * embed the input, so they are replaced by a constant one and only [IllegalArgumentException]
-     * ever leaves [of].
+     * Re-serialises the parts. The cable URI is assembled as text from a fixed authority (the
+     * validated [host], already bracketed for IPv6 by [URI.getHost], and the non-default [port]) and
+     * the already-escaped [rawPath], then parsed, so escapes are kept as they are. Exotic hosts the
+     * first parse accepts could still be rejected here (`URISyntaxException`, or
+     * `IllegalArgumentException` from the constructor); both messages embed the input, so they are
+     * replaced by a constant one and only [IllegalArgumentException] ever leaves [of].
      */
-    private fun build(wsScheme: String, scheme: String, host: String, port: Int, path: String): CableEndpoint =
+    private fun build(wsScheme: String, scheme: String, host: String, port: Int, rawPath: String): CableEndpoint =
       try {
-        val uri = URI(wsScheme, null, host, port, path, null, null)
+        val authority = if (port == -1) host else "$host:$port"
+        val uri = URI("$wsScheme://$authority$rawPath")
         val origin = URI(scheme, null, host, port, null, null, null).toString()
         CableEndpoint(uri, origin)
       } catch (

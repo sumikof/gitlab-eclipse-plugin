@@ -49,6 +49,17 @@ class CableEndpointTest : DescribeSpec({
     CableEndpoint.of("https://example.com/my%20gitlab").uri.rawPath shouldBe "/my%20gitlab/-/cable"
     CableEndpoint.of("https://example.com/my%20gitlab/").uri.rawPath shouldBe "/my%20gitlab/-/cable"
   }
+  it("keeps an escaped reserved character in the sub path") {
+    CableEndpoint.of("https://example.com/git%2Flab").uri.rawPath shouldBe "/git%2Flab/-/cable"
+    CableEndpoint.of("https://example.com/git%2Flab/").uri.rawPath shouldBe "/git%2Flab/-/cable"
+  }
+  it("builds for an IPv6 host with the same host and port") {
+    val endpoint = CableEndpoint.of("https://[::1]:8443/gl")
+    endpoint.uri.host shouldBe "[::1]"
+    endpoint.uri.port shouldBe 8443
+    endpoint.uri shouldBe URI("wss://[::1]:8443/gl/-/cable")
+    endpoint.origin shouldBe "https://[::1]:8443"
+  }
   it("lets nothing but IllegalArgumentException escape for exotic hosts, without echoing the input") {
     listOf(
       "https://[fe80::1%25eth0]/gl",
