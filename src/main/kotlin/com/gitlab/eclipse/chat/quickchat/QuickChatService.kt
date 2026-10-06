@@ -172,13 +172,19 @@ class QuickChatService(
     }
   }
 
-  /** §19: one line per send that tried a stream — kinds and counts only, never text, token or user id. */
+  /**
+   * §19: one line per send that tried a stream — kinds and counts only, never text, token or user id.
+   * Never throws: it runs in `finally`, where a logging failure would replace the send's own result or
+   * its [CancellationException].
+   */
   private fun logStream(open: String, stream: AiCompletionStream?, requestId: String?) {
-    logger.info(
-      "Quick Chat stream ended: open=$open stop=${stream?.stopReason ?: "none"} " +
-        "chunks=${stream?.chunksAccepted ?: 0} seriesResets=${stream?.seriesResets ?: 0} " +
-        "final=${stream?.finalReceived ?: false} requestId=$requestId",
-    )
+    runCatching {
+      logger.info(
+        "Quick Chat stream ended: open=$open stop=${stream?.stopReason ?: "none"} " +
+          "chunks=${stream?.chunksAccepted ?: 0} seriesResets=${stream?.seriesResets ?: 0} " +
+          "final=${stream?.finalReceived ?: false} requestId=$requestId",
+      )
+    }
   }
 
   private suspend fun afterAsk(

@@ -406,6 +406,50 @@ class QuickChatServiceStreamTest : DescribeSpec({
     messages.none { "Quick Chat stream stopped" in it } shouldBe true // the client's normal stop is not logged
   }
 
+  it("a logger that throws neither replaces a cancellation nor changes an outcome") {
+    val log = mockk<ILog>(relaxUnitFun = true)
+    every { log.info(any()) } throws IllegalStateException("log broken")
+    every { Platform.getLog(any<Bundle>()) } returns log
+    // A cancelled send: the summary in finally must not replace the CancellationException.
+    val entered = CountDownLatch(1)
+    val never = CountDownLatch(1)
+    stubAsk {
+      entered.countDown()
+      never.await()
+      AskResponse(REQUEST_ID, emptyList(), THREAD)
+    }
+    val cancelled = FakeStreams.opened()
+    val h = harness(cancelled)
+    val background = BackgroundScope()
+    var thrown: Throwable? = null
+    try {
+      val job = background.scope.async {
+        try {
+          h.service.ask(h.request())
+        } catch (e: Throwable) {
+          thrown = e
+          throw e
+        }
+      }
+      entered.await(5, TimeUnit.SECONDS) shouldBe true
+      job.cancel()
+      withTimeout(5.seconds) { job.join() }
+      job.isCancelled shouldBe true
+    } finally {
+      never.countDown()
+      background.close()
+    }
+    thrown.shouldBeInstanceOf<CancellationException>()
+    cancelled.opened!!.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
+    verify { log.info(match { it.startsWith("Quick Chat stream ended") }) } // the throwing log was reached
+    // A completed send: its outcome is unchanged.
+    stubAsk { AskResponse(REQUEST_ID, emptyList(), THREAD) }
+    val streams = FakeStreams.opened()
+    val ok = harness(streams)
+    ok.service.ask(ok.request()) shouldBe QuickChatOutcome.Answered("The answer", firstUpdate)
+    streams.opened!!.stopReason shouldBe CableStop.CLOSED_BY_CLIENT
+  }
+
   it("logs no stream summary when there is no stream to try") {
     val messages = captureLog()
     val without = harness(null)
