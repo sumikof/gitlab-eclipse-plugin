@@ -64,6 +64,9 @@ class QuickChatConversation {
     /** The latest streamed text's reader and the scheduled partial render (streaming design §9.4). */
     var progressSource: (() -> String)? = null
     var renderTimer: Cancellable? = null
+
+    /** How long this send's last partial render took, in nanoseconds; widens the next interval (Codex PR #105 P1). */
+    var lastRenderNanos: Long = 0
   }
 
   private val items = ArrayList<Entry>()

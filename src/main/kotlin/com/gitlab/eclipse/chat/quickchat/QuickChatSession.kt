@@ -131,17 +131,30 @@ class QuickChatSession(
 
   /**
    * A streamed partial answer (streaming design §9.4 step 2): display only. Dropped unless [ticket]
-   * is still the current send; otherwise remembered, and one render is scheduled per
-   * [renderInterval]. The text is read only when that render runs. Should [scheduleOnUi] throw, the
-   * exception goes to the posting sink's UI hop: the display is not updated, the send is unaffected.
+   * is still the current send; otherwise remembered, and one render is scheduled at a time. The text
+   * is read only when that render runs. Should [scheduleOnUi] throw, the exception goes to the
+   * posting sink's UI hop: the display is not updated, the send is unaffected.
+   *
+   * The delay is [renderInterval] at least, and [QuickChatStreamLimits.RENDER_BACKOFF_FACTOR] times
+   * the last partial render's duration when that is longer (Codex PR #105 P1). A render is only
+   * scheduled once the previous one has run (its timer is cleared as it starts) and the delay counts
+   * from this call, after it ended: a render of duration d is followed by a gap of at least
+   * factor × d, so partial renders take at most 1 / (1 + factor) of the UI thread.
    */
   fun onProgress(ticket: SubmitTicket, gen: Long, source: () -> String) {
     if (!conversation.isCurrent(ticket, gen)) return
     val send = conversation.inFlight ?: return
     send.progressSource = source
     if (send.renderTimer == null) {
-      send.renderTimer = scheduleOnUi(renderInterval.inWholeMilliseconds) { renderProgress(ticket, gen) }
+      send.renderTimer = scheduleOnUi(renderDelayMillis(send.lastRenderNanos)) { renderProgress(ticket, gen) }
     }
+  }
+
+  /** The next partial render's delay after one that took [lastRenderNanos]; saturates instead of overflowing. */
+  private fun renderDelayMillis(lastRenderNanos: Long): Long {
+    val factor = QuickChatStreamLimits.RENDER_BACKOFF_FACTOR
+    val backoffNanos = lastRenderNanos.coerceIn(0, Long.MAX_VALUE / factor) * factor
+    return maxOf(renderInterval.inWholeMilliseconds, ceilMillis(backoffNanos))
   }
 
   private fun renderProgress(ticket: SubmitTicket, gen: Long) {
@@ -149,9 +162,15 @@ class QuickChatSession(
     val send = conversation.inFlight ?: return
     send.renderTimer = null
     val source = send.progressSource ?: return
-    guarded("show the partial answer") {
-      conversation.showPartial(source())
-      view.render(conversation.toInlineModel())
+    // Reading the text, building the model and rendering all count: a failed render too.
+    val start = clock.nanoTime()
+    try {
+      guarded("show the partial answer") {
+        conversation.showPartial(source())
+        view.render(conversation.toInlineModel())
+      }
+    } finally {
+      send.lastRenderNanos = clock.nanoTime() - start
     }
   }
 
@@ -231,7 +250,8 @@ class QuickChatSession(
 
 private const val NANOS_PER_MILLI = 1_000_000L
 
-private fun ceilMillis(nanos: Long): Long = (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI
+// Divides before rounding up so that no positive value overflows (a saturated render backoff is near Long.MAX_VALUE).
+private fun ceilMillis(nanos: Long): Long = nanos / NANOS_PER_MILLI + if (nanos % NANOS_PER_MILLI > 0) 1 else 0
 
 // Top-level on purpose: a lambda built inside the session could capture it (design §9.2.5).
 private fun launchSend(

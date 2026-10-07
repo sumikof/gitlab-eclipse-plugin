@@ -17,6 +17,13 @@ object QuickChatStreamLimits {
   val RENDER_INTERVAL: Duration = 150.milliseconds
 
   /**
+   * The UI-thread share partial renders may take (§9.4, Codex PR #105 P1): after a render that took
+   * d, the next one waits at least d × RENDER_BACKOFF_FACTOR, so renders occupy at most
+   * 1 / (1 + factor) of the UI thread (25 %) however slow `render` becomes.
+   */
+  const val RENDER_BACKOFF_FACTOR: Long = 3
+
+  /**
    * Bounds the WebSocket opening handshake (the Upgrade response, §15.1, §18). The JDK applies no
    * response timeout to the upgrade unless `WebSocket.Builder.connectTimeout` is set; the shared
    * `HttpClient` connect timeout covers only the TCP connect. On expiry the JDK fails the handshake
