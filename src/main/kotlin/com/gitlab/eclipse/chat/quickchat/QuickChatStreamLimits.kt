@@ -23,6 +23,12 @@ object QuickChatStreamLimits {
    */
   const val RENDER_BACKOFF_FACTOR: Long = 3
 
+  /** Chars of the streamed partial kept on screen: its newest tail, so it stays in view (§9.4, PR #105). */
+  const val PARTIAL_TAIL_CHARS: Int = 1200
+
+  /** Lines of the streamed partial kept on screen (the tail is cut to whichever limit is smaller). */
+  const val PARTIAL_TAIL_LINES: Int = 16
+
   /**
    * Bounds the WebSocket opening handshake (the Upgrade response, §15.1, §18). The JDK applies no
    * response timeout to the upgrade unless `WebSocket.Builder.connectTimeout` is set; the shared
