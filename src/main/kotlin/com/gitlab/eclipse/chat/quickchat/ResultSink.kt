@@ -40,19 +40,30 @@ class ResultSink(
    * Background, from the stream (streaming design §9.4 step 1): keeps only the latest [source] and
    * posts at most one UI action at a time, so a flood of chunks never floods the UI queue. May be
    * called concurrently and after the send ended; never throws.
+   *
+   * A callback that arrives while a post is being attempted leaves the posting to it. Should that
+   * post fail, the newer source would be stranded until a third callback, so a failed post is
+   * retried once when [latest] changed meanwhile (Codex PR #105 P2) — once only: a disposed display
+   * fails every time and must not spin.
    */
   fun progress(source: () -> String) {
     if (session.get() == null) return
     latest.set(source)
-    if (progressPosted.compareAndSet(false, true)) {
-      try {
-        runOnUi { onProgressUi() }
-      } catch (e: Exception) {
-        progressPosted.set(false)
-        logger<ResultSink>().info("Quick Chat progress not posted to the UI: ${e.javaClass.name}")
-      }
-    }
+    if (!progressPosted.compareAndSet(false, true)) return
+    if (tryPostProgress()) return
+    if (latest.get() !== source && progressPosted.compareAndSet(false, true)) tryPostProgress()
   }
+
+  /** Posts the progress action; on failure clears the in-flight flag so a later callback can post. */
+  private fun tryPostProgress(): Boolean =
+    try {
+      runOnUi { onProgressUi() }
+      true
+    } catch (e: Exception) {
+      progressPosted.set(false)
+      logger<ResultSink>().info("Quick Chat progress not posted to the UI: ${e.javaClass.name}")
+      false
+    }
 
   /**
    * UI thread: re-reads the session; the text itself is read later, once per render. The flag is

@@ -136,4 +136,43 @@ class ResultSinkTest : DescribeSpec({
     ui.drain()
     verify(exactly = 1) { session.onProgress(t, 0, late) }
   }
+
+  it("a progress suppressed while a failing post was in flight is posted once more (Codex PR #105 P2)") {
+    val ui = FakeUi()
+    val session = mockk<QuickChatSession>(relaxed = true)
+    val t = ticket()
+    lateinit var sink: ResultSink
+    val second = { "ab" }
+    var calls = 0
+    val runOnUi: (() -> Unit) -> Unit = { action ->
+      calls++
+      if (calls == 1) {
+        // The concurrent callback: it sees a post in flight and leaves it to this one.
+        sink.progress(second)
+        error("disposed")
+      }
+      ui.runOnUi(action)
+    }
+    sink = ResultSink(session, t, 0, runOnUi)
+    sink.progress { "a" }
+    calls shouldBe 2
+    ui.queue.size shouldBe 1
+    ui.drain()
+    verify(exactly = 1) { session.onProgress(t, 0, second) }
+  }
+
+  it("a runOnUi that always fails is retried at most once per progress, never in a loop") {
+    val session = mockk<QuickChatSession>(relaxed = true)
+    lateinit var sink: ResultSink
+    var calls = 0
+    sink = ResultSink(session, ticket(), 0) {
+      calls++
+      sink.progress { "newer $calls" }
+      error("disposed")
+    }
+    sink.progress { "a" }
+    calls shouldBe 2
+    sink.progress { "b" }
+    calls shouldBe 4
+  }
 })
