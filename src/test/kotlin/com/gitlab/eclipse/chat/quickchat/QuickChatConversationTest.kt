@@ -181,4 +181,132 @@ class QuickChatConversationTest : DescribeSpec({
         listOf(false, true, false, false, false)
     }
   }
+
+  describe("streamed partial answers (streaming design §9.4)") {
+    it("showPartial replaces the pending entry and keeps replacing its own streaming entry") {
+      val c = QuickChatConversation()
+      c.add(Entry.Question("q"))
+      c.add(Entry.Pending)
+      c.showPartial("Hel")
+      c.entries shouldBe listOf(Entry.Question("q"), Entry.Streaming("Hel"))
+      c.showPartial("Hello")
+      c.entries shouldBe listOf(Entry.Question("q"), Entry.Streaming("Hello"))
+    }
+
+    it("an empty partial shows the plain waiting entry again") {
+      val c = QuickChatConversation()
+      c.add(Entry.Pending)
+      c.showPartial("x")
+      c.showPartial("")
+      c.entries shouldBe listOf(Entry.Pending)
+    }
+
+    it("showPartial does nothing when nothing is pending") {
+      val c = QuickChatConversation()
+      c.add(Entry.Answer("done"))
+      c.showPartial("late")
+      c.entries shouldBe listOf(Entry.Answer("done"))
+    }
+
+    it("the result replaces a streaming entry") {
+      val c = QuickChatConversation()
+      c.add(Entry.Pending)
+      c.showPartial("part")
+      c.storeAnswer("full")
+      c.entries shouldBe listOf(Entry.Answer("full"))
+      val f = QuickChatConversation()
+      f.add(Entry.Pending)
+      f.showPartial("part")
+      f.resolvePending(Entry.Failure("no"))
+      f.entries shouldBe listOf(Entry.Failure("no"))
+    }
+
+    it("a project change still puts New chat before the question of a streaming send") {
+      val c = QuickChatConversation()
+      c.add(Entry.Question("q"))
+      c.add(Entry.Pending)
+      c.showPartial("part")
+      c.insertSeparatorBeforePendingQuestion()
+      c.entries shouldBe listOf(Entry.Separator, Entry.Question("q"), Entry.Streaming("part"))
+    }
+
+    describe("only the newest tail of a partial is shown (Codex PR #105)") {
+      val maxLines = QuickChatStreamLimits.PARTIAL_TAIL_LINES
+      val maxChars = QuickChatStreamLimits.PARTIAL_TAIL_CHARS
+
+      fun shown(text: String): Entry.Streaming {
+        val c = QuickChatConversation()
+        c.add(Entry.Pending)
+        c.showPartial(text)
+        return c.entries.single() as Entry.Streaming
+      }
+
+      it("uses the agreed limits") {
+        maxLines shouldBe 16
+        maxChars shouldBe 1200
+        QuickChatTexts.PARTIAL_ELIDED shouldBe "…"
+      }
+
+      it("a text within both limits is kept whole") {
+        val text = (1..maxLines).joinToString("\n") { "line $it" }
+        shown(text) shouldBe Entry.Streaming(text, elided = false)
+      }
+
+      it("keeps the last lines and renders the elision mark before them") {
+        val lines = (1..40).map { "line $it" }
+        val tail = lines.takeLast(maxLines).joinToString("\n")
+        shown(lines.joinToString("\n")) shouldBe Entry.Streaming(tail, elided = true)
+
+        val c = QuickChatConversation()
+        c.add(Entry.Pending)
+        c.showPartial(lines.joinToString("\n"))
+        val entry = c.toInlineModel().items.single().entries.single()
+        entry.body shouldBe "${QuickChatTexts.PARTIAL_ELIDED}\n$tail\n\n${QuickChatTexts.ANSWER_IN_PROGRESS}"
+        entry.codeBlocks shouldBe false
+      }
+
+      it("keeps the last chars of one long line") {
+        val text = (0 until 5000).map { 'a' + it % 26 }.joinToString("")
+        shown(text) shouldBe Entry.Streaming(text.takeLast(maxChars), elided = true)
+      }
+
+      it("never starts on the low half of a surrogate pair") {
+        // 2001 chars: the last 1200 would start on a low surrogate (index 801).
+        val text = "😀".repeat(1000) + "y"
+        text[text.length - maxChars].isLowSurrogate() shouldBe true
+        val kept = shown(text)
+        kept.elided shouldBe true
+        kept.text.first().isLowSurrogate() shouldBe false
+        (kept.text.length <= maxChars) shouldBe true
+        kept.text shouldBe "😀".repeat((maxChars - 2) / 2) + "y"
+      }
+
+      it("a trailing newline ends the last line: it is kept and does not count as a line") {
+        val lines = (1..40).map { "line $it" }
+        val text = lines.joinToString("\n") + "\n"
+        shown(text) shouldBe Entry.Streaming(lines.takeLast(maxLines).joinToString("\n") + "\n", elided = true)
+        val exact = (1..maxLines).joinToString("\n") { "line $it" } + "\n"
+        shown(exact) shouldBe Entry.Streaming(exact, elided = false)
+      }
+
+      it("the final answer still replaces the tail with the full text") {
+        val text = (1..40).joinToString("\n") { "line $it" }
+        val c = QuickChatConversation()
+        c.add(Entry.Pending)
+        c.showPartial(text)
+        c.storeAnswer(text)
+        c.entries shouldBe listOf(Entry.Answer(text))
+      }
+    }
+
+    it("renders a streaming entry as plain text followed by the in-progress line, without code blocks") {
+      val c = QuickChatConversation()
+      c.add(Entry.Pending)
+      c.showPartial("```kotlin\nval x\n")
+      val entry = c.toInlineModel().items.single().entries.single()
+      entry.author shouldBe QuickChatTexts.AUTHOR_DUO
+      entry.body shouldBe "```kotlin\nval x\n\n\n${QuickChatTexts.ANSWER_IN_PROGRESS}"
+      entry.codeBlocks shouldBe false
+    }
+  }
 })

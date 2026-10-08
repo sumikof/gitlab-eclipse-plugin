@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.chat.quickchat
 
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
@@ -11,6 +12,22 @@ import kotlin.time.toJavaDuration
 object QuickChatStreamLimits {
   /** How long a send waits for `confirm_subscription` before sending without a stream (§15.1). */
   val SUBSCRIBE_WAIT: Duration = 3.seconds
+
+  /** How often the popup re-renders while an answer streams (§9.4, §26.1): `render` rebuilds the whole pane. */
+  val RENDER_INTERVAL: Duration = 150.milliseconds
+
+  /**
+   * The UI-thread share partial renders may take (§9.4, Codex PR #105 P1): after a render that took
+   * d, the next one waits at least d × RENDER_BACKOFF_FACTOR, so renders occupy at most
+   * 1 / (1 + factor) of the UI thread (25 %) however slow `render` becomes.
+   */
+  const val RENDER_BACKOFF_FACTOR: Long = 3
+
+  /** Chars of the streamed partial kept on screen: its newest tail, so it stays in view (§9.4, PR #105). */
+  const val PARTIAL_TAIL_CHARS: Int = 1200
+
+  /** Lines of the streamed partial kept on screen (the tail is cut to whichever limit is smaller). */
+  const val PARTIAL_TAIL_LINES: Int = 16
 
   /**
    * Bounds the WebSocket opening handshake (the Upgrade response, §15.1, §18). The JDK applies no

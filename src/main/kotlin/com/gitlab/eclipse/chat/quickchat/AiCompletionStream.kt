@@ -28,6 +28,16 @@ sealed interface StreamOpenResult {
   data class Failed(val reason: StreamOpenFailure, val exceptionClass: String? = null) : StreamOpenResult
 }
 
+/** Opens one send's answer stream (§9.1 s1); the seam [QuickChatService] is wired through. */
+fun interface QuickChatStreams {
+  suspend fun open(
+    connection: ConnectionSnapshot,
+    clientSubscriptionId: String,
+    waitLimit: Duration,
+    onProgress: () -> Unit,
+  ): StreamOpenResult
+}
+
 /**
  * Opens the per-send answer stream (design `quick-chat-streaming` §9.1 s1, §14, §15.1): the user id,
  * then an ActionCable subscription to `aiCompletionResponse`, all within one wait limit.
@@ -39,13 +49,13 @@ class AiCompletionStreamOpener(
   private val api: QuickChatApi,
   private val sockets: CableSocketFactory = JdkCableSocketFactory(),
   private val clock: MonotonicClock = MonotonicClock.SYSTEM,
-) {
+) : QuickChatStreams {
   /**
    * §9.1 s1. Waits at most [waitLimit] for `confirm_subscription`. Never throws except
    * [CancellationException] when the caller is cancelled; on every non-[StreamOpenResult.Opened] path, and on cancellation, the
    * client is stopped so its socket is aborted, now or when it opens later.
    */
-  suspend fun open(
+  override suspend fun open(
     connection: ConnectionSnapshot,
     clientSubscriptionId: String,
     waitLimit: Duration,

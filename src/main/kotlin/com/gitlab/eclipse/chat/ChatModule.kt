@@ -2,6 +2,7 @@ package com.gitlab.eclipse.chat
 
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.context.EditorSelectionContextProvider
+import com.gitlab.eclipse.chat.quickchat.AiCompletionStreamOpener
 import com.gitlab.eclipse.chat.quickchat.ApiClientQuickChatConnections
 import com.gitlab.eclipse.chat.quickchat.GraphQlQuickChatApi
 import com.gitlab.eclipse.chat.quickchat.QuickChatApi
@@ -78,5 +79,5 @@ val chatModule = module {
     QuickChatPreflight(get(), resolver::resolveProjectForFile)
   }
   single<QuickChatPoller> { QuickChatPoller(get(), get()) }
-  single<QuickChatService> { QuickChatService(get(), get(), get(), get()) }
+  single<QuickChatService> { QuickChatService(get(), get(), get(), get(), streams = AiCompletionStreamOpener(get())) }
 }
