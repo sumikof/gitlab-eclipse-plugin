@@ -204,7 +204,12 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   val languageServerWrapper = mockk<GitLabLanguageServerWrapper>(relaxUnitFun = true)
-  val configurationService = mockk<GitLabLanguageServerConfigurationService>(relaxUnitFun = true)
+  // Rebuilt for every test (beforeEach). A test that stops its provider right after a start or a
+  // restart can leave that server's readiness callback still running: it passed the superseded
+  // check before stop() took the lock, and its configuration send lands only after afterEach has
+  // cleared the mocks. On a shared mock that send is counted by whichever test runs next, so a
+  // fresh instance per test is what keeps an exact count about the test's own connections.
+  var configurationService = mockk<GitLabLanguageServerConfigurationService>(relaxUnitFun = true)
   val openFilesService = mockk<GitLabLanguageServerOpenFilesService>(relaxUnitFun = true)
   val proxyManager = mockk<LanguageServerProxyManager>()
   val webviewService = mockk<LanguageServerWebviewService>(relaxUnitFun = true)
@@ -258,6 +263,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     // The wrapper's snapshot is process-wide too, and the revocation tests below read a real one.
     GitLabLanguageServerWrapper().unregisterLanguageServer()
     nextInitializeReply = InitializeReply.SUCCESS
+    configurationService = mockk(relaxUnitFun = true)
     every { installer.install() } returns "/fake/language-server"
     every { workspaceFolders } returns eclipseProjects
     // Not covered by relaxUnitFun: the identity-aware revocation returns whether it cleared.
