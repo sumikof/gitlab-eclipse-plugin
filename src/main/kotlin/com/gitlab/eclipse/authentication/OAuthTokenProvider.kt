@@ -11,31 +11,59 @@ import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * Holds the OAuth token and refreshes it when it expires (design §8, §11).
+ *
+ * - Reads are lock-free. The first load from secure storage publishes with `compareAndSet(null, …)`
+ *   only, so it never overwrites a token that is already published (including a refreshed one).
+ * - Refreshes, authorization-flow updates and the drop after a rejection write under [refreshLock],
+ *   so concurrent callers share one refresh instead of replaying the same refresh token.
+ * - Notifications and `sendConfiguration` always run after [refreshLock] is released.
+ */
 class OAuthTokenProvider(
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
   private val preferenceStore: ScopedPreferenceStore = service(),
-  private val oAuthSecretStorage: OAuthSecretStorage = OAuthSecretStorage()
+  private val oAuthSecretStorage: OAuthSecretStorage = OAuthSecretStorage(),
+  // Resolved lazily: GitLabOAuthService itself looks up this provider (cycle).
+  private val oAuthService: () -> GitLabOAuthService = { service() },
+  private val clock: () -> Instant = Instant::now,
+  private val notify: (String) -> Unit = NotificationUtils::show,
 ) : TokenProvider {
-  private var currentToken: GitLabAuthorizationToken? = null
+  private val currentToken = AtomicReference<GitLabAuthorizationToken?>(null)
   private val logger by lazy { logger<OAuthTokenProvider>() }
+
+  /** Never taken on the UI thread; never held while notifying or sending the configuration. */
+  private val refreshLock = Any()
+
+  /** Guarded by [refreshLock]. No refresh before this instant after a transient failure. */
+  private var retryNotBefore: Instant = Instant.MIN
+
+  /** Guarded by [refreshLock]. Whether the current run of transient failures was already notified. */
+  private var transientNotified = false
 
   var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
   override fun getToken(): String {
-    if (currentToken == null) {
-      loadCachedToken()
-    } else {
-      refreshTokenIfExpired()
-    }
+    if (currentToken.get() == null) loadCachedIfAbsent()
+    val token = currentToken.get() ?: return ""
+    if (token.tokenExpirationTimestamp > clock()) return token.accessToken
 
-    return currentToken?.accessToken.orEmpty()
+    refreshIfExpired()
+    // After a transient failure this is still the (buffer-expired) token: the server accepts it
+    // until the real expiry, 120 s later.
+    return currentToken.get()?.accessToken.orEmpty()
   }
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {
-    setOAuthInPreferenceStore(true)
-    this.currentToken = newToken
-    oAuthSecretStorage.setOAuthToken(currentToken)
+    synchronized(refreshLock) {
+      setOAuthInPreferenceStore(true)
+      currentToken.set(newToken)
+      oAuthSecretStorage.setOAuthToken(newToken)
+      retryNotBefore = Instant.MIN
+      transientNotified = false
+    }
     languageServiceConfigurationService.sendConfiguration()
   }
 
@@ -44,72 +72,129 @@ class OAuthTokenProvider(
     preferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, tokenProviderType)
   }
 
-  private fun loadCachedToken() {
-    if (currentToken != null || !isOAuthEnabled()) return
+  /**
+   * Loads the cached token from secure storage if none is published yet. Takes no lock, so it is
+   * safe on the UI thread; the read runs on the caller's thread as before.
+   */
+  internal fun loadCachedIfAbsent() {
+    if (currentToken.get() != null || !isOAuthEnabled()) return
 
-    try {
-      oAuthSecretStorage.getOAuthToken()?.let { cachedToken ->
-        logger.info(
-          "Loading cached token from PasswordSafe. Expiration timestamp is ${cachedToken.tokenExpirationTimestamp}"
-        )
-        currentToken = cachedToken
-        refreshTokenIfExpired()
-      } ?: run {
-        logger.info(
-          "No cached token found in PasswordSafe. Updating settings to reflect that OAuth is no longer enabled."
-        )
-        setOAuthInPreferenceStore(false)
-      }
+    val cachedToken = try {
+      oAuthSecretStorage.getOAuthToken()
     } catch (e: Exception) {
-      logger.info("Failed to load cached token: ${e.message}")
-      setOAuthInPreferenceStore(false)
-    }
-  }
-
-  private fun refreshTokenIfExpired() {
-    val tokenExpirationTimestamp = currentToken?.tokenExpirationTimestamp ?: Instant.MIN
-    // Always check if the token is expired first
-    if (tokenExpirationTimestamp > Instant.now()) return
-
-    logger.info("Refreshing expired token with timestamp $tokenExpirationTimestamp.")
-
-    // TODO(Task 2): handle RefreshOutcome.Rejected / Transient distinctly; for now any non-Refreshed
-    // outcome takes the pre-existing "refresh failed" branch (minimal compile fix for the new type).
-    val outcome = service<GitLabOAuthService>().refreshToken(currentToken?.refreshToken.orEmpty())
-    val refreshedToken = (outcome as? RefreshOutcome.Refreshed)?.token
-    if (refreshedToken == null) {
-      logger.info("Failed to refresh the OAuth token.")
-      NotificationUtils.show("Failed to refresh the OAuth token. Please re-authenticate.")
+      logger.info("Failed to load cached token: ${e::class.java.name}")
       setOAuthInPreferenceStore(false)
       return
     }
 
-    logger.info("The OAuth token has been refreshed and it expires at ${refreshedToken.tokenExpirationTimestamp}.")
+    if (cachedToken == null) {
+      logger.info(
+        "No cached token found in PasswordSafe. Updating settings to reflect that OAuth is no longer enabled."
+      )
+      setOAuthInPreferenceStore(false)
+      return
+    }
 
-    updateToken(refreshedToken)
+    if (currentToken.compareAndSet(null, cachedToken)) {
+      logger.info(
+        "Loading cached token from PasswordSafe. Expiration timestamp is ${cachedToken.tokenExpirationTimestamp}"
+      )
+    }
+  }
+
+  /**
+   * Refreshes at most once across concurrent callers. The decision, the network call and the state
+   * writes happen under [refreshLock]; the outcome's effect (notification or `sendConfiguration`)
+   * runs only after the lock is released.
+   */
+  private fun refreshIfExpired() {
+    val effect = synchronized<(() -> Unit)?>(refreshLock) {
+      // Null after a rejection: nothing left to refresh.
+      val token = currentToken.get() ?: return@synchronized null
+      val now = clock()
+      // Another caller refreshed it while we waited, or a transient failure is backing off.
+      if (token.tokenExpirationTimestamp > now || now < retryNotBefore) return@synchronized null
+      // A late first load re-published a rejected token, or the user switched to PAT (design N1).
+      if (!isOAuthEnabled()) {
+        currentToken.set(null)
+        return@synchronized null
+      }
+
+      logger.info("Refreshing expired token with timestamp ${token.tokenExpirationTimestamp}.")
+
+      when (val outcome = oAuthService().refreshToken(token.refreshToken)) {
+        is RefreshOutcome.Refreshed -> {
+          val refreshedToken = outcome.token
+          currentToken.set(refreshedToken)
+          oAuthSecretStorage.setOAuthToken(refreshedToken)
+          retryNotBefore = Instant.MIN
+          transientNotified = false
+          logger.info(
+            "The OAuth token has been refreshed and it expires at ${refreshedToken.tokenExpirationTimestamp}."
+          )
+          languageServiceConfigurationService::sendConfiguration
+        }
+
+        is RefreshOutcome.Rejected -> {
+          // Drop the dead token so it is not refreshed again; secure storage keeps it until re-authentication.
+          currentToken.set(null)
+          retryNotBefore = Instant.MIN
+          transientNotified = false
+          logger.info("Failed to refresh the OAuth token: Rejected(${outcome.error}).")
+          setOAuthInPreferenceStore(false)
+          val reauthenticateNotice: () -> Unit = { notify(REAUTHENTICATE_MESSAGE) }
+          reauthenticateNotice
+        }
+
+        is RefreshOutcome.Transient -> {
+          retryNotBefore = clock().plus(RETRY_BACKOFF)
+          logger.info(
+            "Failed to refresh the OAuth token: Transient(${outcome.reason}). Retrying after $retryNotBefore."
+          )
+          if (transientNotified) {
+            null
+          } else {
+            transientNotified = true
+            val transientNotice: () -> Unit = { notify(TRANSIENT_FAILURE_MESSAGE) }
+            transientNotice
+          }
+        }
+      }
+    }
+    effect?.invoke()
   }
 
   fun startTokenRefreshTimer(
-    refreshIntervalInSeconds: Int = currentToken?.expiresIn ?: DEFAULT_REFRESH_INTERVAL_SECONDS
+    refreshIntervalInSeconds: Int = currentToken.get()?.expiresIn ?: DEFAULT_REFRESH_INTERVAL_SECONDS
   ) {
+    scheduleRefresh(Duration.ofSeconds(refreshIntervalInSeconds.toLong()).toMillis())
+  }
+
+  internal fun scheduleRefresh(periodInMillis: Long) {
     if (!isOAuthEnabled()) {
       return
     }
 
-    if (currentToken == null) {
+    if (currentToken.get() == null) {
       logger.info("Canceling the timer for token refresh.")
       scheduler.shutdownNow()
       return
     }
 
-    val refreshIntervalInMillis = Duration.ofSeconds(refreshIntervalInSeconds.toLong()).toMillis()
+    scheduler.scheduleAtFixedRate({ runScheduledRefresh() }, 0, periodInMillis, TimeUnit.MILLISECONDS)
+  }
 
-    scheduler.scheduleAtFixedRate({
-      if (currentToken != null) {
-        refreshTokenIfExpired()
+  /** The scheduled task body. Catches everything: an escaping throwable would cancel all later runs. */
+  internal fun runScheduledRefresh() {
+    try {
+      if (currentToken.get() != null) {
+        refreshIfExpired()
         logger.info("Token refreshed by scheduled task.")
       }
-    }, 0, refreshIntervalInMillis, TimeUnit.MILLISECONDS)
+    } catch (t: Throwable) {
+      // Type name only: an exception message may carry a response body.
+      logger.warn("Scheduled OAuth refresh failed: ${t::class.java.name}")
+    }
   }
 
   private fun isOAuthEnabled(): Boolean =
@@ -122,5 +207,11 @@ class OAuthTokenProvider(
 
   companion object {
     const val DEFAULT_REFRESH_INTERVAL_SECONDS: Int = 7200
+
+    /** How long to wait after a transient refresh failure before trying again. */
+    val RETRY_BACKOFF: Duration = Duration.ofSeconds(30)
+
+    private const val REAUTHENTICATE_MESSAGE = "Failed to refresh the OAuth token. Please re-authenticate."
+    private const val TRANSIENT_FAILURE_MESSAGE = "Could not refresh the GitLab OAuth token. Retrying automatically."
   }
 }
