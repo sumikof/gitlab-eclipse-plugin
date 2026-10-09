@@ -21,7 +21,11 @@ import java.util.concurrent.atomic.AtomicReference
  * - Refreshes, authorization-flow updates and the drop after a rejection write under [refreshLock],
  *   so concurrent callers share one refresh instead of replaying the same refresh token.
  * - Notifications and `sendConfiguration` always run after [refreshLock] is released.
+ *
+ * TooManyFunctions is suppressed: [hasToken] (design §7.3) has to read [currentToken] and the lock-free
+ * first load directly, so it cannot move out of this class without exposing that state.
  */
+@Suppress("TooManyFunctions")
 class OAuthTokenProvider(
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
   private val preferenceStore: ScopedPreferenceStore = service(),
@@ -54,6 +58,16 @@ class OAuthTokenProvider(
     // After a transient failure this is still the (buffer-expired) token: the server accepts it
     // until the real expiry, 120 s later.
     return currentToken.get()?.accessToken.orEmpty()
+  }
+
+  /**
+   * Whether an OAuth token is available (design §7.3). An expired token counts: whoever sends the
+   * request refreshes it. Never takes [refreshLock] and never refreshes, so it does not wait for an
+   * in-flight refresh and is safe on the UI thread (design §11).
+   */
+  override fun hasToken(): Boolean {
+    loadCachedIfAbsent()
+    return !currentToken.get()?.accessToken.isNullOrEmpty()
   }
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {

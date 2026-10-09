@@ -259,7 +259,7 @@ class SecurityScanLauncherTest : DescribeSpec({
       clearMocks(preferenceStore, wrapper, configurationService, tokenManager, server)
       every { wrapper.currentSnapshot } returns
         LanguageServerHandle(server, LanguageServerSession(), DiagnosticGenerationRegistry.currentEpoch)
-      every { tokenManager.getToken() } returns "token"
+      every { tokenManager.hasToken() } returns true
       every { configurationService.buildParams() } returns GitLabLanguageServerConfigurationParams()
       enable(true)
     }
@@ -321,6 +321,18 @@ class SecurityScanLauncherTest : DescribeSpec({
       launcher(scope).launch(URI_A, SecurityScanSource.SAVE) shouldBe SecurityScanLaunchOutcome.DISABLED
       scope.testScheduler.advanceUntilIdle()
 
+      verify(exactly = 0) { tokenManager.hasToken() }
+      verify(exactly = 0) { tokenManager.getToken() }
+    }
+
+    it("checks for a token without reading it, once, when the scan can go out") {
+      // getToken() may refresh the OAuth token over the network, and launch runs on the UI thread.
+      // The real token is read later, in the background, by buildParams().
+      val scope = TestScope(StandardTestDispatcher())
+
+      launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
+
+      verify(exactly = 1) { tokenManager.hasToken() }
       verify(exactly = 0) { tokenManager.getToken() }
     }
 
@@ -337,6 +349,7 @@ class SecurityScanLauncherTest : DescribeSpec({
         SecurityScanLaunchOutcome.NO_EDITOR
       scope.testScheduler.advanceUntilIdle()
 
+      verify(exactly = 0) { tokenManager.hasToken() }
       verify(exactly = 0) { tokenManager.getToken() }
     }
 
@@ -461,7 +474,7 @@ class SecurityScanLauncherTest : DescribeSpec({
     }
 
     it("reports NO_TOKEN without sending when there is no token") {
-      every { tokenManager.getToken() } returns ""
+      every { tokenManager.hasToken() } returns false
       val scope = TestScope(StandardTestDispatcher())
 
       launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.NO_TOKEN
