@@ -22,9 +22,11 @@ import java.util.concurrent.atomic.AtomicReference
  * - Refreshes, authorization-flow updates and the drop after a rejection write under [refreshLock],
  *   so concurrent callers share one refresh instead of replaying the same refresh token.
  * - Notifications and `sendConfiguration` always run after [refreshLock] is released.
- * - [startTokenRefreshTimer] registers one fixed-delay check every [refreshCheckPeriod]. Each run loads
- *   the cached token if needed and refreshes it once it has expired, so it also picks up a token that
- *   was not loaded at startup or arrives later from a sign-in.
+ * - [startTokenRefreshTimer] registers one fixed-delay check every [refreshCheckPeriod]. Each run refreshes
+ *   the published token once it has expired, so it also picks up a token published after the timer started
+ *   (the first load at startup, a later sign-in). The timer never reads secure storage: the first load stays
+ *   on [getToken] / [hasToken] (at startup, the language server configuration build), so there is no second
+ *   concurrent first load and the master-password prompt appears where it did before.
  *
  * TooManyFunctions is suppressed: [hasToken] (design §7.3) has to read [currentToken] and the lock-free
  * first load directly, so it cannot move out of this class without exposing that state.
@@ -211,13 +213,13 @@ class OAuthTokenProvider(
   }
 
   /**
-   * The scheduled task body, off the UI thread. Loads the cached token while none is loaded (secure storage
-   * is read here) and takes [refreshLock] only once the token has expired. Catches everything: an
-   * escaping throwable would cancel all later runs.
+   * The scheduled task body, off the UI thread. Handles only a token already published by [getToken],
+   * [hasToken] or [updateToken]; it never reads secure storage, so it cannot race their first load into a
+   * second master-password prompt or a conflicting switch to PAT. Takes [refreshLock] only once the token
+   * has expired. Catches everything: an escaping throwable would cancel all later runs.
    */
   internal fun runScheduledRefresh() {
     try {
-      loadCachedIfAbsent()
       val token = currentToken.get() ?: return
       if (token.tokenExpirationTimestamp > clock()) return
 

@@ -22,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -154,9 +155,9 @@ class OAuthTokenProviderTest : DescribeSpec({
   }
 
   describe("startTokenRefreshTimer") {
-    it("R1: refreshes an expired token that is not loaded yet when the timer starts") {
+    it("R1: runs never read secure storage; they refresh a token once the normal path has published it") {
       val f = Fixture()
-      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      val scheduler = RunCountingScheduler()
       f.provider.scheduler = scheduler
       try {
         every { f.storage.getOAuthToken() } returns expired("stored")
@@ -166,16 +167,26 @@ class OAuthTokenProviderTest : DescribeSpec({
 
         f.provider.startTokenRefreshTimer()
 
+        // Nothing is loaded yet: several runs pass without touching secure storage (the first load stays
+        // on the existing paths, so there is never a second concurrent master-password prompt).
+        awaitUntil { scheduler.runs.get() >= RUNS } shouldBe true
+        verify(exactly = 0) { f.storage.getOAuthToken() }
+        verify(exactly = 0) { f.service.refreshToken(any()) }
+
+        // The normal path (here hasToken, which loads without refreshing) publishes the expired token.
+        f.provider.hasToken() shouldBe true
+
         sent.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
         verify(exactly = 1) { f.service.refreshToken("refresh-stored") }
         f.provider.getToken() shouldBe "new"
+        verify(exactly = 1) { f.storage.getOAuthToken() }
         scheduler.isShutdown shouldBe false
       } finally {
         scheduler.shutdownNow()
       }
     }
 
-    it("R2: loads a valid stored token without refreshing it, then refreshes it on a run after it expires") {
+    it("R2: leaves a published valid token alone, then refreshes it on a run after it expires") {
       val f = Fixture()
       val scheduler = Executors.newSingleThreadScheduledExecutor()
       f.provider.scheduler = scheduler
@@ -186,9 +197,11 @@ class OAuthTokenProviderTest : DescribeSpec({
         every { f.lsConfig.sendConfiguration() } answers { sent.countDown() }
 
         f.provider.startTokenRefreshTimer()
+        f.provider.getToken() shouldBe "stored"
 
-        // Several runs see the loaded, still valid token.
-        awaitUntil { f.clockReads.get() >= RUNS } shouldBe true
+        // Several runs see the published, still valid token.
+        val readsAfterPublish = f.clockReads.get()
+        awaitUntil { f.clockReads.get() >= readsAfterPublish + RUNS } shouldBe true
         verify(exactly = 1) { f.storage.getOAuthToken() }
         verify(exactly = 0) { f.service.refreshToken(any()) }
 
@@ -237,7 +250,7 @@ class OAuthTokenProviderTest : DescribeSpec({
     it("R5: with a personal access token selected, runs neither read secure storage nor refresh") {
       val f = Fixture()
       f.authType.set(TokenProviderType.PAT.name)
-      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      val scheduler = RunCountingScheduler()
       f.provider.scheduler = scheduler
       try {
         every { f.storage.getOAuthToken() } returns expired("stored")
@@ -245,7 +258,7 @@ class OAuthTokenProviderTest : DescribeSpec({
 
         f.provider.startTokenRefreshTimer()
 
-        awaitUntil { f.authTypeReads.get() >= RUNS } shouldBe true
+        awaitUntil { scheduler.runs.get() >= RUNS } shouldBe true
         verify(exactly = 0) { f.storage.getOAuthToken() }
         verify(exactly = 0) { f.service.refreshToken(any()) }
       } finally {
@@ -263,6 +276,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(validAt("new", AFTER_EXPIRY_S))
 
         f.provider.startTokenRefreshTimer()
+        f.provider.hasToken() shouldBe true
 
         awaitUntil { f.clockReads.get() >= RUNS } shouldBe true
         logged.count { it == SCHEDULED_REFRESH_LOG } shouldBe 0
@@ -664,13 +678,12 @@ private fun captureLog(): List<String> {
 
 /**
  * A provider wired to fakes: a stateful authentication type, an injected clock and captured notifications.
- * [clockReads] and [authTypeReads] count reads, so a test can wait for scheduled runs to happen.
+ * [clockReads] counts clock reads, so a test can wait for scheduled runs that see a published token.
  */
 private class Fixture {
   val authType = AtomicReference(TokenProviderType.OAUTH.name)
   val now = AtomicReference(T0)
   val clockReads = AtomicInteger()
-  val authTypeReads = AtomicInteger()
   val notifications = CopyOnWriteArrayList<String>()
 
   @Volatile var onNotify: (String) -> Unit = {}
@@ -695,10 +708,7 @@ private class Fixture {
   )
 
   init {
-    every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } answers {
-      authTypeReads.incrementAndGet()
-      authType.get()
-    }
+    every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } answers { authType.get() }
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } answers {
       authType.set(secondArg())
     }
@@ -708,6 +718,19 @@ private class Fixture {
 
   fun advance(seconds: Long) {
     now.updateAndGet { it.plusSeconds(seconds) }
+  }
+}
+
+/**
+ * A single-threaded scheduler that counts finished task runs. Lets a test wait for runs whose body
+ * returns before touching any fake (no token published yet), where no other read counter advances.
+ */
+private class RunCountingScheduler : ScheduledThreadPoolExecutor(1) {
+  val runs = AtomicInteger()
+
+  override fun afterExecute(r: Runnable?, t: Throwable?) {
+    super.afterExecute(r, t)
+    runs.incrementAndGet()
   }
 }
 
