@@ -129,7 +129,7 @@ class OAuthTokenProviderTest : DescribeSpec({
 
       every {
         oAuthService.refreshToken(oldToken.refreshToken)
-      } returns newToken
+      } returns RefreshOutcome.Refreshed(newToken)
 
       tokenProvider.updateToken(oldToken)
 
@@ -160,7 +160,7 @@ class OAuthTokenProviderTest : DescribeSpec({
       val newToken =
         GitLabAuthorizationToken("new_token", "refresh_token", 3600, Instant.now().epochSecond)
 
-      every { oAuthService.refreshToken(any()) } returns newToken
+      every { oAuthService.refreshToken(any()) } returns RefreshOutcome.Refreshed(newToken)
       every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
 
       val expiredToken = GitLabAuthorizationToken(

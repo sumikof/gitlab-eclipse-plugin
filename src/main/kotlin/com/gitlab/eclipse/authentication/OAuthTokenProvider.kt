@@ -73,7 +73,10 @@ class OAuthTokenProvider(
 
     logger.info("Refreshing expired token with timestamp $tokenExpirationTimestamp.")
 
-    val refreshedToken = service<GitLabOAuthService>().refreshToken(currentToken?.refreshToken.orEmpty())
+    // TODO(Task 2): handle RefreshOutcome.Rejected / Transient distinctly; for now any non-Refreshed
+    // outcome takes the pre-existing "refresh failed" branch (minimal compile fix for the new type).
+    val outcome = service<GitLabOAuthService>().refreshToken(currentToken?.refreshToken.orEmpty())
+    val refreshedToken = (outcome as? RefreshOutcome.Refreshed)?.token
     if (refreshedToken == null) {
       logger.info("Failed to refresh the OAuth token.")
       NotificationUtils.show("Failed to refresh the OAuth token. Please re-authenticate.")

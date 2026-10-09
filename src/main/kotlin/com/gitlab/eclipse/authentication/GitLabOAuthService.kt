@@ -2,8 +2,12 @@ package com.gitlab.eclipse.authentication
 
 import com.github.scribejava.core.builder.ServiceBuilder
 import com.github.scribejava.core.builder.api.DefaultApi20
+import com.github.scribejava.core.httpclient.HttpClientConfig
+import com.github.scribejava.core.httpclient.jdk.JDKHttpClientConfig
+import com.github.scribejava.core.model.OAuth2AccessTokenErrorResponse
 import com.github.scribejava.core.oauth.AccessTokenRequestParams
 import com.github.scribejava.core.oauth.OAuth20Service
+import com.github.scribejava.core.oauth2.OAuth2Error
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
@@ -16,7 +20,17 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.*
 
-class GitLabOAuthService {
+/**
+ * @param tokenEndpoint test seam (design §7.1): the OAuth token endpoint. Defaults to GitLab.com.
+ * @param httpClientConfig test seam: connect/read timeouts for the single HTTP round trip. Defaults
+ *   bound the refresh call so it can never hang indefinitely (design §10, C1).
+ */
+class GitLabOAuthService(
+  tokenEndpoint: String = TOKEN_ENDPOINT,
+  httpClientConfig: HttpClientConfig = JDKHttpClientConfig.defaultConfig()
+    .withConnectTimeout(CONNECT_TIMEOUT_MS)
+    .withReadTimeout(READ_TIMEOUT_MS),
+) {
   companion object {
     private const val CLIENT_ID = "ee276bb6507af1f6a7eb086d1a07c5cd1bc3c192b631a214d9f8bba35fb9178a"
     private const val CALLBACK_PORT = 63343
@@ -24,17 +38,25 @@ class GitLabOAuthService {
     private const val AUTHORIZATION_ENDPOINT = "https://gitlab.com/oauth/authorize"
     private const val TOKEN_ENDPOINT = "https://gitlab.com/oauth/token"
     private const val SCOPE = "api"
+
+    private const val CONNECT_TIMEOUT_MS = 10_000
+    private const val READ_TIMEOUT_MS = 30_000
+
+    /** Design §9: the only OAuth error codes that mean the refresh token itself is unusable. */
+    private val REJECTED_ERRORS =
+      setOf(OAuth2Error.INVALID_GRANT, OAuth2Error.INVALID_CLIENT, OAuth2Error.UNAUTHORIZED_CLIENT)
+    private val REJECTED_STATUS_RANGE = 400..499
   }
 
   private val logger by lazy { logger<GitLabOAuthService>() }
 
   private val oauthService: OAuth20Service = ServiceBuilder(CLIENT_ID)
-    .debug()
     .callback(REDIRECT_URI)
+    .httpClientConfig(httpClientConfig)
     .build(object : DefaultApi20() {
-      override fun getAccessTokenEndpoint(): String = TOKEN_ENDPOINT
+      override fun getAccessTokenEndpoint(): String = tokenEndpoint
       override fun getAuthorizationBaseUrl(): String = AUTHORIZATION_ENDPOINT
-      override fun getRefreshTokenEndpoint(): String = TOKEN_ENDPOINT
+      override fun getRefreshTokenEndpoint(): String = tokenEndpoint
       override fun getClientAuthentication(): ClientAuthentication = RequestBodyAuthenticationScheme.instance()
     })
 
@@ -71,15 +93,56 @@ class GitLabOAuthService {
     }
   }
 
-  @Suppress("SwallowedException")
-  fun refreshToken(currentToken: String): GitLabAuthorizationToken? {
+  fun refreshToken(currentToken: String): RefreshOutcome =
     try {
       val newToken = oauthService.refreshAccessToken(currentToken, SCOPE)
-      val gitlabToken = gson.fromJson(newToken.rawResponse, GitLabAuthorizationToken::class.java)
-      return gitlabToken
+      parseRefreshedToken(newToken.rawResponse)
+    } catch (errorResponse: OAuth2AccessTokenErrorResponse) {
+      classifyErrorResponse(errorResponse)
     } catch (exception: Exception) {
-      return null
+      classifyFailure(exception)
     }
+
+  private fun parseRefreshedToken(rawResponse: String): RefreshOutcome =
+    try {
+      val gitlabToken = gson.fromJson(rawResponse, GitLabAuthorizationToken::class.java)
+      logger.info("OAuth token refresh: Refreshed")
+      RefreshOutcome.Refreshed(gitlabToken)
+    } catch (exception: Exception) {
+      classifyFailure(exception)
+    }
+
+  /** Design §9: allow-list the status/error combinations that mean the refresh token is dead. */
+  private fun classifyErrorResponse(errorResponse: OAuth2AccessTokenErrorResponse): RefreshOutcome {
+    val status = errorResponse.response.code
+    val errorCode: OAuth2Error? = errorResponse.error
+    return if (status in REJECTED_STATUS_RANGE && errorCode != null && errorCode in REJECTED_ERRORS) {
+      val code = errorCode.errorString
+      logger.info("OAuth token refresh: Rejected($code)")
+      RefreshOutcome.Rejected(code)
+    } else {
+      val reason = errorCode?.errorString ?: "http $status"
+      logger.info("OAuth token refresh: Transient($reason)")
+      RefreshOutcome.Transient(reason)
+    }
+  }
+
+  /**
+   * Classifies any other failure (I/O, timeout, interrupt, an unparsable body, …) as
+   * [RefreshOutcome.Transient]. Only the exception's type name is used — never its message, which
+   * for ScribeJava's response exceptions embeds the response body (design §9/§12, C14).
+   *
+   * Internal so the interrupt-flag restoration can be pinned by a unit test with an injected
+   * [InterruptedException], instead of a real socket interrupt: a blocking read on a plain socket
+   * does not respond to [Thread.interrupt].
+   */
+  internal fun classifyFailure(exception: Exception): RefreshOutcome {
+    if (exception is InterruptedException) {
+      Thread.currentThread().interrupt()
+    }
+    val reason = exception::class.simpleName ?: "Exception"
+    logger.info("OAuth token refresh: Transient($reason)")
+    return RefreshOutcome.Transient(reason)
   }
 
   internal fun createServer(codeVerifier: String): OAuthCallbackServer {
