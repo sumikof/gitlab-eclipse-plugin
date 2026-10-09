@@ -60,7 +60,13 @@ class OAuthTokenProvider(
   /** Guarded by [timerLock]. The periodic check, once registered. */
   private var refreshTask: ScheduledFuture<*>? = null
 
-  var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
+  /**
+   * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
+   * [stopTokenRefreshTimer] is not reached.
+   */
+  var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1) { runnable ->
+    Thread(runnable, REFRESH_THREAD_NAME).apply { isDaemon = true }
+  }
 
   override fun getToken(): String {
     if (currentToken.get() == null) loadCachedIfAbsent()
@@ -247,6 +253,8 @@ class OAuthTokenProvider(
      * the real expiry [TOKEN_EXPIRATION_BUFFER_SECONDS] (120 s) later.
      */
     val REFRESH_CHECK_PERIOD: Duration = Duration.ofSeconds(30)
+
+    private const val REFRESH_THREAD_NAME = "gitlab-oauth-refresh"
 
     /** How long to wait after a transient refresh failure before trying again. */
     val RETRY_BACKOFF: Duration = Duration.ofSeconds(30)

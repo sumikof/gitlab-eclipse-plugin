@@ -182,7 +182,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         verify(exactly = 1) { f.storage.getOAuthToken() }
         scheduler.isShutdown shouldBe false
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -211,7 +211,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         verify(exactly = 1) { f.service.refreshToken("refresh-stored") }
         f.provider.getToken() shouldBe "new"
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -243,7 +243,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         scheduler.isShutdown shouldBe true
         verify(exactly = 0) { f.storage.getOAuthToken() }
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -262,7 +262,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         verify(exactly = 0) { f.storage.getOAuthToken() }
         verify(exactly = 0) { f.service.refreshToken(any()) }
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -288,7 +288,7 @@ class OAuthTokenProviderTest : DescribeSpec({
         awaitUntil { f.clockReads.get() >= readsAfterRefresh + RUNS } shouldBe true
         logged.count { it == SCHEDULED_REFRESH_LOG } shouldBe 1
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -299,6 +299,19 @@ class OAuthTokenProviderTest : DescribeSpec({
 
       (OAuthTokenProvider.REFRESH_CHECK_PERIOD <= OAuthTokenProvider.RETRY_BACKOFF) shouldBe true
       (OAuthTokenProvider.REFRESH_CHECK_PERIOD.multipliedBy(2).plus(failedAttempt) < buffer) shouldBe true
+    }
+
+    it("R8: the default scheduler runs on a named daemon thread, so it never keeps the JVM alive") {
+      val f = Fixture()
+      try {
+        val thread = f.provider.scheduler.submit<Thread> { Thread.currentThread() }
+          .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        thread.isDaemon shouldBe true
+        thread.name shouldBe "gitlab-oauth-refresh"
+      } finally {
+        f.provider.stopTokenRefreshTimer()
+      }
     }
   }
 
@@ -526,7 +539,7 @@ class OAuthTokenProviderTest : DescribeSpec({
 
         runs.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
       } finally {
-        scheduler.shutdownNow()
+        scheduler.stopAndAwait()
       }
     }
 
@@ -771,6 +784,15 @@ private fun blockedIn(threads: Collection<Thread>, method: String): Int =
   threads.count { t ->
     t.state == Thread.State.BLOCKED && t.stackTrace.firstOrNull()?.methodName?.startsWith(method) == true
   }
+
+/**
+ * Stops the executor and waits for an in-flight run, so no run touches the mocks after the test's
+ * `clearAllMocks()`.
+ */
+private fun ScheduledExecutorService.stopAndAwait() {
+  shutdownNow()
+  awaitTermination(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+}
 
 /** Polls [condition] until it holds or [AWAIT_TIMEOUT_MS] passes; returns whether it held. */
 private fun awaitUntil(condition: () -> Boolean): Boolean {
