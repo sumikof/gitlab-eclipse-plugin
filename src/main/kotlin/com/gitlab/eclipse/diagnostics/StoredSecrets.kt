@@ -9,17 +9,19 @@ import com.gitlab.eclipse.inject.service
  *
  * This exists because [com.gitlab.eclipse.authentication.GitLabTokenProviderManager.getToken] is
  * not safe to call from anything diagnostics do. On the OAuth path it runs
- * `OAuthTokenProvider.refreshTokenIfExpired()`, which:
+ * `OAuthTokenProvider.refreshIfExpired()`, which:
  *
- * - performs a **blocking HTTP round trip** (`GitLabOAuthService.refreshToken`), and
- * - on failure shows a notification **and flips `AUTHENTICATION_TYPE` to PAT**
- *   (`OAuthTokenProvider.kt:79-80`).
+ * - performs a **blocking HTTP round trip** (`GitLabOAuthService.refreshToken`, bounded by its
+ *   timeouts), or waits under the refresh lock for one already in flight,
+ * - on a transient failure (e.g. an unreachable instance) shows a notification, and
+ * - when the refresh token is rejected shows a notification **and flips `AUTHENTICATION_TYPE` to
+ *   PAT**.
  *
- * Both are wrong here, and the second is worse than the first: a report generated against an
- * unreachable instance would *change the authentication type it is reporting on*. Diagnostics must
- * not alter the state they describe. The first also freezes the workbench, since
- * `ShowDiagnosticsHandler` runs on the UI thread — exactly when the user is most likely offline and
- * reaching for the diagnostics command.
+ * All are wrong here, and the last is the worst: a report generated while the refresh token is
+ * rejected would *change the authentication type it is reporting on*. Diagnostics must not alter
+ * the state they describe. The round trip also freezes the workbench, since `ShowDiagnosticsHandler`
+ * runs on the UI thread — exactly when the user is most likely offline and reaching for the
+ * diagnostics command.
  *
  * Both reads below go to Eclipse secure storage and stop there. They do log (via
  * `OAuthSecretStorage`), so this must never be called from the log-capture path — [DiagnosticsLog]

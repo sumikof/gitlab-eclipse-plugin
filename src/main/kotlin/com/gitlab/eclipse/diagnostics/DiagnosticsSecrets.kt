@@ -6,8 +6,8 @@ package com.gitlab.eclipse.diagnostics
  *
  * **This cache exists because the obvious implementation is unusable.** Asking
  * `GitLabTokenProviderManager.getToken()` for the live token on the OAuth path runs
- * `OAuthTokenProvider.refreshTokenIfExpired()`, which performs a network round trip, writes three
- * log lines and can raise a notification (`OAuthTokenProvider.kt:69-87`). [PluginLogTap] runs
+ * `OAuthTokenProvider.refreshIfExpired()`, which performs a network round trip, writes log lines
+ * and can raise a notification. [PluginLogTap] runs
  * inside Eclipse's log delivery on every log line, so calling that from there would block log
  * delivery on the network, re-enter the tap through its own logging, and pop a dialog from inside a
  * log call. None of that is acceptable on a path whose entire job is to be cheap and silent.

@@ -10,8 +10,8 @@ import io.kotest.matchers.string.shouldNotContain
  * 設計 §10.1。
  *
  * **このキャッシュが存在する理由そのものを固定する spec。** ログ 1 行ごとにトークンを引くと、
- * OAuth 経路の `getToken()` が `refreshTokenIfExpired()` を通ってネットワーク往復・ログ出力・
- * 通知表示を行う(`OAuthTokenProvider.kt:69-87`)。それを Eclipse のログ配送の内側でやると、
+ * OAuth 経路の `getToken()` が `refreshIfExpired()` を通ってネットワーク往復・ログ出力・
+ * 通知表示を行う。それを Eclipse のログ配送の内側でやると、
  * ログがネットワークでブロックし、自分のログで再入し、ログ呼び出しからダイアログが出る。
  * したがって **読み取り経路は絶対に I/O を含んではならない**。
  */

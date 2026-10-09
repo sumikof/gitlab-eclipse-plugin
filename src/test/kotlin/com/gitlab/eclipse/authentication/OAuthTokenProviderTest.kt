@@ -554,7 +554,11 @@ private fun runConcurrently(count: Int, threads: MutableList<Thread>, task: () -
   return results.toList()
 }
 
-/** How many of [threads] are blocked on a monitor inside [method] (i.e. waiting for a `synchronized` lock). */
+/**
+ * How many of [threads] are blocked on a monitor inside [method] (i.e. waiting for a `synchronized` lock).
+ * Threads are identified by the top stack frame's method name (`refreshIfExpired` / `updateToken`), so a
+ * rename of those functions must be mirrored here, or the gates stop forcing the race.
+ */
 private fun blockedIn(threads: Collection<Thread>, method: String): Int =
   threads.count { t ->
     t.state == Thread.State.BLOCKED && t.stackTrace.firstOrNull()?.methodName?.startsWith(method) == true
