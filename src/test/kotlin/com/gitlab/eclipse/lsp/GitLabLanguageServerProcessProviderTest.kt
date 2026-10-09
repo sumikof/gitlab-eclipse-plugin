@@ -206,7 +206,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   val languageServerWrapper = mockk<GitLabLanguageServerWrapper>(relaxUnitFun = true)
   // Rebuilt for every test (beforeEach). A test that stops its provider right after a start or a
   // restart can leave that server's readiness callback still running: it passed the superseded
-  // check before stop() took the lock, and its configuration send lands only after afterEach has
+  // check before stop() took the lock, and its configuration send can land after afterEach has
   // cleared the mocks. On a shared mock that send is counted by whichever test runs next, so a
   // fresh instance per test is what keeps an exact count about the test's own connections.
   var configurationService = mockk<GitLabLanguageServerConfigurationService>(relaxUnitFun = true)
