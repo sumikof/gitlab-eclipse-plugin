@@ -291,6 +291,15 @@ class OAuthTokenProviderTest : DescribeSpec({
         scheduler.shutdownNow()
       }
     }
+
+    it("R7: the check period lets a retry after a failed refresh start before the real expiry") {
+      // A failed refresh takes at most 40 s (GitLabOAuthService: 10 s connect + 30 s read timeout).
+      val failedAttempt = Duration.ofSeconds(40)
+      val buffer = Duration.ofSeconds(TOKEN_EXPIRATION_BUFFER_SECONDS.toLong())
+
+      (OAuthTokenProvider.REFRESH_CHECK_PERIOD <= OAuthTokenProvider.RETRY_BACKOFF) shouldBe true
+      (OAuthTokenProvider.REFRESH_CHECK_PERIOD.multipliedBy(2).plus(failedAttempt) < buffer) shouldBe true
+    }
   }
 
   describe("refresh coordination (design §8, §9, §11)") {

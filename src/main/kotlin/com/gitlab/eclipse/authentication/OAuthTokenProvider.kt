@@ -240,10 +240,13 @@ class OAuthTokenProvider(
 
   companion object {
     /**
-     * How often the scheduled task checks the token. Must stay below [TOKEN_EXPIRATION_BUFFER_SECONDS], so
-     * a run always lands between the buffered expiry and the real one.
+     * How often the scheduled task checks the token. The first run that sees the buffered expiry comes at
+     * most one period after it. A failed refresh takes at most 40 s (10 s connect + 30 s read timeout) and
+     * the retry waits one period, which also covers [RETRY_BACKOFF] because the delay starts after
+     * `retryNotBefore` is set. So a retry starts within 30 + 40 + 30 = 100 s of the buffered expiry, before
+     * the real expiry [TOKEN_EXPIRATION_BUFFER_SECONDS] (120 s) later.
      */
-    val REFRESH_CHECK_PERIOD: Duration = Duration.ofSeconds(60)
+    val REFRESH_CHECK_PERIOD: Duration = Duration.ofSeconds(30)
 
     /** How long to wait after a transient refresh failure before trying again. */
     val RETRY_BACKOFF: Duration = Duration.ofSeconds(30)
