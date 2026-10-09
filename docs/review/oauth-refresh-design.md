@@ -168,6 +168,7 @@ refreshIfExpired():
     token = currentToken.get() ?: return none          // 拒否後は null(R9)
     if 期限内(待っている間に他が更新した) → return none
     if clock() < retryNotBefore(一時的失敗の待機中) → return none
+    if !isOAuthEnabled() → currentToken.set(null); return none   // 拒否直後の遅れた初回ロード・ユーザーの PAT 切替(第 2 巡 N1)
     outcome = oAuthService().refreshToken(token.refreshToken)   ← ロック内でネットワーク(有限時間)
     when (outcome)
       Refreshed → currentToken.set(new); 保存; retryNotBefore = MIN; transientNotified = false
@@ -326,6 +327,7 @@ PR-2 の後、PR-1 + PR-2 の変更全体を Fable 5.1 でレビューする。
 - 失敗の分類が §9 の許可リストどおりか(`error == null`・5xx・許可リスト外を `Rejected` にしていないか)。拒否のあと `currentToken` が null になるか。
 - スキャン起動のゲートの順序と短絡が保たれ、未オプトインのユーザーにセキュアストレージの読み取りを起こさないか。
 - 秘密情報が標準出力・ログ・通知・`toString` に出ないか。Throwable をロガーに渡していないか。
+- 拒否の直後に遅れて完了した初回ロードが無効なトークンを再公開しても、ロック内の `isOAuthEnabled()` 再確認で更新・通知が重ならないか(第 2 巡 N1。決定的なテストで再現する)。
 
 ## 22. 反映履歴
 
@@ -340,3 +342,15 @@ PR-2 の後、PR-1 + PR-2 の変更全体を Fable 5.1 でレビューする。
 | F5 | P2: `OAuthResponseException` のメッセージは本文そのもの。Throwable をロガーに渡すと本文が出る | 採用(設計で解決) | C14・R6・§9・§12、T5 にプラットフォームログを追加 |
 | F6 | P3: 周期と回復の前提、`startTokenRefreshTimer` の重複登録・`shutdownNow` 後の例外 | 記録(別件) | §19 U3 に記録、対象外として申し送り |
 | F7 | P3: 一時的失敗で期限切れトークンを返す根拠、既存 `GitLabOAuthServiceTest` のリフレクション差し替えの書き換え、`Rejected.error` の型、detekt `SwallowedException` | 実装段階へ | 根拠は §8 に 1 行追記。残りは実装レビューの確認項目 |
+
+### 第 2 巡(Fable 5.1、`d3ead18`)— **収束**
+
+- F1〜F5 はすべて解消を確認(`OAuth2Error` の定数名・`OAuthResponseException.getResponse()` を javap で確認、CAS 初回ロード × 更新中 / × `hasToken()` / × 拒否の組み合わせを検証)。
+
+| # | 指摘 | 仕分け | 反映 |
+|---|---|---|---|
+| N1 | P3: 拒否の直後に遅れて完了した初回ロードが、無効なトークンを CAS で再公開する窓(1 往復の無駄と通知の重複のみ) | 実装段階へ | §8 にロック内の `isOAuthEnabled()` 再確認を 1 行、§21 に確認項目を追加 |
+| N2 | P3: 同時の初回ロードでセキュアストレージの読み取りとログが重複する | 実装段階へ | 実装時に `loadCached()` 直前で再読する |
+| N3 | P3: PR-2 マージ時の手順(`--delete-branch` 不使用、base 付け替えの後に PR-1 ブランチ削除)、既存テストの整理 | 実装段階へ | §15 の順序どおり。実装計画に記載 |
+
+収束基準(CLAUDE.md)により、再依頼せずに本 PR をマージせず Close する。
