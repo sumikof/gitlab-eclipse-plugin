@@ -481,6 +481,69 @@ class OAuthTokenProviderTest : DescribeSpec({
       f.provider.getToken() shouldBe "from-callback"
     }
   }
+
+  describe("hasToken (design §7.3, §11)") {
+    it("T12c: returns without waiting while another thread holds the refresh lock") {
+      val f = Fixture()
+      f.provider.updateToken(expired("old"))
+      val inRefresh = CountDownLatch(1)
+      val releaseRefresh = CountDownLatch(1)
+      every { f.service.refreshToken(any()) } answers {
+        inRefresh.countDown()
+        releaseRefresh.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        RefreshOutcome.Refreshed(valid("new"))
+      }
+
+      val refresher = Thread { f.provider.getToken() }.apply { start() }
+      try {
+        inRefresh.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+        val result = AtomicReference<Boolean?>()
+        val checker = Thread { result.set(f.provider.hasToken()) }.apply { start() }
+        checker.join(JOIN_TIMEOUT_MS)
+        checker.isAlive shouldBe false
+        result.get() shouldBe true
+      } finally {
+        releaseRefresh.countDown()
+        refresher.join(JOIN_TIMEOUT_MS)
+      }
+      verify(exactly = 1) { f.service.refreshToken(any()) }
+    }
+
+    it("T16: an expired token counts as present and is not refreshed") {
+      val f = Fixture()
+      f.provider.updateToken(expired("old"))
+
+      f.provider.hasToken() shouldBe true
+
+      verify(exactly = 0) { f.service.refreshToken(any()) }
+    }
+
+    it("T16: loads an expired cached token from secure storage without refreshing it") {
+      val f = Fixture()
+      every { f.storage.getOAuthToken() } returns expired("cached")
+
+      f.provider.hasToken() shouldBe true
+
+      verify(exactly = 1) { f.storage.getOAuthToken() }
+      verify(exactly = 0) { f.service.refreshToken(any()) }
+    }
+
+    it("T16: is false when nothing is loaded and secure storage is empty") {
+      val f = Fixture()
+      every { f.storage.getOAuthToken() } returns null
+
+      f.provider.hasToken() shouldBe false
+
+      verify(exactly = 0) { f.service.refreshToken(any()) }
+    }
+
+    it("is false for a token with an empty access token") {
+      val f = Fixture()
+      f.provider.updateToken(valid(""))
+
+      f.provider.hasToken() shouldBe false
+    }
+  }
 })
 
 private const val WORKERS = 10

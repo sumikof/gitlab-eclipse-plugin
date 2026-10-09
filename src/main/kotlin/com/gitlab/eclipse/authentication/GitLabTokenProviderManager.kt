@@ -27,6 +27,21 @@ class GitLabTokenProviderManager(private val preferenceStore: ScopedPreferenceSt
     }
     return ""
   }
+
+  /**
+   * Whether any provider has a token, checked in the same order as [getToken]. Never calls [getToken],
+   * which may refresh the OAuth token over the network.
+   */
+  fun hasToken(): Boolean {
+    val authenticationType = preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE)
+    val tokenProviderType = TokenProviderType.valueOf(authenticationType)
+
+    if (tokenProviders[tokenProviderType]?.hasToken() == true) {
+      return true
+    }
+
+    return tokenProviders.values.any { it.hasToken() }
+  }
 }
 
 enum class TokenProviderType {

@@ -256,7 +256,11 @@ class SecurityScanLauncher(
       // save, and a user who did opt in would get one for every command with no active file or an
       // untitled editor. The condition mirrors the two gates exactly, so the outcome is unchanged:
       // DISABLED and NO_EDITOR both already win over NO_TOKEN in the gate order.
-      hasToken = enabled && !scanUri.isNullOrBlank() && tokenProviderManager.getToken().isNotBlank(),
+      // The check is `hasToken()`, not `getToken()`: it still reads secure storage, but it never
+      // refreshes an expired OAuth token over the network or waits for a refresh in flight, so the
+      // UI thread does not block on one. The real token, refreshed if needed, is read later in the
+      // background by `buildParams()`.
+      hasToken = enabled && !scanUri.isNullOrBlank() && tokenProviderManager.hasToken(),
       // `path` is non-null on every path that reaches this lambda: a null one made `uri` null
       // above, and the gates answer NO_EDITOR for that before send is ever called.
       send = { params -> if (path != null) dispatch(params, path, source, handle, epoch) },
