@@ -10,6 +10,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -21,6 +22,9 @@ import java.util.concurrent.atomic.AtomicReference
  * - Refreshes, authorization-flow updates and the drop after a rejection write under [refreshLock],
  *   so concurrent callers share one refresh instead of replaying the same refresh token.
  * - Notifications and `sendConfiguration` always run after [refreshLock] is released.
+ * - [startTokenRefreshTimer] registers one fixed-delay check every [refreshCheckPeriod]. Each run loads
+ *   the cached token if needed and refreshes it once it has expired, so it also picks up a token that
+ *   was not loaded at startup or arrives later from a sign-in.
  *
  * TooManyFunctions is suppressed: [hasToken] (design §7.3) has to read [currentToken] and the lock-free
  * first load directly, so it cannot move out of this class without exposing that state.
@@ -34,6 +38,7 @@ class OAuthTokenProvider(
   private val oAuthService: () -> GitLabOAuthService = { service() },
   private val clock: () -> Instant = Instant::now,
   private val notify: (String) -> Unit = NotificationUtils::show,
+  private val refreshCheckPeriod: Duration = REFRESH_CHECK_PERIOD,
 ) : TokenProvider {
   private val currentToken = AtomicReference<GitLabAuthorizationToken?>(null)
   private val logger by lazy { logger<OAuthTokenProvider>() }
@@ -46,6 +51,12 @@ class OAuthTokenProvider(
 
   /** Guarded by [refreshLock]. Whether the current run of transient failures was already notified. */
   private var transientNotified = false
+
+  /** Serializes registering the periodic task with [stopTokenRefreshTimer]. Independent of [refreshLock]. */
+  private val timerLock = Any()
+
+  /** Guarded by [timerLock]. The periodic check, once registered. */
+  private var refreshTask: ScheduledFuture<*>? = null
 
   var scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
 
@@ -120,8 +131,11 @@ class OAuthTokenProvider(
    * Refreshes at most once across concurrent callers. The decision, the network call and the state
    * writes happen under [refreshLock]; the outcome's effect (notification or `sendConfiguration`)
    * runs only after the lock is released.
+   *
+   * @return whether this call refreshed the token.
    */
-  private fun refreshIfExpired() {
+  private fun refreshIfExpired(): Boolean {
+    var refreshed = false
     val effect = synchronized<(() -> Unit)?>(refreshLock) {
       // Null after a rejection: nothing left to refresh.
       val token = currentToken.get() ?: return@synchronized null
@@ -146,6 +160,7 @@ class OAuthTokenProvider(
           logger.info(
             "The OAuth token has been refreshed and it expires at ${refreshedToken.tokenExpirationTimestamp}."
           )
+          refreshed = true
           languageServiceConfigurationService::sendConfiguration
         }
 
@@ -176,35 +191,37 @@ class OAuthTokenProvider(
       }
     }
     effect?.invoke()
+    return refreshed
   }
 
-  fun startTokenRefreshTimer(
-    refreshIntervalInSeconds: Int = currentToken.get()?.expiresIn ?: DEFAULT_REFRESH_INTERVAL_SECONDS
-  ) {
-    scheduleRefresh(Duration.ofSeconds(refreshIntervalInSeconds.toLong()).toMillis())
-  }
-
-  internal fun scheduleRefresh(periodInMillis: Long) {
-    if (!isOAuthEnabled()) {
-      return
+  /**
+   * Registers the periodic refresh check once. Later calls, and calls after [stopTokenRefreshTimer],
+   * do nothing. Fixed delay: a refresh stalled by its network timeouts never causes a burst of runs.
+   */
+  fun startTokenRefreshTimer() {
+    synchronized(timerLock) {
+      if (refreshTask != null || scheduler.isShutdown) return
+      refreshTask = scheduler.scheduleWithFixedDelay(
+        { runScheduledRefresh() },
+        0,
+        refreshCheckPeriod.toMillis(),
+        TimeUnit.MILLISECONDS,
+      )
     }
-
-    if (currentToken.get() == null) {
-      logger.info("Canceling the timer for token refresh.")
-      scheduler.shutdownNow()
-      return
-    }
-
-    scheduler.scheduleAtFixedRate({ runScheduledRefresh() }, 0, periodInMillis, TimeUnit.MILLISECONDS)
   }
 
-  /** The scheduled task body. Catches everything: an escaping throwable would cancel all later runs. */
+  /**
+   * The scheduled task body, off the UI thread. Loads the cached token while none is loaded (secure storage
+   * is read here) and takes [refreshLock] only once the token has expired. Catches everything: an
+   * escaping throwable would cancel all later runs.
+   */
   internal fun runScheduledRefresh() {
     try {
-      if (currentToken.get() != null) {
-        refreshIfExpired()
-        logger.info("Token refreshed by scheduled task.")
-      }
+      loadCachedIfAbsent()
+      val token = currentToken.get() ?: return
+      if (token.tokenExpirationTimestamp > clock()) return
+
+      if (refreshIfExpired()) logger.info("Token refreshed by scheduled task.")
     } catch (t: Throwable) {
       // Type name only: an exception message may carry a response body.
       logger.warn("Scheduled OAuth refresh failed: ${t::class.java.name}")
@@ -216,11 +233,15 @@ class OAuthTokenProvider(
 
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")
-    scheduler.shutdownNow()
+    synchronized(timerLock) { scheduler.shutdownNow() }
   }
 
   companion object {
-    const val DEFAULT_REFRESH_INTERVAL_SECONDS: Int = 7200
+    /**
+     * How often the scheduled task checks the token. Must stay below [TOKEN_EXPIRATION_BUFFER_SECONDS], so
+     * a run always lands between the buffered expiry and the real one.
+     */
+    val REFRESH_CHECK_PERIOD: Duration = Duration.ofSeconds(60)
 
     /** How long to wait after a transient refresh failure before trying again. */
     val RETRY_BACKOFF: Duration = Duration.ofSeconds(30)

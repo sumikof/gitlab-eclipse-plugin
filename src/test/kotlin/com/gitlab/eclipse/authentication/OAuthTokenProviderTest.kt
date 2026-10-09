@@ -3,26 +3,30 @@ package com.gitlab.eclipse.authentication
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldContainOnly
 import io.kotest.matchers.shouldBe
 import io.mockk.*
-import kotlinx.coroutines.delay
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
+import org.osgi.framework.Bundle
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 
 class OAuthTokenProviderTest : DescribeSpec({
   val oAuthService = mockk<GitLabOAuthService>()
@@ -150,50 +154,128 @@ class OAuthTokenProviderTest : DescribeSpec({
   }
 
   describe("startTokenRefreshTimer") {
-    val timerRefreshInSeconds = 1
+    it("R1: refreshes an expired token that is not loaded yet when the timer starts") {
+      val f = Fixture()
+      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      f.provider.scheduler = scheduler
+      try {
+        every { f.storage.getOAuthToken() } returns expired("stored")
+        every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(valid("new"))
+        val sent = CountDownLatch(1)
+        every { f.lsConfig.sendConfiguration() } answers { sent.countDown() }
 
-    afterEach { clearAllMocks() }
-    afterSpec { unmockkAll() }
+        f.provider.startTokenRefreshTimer()
 
-    it("timer shouldn't start when the token is null") {
-      every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
-      tokenProvider.updateToken(null)
-      tokenProvider.startTokenRefreshTimer(timerRefreshInSeconds)
-
-      verify(exactly = 0) {
-        oAuthService.refreshToken(any())
+        sent.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+        verify(exactly = 1) { f.service.refreshToken("refresh-stored") }
+        f.provider.getToken() shouldBe "new"
+        scheduler.isShutdown shouldBe false
+      } finally {
+        scheduler.shutdownNow()
       }
     }
 
-    it("token refreshes periodically when OAuth is enabled") {
-      val realScheduler = Executors.newScheduledThreadPool(1)
-      tokenProvider.scheduler = realScheduler
+    it("R2: loads a valid stored token without refreshing it, then refreshes it on a run after it expires") {
+      val f = Fixture()
+      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      f.provider.scheduler = scheduler
+      try {
+        every { f.storage.getOAuthToken() } returns valid("stored")
+        every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(validAt("new", AFTER_EXPIRY_S))
+        val sent = CountDownLatch(1)
+        every { f.lsConfig.sendConfiguration() } answers { sent.countDown() }
 
-      val newToken =
-        GitLabAuthorizationToken("new_token", "refresh_token", 3600, Instant.now().epochSecond)
+        f.provider.startTokenRefreshTimer()
 
-      every { oAuthService.refreshToken(any()) } returns RefreshOutcome.Refreshed(newToken)
-      every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
+        // Several runs see the loaded, still valid token.
+        awaitUntil { f.clockReads.get() >= RUNS } shouldBe true
+        verify(exactly = 1) { f.storage.getOAuthToken() }
+        verify(exactly = 0) { f.service.refreshToken(any()) }
 
-      val expiredToken = GitLabAuthorizationToken(
-        "expired_token",
-        "refresh_token",
-        3600,
-        Instant.now().epochSecond.minus(5000)
-      )
+        f.advance(AFTER_EXPIRY_S)
 
-      // Make sure the token provider has an existing token that is expired
-      tokenProvider.updateToken(expiredToken)
+        sent.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+        verify(exactly = 1) { f.service.refreshToken("refresh-stored") }
+        f.provider.getToken() shouldBe "new"
+      } finally {
+        scheduler.shutdownNow()
+      }
+    }
 
-      tokenProvider.startTokenRefreshTimer(timerRefreshInSeconds)
+    it("R3: a second call registers no second periodic task") {
+      val f = Fixture()
+      val scheduler = mockk<ScheduledExecutorService>()
+      every { scheduler.isShutdown } returns false
+      every { scheduler.scheduleWithFixedDelay(any(), any(), any(), any()) } returns mockk()
+      f.provider.scheduler = scheduler
 
-      delay(2.seconds)
+      f.provider.startTokenRefreshTimer()
+      f.provider.startTokenRefreshTimer()
 
-      assertEquals("new_token", tokenProvider.getToken())
+      verify(exactly = 1) {
+        scheduler.scheduleWithFixedDelay(any(), 0, SCHEDULE_PERIOD_MS, TimeUnit.MILLISECONDS)
+      }
+    }
 
-      verify(exactly = 1) { oAuthService.refreshToken(any()) }
+    it("R4: a call after stopTokenRefreshTimer neither throws nor schedules anything") {
+      val f = Fixture()
+      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      f.provider.scheduler = scheduler
+      try {
+        every { f.storage.getOAuthToken() } returns expired("stored")
 
-      realScheduler.shutdownNow()
+        f.provider.stopTokenRefreshTimer()
+        shouldNotThrowAny { f.provider.startTokenRefreshTimer() }
+
+        scheduler.isShutdown shouldBe true
+        verify(exactly = 0) { f.storage.getOAuthToken() }
+      } finally {
+        scheduler.shutdownNow()
+      }
+    }
+
+    it("R5: with a personal access token selected, runs neither read secure storage nor refresh") {
+      val f = Fixture()
+      f.authType.set(TokenProviderType.PAT.name)
+      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      f.provider.scheduler = scheduler
+      try {
+        every { f.storage.getOAuthToken() } returns expired("stored")
+        every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(valid("new"))
+
+        f.provider.startTokenRefreshTimer()
+
+        awaitUntil { f.authTypeReads.get() >= RUNS } shouldBe true
+        verify(exactly = 0) { f.storage.getOAuthToken() }
+        verify(exactly = 0) { f.service.refreshToken(any()) }
+      } finally {
+        scheduler.shutdownNow()
+      }
+    }
+
+    it("R6: logs the scheduled refresh only on the run that refreshed") {
+      val logged = captureLog()
+      val f = Fixture()
+      val scheduler = Executors.newSingleThreadScheduledExecutor()
+      f.provider.scheduler = scheduler
+      try {
+        every { f.storage.getOAuthToken() } returns valid("stored")
+        every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(validAt("new", AFTER_EXPIRY_S))
+
+        f.provider.startTokenRefreshTimer()
+
+        awaitUntil { f.clockReads.get() >= RUNS } shouldBe true
+        logged.count { it == SCHEDULED_REFRESH_LOG } shouldBe 0
+
+        f.advance(AFTER_EXPIRY_S)
+        awaitUntil { logged.contains(SCHEDULED_REFRESH_LOG) } shouldBe true
+        // Later runs see the refreshed, valid token and stay silent.
+        val readsAfterRefresh = f.clockReads.get()
+        awaitUntil { f.clockReads.get() >= readsAfterRefresh + RUNS } shouldBe true
+        logged.count { it == SCHEDULED_REFRESH_LOG } shouldBe 1
+      } finally {
+        scheduler.shutdownNow()
+      }
     }
   }
 
@@ -417,7 +499,7 @@ class OAuthTokenProviderTest : DescribeSpec({
           RefreshOutcome.Transient("IOException")
         }
 
-        f.provider.scheduleRefresh(SCHEDULE_PERIOD_MS)
+        f.provider.startTokenRefreshTimer()
 
         runs.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
       } finally {
@@ -552,6 +634,9 @@ private const val JOIN_TIMEOUT_MS = 1_000L
 private const val AWAIT_TIMEOUT_MS = 5_000L
 private const val SCHEDULE_PERIOD_MS = 50L
 private const val POLL_MS = 5L
+private const val RUNS = 3
+private const val AFTER_EXPIRY_S = 3_600L
+private const val SCHEDULED_REFRESH_LOG = "Token refreshed by scheduled task."
 private const val TRANSIENT_MESSAGE = "Could not refresh the GitLab OAuth token. Retrying automatically."
 private const val REAUTH_MESSAGE = "Failed to refresh the OAuth token. Please re-authenticate."
 private val T0: Instant = Instant.ofEpochSecond(1_000_000_000L)
@@ -561,10 +646,31 @@ private fun expired(name: String) = GitLabAuthorizationToken(name, "refresh-$nam
 
 private fun valid(name: String) = GitLabAuthorizationToken(name, "refresh-$name", 3600, T0.epochSecond)
 
-/** A provider wired to fakes: a stateful authentication type, an injected clock and captured notifications. */
+/** Created [seconds] after [T0], so it is valid once the fixture clock has advanced that far. */
+private fun validAt(name: String, seconds: Long) =
+  GitLabAuthorizationToken(name, "refresh-$name", 3600, T0.epochSecond + seconds)
+
+/** Installs a log that records every message handed to it, from any thread. */
+private fun captureLog(): List<String> {
+  val recorded = CopyOnWriteArrayList<String>()
+  val log = mockk<ILog>()
+  every { log.info(any<String>()) } answers { recorded += firstArg<String>() }
+  every { log.warn(any<String>()) } answers { recorded += firstArg<String>() }
+  every { log.error(any<String>(), any()) } answers { recorded += firstArg<String>() }
+  every { Platform.getLog(any<Bundle>()) } returns log
+  every { Platform.getLog(any<Class<*>>()) } returns log
+  return recorded
+}
+
+/**
+ * A provider wired to fakes: a stateful authentication type, an injected clock and captured notifications.
+ * [clockReads] and [authTypeReads] count reads, so a test can wait for scheduled runs to happen.
+ */
 private class Fixture {
   val authType = AtomicReference(TokenProviderType.OAUTH.name)
   val now = AtomicReference(T0)
+  val clockReads = AtomicInteger()
+  val authTypeReads = AtomicInteger()
   val notifications = CopyOnWriteArrayList<String>()
 
   @Volatile var onNotify: (String) -> Unit = {}
@@ -577,15 +683,22 @@ private class Fixture {
     prefs,
     storage,
     oAuthService = { service },
-    clock = { now.get() },
+    clock = {
+      clockReads.incrementAndGet()
+      now.get()
+    },
     notify = { message ->
       notifications.add(message)
       onNotify(message)
     },
+    refreshCheckPeriod = Duration.ofMillis(SCHEDULE_PERIOD_MS),
   )
 
   init {
-    every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } answers { authType.get() }
+    every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } answers {
+      authTypeReads.incrementAndGet()
+      authType.get()
+    }
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } answers {
       authType.set(secondArg())
     }
