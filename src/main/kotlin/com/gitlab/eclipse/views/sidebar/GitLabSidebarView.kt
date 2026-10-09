@@ -119,7 +119,7 @@ class GitLabSidebarView : ViewPart() {
   // exactly like mrVersionCache and cleared with it (UI thread only). Recorded once on the fetch
   // path — where the capture already happens off the UI thread — so the cache-hit path never has
   // to capture: `captureConnection` reads the token, and for an expired OAuth credential that
-  // performs a SYNCHRONOUS refresh request (OAuthTokenProvider.getToken -> refreshTokenIfExpired),
+  // performs a SYNCHRONOUS refresh request (OAuthTokenProvider.getToken -> refreshIfExpired),
   // which on the UI thread freezes the workbench. Correctness, not just cost: the tags exist to
   // record which instance AND which account the cached data came from, so re-capturing later
   // would stamp the node with whatever connection is configured now and hide the very mismatch

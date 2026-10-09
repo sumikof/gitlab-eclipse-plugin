@@ -1,15 +1,21 @@
 package com.gitlab.eclipse.authentication
 
-import com.github.scribejava.core.model.OAuth2AccessToken
-import com.github.scribejava.core.oauth.OAuth20Service
+import com.github.scribejava.core.httpclient.jdk.JDKHttpClientConfig
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
-import com.google.gson.Gson
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeTypeOf
 import io.mockk.*
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
+import org.osgi.framework.Bundle
 import java.awt.Desktop
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
+import java.net.ServerSocket
 import java.net.URI
+import java.nio.charset.StandardCharsets
 
 @Suppress("IgnoredReturnValue")
 class GitLabOAuthServiceTest : DescribeSpec({
@@ -66,83 +72,181 @@ class GitLabOAuthServiceTest : DescribeSpec({
     }
   }
 
+  // Real local server sockets stand in for the token endpoint instead of reflecting the private
+  // `oauthService`/`gson` fields: the behaviour under test (timeouts, response classification) is
+  // in the HTTP stack itself, which a field-swapped mock cannot exercise.
   describe("refreshToken") {
-    val mockOAuthService = mockk<OAuth20Service>()
-    val mockGson = mockk<Gson>()
+    val currentRefreshToken = "current-refresh-token-value"
 
-    beforeTest {
-      val oauthServiceField = GitLabOAuthService::class.java.getDeclaredField("oauthService")
-      oauthServiceField.isAccessible = true
-      oauthServiceField.set(gitLabOAuthService, mockOAuthService)
+    it("T1: returns Transient within the read timeout when the endpoint never responds") {
+      startFakeTokenEndpoint(rawResponse = null).use { serverSocket ->
+        val service = testOAuthService(serverSocket, connectTimeoutMs = 300, readTimeoutMs = 300)
 
-      val gsonField = GitLabOAuthService::class.java.getDeclaredField("gson")
-      gsonField.isAccessible = true
-      gsonField.set(gitLabOAuthService, mockGson)
+        val startedAt = System.currentTimeMillis()
+        val outcome = service.refreshToken(currentRefreshToken)
+        val elapsedMs = System.currentTimeMillis() - startedAt
+
+        (elapsedMs < 2_000L) shouldBe true
+        outcome.shouldBeTypeOf<RefreshOutcome.Transient>()
+        (outcome as RefreshOutcome.Transient).reason shouldBe "SocketTimeoutException"
+      }
     }
 
-    it("should refresh the token and return a new GitLabAuthorizationToken") {
-      val currentToken = "old_refresh_token"
-      val newAccessToken = OAuth2AccessToken(
-        "new_access_token",
-        "new_token_type",
-        3600,
-        "new_refresh_token",
-        "new_scope",
-        "{\"access_token\":\"new_access_token\",\"refresh_token\":\"new_refresh_token\",\"expires_in\":3600,\"created_at\":1234567890}"
-      )
-      val expectedGitLabToken = GitLabAuthorizationToken("new_access_token", "new_refresh_token", 3600, 1234567890L)
+    it("T1b: restores the interrupt flag and classifies InterruptedException as Transient") {
+      val service = GitLabOAuthService()
+      var outcome: RefreshOutcome? = null
+      var wasInterrupted = false
 
-      every { mockOAuthService.refreshAccessToken(currentToken, "api") } returns newAccessToken
-      every {
-        mockGson.fromJson(
-          newAccessToken.rawResponse,
-          GitLabAuthorizationToken::class.java
-        )
-      } returns expectedGitLabToken
+      val thread = Thread {
+        outcome = service.classifyFailure(InterruptedException())
+        wasInterrupted = Thread.currentThread().isInterrupted
+      }
+      thread.start()
+      thread.join()
 
-      val result = gitLabOAuthService.refreshToken(currentToken)
-
-      result.shouldBeTypeOf<GitLabAuthorizationToken>()
-      result shouldBe expectedGitLabToken
-      verify(exactly = 1) { mockOAuthService.refreshAccessToken(currentToken, "api") }
-      verify(exactly = 1) { mockGson.fromJson(newAccessToken.rawResponse, GitLabAuthorizationToken::class.java) }
+      outcome shouldBe RefreshOutcome.Transient("InterruptedException")
+      wasInterrupted shouldBe true
     }
 
-    it("should return null when token refresh fails") {
-      val currentToken = "invalid_refresh_token"
+    it("T2: classifies invalid_grant, invalid_client and unauthorized_client as Rejected") {
+      listOf("invalid_grant", "invalid_client", "unauthorized_client").forEach { errorCode ->
+        val body = """{"error":"$errorCode","error_description":"x"}"""
+        startFakeTokenEndpoint(rawHttpResponse(400, "Bad Request", body)).use { serverSocket ->
+          val service = testOAuthService(serverSocket)
 
-      every { mockOAuthService.refreshAccessToken(currentToken, "api") } throws Exception("Token refresh failed")
+          val outcome = service.refreshToken(currentRefreshToken)
 
-      val result = gitLabOAuthService.refreshToken(currentToken)
-
-      result shouldBe null
-      verify(exactly = 1) { mockOAuthService.refreshAccessToken(currentToken, "api") }
+          outcome shouldBe RefreshOutcome.Rejected(errorCode)
+        }
+      }
     }
 
-    it("should return null when Gson parsing fails") {
-      val currentToken = "valid_refresh_token"
-      val newAccessToken = OAuth2AccessToken(
-        "new_access_token",
-        "new_token_type",
-        3600,
-        "new_refresh_token",
-        "new_scope",
-        "invalid_json"
+    it("T3: classifies non-JSON 5xx, excluded errors and empty bodies as Transient") {
+      val cases = listOf(
+        rawHttpResponse(502, "Bad Gateway", "<html>bad gateway</html>"),
+        rawHttpResponse(400, "Bad Request", """{"error":"invalid_request"}"""),
+        rawHttpResponse(500, "Internal Server Error", """{"error":"invalid_grant"}"""),
+        rawHttpResponse(503, "Service Unavailable", ""),
       )
 
-      every { mockOAuthService.refreshAccessToken(currentToken, "api") } returns newAccessToken
-      every {
-        mockGson.fromJson(
-          newAccessToken.rawResponse,
-          GitLabAuthorizationToken::class.java
+      cases.forEach { rawResponse ->
+        startFakeTokenEndpoint(rawResponse).use { serverSocket ->
+          val service = testOAuthService(serverSocket)
+
+          val outcome = service.refreshToken(currentRefreshToken)
+
+          outcome.shouldBeTypeOf<RefreshOutcome.Transient>()
+        }
+      }
+    }
+
+    it("T4: returns Refreshed with the parsed token on 200") {
+      val createdAt = 1_234_567_890L
+      val body = """{"access_token":"new-access-token-value","refresh_token":"new-refresh-token-value",""" +
+        """"expires_in":7200,"created_at":$createdAt}"""
+      startFakeTokenEndpoint(rawHttpResponse(200, "OK", body)).use { serverSocket ->
+        val service = testOAuthService(serverSocket)
+
+        val outcome = service.refreshToken(currentRefreshToken)
+
+        outcome shouldBe RefreshOutcome.Refreshed(
+          GitLabAuthorizationToken("new-access-token-value", "new-refresh-token-value", 7200, createdAt)
         )
-      } throws Exception("JSON parsing failed")
+      }
+    }
 
-      val result = gitLabOAuthService.refreshToken(currentToken)
+    it("T5: never writes the access token, refresh token or sent token to stdout or the platform log") {
+      val newAccessToken = "secret-access-token-marker"
+      val newRefreshToken = "secret-refresh-token-marker"
+      val sentRefreshToken = "secret-sent-refresh-token-marker"
+      val createdAt = 1_234_567_890L
+      val body = """{"access_token":"$newAccessToken","refresh_token":"$newRefreshToken",""" +
+        """"expires_in":7200,"created_at":$createdAt}"""
 
-      result shouldBe null
-      verify(exactly = 1) { mockOAuthService.refreshAccessToken(currentToken, "api") }
-      verify(exactly = 1) { mockGson.fromJson(newAccessToken.rawResponse, GitLabAuthorizationToken::class.java) }
+      val logMock = mockk<ILog>(relaxUnitFun = true)
+      val infoMessages = mutableListOf<String>()
+      every { Platform.getLog(any<Bundle>()) } returns logMock
+      every { Platform.getLog(any<Class<*>>()) } returns logMock
+      every { logMock.info(capture(infoMessages)) } just Runs
+
+      val originalOut = System.out
+      val captured = ByteArrayOutputStream()
+      System.setOut(PrintStream(captured))
+
+      try {
+        startFakeTokenEndpoint(rawHttpResponse(200, "OK", body)).use { serverSocket ->
+          val service = testOAuthService(serverSocket)
+          val outcome = service.refreshToken(sentRefreshToken)
+          outcome.shouldBeTypeOf<RefreshOutcome.Refreshed>()
+        }
+      } finally {
+        System.setOut(originalOut)
+      }
+
+      val stdout = captured.toByteArray().toString(StandardCharsets.UTF_8)
+      stdout shouldNotContain newAccessToken
+      stdout shouldNotContain newRefreshToken
+      stdout shouldNotContain sentRefreshToken
+
+      infoMessages.forEach { message ->
+        message shouldNotContain newAccessToken
+        message shouldNotContain newRefreshToken
+        message shouldNotContain sentRefreshToken
+      }
+      verify(exactly = 0) { logMock.error(any(), any()) }
     }
   }
 })
+
+private fun testOAuthService(
+  serverSocket: ServerSocket,
+  connectTimeoutMs: Int = 500,
+  readTimeoutMs: Int = 500,
+): GitLabOAuthService =
+  GitLabOAuthService(
+    tokenEndpoint = "http://127.0.0.1:${serverSocket.localPort}/oauth/token",
+    httpClientConfig = JDKHttpClientConfig.defaultConfig()
+      .withConnectTimeout(connectTimeoutMs)
+      .withReadTimeout(readTimeoutMs),
+  )
+
+/**
+ * Opens a raw server socket and, on the first connection, either sends [rawResponse] verbatim and
+ * closes the connection, or — when null — accepts the connection and never answers, to exercise the
+ * client's read timeout (T1).
+ */
+private fun startFakeTokenEndpoint(rawResponse: String?): ServerSocket {
+  val serverSocket = ServerSocket(0)
+  val thread = Thread {
+    try {
+      serverSocket.accept().use { socket ->
+        if (rawResponse == null) {
+          Thread.sleep(5_000)
+        } else {
+          val reader = socket.getInputStream().bufferedReader()
+          // Drain the request headers up to (and including) the blank line that ends them.
+          while (!reader.readLine().isNullOrEmpty()) {
+            // no-op: discard each header line
+          }
+          socket.getOutputStream().write(rawResponse.toByteArray(StandardCharsets.UTF_8))
+          socket.getOutputStream().flush()
+        }
+      }
+    } catch (_: Exception) {
+      // The listening socket was closed by test cleanup, or the client disconnected first.
+    }
+  }
+  thread.isDaemon = true
+  thread.start()
+  return serverSocket
+}
+
+private fun rawHttpResponse(status: Int, reason: String, body: String): String {
+  val bodyBytes = body.toByteArray(StandardCharsets.UTF_8).size
+  return "HTTP/1.1 $status $reason\r\n" +
+    "Content-Type: application/json\r\n" +
+    "Content-Length: $bodyBytes\r\n" +
+    "Connection: close\r\n" +
+    "\r\n" +
+    body
+}

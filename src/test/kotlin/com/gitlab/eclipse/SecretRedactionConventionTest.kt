@@ -48,6 +48,8 @@ private val EXEMPTIONS = setOf(
  */
 private val EXPECTED_SECRET_CLASSES: Map<String, Set<String>> = mapOf(
   "com.gitlab.eclipse.authentication.GitLabAuthorizationToken" to setOf("accessToken", "refreshToken"),
+  // 設計 §7.1(OAuth 更新の分類)。`token` は直接の秘匿名であり、かつ型自体が上の行の再帰対象。
+  "com.gitlab.eclipse.authentication.RefreshOutcome\$Refreshed" to setOf("token"),
   "com.gitlab.eclipse.api.ConnectionSnapshot" to setOf("token"),
   "com.gitlab.eclipse.api.http.EgressConfigSnapshot" to
     setOf("caCertificatePath", "clientCertificatePath", "clientCertificateKeyPath"),
@@ -173,6 +175,14 @@ internal class SynthesisFailure(message: String, cause: Throwable? = null) : Ass
 
 internal object Synthesizer {
   /**
+   * `ConventionScan.run()` の結果を一度だけ受け取る(`ConventionScan` 自身の `scanned` /
+   * `unexaminable` / `dataClasses` と同じ、走査 1 回ぶんの共有状態)。設計 §7.5 の再帰対象が
+   * **直接の秘匿フィールドとしても**現れた場合([synthesizeSecret] の最後の分岐、
+   * [verifySamplesDiffer] の入れ子分岐)に、その型の秘匿構築・差分判定へ委譲するために使う。
+   */
+  var knownClasses: List<DetectedClass> = emptyList()
+
+  /**
    * [varying] に名指しした秘匿フィールドだけを variant 1 に、他の秘匿フィールドは variant 0 に置く。
    * 設計 §22 A1 が求める「**その秘匿フィールドだけが異なる** 2 インスタンス」の作り方であり、
    * `null` を渡すとどの秘匿フィールドも variant 0 の基準標本になる。
@@ -253,14 +263,38 @@ internal object Synthesizer {
       val f = target.kClass.java.getDeclaredField(s.name).apply { isAccessible = true }
       val valueA = f.get(a)
       val valueB = f.get(b)
+      val nested = knownClasses.firstOrNull { it.kClass.java == s.type }
       if (valueA is Throwable && valueB is Throwable) {
         verifyThrowablesDiffer("${target.fqcn}#${s.name}", valueA, valueB)
+      } else if (nested != null && valueA != null && valueB != null) {
+        // 設計 §7.5: 秘匿フィールドの型自体が被検出クラスの場合、その `toString()` は
+        // (production の要件そのもので)自分の秘匿をマスクしているため、マスク後の文字列の
+        // 一致では「2 標本が実際に異なるか」を判定できない。入れ子の**生の**秘匿フィールドで比べる。
+        if (!nestedValuesDiffer(nested, valueA, valueB)) {
+          throw SynthesisFailure("${target.fqcn}#${s.name}: both samples hold the same ${nested.fqcn} values")
+        }
       } else if (observableForm(valueA) == observableForm(valueB)) {
         val form = observableForm(valueA)
         throw SynthesisFailure("${target.fqcn}#${s.name}: both samples hold the same value ($form)")
       }
     }
   }
+
+  /**
+   * [nested] 型の秘匿フィールドの**生の値**を読み戻して比べる([verifySamplesDiffer] の入れ子分岐から)。
+   * [Throwable] の対は、より強い [verifyThrowablesDiffer] と同じ判定基準を使う。
+   */
+  private fun nestedValuesDiffer(nested: DetectedClass, a: Any, b: Any): Boolean =
+    nested.secrets.any { s ->
+      val f = nested.kClass.java.getDeclaredField(s.name).apply { isAccessible = true }
+      val valueA = f.get(a)
+      val valueB = f.get(b)
+      if (valueA is Throwable && valueB is Throwable) {
+        valueA.javaClass != valueB.javaClass || THROWABLE_COMPONENTS.any { (_, read) -> read(valueA) != read(valueB) }
+      } else {
+        observableForm(valueA) != observableForm(valueB)
+      }
+    }
 
   /**
    * 設計 §22 A1 / §11 step 10 の※が求める組の形を、**組み上がった 2 標本から読み戻して**固定する。
@@ -334,8 +368,37 @@ internal object Synthesizer {
     when {
       java == String::class.java || java == CharSequence::class.java -> Sentinels.forString(name, variant)
       Throwable::class.java.isAssignableFrom(java) -> Sentinels.forThrowable(fqcn, name, java, variant)
+      // 設計 §7.5: 秘匿フィールドの型そのものが別の被検出クラスである場合(例:
+      // `RefreshOutcome.Refreshed#token: GitLabAuthorizationToken`)。[buildFlatVariant] へ委譲する。
+      knownClasses.any { it.kClass.java == java } ->
+        buildFlatVariant(knownClasses.first { it.kClass.java == java }, variant)
       else -> throw SynthesisFailure("$fqcn#$name: no synthesis strategy for ${java.name}")
     }
+
+  /**
+   * [synthesizeSecret] の再帰対象向け分岐。[nested] の秘匿フィールドすべてを同じ [variant] で
+   * 埋める — 外側から見れば「丸ごと別の値」という 1 つの秘匿単位として扱う(設計 §7.5)。
+   * 入れ子自身がさらに秘匿型を入れ子に持つ場合も [synthesizeSecret] を再帰的に経由する。
+   */
+  private fun buildFlatVariant(nested: DetectedClass, variant: Int): Any {
+    val ctor = nested.kClass.constructors.firstOrNull()
+      ?: throw SynthesisFailure("${nested.fqcn}: no constructor")
+    val secretNames = nested.secrets.map(SecretField::name).toSet()
+    val args = mutableMapOf<KParameter, Any?>()
+    ctor.parameters.forEach { p ->
+      val (name, java) = nameAndTypeOf(nested.fqcn, p)
+      when {
+        name in secretNames -> args[p] = synthesizeSecret(nested.fqcn, name, java, variant)
+        p.isOptional -> Unit
+        else -> args[p] = synthesizeNeutral(nested.fqcn, name, java, p.type.isMarkedNullable)
+      }
+    }
+    return try {
+      ctor.callBy(args)
+    } catch (e: Throwable) {
+      throw SynthesisFailure("${nested.fqcn}: callBy failed (${e.javaClass.name})", e)
+    }
+  }
 
   /** 引数名と実行時型を取り出す。取れない引数は合成不能として失敗させる(設計 §13.1)。 */
   private fun nameAndTypeOf(fqcn: String, p: KParameter): Pair<String, Class<*>> {
@@ -367,9 +430,14 @@ internal object Synthesizer {
       val (name, java) = nameAndTypeOf(target.fqcn, p)
       val nested = all.firstOrNull { it.kClass.java == java }
       when {
-        // 外側自身の秘匿は 2 標本で同一に保つ(動かすのは入れ子の中だけ)
-        name in secretNames -> args[p] = synthesizeSecret(target.fqcn, name, java, 0)
+        // 型が再帰対象なら常にこちらを使う(§7.5)。この引数名が外側自身の秘匿名にも
+        // 当たる場合(例: `RefreshOutcome.Refreshed#token`)でも、[varying] が当該入れ子の
+        // 1 フィールドだけを動かせるようにするため、secretNames の判定より先に見る。
+        // `varying` が無指定(= この引数を狙っていない)なら [nestedVaryingFor] は null を返し、
+        // 入れ子の秘匿はすべて variant 0 になる — これが「外側自身の秘匿は 2 標本で同一に保つ」
+        // (動かすのは入れ子の中だけ)の実体である。
         nested != null -> args[p] = build(nested, nestedVaryingFor(p, varying)) // ← 再帰。null にしない
+        name in secretNames -> args[p] = synthesizeSecret(target.fqcn, name, java, 0)
         p.isOptional -> Unit
         else -> args[p] = synthesizeNeutral(target.fqcn, name, java, p.type.isMarkedNullable)
       }
@@ -458,6 +526,8 @@ internal fun nestedSecretsOf(outer: DetectedClass, all: List<DetectedClass>): Li
 
 class SecretRedactionConventionTest : DescribeSpec({
   val detected = ConventionScan.run()
+  // 設計 §7.5: 秘匿フィールドの型そのものが別の被検出クラスである場合の構築・差分判定に使う。
+  Synthesizer.knownClasses = detected
 
   describe("the scan itself") {
     // A3: 走査が壊れると 0 クラスを見て「違反なし」と報告する
