@@ -222,10 +222,12 @@ class OAuthTokenProvider(
    * The scheduled task body, off the UI thread. Handles only a token already published by [getToken],
    * [hasToken] or [updateToken]; it never reads secure storage, so it cannot race their first load into a
    * second master-password prompt or a conflicting switch to PAT. Takes [refreshLock] only once the token
-   * has expired. Catches everything: an escaping throwable would cancel all later runs.
+   * has expired. Does nothing once [stopTokenRefreshTimer] has run, so a run that starts after the bundle
+   * stopped has no effect. Catches everything: an escaping throwable would cancel all later runs.
    */
   internal fun runScheduledRefresh() {
     try {
+      if (scheduler.isShutdown) return
       val token = currentToken.get() ?: return
       if (token.tokenExpirationTimestamp > clock()) return
 

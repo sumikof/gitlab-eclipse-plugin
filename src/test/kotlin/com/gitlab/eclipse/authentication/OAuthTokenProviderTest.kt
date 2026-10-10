@@ -301,6 +301,19 @@ class OAuthTokenProviderTest : DescribeSpec({
       (OAuthTokenProvider.REFRESH_CHECK_PERIOD.multipliedBy(2).plus(failedAttempt) < buffer) shouldBe true
     }
 
+    it("R9: a run that starts after stopTokenRefreshTimer does nothing") {
+      val f = Fixture()
+      every { f.storage.getOAuthToken() } returns expired("stored")
+      every { f.service.refreshToken(any()) } returns RefreshOutcome.Refreshed(valid("new"))
+      f.provider.hasToken() shouldBe true
+
+      f.provider.stopTokenRefreshTimer()
+      f.provider.runScheduledRefresh()
+
+      verify(exactly = 0) { f.service.refreshToken(any()) }
+      verify(exactly = 0) { f.lsConfig.sendConfiguration() }
+    }
+
     it("R8: the default scheduler runs on a named daemon thread, so it never keeps the JVM alive") {
       val f = Fixture()
       try {
