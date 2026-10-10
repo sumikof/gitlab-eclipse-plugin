@@ -357,6 +357,32 @@ class OAuthTokenProviderTest : DescribeSpec({
       f.notifications shouldBe emptyList()
     }
 
+    it("R10c: stopTokenRefreshTimer waits for an effect already being dispatched, so none starts after it") {
+      val f = Fixture()
+      f.provider.updateToken(expired("old"))
+      every { f.service.refreshToken(any()) } returns RefreshOutcome.Transient("IOException")
+      val dispatching = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      f.onNotify = {
+        dispatching.countDown()
+        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      }
+
+      val run = Thread { f.provider.runScheduledRefresh() }.apply { start() }
+      dispatching.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      val stop = Thread { f.provider.stopTokenRefreshTimer() }.apply { start() }
+      try {
+        // The stop cannot complete while the effect is being dispatched.
+        stop.join(STOP_BLOCKED_MS)
+        stop.isAlive shouldBe true
+      } finally {
+        release.countDown()
+        run.join(JOIN_TIMEOUT_MS)
+        stop.join(JOIN_TIMEOUT_MS)
+      }
+      stop.isAlive shouldBe false
+    }
+
     it("R8: the default scheduler runs on a named daemon thread, so it never keeps the JVM alive") {
       val f = Fixture()
       try {
@@ -726,6 +752,7 @@ private const val JOIN_TIMEOUT_MS = 1_000L
 private const val AWAIT_TIMEOUT_MS = 5_000L
 private const val SCHEDULE_PERIOD_MS = 50L
 private const val POLL_MS = 5L
+private const val STOP_BLOCKED_MS = 200L
 private const val RUNS = 3
 private const val AFTER_EXPIRY_S = 3_600L
 private const val SCHEDULED_REFRESH_LOG = "Token refreshed by scheduled task."

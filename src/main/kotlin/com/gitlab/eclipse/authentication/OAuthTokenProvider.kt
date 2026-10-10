@@ -13,6 +13,9 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * Holds the OAuth token and refreshes it when it expires (design §8, §11).
@@ -66,6 +69,15 @@ class OAuthTokenProvider(
    * it replaced is single use.
    */
   @Volatile private var stopped = false
+
+  /**
+   * Makes "check [stopped], then dispatch the effect" one step against [stopTokenRefreshTimer], so no effect
+   * starts after the stop. Dispatches share the read lock, so they never exclude each other (an effect may
+   * itself lead to another refresh); only the stop takes the write lock and waits for them. Held only while
+   * dispatching: `sendConfiguration` queues a coroutine and the notification an `asyncExec`, so neither
+   * waits. Never nested with [refreshLock] or [timerLock].
+   */
+  private val effectGate = ReentrantReadWriteLock()
 
   /**
    * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
@@ -206,7 +218,7 @@ class OAuthTokenProvider(
       }
     }
     // Checked after the network call: a refresh that was in flight when the timer stopped has no effect.
-    if (!stopped) effect?.invoke()
+    effectGate.read { if (!stopped) effect?.invoke() }
     return refreshed
   }
 
@@ -251,7 +263,8 @@ class OAuthTokenProvider(
 
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")
-    stopped = true
+    // Waits for an effect being dispatched, so none starts after this returns.
+    effectGate.write { stopped = true }
     synchronized(timerLock) { scheduler.shutdownNow() }
   }
 
