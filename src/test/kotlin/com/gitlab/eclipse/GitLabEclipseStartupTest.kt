@@ -14,6 +14,7 @@ import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -39,6 +40,8 @@ class GitLabEclipseStartupTest : DescribeSpec({
   val processProvider = mockk<GitLabLanguageServerProcessProvider>()
   val markerService = mockk<DiagnosticMarkerService>(relaxUnitFun = true)
   val saveListener = mockk<SecurityScanSaveListener>(relaxUnitFun = true)
+  val codeSuggestionsManager = mockk<CodeSuggestionsManager>(relaxed = true)
+  val oAuthTokenProvider = mockk<OAuthTokenProvider>(relaxed = true)
 
   beforeSpec {
     startKoin {
@@ -47,8 +50,8 @@ class GitLabEclipseStartupTest : DescribeSpec({
           single<GitLabLanguageServerProcessProvider> { processProvider }
           single<DiagnosticMarkerService> { markerService }
           single<SecurityScanSaveListener> { saveListener }
-          single<CodeSuggestionsManager> { mockk(relaxed = true) }
-          single<OAuthTokenProvider> { mockk(relaxed = true) }
+          single<CodeSuggestionsManager> { codeSuggestionsManager }
+          single<OAuthTokenProvider> { oAuthTokenProvider }
           single<GitLabHttpClient> { mockk(relaxed = true) }
         }
       )
@@ -75,6 +78,20 @@ class GitLabEclipseStartupTest : DescribeSpec({
       DiagnosticGenerationRegistry.active shouldBe false
       verify { markerService.deleteAllMarkers() }
       verify { saveListener.uninstall() }
+    }
+
+    it("stops the OAuth refresh timer even when a later step throws") {
+      // Earlier tests in this spec stopped the timer too.
+      clearMocks(oAuthTokenProvider)
+      every { processProvider.stop() } returns Unit
+      every { codeSuggestionsManager.endAllSessions() } throws IllegalStateException("editor already disposed")
+      try {
+        runCatching { GitLabEclipseStartup().stop(mockk<BundleContext>()) }
+
+        verify { oAuthTokenProvider.stopTokenRefreshTimer() }
+      } finally {
+        every { codeSuggestionsManager.endAllSessions() } returns Unit
+      }
     }
   }
 
