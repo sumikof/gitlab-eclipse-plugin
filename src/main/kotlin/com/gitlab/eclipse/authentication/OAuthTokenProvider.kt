@@ -61,6 +61,13 @@ class OAuthTokenProvider(
   private var refreshTask: ScheduledFuture<*>? = null
 
   /**
+   * Set by [stopTokenRefreshTimer]. From then on no refresh sends the configuration or notifies: the language
+   * server and the workbench are being torn down. A refreshed token is still stored, because the refresh token
+   * it replaced is single use.
+   */
+  @Volatile private var stopped = false
+
+  /**
    * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
    * [stopTokenRefreshTimer] is not reached.
    */
@@ -198,7 +205,8 @@ class OAuthTokenProvider(
         }
       }
     }
-    effect?.invoke()
+    // Checked after the network call: a refresh that was in flight when the timer stopped has no effect.
+    if (!stopped) effect?.invoke()
     return refreshed
   }
 
@@ -227,7 +235,7 @@ class OAuthTokenProvider(
    */
   internal fun runScheduledRefresh() {
     try {
-      if (scheduler.isShutdown) return
+      if (stopped) return
       val token = currentToken.get() ?: return
       if (token.tokenExpirationTimestamp > clock()) return
 
@@ -243,6 +251,7 @@ class OAuthTokenProvider(
 
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")
+    stopped = true
     synchronized(timerLock) { scheduler.shutdownNow() }
   }
 

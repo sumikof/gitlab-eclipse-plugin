@@ -314,6 +314,49 @@ class OAuthTokenProviderTest : DescribeSpec({
       verify(exactly = 0) { f.lsConfig.sendConfiguration() }
     }
 
+    it("R10: a refresh in flight when the timer stops keeps the new token but sends no configuration") {
+      val f = Fixture()
+      f.provider.updateToken(expired("old"))
+      val inFlight = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      every { f.service.refreshToken(any()) } answers {
+        inFlight.countDown()
+        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        RefreshOutcome.Refreshed(valid("new"))
+      }
+      clearMocks(f.lsConfig, answers = false)
+
+      val run = Thread { f.provider.runScheduledRefresh() }.apply { start() }
+      inFlight.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      f.provider.stopTokenRefreshTimer()
+      release.countDown()
+      run.join(JOIN_TIMEOUT_MS)
+
+      // The refresh token is single use: the new token must still be stored.
+      verify { f.storage.setOAuthToken(valid("new")) }
+      verify(exactly = 0) { f.lsConfig.sendConfiguration() }
+    }
+
+    it("R10b: a transient failure in flight when the timer stops does not notify") {
+      val f = Fixture()
+      f.provider.updateToken(expired("old"))
+      val inFlight = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      every { f.service.refreshToken(any()) } answers {
+        inFlight.countDown()
+        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        RefreshOutcome.Transient("IOException")
+      }
+
+      val run = Thread { f.provider.runScheduledRefresh() }.apply { start() }
+      inFlight.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      f.provider.stopTokenRefreshTimer()
+      release.countDown()
+      run.join(JOIN_TIMEOUT_MS)
+
+      f.notifications shouldBe emptyList()
+    }
+
     it("R8: the default scheduler runs on a named daemon thread, so it never keeps the JVM alive") {
       val f = Fixture()
       try {
