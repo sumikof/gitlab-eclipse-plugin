@@ -3,6 +3,7 @@ package com.gitlab.eclipse.authentication
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.GsonBuilder
+import org.eclipse.equinox.security.storage.StorageException
 
 class OAuthSecretStorage(
   private val secretStorage: SecretStorage = SecretStorage("gitlab.com")
@@ -16,8 +17,15 @@ class OAuthSecretStorage(
     const val SECRET_NAME = "oauth_token"
   }
 
+  /**
+   * The stored token, or null when secure storage holds none.
+   *
+   * @throws StorageException when secure storage cannot be read (e.g. the master-password prompt was
+   *   cancelled), so the caller does not mistake it for an empty storage.
+   */
+  @Throws(StorageException::class)
   fun getOAuthToken(): GitLabAuthorizationToken? {
-    val serializedOAuthToken = secretStorage.getSecret(SECRET_NAME).orEmpty()
+    val serializedOAuthToken = secretStorage.readSecret(SECRET_NAME).orEmpty()
     return if (serializedOAuthToken.isEmpty()) {
       logger.info("Loaded OAuth token is null.")
       null
