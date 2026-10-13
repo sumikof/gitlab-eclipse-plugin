@@ -242,8 +242,9 @@ class OAuthTokenProvider(
    * The scheduled task body, off the UI thread. Handles only a token already published by [getToken],
    * [hasToken] or [updateToken]; it never reads secure storage, so it cannot race their first load into a
    * second master-password prompt or a conflicting switch to PAT. Takes [refreshLock] only once the token
-   * has expired. Does nothing once [stopTokenRefreshTimer] has run, so a run that starts after the bundle
-   * stopped has no effect. Catches everything: an escaping throwable would cancel all later runs.
+   * has expired. Does nothing once [stopTokenRefreshTimer] has run. A run already past that check still
+   * finishes its refresh and stores the token, but dispatches no effect after the stop. Catches
+   * everything: an escaping throwable would cancel all later runs.
    */
   internal fun runScheduledRefresh() {
     try {
@@ -265,7 +266,9 @@ class OAuthTokenProvider(
     logger.info("Canceling the timer for token refresh.")
     // Waits for an effect being dispatched, so none starts after this returns.
     effectGate.write { stopped = true }
-    synchronized(timerLock) { scheduler.shutdownNow() }
+    // Not shutdownNow: interrupting a refresh in flight could fail storing its new token, and the old
+    // refresh token is single use. Shutdown already drops the periodic task.
+    synchronized(timerLock) { scheduler.shutdown() }
   }
 
   companion object {

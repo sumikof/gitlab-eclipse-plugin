@@ -314,26 +314,34 @@ class OAuthTokenProviderTest : DescribeSpec({
       verify(exactly = 0) { f.lsConfig.sendConfiguration() }
     }
 
-    it("R10: a refresh in flight when the timer stops keeps the new token but sends no configuration") {
+    it("R10: a refresh in flight when the timer stops is not interrupted, keeps the new token, sends no config") {
       val f = Fixture()
+      val scheduler = RunCountingScheduler().also { f.provider.scheduler = it }
       f.provider.updateToken(expired("old"))
       val inFlight = CountDownLatch(1)
       val release = CountDownLatch(1)
+      val interruptedAtStore = AtomicReference<Boolean>()
       every { f.service.refreshToken(any()) } answers {
         inFlight.countDown()
-        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        while (release.count > 0) Thread.onSpinWait() // Like a plain socket read: ignores interrupts.
         RefreshOutcome.Refreshed(valid("new"))
       }
+      every { f.storage.setOAuthToken(any()) } answers { interruptedAtStore.set(Thread.currentThread().isInterrupted) }
       clearMocks(f.lsConfig, answers = false)
+      try {
+        f.provider.startTokenRefreshTimer()
+        inFlight.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+        f.provider.stopTokenRefreshTimer()
+        release.countDown()
+        scheduler.awaitTermination(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      } finally {
+        release.countDown()
+        scheduler.stopAndAwait()
+      }
 
-      val run = Thread { f.provider.runScheduledRefresh() }.apply { start() }
-      inFlight.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
-      f.provider.stopTokenRefreshTimer()
-      release.countDown()
-      run.join(JOIN_TIMEOUT_MS)
-
-      // The refresh token is single use: the new token must still be stored.
+      // The refresh token is single use: the new token must still be stored, without an interrupt pending.
       verify { f.storage.setOAuthToken(valid("new")) }
+      interruptedAtStore.get() shouldBe false
       verify(exactly = 0) { f.lsConfig.sendConfiguration() }
     }
 
@@ -353,6 +361,7 @@ class OAuthTokenProviderTest : DescribeSpec({
       f.provider.stopTokenRefreshTimer()
       release.countDown()
       run.join(JOIN_TIMEOUT_MS)
+      run.isAlive shouldBe false
 
       f.notifications shouldBe emptyList()
     }
