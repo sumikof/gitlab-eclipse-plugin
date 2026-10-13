@@ -124,6 +124,14 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
   }
 
   override fun stop(context: BundleContext) {
+    // First, and independent of every step below: a step that throws must not leave the periodic
+    // OAuth refresh scheduled after this bundle has stopped. Guarded like the steps below: Koin can be
+    // closed by the time a late stop runs.
+    try {
+      service<OAuthTokenProvider>().stopTokenRefreshTimer()
+    } catch (e: Exception) {
+      logger<GitLabEclipseStartup>().warn("OAuth refresh timer shutdown skipped: ${e::class.simpleName}")
+    }
     uninstallDiagnosticsLogTap(context)
     shutdownJobLog()
     // Design §17 step 2: shutdownJobLog() above already discarded every Quick Chat popup on the UI
@@ -139,7 +147,6 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     stopLanguageServer()
     shutdownDiagnostics()
     service<CodeSuggestionsManager>().endAllSessions()
-    service<OAuthTokenProvider>().stopTokenRefreshTimer()
     service<GitLabHttpClient>().close()
   }
 
