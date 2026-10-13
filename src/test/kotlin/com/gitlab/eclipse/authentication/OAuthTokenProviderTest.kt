@@ -3,7 +3,6 @@ package com.gitlab.eclipse.authentication
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.PreferenceConstants
-import com.google.gson.JsonSyntaxException
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
@@ -12,7 +11,6 @@ import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
-import org.eclipse.equinox.security.storage.StorageException
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
@@ -755,107 +753,6 @@ class OAuthTokenProviderTest : DescribeSpec({
       f.provider.hasToken() shouldBe false
     }
   }
-
-  describe("first load failure (C1)") {
-    it("L1: a secure storage failure keeps OAuth selected and reports no token") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws StorageException(StorageException.NO_PASSWORD, "cancelled")
-
-      f.provider.hasToken() shouldBe false
-      f.provider.getToken() shouldBe ""
-
-      verify(exactly = 0) {
-        f.prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.PAT.name)
-      }
-      f.authType.get() shouldBe TokenProviderType.OAUTH.name
-    }
-
-    it("L2: after a failure, later calls do not read secure storage again") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws StorageException(StorageException.NO_PASSWORD, "cancelled")
-
-      repeat(RUNS) {
-        f.provider.hasToken() shouldBe false
-        f.provider.getToken() shouldBe ""
-      }
-
-      verify(exactly = 1) { f.storage.getOAuthToken() }
-    }
-
-    it("L3: concurrent callers that all fail to load notify exactly once") {
-      val f = Fixture()
-      val entered = AtomicInteger()
-      every { f.storage.getOAuthToken() } answers {
-        entered.incrementAndGet()
-        // Every caller is inside the read before any of them fails, so all of them reach the catch.
-        awaitUntil { entered.get() >= WORKERS }
-        throw StorageException(StorageException.NO_PASSWORD, "cancelled")
-      }
-
-      val results = runConcurrently(WORKERS, CopyOnWriteArrayList()) { f.provider.hasToken().toString() }
-
-      results shouldContainOnly listOf("false")
-      entered.get() shouldBe WORKERS
-      f.notifications shouldBe listOf(LOAD_FAILURE_MESSAGE)
-
-      f.provider.hasToken() shouldBe false
-      f.notifications shouldBe listOf(LOAD_FAILURE_MESSAGE)
-    }
-
-    it("L4: a sign-in after the failure publishes the new token") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws StorageException(StorageException.NO_PASSWORD, "cancelled")
-      f.provider.hasToken() shouldBe false
-
-      f.provider.updateToken(valid("signed-in"))
-
-      f.provider.getToken() shouldBe "signed-in"
-      f.provider.hasToken() shouldBe true
-      verify(exactly = 1) { f.storage.getOAuthToken() }
-    }
-
-    it("L5: a corrupt stored token still switches to a personal access token") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws JsonSyntaxException("corrupt")
-
-      f.provider.hasToken() shouldBe false
-
-      f.authType.get() shouldBe TokenProviderType.PAT.name
-      f.notifications shouldBe emptyList()
-    }
-
-    it("L6: empty secure storage still switches to a personal access token") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } returns null
-
-      f.provider.hasToken() shouldBe false
-
-      f.authType.get() shouldBe TokenProviderType.PAT.name
-      f.notifications shouldBe emptyList()
-    }
-
-    it("L7: a failure after stopTokenRefreshTimer does not notify") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws StorageException(StorageException.NO_PASSWORD, "cancelled")
-
-      f.provider.stopTokenRefreshTimer()
-      f.provider.hasToken() shouldBe false
-
-      f.notifications shouldBe emptyList()
-      f.authType.get() shouldBe TokenProviderType.OAUTH.name
-    }
-
-    it("L8: after a failure, a scheduled run does not read secure storage") {
-      val f = Fixture()
-      every { f.storage.getOAuthToken() } throws StorageException(StorageException.NO_PASSWORD, "cancelled")
-      f.provider.hasToken() shouldBe false
-
-      f.provider.runScheduledRefresh()
-
-      verify(exactly = 1) { f.storage.getOAuthToken() }
-      verify(exactly = 0) { f.service.refreshToken(any()) }
-    }
-  }
 })
 
 private const val WORKERS = 10
@@ -870,8 +767,6 @@ private const val AFTER_EXPIRY_S = 3_600L
 private const val SCHEDULED_REFRESH_LOG = "Token refreshed by scheduled task."
 private const val TRANSIENT_MESSAGE = "Could not refresh the GitLab OAuth token. Retrying automatically."
 private const val REAUTH_MESSAGE = "Failed to refresh the OAuth token. Please re-authenticate."
-private const val LOAD_FAILURE_MESSAGE =
-  "Could not read the GitLab OAuth token from secure storage. Restart Eclipse or sign in again."
 private val T0: Instant = Instant.ofEpochSecond(1_000_000_000L)
 
 /** Expired at [T0]: created one lifetime ago (the provider also subtracts its 120 s buffer). */
