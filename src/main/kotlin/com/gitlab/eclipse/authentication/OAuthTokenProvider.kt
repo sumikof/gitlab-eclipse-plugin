@@ -158,8 +158,12 @@ class OAuthTokenProvider(
       // Concurrent first loads of one attempt may all fail; only the first one notifies.
       val failedAttempt = LoadAttempt(failed = true)
       if (loadAttempt.compareAndSet(attempt, failedAttempt)) {
-        // Rechecked at dispatch: a sign-in that replaced the attempt after the CAS makes the notice obsolete.
-        effectGate.read { if (!stopped && loadAttempt.get() === failedAttempt) notify(LOAD_FAILURE_MESSAGE) }
+        // Rechecked at dispatch: a sign-in that replaced the attempt after the CAS, or a concurrent load that
+        // published the token, makes the notice obsolete.
+        effectGate.read {
+          val current = loadAttempt.get() === failedAttempt && currentToken.get() == null
+          if (!stopped && current) notify(LOAD_FAILURE_MESSAGE)
+        }
       }
       return
     } catch (e: Exception) {

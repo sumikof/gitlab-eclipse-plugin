@@ -155,6 +155,33 @@ class OAuthTokenProviderLoadFailureTest : DescribeSpec({
       f.provider.getToken() shouldBe "signed-in"
       f.authType.get() shouldBe TokenProviderType.OAUTH.name
     }
+
+    it("L10: a load failure after a concurrent load published the token does not notify") {
+      val f = LoadFailureFixture()
+      val reading = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      val reads = AtomicInteger()
+      every { f.storage.getOAuthToken() } answers {
+        if (reads.incrementAndGet() == 1) {
+          reading.countDown()
+          release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+          throw storageFailure()
+        }
+        validToken("stored")
+      }
+
+      // The first read is pending (its prompt is later cancelled) while a second read succeeds.
+      val loader = Thread { f.provider.hasToken() }.apply { start() }
+      reading.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      f.provider.hasToken() shouldBe true
+      release.countDown()
+      loader.join(AWAIT_TIMEOUT_MS)
+      loader.isAlive shouldBe false
+
+      f.notifications shouldBe emptyList()
+      f.provider.getToken() shouldBe "stored"
+      f.authType.get() shouldBe TokenProviderType.OAUTH.name
+    }
   }
 })
 
