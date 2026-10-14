@@ -132,6 +132,29 @@ class OAuthTokenProviderLoadFailureTest : DescribeSpec({
       verify(exactly = 1) { f.storage.getOAuthToken() }
       verify(exactly = 0) { f.service.refreshToken(any()) }
     }
+
+    it("L9: a load failure superseded by a sign-in neither notifies nor blocks later loads") {
+      val f = LoadFailureFixture()
+      val reading = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      every { f.storage.getOAuthToken() } answers {
+        reading.countDown()
+        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        throw storageFailure()
+      }
+
+      // The read starts, a sign-in completes while it is pending, then the stale read fails.
+      val loader = Thread { f.provider.hasToken() }.apply { start() }
+      reading.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      f.provider.updateToken(validToken("signed-in"))
+      release.countDown()
+      loader.join(AWAIT_TIMEOUT_MS)
+      loader.isAlive shouldBe false
+
+      f.notifications shouldBe emptyList()
+      f.provider.getToken() shouldBe "signed-in"
+      f.authType.get() shouldBe TokenProviderType.OAUTH.name
+    }
   }
 })
 

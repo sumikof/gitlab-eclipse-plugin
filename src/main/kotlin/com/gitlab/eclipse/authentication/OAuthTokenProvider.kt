@@ -13,7 +13,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -84,10 +83,11 @@ class OAuthTokenProvider(
   private val effectGate = ReentrantReadWriteLock()
 
   /**
-   * Set when the first load could not read secure storage; cleared by [updateToken]. While set, no first load
-   * reads secure storage again, so a cancelled master-password prompt is not shown again on every call.
+   * The current first-load attempt. Once it has failed to read secure storage, no first load reads it again,
+   * so a cancelled master-password prompt is not shown again on every call. [updateToken] replaces it with a
+   * fresh attempt, so a read that was already in flight cannot mark the new one failed or notify after it.
    */
-  private val loadFailed = AtomicBoolean(false)
+  private val loadAttempt = AtomicReference(LoadAttempt(failed = false))
 
   /**
    * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
@@ -121,7 +121,7 @@ class OAuthTokenProvider(
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     synchronized(refreshLock) {
       setOAuthInPreferenceStore(true)
-      loadFailed.set(false)
+      loadAttempt.set(LoadAttempt(failed = false))
       currentToken.set(newToken)
       oAuthSecretStorage.setOAuthToken(newToken)
       retryNotBefore = Instant.MIN
@@ -140,17 +140,20 @@ class OAuthTokenProvider(
    * safe on the UI thread; the read runs on the caller's thread as before.
    *
    * An empty or unparsable storage switches to PAT. A storage that cannot be read keeps OAuth (the token may
-   * still be there), notifies once and stops further loads until [updateToken].
+   * still be there), notifies once and stops further loads until [updateToken]. A failure that a sign-in
+   * superseded while the read was pending is ignored.
    */
   internal fun loadCachedIfAbsent() {
-    if (currentToken.get() != null || loadFailed.get() || !isOAuthEnabled()) return
+    // Captured before the read: the failure below only counts if no sign-in replaced this attempt meanwhile.
+    val attempt = loadAttempt.get()
+    if (currentToken.get() != null || attempt.failed || !isOAuthEnabled()) return
 
     val cachedToken = try {
       oAuthSecretStorage.getOAuthToken()
     } catch (e: StorageException) {
       logger.info("Failed to read the cached token from secure storage: ${e::class.java.name}")
-      // Concurrent first loads may all fail; only the first one notifies.
-      if (loadFailed.compareAndSet(false, true)) {
+      // Concurrent first loads of one attempt may all fail; only the first one notifies.
+      if (loadAttempt.compareAndSet(attempt, LoadAttempt(failed = true))) {
         effectGate.read { if (!stopped) notify(LOAD_FAILURE_MESSAGE) }
       }
       return
@@ -291,6 +294,9 @@ class OAuthTokenProvider(
     // refresh token is single use. Shutdown already drops the periodic task.
     synchronized(timerLock) { scheduler.shutdown() }
   }
+
+  /** One first-load attempt, compared by identity. */
+  private class LoadAttempt(val failed: Boolean)
 
   companion object {
     /**
