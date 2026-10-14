@@ -86,6 +86,8 @@ class OAuthTokenProvider(
    * The current first-load attempt. Once it has failed to read secure storage, no first load reads it again,
    * so a cancelled master-password prompt is not shown again on every call. [updateToken] replaces it with a
    * fresh attempt, so a read that was already in flight cannot mark the new one failed or notify after it.
+   * It does so after publishing the token, and a load captures the attempt before checking the token, so no
+   * load can read storage on behalf of the fresh attempt.
    */
   private val loadAttempt = AtomicReference(LoadAttempt(failed = false))
 
@@ -121,8 +123,9 @@ class OAuthTokenProvider(
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     synchronized(refreshLock) {
       setOAuthInPreferenceStore(true)
-      loadAttempt.set(LoadAttempt(failed = false))
+      // Token first: a load that captures the fresh attempt then sees the token and does not read storage.
       currentToken.set(newToken)
+      loadAttempt.set(LoadAttempt(failed = false))
       oAuthSecretStorage.setOAuthToken(newToken)
       retryNotBefore = Instant.MIN
       transientNotified = false
