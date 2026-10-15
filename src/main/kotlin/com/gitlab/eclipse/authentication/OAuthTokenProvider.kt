@@ -5,6 +5,7 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationSer
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.equinox.security.storage.StorageException
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.time.Duration
 import java.time.Instant
@@ -30,6 +31,8 @@ import kotlin.concurrent.write
  *   (the first load at startup, a later sign-in). The timer never reads secure storage: the first load stays
  *   on [getToken] / [hasToken] (at startup, the language server configuration build), so there is no second
  *   concurrent first load and the master-password prompt appears where it did before.
+ * - A first load that cannot read secure storage (e.g. the master-password prompt was cancelled) keeps OAuth
+ *   selected, notifies once and is not retried until [updateToken]: the stored token may still be valid.
  *
  * TooManyFunctions is suppressed: [hasToken] (design §7.3) has to read [currentToken] and the lock-free
  * first load directly, so it cannot move out of this class without exposing that state.
@@ -80,6 +83,15 @@ class OAuthTokenProvider(
   private val effectGate = ReentrantReadWriteLock()
 
   /**
+   * The current first-load attempt. Once it has failed to read secure storage, no first load reads it again,
+   * so a cancelled master-password prompt is not shown again on every call. [updateToken] replaces it with a
+   * fresh attempt, so a read that was already in flight cannot mark the new one failed or notify after it.
+   * It does so after publishing the token, and a load captures the attempt before checking the token, so no
+   * load can read storage on behalf of the fresh attempt.
+   */
+  private val loadAttempt = AtomicReference(LoadAttempt(failed = false))
+
+  /**
    * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
    * [stopTokenRefreshTimer] is not reached.
    */
@@ -111,7 +123,9 @@ class OAuthTokenProvider(
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     synchronized(refreshLock) {
       setOAuthInPreferenceStore(true)
+      // Token first: a load that captures the fresh attempt then sees the token and does not read storage.
       currentToken.set(newToken)
+      loadAttempt.set(LoadAttempt(failed = false))
       oAuthSecretStorage.setOAuthToken(newToken)
       retryNotBefore = Instant.MIN
       transientNotified = false
@@ -127,12 +141,31 @@ class OAuthTokenProvider(
   /**
    * Loads the cached token from secure storage if none is published yet. Takes no lock, so it is
    * safe on the UI thread; the read runs on the caller's thread as before.
+   *
+   * An empty or unparsable storage switches to PAT. A storage that cannot be read keeps OAuth (the token may
+   * still be there), notifies once and stops further loads until [updateToken]. A failure that a sign-in
+   * superseded while the read was pending is ignored.
    */
   internal fun loadCachedIfAbsent() {
-    if (currentToken.get() != null || !isOAuthEnabled()) return
+    // Captured before the read: the failure below only counts if no sign-in replaced this attempt meanwhile.
+    val attempt = loadAttempt.get()
+    if (currentToken.get() != null || attempt.failed || !isOAuthEnabled()) return
 
     val cachedToken = try {
       oAuthSecretStorage.getOAuthToken()
+    } catch (e: StorageException) {
+      logger.info("Failed to read the cached token from secure storage: ${e::class.java.name}")
+      // Concurrent first loads of one attempt may all fail; only the first one notifies.
+      val failedAttempt = LoadAttempt(failed = true)
+      if (loadAttempt.compareAndSet(attempt, failedAttempt)) {
+        // Rechecked at dispatch: a sign-in that replaced the attempt after the CAS, or a concurrent load that
+        // published the token, makes the notice obsolete.
+        effectGate.read {
+          val current = loadAttempt.get() === failedAttempt && currentToken.get() == null
+          if (!stopped && current) notify(LOAD_FAILURE_MESSAGE)
+        }
+      }
+      return
     } catch (e: Exception) {
       logger.info("Failed to load cached token: ${e::class.java.name}")
       setOAuthInPreferenceStore(false)
@@ -271,6 +304,9 @@ class OAuthTokenProvider(
     synchronized(timerLock) { scheduler.shutdown() }
   }
 
+  /** One first-load attempt, compared by identity. */
+  private class LoadAttempt(val failed: Boolean)
+
   companion object {
     /**
      * How often the scheduled task checks the token. The first run that sees the buffered expiry comes at
@@ -288,5 +324,7 @@ class OAuthTokenProvider(
 
     private const val REAUTHENTICATE_MESSAGE = "Failed to refresh the OAuth token. Please re-authenticate."
     private const val TRANSIENT_FAILURE_MESSAGE = "Could not refresh the GitLab OAuth token. Retrying automatically."
+    private const val LOAD_FAILURE_MESSAGE =
+      "Could not read the GitLab OAuth token from secure storage. Restart Eclipse or sign in again."
   }
 }

@@ -3,10 +3,12 @@ package com.gitlab.eclipse.authentication
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.preferences.storage.SecretStorage
 import com.google.gson.GsonBuilder
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.*
+import org.eclipse.equinox.security.storage.StorageException
 import java.time.Instant
 
 class OAuthSecretStorageTest : DescribeSpec({
@@ -26,12 +28,12 @@ class OAuthSecretStorageTest : DescribeSpec({
 
     describe("getOAuthToken") {
       it("returns null when secret is empty") {
-        every { mockSecretStorage.getSecret(any()) } returns ""
+        every { mockSecretStorage.readSecret(any()) } returns ""
 
         val result = oauthSecretStorage.getOAuthToken()
 
         result.shouldBeNull()
-        verify { mockSecretStorage.getSecret(OAuthSecretStorage.Companion.SECRET_NAME) }
+        verify { mockSecretStorage.readSecret(OAuthSecretStorage.Companion.SECRET_NAME) }
       }
 
       it("returns token when secret exists") {
@@ -44,14 +46,21 @@ class OAuthSecretStorageTest : DescribeSpec({
         val token = GitLabAuthorizationToken("test-token", "test-refresh", 3600, createdAt)
         val jsonOAuthToken = gson.toJson(token)
 
-        every { mockSecretStorage.getSecret(any()) } returns jsonOAuthToken
+        every { mockSecretStorage.readSecret(any()) } returns jsonOAuthToken
 
         val result = oauthSecretStorage.getOAuthToken()
 
         result?.accessToken shouldBe "test-token"
         result?.refreshToken shouldBe "test-refresh"
         result?.tokenExpirationTimestamp shouldBe expirationTime
-        verify { mockSecretStorage.getSecret(OAuthSecretStorage.Companion.SECRET_NAME) }
+        verify { mockSecretStorage.readSecret(OAuthSecretStorage.Companion.SECRET_NAME) }
+      }
+
+      it("propagates a secure storage failure instead of reporting an empty storage") {
+        every { mockSecretStorage.readSecret(any()) } throws
+          StorageException(StorageException.NO_PASSWORD, "cancelled")
+
+        shouldThrow<StorageException> { oauthSecretStorage.getOAuthToken() }
       }
     }
 
