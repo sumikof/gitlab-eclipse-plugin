@@ -220,6 +220,38 @@ class OAuthTokenProviderSingleFlightTest : DescribeSpec({
       f.reads.get() shouldBe 2
     }
   }
+
+  describe("re-read after a loaded token is dropped") {
+    it("D1: a token dropped while PAT is selected is read again once OAuth is selected again") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } answers {
+        if (f.reads.incrementAndGet() == 1) expiredToken("stored") else validToken("again")
+      }
+      f.provider.hasToken() shouldBe true
+
+      // The user selects PAT; the expired token is then dropped instead of refreshed (N1).
+      f.authType.set(TokenProviderType.PAT.name)
+      f.provider.getToken() shouldBe ""
+
+      f.authType.set(TokenProviderType.OAUTH.name)
+      f.provider.getToken() shouldBe "again"
+      f.reads.get() shouldBe 2
+    }
+
+    it("D2: after a rejected refresh, selecting OAuth again reads storage again") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } answers {
+        if (f.reads.incrementAndGet() == 1) expiredToken("dead") else validToken("again")
+      }
+      every { f.service.refreshToken(any()) } returns RefreshOutcome.Rejected("invalid_grant")
+      f.provider.getToken() shouldBe ""
+      f.authType.get() shouldBe TokenProviderType.PAT.name
+
+      f.authType.set(TokenProviderType.OAUTH.name)
+      f.provider.getToken() shouldBe "again"
+      f.reads.get() shouldBe 2
+    }
+  }
 })
 
 private const val WAITERS = 3
@@ -235,6 +267,9 @@ private fun storageFailure() = StorageException(StorageException.NO_PASSWORD, "c
 
 private fun validToken(name: String) =
   GitLabAuthorizationToken(name, "refresh-$name", EXPIRES_IN_SECONDS, NOW.epochSecond)
+
+private fun expiredToken(name: String) =
+  GitLabAuthorizationToken(name, "refresh-$name", EXPIRES_IN_SECONDS, NOW.epochSecond - EXPIRES_IN_SECONDS)
 
 /**
  * A provider wired to fakes: a stateful authentication type (OAuth at first), captured notifications, a

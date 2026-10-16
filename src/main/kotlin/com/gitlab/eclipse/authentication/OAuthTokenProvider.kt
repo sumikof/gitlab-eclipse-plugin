@@ -259,6 +259,15 @@ class OAuthTokenProvider(
   }
 
   /**
+   * After a loaded token was dropped (with PAT selected): a fresh attempt, so selecting OAuth again reads
+   * storage again as before single-flight (the done attempt would answer "no token" until a sign-in). Called
+   * under [authTypeLock], after any PAT write, for the same reason as in [switchToPatAndRearmUnlessSuperseded].
+   */
+  private fun rearmLoad() {
+    loadAttempt.getAndSet(LoadAttempt(failed = false)).done.countDown()
+  }
+
+  /**
    * Refreshes at most once across concurrent callers. The decision, the network call and the state
    * writes happen under [refreshLock]; the outcome's effect (notification or `sendConfiguration`)
    * runs only after the lock is released.
@@ -276,6 +285,7 @@ class OAuthTokenProvider(
       // A late first load re-published a rejected token, or the user switched to PAT (design N1).
       if (!isOAuthEnabled()) {
         currentToken.set(null)
+        synchronized(authTypeLock) { rearmLoad() }
         return@synchronized null
       }
 
@@ -301,7 +311,10 @@ class OAuthTokenProvider(
           retryNotBefore = Instant.MIN
           transientNotified = false
           logger.info("Failed to refresh the OAuth token: Rejected(${outcome.error}).")
-          synchronized(authTypeLock) { setOAuthInPreferenceStore(false) }
+          synchronized(authTypeLock) {
+            setOAuthInPreferenceStore(false)
+            rearmLoad()
+          }
           val reauthenticateNotice: () -> Unit = { notify(REAUTHENTICATE_MESSAGE) }
           reauthenticateNotice
         }
