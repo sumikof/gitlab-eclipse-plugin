@@ -167,6 +167,9 @@ class OAuthTokenProvider(
       retryNotBefore = Instant.MIN
       transientNotified = false
     }
+    // A session whose startup failed before it registered the timer still gets refreshes after a sign-in.
+    // Idempotent, and a no-op after stop. Outside every lock.
+    startTokenRefreshTimer()
     languageServiceConfigurationService.sendConfiguration()
   }
 

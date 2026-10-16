@@ -154,7 +154,7 @@ class GitLabOAuthService(
       val token = oauthService.getAccessToken(tokenRequest)
       val gitlabToken = gson.fromJson(token.rawResponse, GitLabAuthorizationToken::class.java)
 
-      // The refresh timer registered at startup picks up the new token.
+      // The refresh timer picks up the new token; updateToken also registers it if startup did not.
       service<OAuthTokenProvider>().updateToken(gitlabToken)
     }
   }
