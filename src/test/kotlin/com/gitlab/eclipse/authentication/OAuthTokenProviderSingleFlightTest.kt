@@ -252,6 +252,63 @@ class OAuthTokenProviderSingleFlightTest : DescribeSpec({
       f.reads.get() shouldBe 2
     }
   }
+
+  describe("isLoadPendingOrFailed (F1)") {
+    it("P1: is false before any load, true while the read is in flight, false once the token is published") {
+      val f = SingleFlightFixture()
+      f.holdFirstReadThen { validToken("stored") }
+      f.provider.isLoadPendingOrFailed() shouldBe false
+
+      val loader = f.startLoader { f.provider.hasToken() }
+      f.provider.isLoadPendingOrFailed() shouldBe true
+
+      f.release.countDown()
+      loader.finishes() shouldBe true
+      loader.result.get() shouldBe true
+      f.provider.isLoadPendingOrFailed() shouldBe false
+    }
+
+    it("P2: is true after the read failed to open secure storage") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } throws storageFailure()
+
+      f.provider.hasToken() shouldBe false
+
+      f.provider.isLoadPendingOrFailed() shouldBe true
+      f.authType.get() shouldBe TokenProviderType.OAUTH.name
+    }
+
+    it("P3: is false after an empty read switched to PAT") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } returns null
+
+      f.provider.hasToken() shouldBe false
+
+      f.authType.get() shouldBe TokenProviderType.PAT.name
+      f.provider.isLoadPendingOrFailed() shouldBe false
+    }
+
+    it("P4: is false after a sign-in replaced a failed load") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } throws storageFailure()
+      f.provider.hasToken() shouldBe false
+      f.provider.isLoadPendingOrFailed() shouldBe true
+
+      f.provider.updateToken(validToken("signed-in"))
+
+      f.provider.isLoadPendingOrFailed() shouldBe false
+    }
+
+    it("P5: is false while PAT is selected, even after a failed load") {
+      val f = SingleFlightFixture()
+      every { f.storage.getOAuthToken() } throws storageFailure()
+      f.provider.hasToken() shouldBe false
+
+      f.authType.set(TokenProviderType.PAT.name)
+
+      f.provider.isLoadPendingOrFailed() shouldBe false
+    }
+  }
 })
 
 private const val WAITERS = 3

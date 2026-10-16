@@ -73,6 +73,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
 
       it("returns empty string when no tokens are available") {
         every { oAuthTokenProvider.getToken() } returns ""
+        every { oAuthTokenProvider.isLoadPendingOrFailed() } returns false
         every { patTokenProvider.getToken() } returns ""
         every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "OAUTH"
 
@@ -102,6 +103,7 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
 
       it("falls back to PAT when OAuth is selected but has no token") {
         every { oAuthTokenProvider.hasToken() } returns false
+        every { oAuthTokenProvider.isLoadPendingOrFailed() } returns false
         every { patTokenProvider.hasToken() } returns true
         every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "OAUTH"
 
@@ -123,12 +125,79 @@ class GitLabTokenProviderManagerTest : DescribeSpec({
 
       it("is false when no provider has a token") {
         every { oAuthTokenProvider.hasToken() } returns false
+        every { oAuthTokenProvider.isLoadPendingOrFailed() } returns false
         every { patTokenProvider.hasToken() } returns false
         every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "OAUTH"
 
         tokenProviderManager.hasToken() shouldBe false
 
         verifyNoTokenRead()
+      }
+    }
+
+    // R10: the PAT read goes to the same secure storage, so it would prompt again or block on its lock.
+    describe("no PAT fallback while the OAuth first load is pending or failed (F1)") {
+      fun selectOAuthWithNoToken(pendingOrFailed: Boolean) {
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "OAUTH"
+        every { oAuthTokenProvider.getToken() } returns ""
+        every { oAuthTokenProvider.hasToken() } returns false
+        every { oAuthTokenProvider.isLoadPendingOrFailed() } returns pendingOrFailed
+        every { patTokenProvider.getToken() } returns "pat_token"
+        every { patTokenProvider.hasToken() } returns true
+      }
+
+      fun verifyNoPatCall() {
+        verify(exactly = 0) { patTokenProvider.getToken() }
+        verify(exactly = 0) { patTokenProvider.hasToken() }
+      }
+
+      it("F1a: a failed OAuth load answers no token without calling PAT") {
+        selectOAuthWithNoToken(pendingOrFailed = true)
+
+        tokenProviderManager.getToken() shouldBe ""
+        tokenProviderManager.hasToken() shouldBe false
+
+        verifyNoPatCall()
+      }
+
+      it("F1b: a UI-thread hasToken during an in-flight OAuth load answers false without calling PAT") {
+        selectOAuthWithNoToken(pendingOrFailed = true)
+
+        tokenProviderManager.hasToken() shouldBe false
+
+        verifyOrder {
+          oAuthTokenProvider.hasToken()
+          oAuthTokenProvider.isLoadPendingOrFailed()
+        }
+        verifyNoPatCall()
+      }
+
+      it("F1c: an OAuth load that ended empty (switched to PAT) still falls through to PAT") {
+        selectOAuthWithNoToken(pendingOrFailed = false)
+
+        tokenProviderManager.getToken() shouldBe "pat_token"
+        tokenProviderManager.hasToken() shouldBe true
+      }
+
+      it("F1d: with PAT selected the order is unchanged and the OAuth load state is not consulted") {
+        every { scopedPreferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns "PAT"
+        every { patTokenProvider.getToken() } returns ""
+        every { patTokenProvider.hasToken() } returns false
+        every { oAuthTokenProvider.getToken() } returns "oauth_token"
+        every { oAuthTokenProvider.hasToken() } returns true
+
+        tokenProviderManager.getToken() shouldBe "oauth_token"
+        tokenProviderManager.hasToken() shouldBe true
+
+        verifyOrder {
+          patTokenProvider.getToken()
+          oAuthTokenProvider.getToken()
+        }
+        verifyOrder {
+          patTokenProvider.hasToken()
+          oAuthTokenProvider.hasToken()
+        }
+        verify(exactly = 0) { oAuthTokenProvider.isLoadPendingOrFailed() }
       }
     }
   }

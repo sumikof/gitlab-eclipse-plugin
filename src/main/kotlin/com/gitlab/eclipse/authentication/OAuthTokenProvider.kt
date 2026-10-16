@@ -141,6 +141,18 @@ class OAuthTokenProvider(
     return !currentToken.get()?.accessToken.isNullOrEmpty()
   }
 
+  /**
+   * True while OAuth is selected, no token is published, and the first load is in flight or has failed.
+   * [GitLabTokenProviderManager] then skips its PAT fallback: the PAT read goes to the same secure storage, so
+   * it would prompt for the master password again or block (on the UI thread) on Equinox's storage lock behind
+   * the in-flight read. Lock-free and without I/O, so safe on the UI thread.
+   */
+  internal fun isLoadPendingOrFailed(): Boolean {
+    if (currentToken.get() != null || !isOAuthEnabled()) return false
+    val attempt = loadAttempt.get()
+    return attempt.failed || (attempt.loader.get() != null && attempt.done.count > 0)
+  }
+
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     synchronized(refreshLock) {
       synchronized(authTypeLock) {
