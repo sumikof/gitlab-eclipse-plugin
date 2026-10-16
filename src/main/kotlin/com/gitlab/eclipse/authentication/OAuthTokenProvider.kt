@@ -33,6 +33,8 @@ import kotlin.concurrent.write
  *   concurrent first load and the master-password prompt appears where it did before.
  * - A first load that cannot read secure storage (e.g. the master-password prompt was cancelled) keeps OAuth
  *   selected, notifies once and is not retried until [updateToken]: the stored token may still be valid.
+ * - Every AUTHENTICATION_TYPE write takes [authTypeLock], so an empty or corrupt first load that a sign-in
+ *   superseded does not switch to PAT after the sign-in selected OAuth.
  *
  * TooManyFunctions is suppressed: [hasToken] (design §7.3) has to read [currentToken] and the lock-free
  * first load directly, so it cannot move out of this class without exposing that state.
@@ -92,6 +94,16 @@ class OAuthTokenProvider(
   private val loadAttempt = AtomicReference(LoadAttempt(failed = false))
 
   /**
+   * Makes writing AUTHENTICATION_TYPE one step with publishing the token and the attempt, so a first load's
+   * switch to PAT cannot interleave with a sign-in. Held only for in-memory checks and one preference write:
+   * never across secure-storage I/O, the network, notifications or `sendConfiguration`, so it is safe on the
+   * UI thread. `ScopedPreferenceStore.setValue` fires listeners synchronously on the writer's thread; no plugin
+   * listener watches AUTHENTICATION_TYPE, and none may block (one doing `syncExec` would deadlock with the UI
+   * thread holding this lock). Lock order: [refreshLock] → [authTypeLock] only.
+   */
+  private val authTypeLock = Any()
+
+  /**
    * Daemon: the refresh is best effort, so its thread must never keep the JVM alive when
    * [stopTokenRefreshTimer] is not reached.
    */
@@ -122,10 +134,13 @@ class OAuthTokenProvider(
 
   fun updateToken(newToken: GitLabAuthorizationToken?) {
     synchronized(refreshLock) {
-      setOAuthInPreferenceStore(true)
-      // Token first: a load that captures the fresh attempt then sees the token and does not read storage.
-      currentToken.set(newToken)
-      loadAttempt.set(LoadAttempt(failed = false))
+      synchronized(authTypeLock) {
+        setOAuthInPreferenceStore(true)
+        // Token first: a load that captures the fresh attempt then sees the token and does not read storage.
+        currentToken.set(newToken)
+        loadAttempt.set(LoadAttempt(failed = false))
+      }
+      // May prompt for the master password: outside authTypeLock.
       oAuthSecretStorage.setOAuthToken(newToken)
       retryNotBefore = Instant.MIN
       transientNotified = false
@@ -143,8 +158,8 @@ class OAuthTokenProvider(
    * safe on the UI thread; the read runs on the caller's thread as before.
    *
    * An empty or unparsable storage switches to PAT. A storage that cannot be read keeps OAuth (the token may
-   * still be there), notifies once and stops further loads until [updateToken]. A failure that a sign-in
-   * superseded while the read was pending is ignored.
+   * still be there), notifies once and stops further loads until [updateToken]. Either outcome is ignored
+   * when a sign-in superseded the read while it was pending.
    */
   internal fun loadCachedIfAbsent() {
     // Captured before the read: the failure below only counts if no sign-in replaced this attempt meanwhile.
@@ -168,7 +183,7 @@ class OAuthTokenProvider(
       return
     } catch (e: Exception) {
       logger.info("Failed to load cached token: ${e::class.java.name}")
-      setOAuthInPreferenceStore(false)
+      switchToPatUnlessSuperseded(attempt)
       return
     }
 
@@ -176,7 +191,7 @@ class OAuthTokenProvider(
       logger.info(
         "No cached token found in PasswordSafe. Updating settings to reflect that OAuth is no longer enabled."
       )
-      setOAuthInPreferenceStore(false)
+      switchToPatUnlessSuperseded(attempt)
       return
     }
 
@@ -184,6 +199,13 @@ class OAuthTokenProvider(
       logger.info(
         "Loading cached token from PasswordSafe. Expiration timestamp is ${cachedToken.tokenExpirationTimestamp}"
       )
+    }
+  }
+
+  /** Switches to PAT unless a sign-in replaced [attempt] or a token is published meanwhile. */
+  private fun switchToPatUnlessSuperseded(attempt: LoadAttempt) {
+    synchronized(authTypeLock) {
+      if (loadAttempt.get() === attempt && currentToken.get() == null) setOAuthInPreferenceStore(false)
     }
   }
 
@@ -230,7 +252,7 @@ class OAuthTokenProvider(
           retryNotBefore = Instant.MIN
           transientNotified = false
           logger.info("Failed to refresh the OAuth token: Rejected(${outcome.error}).")
-          setOAuthInPreferenceStore(false)
+          synchronized(authTypeLock) { setOAuthInPreferenceStore(false) }
           val reauthenticateNotice: () -> Unit = { notify(REAUTHENTICATE_MESSAGE) }
           reauthenticateNotice
         }
