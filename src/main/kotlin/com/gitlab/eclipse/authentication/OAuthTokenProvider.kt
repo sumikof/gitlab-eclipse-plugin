@@ -226,11 +226,11 @@ class OAuthTokenProvider(
       oAuthSecretStorage.getOAuthToken()
     } catch (e: StorageException) {
       logger.info("Failed to read the cached token from secure storage: ${e::class.java.name}")
-      // Concurrent first loads of one attempt may all fail; only the first one notifies.
+      // Only this attempt's loader reads; the CAS fails when a sign-in (or a re-arm) replaced the attempt.
       val failedAttempt = LoadAttempt(failed = true)
       if (loadAttempt.compareAndSet(attempt, failedAttempt)) {
-        // Rechecked at dispatch: a sign-in that replaced the attempt after the CAS, or a concurrent load that
-        // published the token, makes the notice obsolete.
+        // Rechecked at dispatch: a sign-in that replaced the attempt after the CAS makes the notice obsolete.
+        // The token check is defensive: single-flight leaves no other load to publish one.
         effectGate.read {
           val current = loadAttempt.get() === failedAttempt && currentToken.get() == null
           if (!stopped && current) notify(LOAD_FAILURE_MESSAGE)
@@ -408,7 +408,10 @@ class OAuthTokenProvider(
     /** The thread reading storage for this attempt, once claimed. */
     val loader = AtomicReference<Thread?>(null)
 
-    /** Released when the claimed read has finished (any outcome), or when [updateToken] replaces the attempt. */
+    /**
+     * Released when the claimed read has finished (any outcome), or when [updateToken] or [rearmLoad] replaces
+     * the attempt.
+     */
     val done = CountDownLatch(1)
   }
 
