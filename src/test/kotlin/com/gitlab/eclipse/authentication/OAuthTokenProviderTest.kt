@@ -655,6 +655,9 @@ class OAuthTokenProviderTest : DescribeSpec({
       loader.start()
       lateLoaderReading.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
 
+      // A sign-in publishes a token that is then rejected (a load of the same attempt would wait for the
+      // late loader instead of reading).
+      f.provider.updateToken(dead)
       f.provider.getToken() shouldBe ""
       f.authType.get() shouldBe TokenProviderType.PAT.name
 
@@ -819,6 +822,8 @@ private class Fixture {
       onNotify(message)
     },
     refreshCheckPeriod = Duration.ofMillis(SCHEDULE_PERIOD_MS),
+    // Headless: the default would load SWT's Display, which has no native library here.
+    isUiThread = { false },
   )
 
   init {

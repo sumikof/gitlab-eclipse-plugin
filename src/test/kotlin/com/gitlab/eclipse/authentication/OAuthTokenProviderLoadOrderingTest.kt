@@ -85,6 +85,8 @@ private class LoadOrderingFixture {
     oAuthService = { service },
     clock = { NOW },
     notify = {},
+    // Headless: the default would load SWT's Display, which has no native library here.
+    isUiThread = { false },
   )
   val reading = CountDownLatch(1)
   val release = CountDownLatch(1)

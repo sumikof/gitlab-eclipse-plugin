@@ -6,9 +6,11 @@ import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.equinox.security.storage.StorageException
+import org.eclipse.swt.widgets.Display
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -31,8 +33,13 @@ import kotlin.concurrent.write
  *   (the first load at startup, a later sign-in). The timer never reads secure storage: the first load stays
  *   on [getToken] / [hasToken] (at startup, the language server configuration build), so there is no second
  *   concurrent first load and the master-password prompt appears where it did before.
+ * - The first load is single-flight per attempt: one thread reads secure storage (one master-password prompt,
+ *   also on cancel), other non-UI callers wait for it and answer from the published state. The UI thread
+ *   never waits: the prompt opens via `syncExec`, which the UI thread would never run while blocked on our
+ *   latch (deadlock), so it answers "no token yet" at once.
  * - A first load that cannot read secure storage (e.g. the master-password prompt was cancelled) keeps OAuth
  *   selected, notifies once and is not retried until [updateToken]: the stored token may still be valid.
+ *   An empty or corrupt one switches to PAT and re-arms the load, so selecting OAuth again reads it again.
  * - Every AUTHENTICATION_TYPE write takes [authTypeLock], so an empty or corrupt first load that a sign-in
  *   superseded does not switch to PAT after the sign-in selected OAuth.
  *
@@ -49,6 +56,7 @@ class OAuthTokenProvider(
   private val clock: () -> Instant = Instant::now,
   private val notify: (String) -> Unit = NotificationUtils::show,
   private val refreshCheckPeriod: Duration = REFRESH_CHECK_PERIOD,
+  private val isUiThread: () -> Boolean = { Display.getCurrent() != null },
 ) : TokenProvider {
   private val currentToken = AtomicReference<GitLabAuthorizationToken?>(null)
   private val logger by lazy { logger<OAuthTokenProvider>() }
@@ -85,11 +93,12 @@ class OAuthTokenProvider(
   private val effectGate = ReentrantReadWriteLock()
 
   /**
-   * The current first-load attempt. Once it has failed to read secure storage, no first load reads it again,
-   * so a cancelled master-password prompt is not shown again on every call. [updateToken] replaces it with a
-   * fresh attempt, so a read that was already in flight cannot mark the new one failed or notify after it.
-   * It does so after publishing the token, and a load captures the attempt before checking the token, so no
-   * load can read storage on behalf of the fresh attempt.
+   * The current first-load attempt. Only the thread that claims it reads secure storage; the others wait for
+   * its [LoadAttempt.done] (see [loadCachedIfAbsent]). Once it has failed to read secure storage, no first load
+   * reads it again, so a cancelled master-password prompt is not shown again on every call. [updateToken]
+   * replaces it with a fresh attempt and releases the old one's waiters, so a read that was already in flight
+   * cannot mark the new one failed or notify after it. It does so after publishing the token, and a load
+   * captures the attempt before checking the token, so no load can read storage on behalf of the fresh attempt.
    */
   private val loadAttempt = AtomicReference(LoadAttempt(failed = false))
 
@@ -138,7 +147,8 @@ class OAuthTokenProvider(
         setOAuthInPreferenceStore(true)
         // Token first: a load that captures the fresh attempt then sees the token and does not read storage.
         currentToken.set(newToken)
-        loadAttempt.set(LoadAttempt(failed = false))
+        // Waiters on a read still in flight answer with this token now instead of waiting for a stale prompt.
+        loadAttempt.getAndSet(LoadAttempt(failed = false)).done.countDown()
       }
       // May prompt for the master password: outside authTypeLock.
       oAuthSecretStorage.setOAuthToken(newToken)
@@ -154,8 +164,14 @@ class OAuthTokenProvider(
   }
 
   /**
-   * Loads the cached token from secure storage if none is published yet. Takes no lock, so it is
-   * safe on the UI thread; the read runs on the caller's thread as before.
+   * Loads the cached token from secure storage if none is published yet. Takes no lock; the read runs on the
+   * caller's thread as before.
+   *
+   * Single-flight: the first caller to claim the attempt reads, and releases [LoadAttempt.done] whatever the
+   * outcome. A later caller never reads for that attempt: on the claiming thread itself (re-entry) or on the
+   * UI thread it returns at once, otherwise it waits without timeout (an interrupt ends the wait), and then
+   * answers from the published state. The UI thread must not wait: the reader's master-password prompt runs
+   * through `syncExec`, so a UI thread parked on our latch would deadlock with it.
    *
    * An empty or unparsable storage switches to PAT. A storage that cannot be read keeps OAuth (the token may
    * still be there), notifies once and stops further loads until [updateToken]. Either outcome is ignored
@@ -166,6 +182,31 @@ class OAuthTokenProvider(
     val attempt = loadAttempt.get()
     if (currentToken.get() != null || attempt.failed || !isOAuthEnabled()) return
 
+    if (!attempt.loader.compareAndSet(null, Thread.currentThread())) {
+      awaitLoad(attempt)
+      return
+    }
+    try {
+      readCachedToken(attempt)
+    } finally {
+      // After any outcome (also an unexpected throwable), so no waiter is stranded.
+      attempt.done.countDown()
+    }
+  }
+
+  /** Waits for another thread's read of [attempt], except on its own loader thread or on the UI thread. */
+  private fun awaitLoad(attempt: LoadAttempt) {
+    if (attempt.loader.get() === Thread.currentThread() || isUiThread()) return
+    try {
+      attempt.done.await()
+    } catch (e: InterruptedException) {
+      logger.info("Interrupted while waiting for the first load: ${e::class.java.name}")
+      Thread.currentThread().interrupt()
+    }
+  }
+
+  /** The claimed read of [attempt] and its outcome. */
+  private fun readCachedToken(attempt: LoadAttempt) {
     val cachedToken = try {
       oAuthSecretStorage.getOAuthToken()
     } catch (e: StorageException) {
@@ -183,7 +224,7 @@ class OAuthTokenProvider(
       return
     } catch (e: Exception) {
       logger.info("Failed to load cached token: ${e::class.java.name}")
-      switchToPatUnlessSuperseded(attempt)
+      switchToPatAndRearmUnlessSuperseded(attempt)
       return
     }
 
@@ -191,7 +232,7 @@ class OAuthTokenProvider(
       logger.info(
         "No cached token found in PasswordSafe. Updating settings to reflect that OAuth is no longer enabled."
       )
-      switchToPatUnlessSuperseded(attempt)
+      switchToPatAndRearmUnlessSuperseded(attempt)
       return
     }
 
@@ -202,10 +243,18 @@ class OAuthTokenProvider(
     }
   }
 
-  /** Switches to PAT unless a sign-in replaced [attempt] or a token is published meanwhile. */
-  private fun switchToPatUnlessSuperseded(attempt: LoadAttempt) {
+  /**
+   * Switches to PAT and replaces [attempt] with a fresh one, so selecting OAuth again reads storage again;
+   * neither happens if a sign-in replaced [attempt] or a token is published meanwhile.
+   */
+  private fun switchToPatAndRearmUnlessSuperseded(attempt: LoadAttempt) {
     synchronized(authTypeLock) {
-      if (loadAttempt.get() === attempt && currentToken.get() == null) setOAuthInPreferenceStore(false)
+      if (loadAttempt.get() === attempt && currentToken.get() == null) {
+        setOAuthInPreferenceStore(false)
+        // After the PAT write: a load that captures the fresh attempt also sees PAT and does not read storage
+        // a second time (for corrupt storage, a second decrypt = a second prompt).
+        loadAttempt.compareAndSet(attempt, LoadAttempt(failed = false))
+      }
     }
   }
 
@@ -327,7 +376,13 @@ class OAuthTokenProvider(
   }
 
   /** One first-load attempt, compared by identity. */
-  private class LoadAttempt(val failed: Boolean)
+  private class LoadAttempt(val failed: Boolean) {
+    /** The thread reading storage for this attempt, once claimed. */
+    val loader = AtomicReference<Thread?>(null)
+
+    /** Released when the claimed read has finished (any outcome), or when [updateToken] replaces the attempt. */
+    val done = CountDownLatch(1)
+  }
 
   companion object {
     /**
