@@ -22,6 +22,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.write
 
 /**
  * Spec for effects queued before [OAuthTokenProvider.stopTokenRefreshTimer] (design §6): a notice whose UI turn
@@ -132,6 +133,71 @@ class OAuthTokenProviderStopTest : DescribeSpec({
     }
   }
 
+  describe("the notice's UI-thread gate never waits (R-1)") {
+    it("a notice run while the stop holds the write lock returns at once and shows nothing") {
+      val f = StopFixture()
+      f.dispatchTransientNotice()
+      val (message, gate) = f.pendingNotices.single()
+      val locked = CountDownLatch(1)
+      val release = CountDownLatch(1)
+
+      // Stands in for the stop's one-assignment write region, held open.
+      val stop = Thread {
+        f.provider.effectGate.write {
+          locked.countDown()
+          release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        }
+      }.apply { start() }
+      locked.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      val ui = Thread { gate { f.shown += message } }.apply { start() }
+      try {
+        ui.join(GATE_RETURNS_MS)
+        ui.isAlive shouldBe false
+      } finally {
+        release.countDown()
+        ui.join(AWAIT_TIMEOUT_MS)
+        stop.join(AWAIT_TIMEOUT_MS)
+      }
+      f.shown shouldBe emptyList()
+    }
+
+    it("a notice run while a stop waits behind a dispatch does not wait, and shows before the stop returns") {
+      val f = StopFixture()
+      f.dispatchTransientNotice()
+      val (message, gate) = f.pendingNotices.single()
+      val dispatching = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      // A sign-in's dispatch region holds the read lock while its send is being queued.
+      every { f.lsConfig.sendConfigurationIf(any()) } answers {
+        dispatching.countDown()
+        release.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      }
+
+      val dispatcher = Thread { f.provider.updateToken(valid("signed-in")) }.apply { start() }
+      dispatching.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
+      val stop = Thread { f.provider.stopTokenRefreshTimer() }.apply { start() }
+      val ui = Thread { gate { f.shown += message } }
+      try {
+        awaitQueued(f, stop)
+        ui.start()
+        // A writer-preferring read would wait behind the queued stop, and so for the dispatch.
+        ui.join(GATE_RETURNS_MS)
+        ui.isAlive shouldBe false
+        f.shown shouldBe listOf(TRANSIENT_MESSAGE)
+        stop.isAlive shouldBe true
+      } finally {
+        release.countDown()
+        dispatcher.join(AWAIT_TIMEOUT_MS)
+        ui.join(AWAIT_TIMEOUT_MS)
+        stop.join(AWAIT_TIMEOUT_MS)
+      }
+      stop.isAlive shouldBe false
+
+      gate { f.shown += message }
+      f.shown shouldBe listOf(TRANSIENT_MESSAGE)
+    }
+  }
+
   describe("queued configuration sends (O2)") {
     it("O2: a send queued by a sign-in is current before the stop and not after it") {
       val f = StopFixture()
@@ -221,6 +287,8 @@ class OAuthTokenProviderStopTest : DescribeSpec({
 
 private const val AWAIT_TIMEOUT_MS = 5_000L
 private const val STOP_BLOCKED_MS = 200L
+private const val GATE_RETURNS_MS = 2_000L
+private const val POLL_MS = 10L
 private const val TRANSIENT_MESSAGE = "Could not refresh the GitLab OAuth token. Retrying automatically."
 private const val LOAD_FAILURE_MESSAGE =
   "Could not read the GitLab OAuth token from secure storage. Restart Eclipse or sign in again."
@@ -230,6 +298,15 @@ private fun valid(name: String) = GitLabAuthorizationToken(name, "refresh-$name"
 
 private fun expired(name: String) =
   GitLabAuthorizationToken(name, "refresh-$name", 3600, NOW.epochSecond - 3601)
+
+/** Waits until [stop] is queued for [OAuthTokenProvider.effectGate]'s write lock. */
+private fun awaitQueued(f: StopFixture, stop: Thread) {
+  val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(AWAIT_TIMEOUT_MS)
+  while (!f.provider.effectGate.hasQueuedThread(stop)) {
+    check(System.nanoTime() < deadline) { "the stop never queued for the write lock" }
+    Thread.sleep(POLL_MS)
+  }
+}
 
 /**
  * A provider wired to fakes. With [deferEffects], notices and configuration sends are captured instead of run:

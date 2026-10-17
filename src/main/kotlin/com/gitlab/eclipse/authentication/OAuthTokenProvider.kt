@@ -96,8 +96,10 @@ class OAuthTokenProvider(
    *
    * Queued effects re-check [stopped] when they run (design §6):
    * - A notice re-checks it in its UI turn, under this read lock, around `popup.open()` (see [postNotice]).
-   *   The stop's write either precedes that region (nothing is shown) or follows it (the popup opened before
-   *   the stop returned), so no OAuth popup opens after [stopTokenRefreshTimer] returns.
+   *   The UI thread only ever tries the read lock (`tryLock`), never waits for it: if the stop holds the write
+   *   lock, nothing is shown. Otherwise the stop's write either precedes that region (nothing is shown) or
+   *   follows it (the popup opened before the stop returned), so no OAuth popup opens after
+   *   [stopTokenRefreshTimer] returns.
    * - A configuration send re-checks it inside the service's outbound lock, before building the
    *   configuration (`sendConfigurationIf { !stopped }`). The send is NOT wrapped in this lock: building the
    *   configuration can refresh the token over the network (up to the HTTP timeouts) and
@@ -109,11 +111,22 @@ class OAuthTokenProvider(
    * - (a) The only writer, [stopTokenRefreshTimer], must never be reachable from a UI runnable while a notice
    *   runnable holds the read lock: a read→write upgrade on one thread deadlocks with itself.
    * - (b) `popup.open()` does not run Synchronizer messages (the popup opens non-blocking, no nested event
-   *   loop), so the UI thread holds the read lock only briefly and no other UI runnable runs inside it.
-   * - (c) The lock is writer-preferring: once a stop is waiting, a UI-thread read waits for it, and so for
-   *   every dispatch in progress. Every dispatch region must therefore stay non-blocking.
+   *   loop), so the UI thread holds the read lock only briefly and no other UI runnable runs inside it. On GTK,
+   *   `Shell.setVisible(true)` iterates the GLib main context until the shell maps; SWT runs async messages
+   *   there only while a native dialog has installed its idle proc, i.e. only if the notice runnable itself
+   *   runs nested inside a native dialog's loop. Harmless: such a nested runnable is never the writer, and with
+   *   `tryLock` it never waits.
+   * - (c) The lock is writer-preferring: once a stop is waiting, a waiting read waits for it, and so for every
+   *   dispatch in progress. Every dispatch region must therefore stay non-blocking. This applies to the
+   *   dispatch regions against the stop, not to the UI thread: its `tryLock` barges past a queued writer and
+   *   fails only while the write lock is held, so it never waits. A waiting UI thread could deadlock during
+   *   `Display.dispose()`: a dispatcher holding the read lock blocks in `asyncExec` on SWT's `Device.class`
+   *   monitor, the UI thread holds that monitor while draining queued runnables and would wait for the read
+   *   lock behind the queued stop, and the stop waits for the dispatcher.
+   *
+   * Internal for tests only.
    */
-  private val effectGate = ReentrantReadWriteLock()
+  internal val effectGate = ReentrantReadWriteLock()
 
   /**
    * The current first-load attempt. Only the thread that claims it reads secure storage; the others wait for
@@ -203,9 +216,23 @@ class OAuthTokenProvider(
    * [stillRelevant] still holds. Both are checked under [effectGate]'s read lock, so the popup either opens
    * before [stopTokenRefreshTimer] returns or not at all. Call it while dispatching under that read lock, after
    * the dispatch-time checks.
+   *
+   * The UI turn never waits for the lock: `tryLock` barges past a queued stop (reentrant reads succeed too) and
+   * fails only while the stop holds the write lock, in which case the stop is in progress and nothing is
+   * shown. Waiting there could deadlock with SWT's `Device.class` monitor during `Display.dispose()` (see
+   * [effectGate], invariant (c)).
    */
   private fun postNotice(message: String, stillRelevant: () -> Boolean = { true }) {
-    notify(message) { show -> effectGate.read { if (!stopped && stillRelevant()) show() } }
+    notify(message) { show ->
+      val readLock = effectGate.readLock()
+      // The write lock is held: the stop is in progress, show nothing.
+      if (!readLock.tryLock()) return@notify
+      try {
+        if (!stopped && stillRelevant()) show()
+      } finally {
+        readLock.unlock()
+      }
+    }
   }
 
   private fun setOAuthInPreferenceStore(value: Boolean) {
@@ -439,8 +466,11 @@ class OAuthTokenProvider(
    * a refresh in flight still stores its token, and [updateToken] still stores and publishes one. Idempotent.
    *
    * The only writer of [effectGate]: it waits for dispatches in progress and for a notice's UI-thread check
-   * and `popup.open()`. Must never be called from a UI runnable while a notice runnable holds the read lock
-   * (read→write upgrade deadlock); the stop holds the write lock for one assignment only.
+   * and `popup.open()` that already holds the read lock. The UI thread never waits for it in turn (the notice
+   * only tries the read lock), so the stop cannot be part of a wait cycle through the UI thread, such as one
+   * with SWT's `Device.class` monitor during `Display.dispose()`. Must never be called from a UI runnable while
+   * a notice runnable holds the read lock (read→write upgrade deadlock); the stop holds the write lock for one
+   * assignment only.
    */
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")
