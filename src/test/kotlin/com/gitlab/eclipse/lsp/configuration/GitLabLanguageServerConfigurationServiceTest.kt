@@ -176,6 +176,22 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       verify(exactly = 0) { tokenManager.getToken() }
     }
 
+    it("logs one payload-free line when the send is dropped because isCurrent is false") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val loggingService = GitLabLanguageServerConfigurationService(
+        preferenceStore,
+        wrapper,
+        CoroutineScope(UnconfinedTestDispatcher()),
+        Mutex()
+      )
+
+      loggingService.sendConfigurationIf { false }
+
+      verify(exactly = 1) { log.info("Configuration send dropped: its owner is no longer current.") }
+      verify(exactly = 0) { log.error(any<String>()) }
+    }
+
     it("sends to the current server when isCurrent is true") {
       service.sendConfigurationIf { true }
 

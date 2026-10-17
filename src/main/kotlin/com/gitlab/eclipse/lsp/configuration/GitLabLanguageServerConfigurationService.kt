@@ -91,7 +91,10 @@ class GitLabLanguageServerConfigurationService(
           val target = handle ?: return@withLock
           // Checked here, under the lock and before anything is built: a send queued (or waiting for
           // the lock) when its owner stopped is dropped without reading the token.
-          if (!isCurrent()) return@withLock
+          if (!isCurrent()) {
+            logger.info("Configuration send dropped: its owner is no longer current.")
+            return@withLock
+          }
           val params = buildParams()
           trackScanContext(params, target.connectionEpoch)
           target.proxy.didChangeConfiguration(DidChangeConfigurationParams(params))

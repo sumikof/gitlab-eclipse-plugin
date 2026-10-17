@@ -70,7 +70,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
           single<SecurityScanSaveListener> { saveListener }
           if (omit != CodeSuggestionsManager::class) single<CodeSuggestionsManager> { codeSuggestionsManager }
           if (omit != OAuthTokenProvider::class) single<OAuthTokenProvider> { oAuthTokenProvider }
-          single<GitLabHttpClient> { httpClient }
+          if (omit != GitLabHttpClient::class) single<GitLabHttpClient> { httpClient }
         }
       )
     }
@@ -310,6 +310,24 @@ class GitLabEclipseStartupTest : DescribeSpec({
           stopKoin()
           startTestKoin()
         }
+      }
+    }
+
+    it("continues past a GitLabHttpClient that cannot be resolved, after the earlier steps ran") {
+      stopKoin()
+      startTestKoin(omit = GitLabHttpClient::class)
+      try {
+        shouldNotThrowAny { startup(inlineTurn).stop(mockk<BundleContext>()) }
+
+        verify { oAuthTokenProvider.stopTokenRefreshTimer() }
+        verify { processProvider.stop() }
+        verify { markerService.deleteAllMarkers() }
+        verify { saveListener.uninstall() }
+        verify { codeSuggestionsManager.endAllSessions() }
+        verify(exactly = 0) { httpClient.close() }
+      } finally {
+        stopKoin()
+        startTestKoin()
       }
     }
 
