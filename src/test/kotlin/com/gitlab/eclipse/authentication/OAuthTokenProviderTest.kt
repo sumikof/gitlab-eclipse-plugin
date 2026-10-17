@@ -393,7 +393,7 @@ class OAuthTokenProviderTest : DescribeSpec({
     }
 
     it("R8: the default scheduler runs on a named daemon thread, so it never keeps the JVM alive") {
-      val f = Fixture()
+      val f = Fixture(inertScheduler = false)
       try {
         val thread = f.provider.scheduler.submit<Thread> { Thread.currentThread() }
           .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -655,6 +655,9 @@ class OAuthTokenProviderTest : DescribeSpec({
       loader.start()
       lateLoaderReading.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
 
+      // A sign-in publishes a token that is then rejected (a load of the same attempt would wait for the
+      // late loader instead of reading).
+      f.provider.updateToken(dead)
       f.provider.getToken() shouldBe ""
       f.authType.get() shouldBe TokenProviderType.PAT.name
 
@@ -794,7 +797,7 @@ private fun captureLog(): List<String> {
  * A provider wired to fakes: a stateful authentication type, an injected clock and captured notifications.
  * [clockReads] counts clock reads, so a test can wait for scheduled runs that see a published token.
  */
-private class Fixture {
+private class Fixture(inertScheduler: Boolean = true) {
   val authType = AtomicReference(TokenProviderType.OAUTH.name)
   val now = AtomicReference(T0)
   val clockReads = AtomicInteger()
@@ -819,9 +822,14 @@ private class Fixture {
       onNotify(message)
     },
     refreshCheckPeriod = Duration.ofMillis(SCHEDULE_PERIOD_MS),
+    // Headless: the default would load SWT's Display, which has no native library here.
+    isUiThread = { false },
   )
 
   init {
+    // updateToken registers the refresh timer; a shut-down scheduler makes that a no-op, so only tests that
+    // install their own scheduler see scheduled runs.
+    if (inertScheduler) provider.scheduler = ScheduledThreadPoolExecutor(1).also { it.shutdown() }
     every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } answers { authType.get() }
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } answers {
       authType.set(secondArg())

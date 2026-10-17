@@ -58,21 +58,22 @@ class OAuthTokenProviderLoadFailureTest : DescribeSpec({
       verify(exactly = 1) { f.storage.getOAuthToken() }
     }
 
-    it("L3: concurrent callers that all fail to load notify exactly once") {
+    it("L3: concurrent callers share one failing read and notify exactly once") {
       val f = LoadFailureFixture()
       val entered = AtomicInteger()
+      val workers = CopyOnWriteArrayList<Thread>()
       every { f.storage.getOAuthToken() } answers {
         entered.incrementAndGet()
-        // Every caller is inside the read before any of them fails, so all of them reach the catch.
-        awaitUntil { entered.get() >= WORKERS }
+        // Fails only once every other caller waits for this read, so none of them can read in between.
+        awaitUntil { waitingInLoad(workers) >= WORKERS - 1 }
         throw storageFailure()
       }
 
-      val results = runConcurrently(WORKERS) { f.provider.hasToken() }
+      val results = runConcurrently(WORKERS, workers) { f.provider.hasToken() }
 
       results.size shouldBe WORKERS
       results shouldContainOnly listOf(false)
-      entered.get() shouldBe WORKERS
+      entered.get() shouldBe 1
       f.notifications shouldBe listOf(LOAD_FAILURE_MESSAGE)
 
       f.provider.hasToken() shouldBe false
@@ -156,7 +157,7 @@ class OAuthTokenProviderLoadFailureTest : DescribeSpec({
       f.authType.get() shouldBe TokenProviderType.OAUTH.name
     }
 
-    it("L10: a load failure after a concurrent load published the token does not notify") {
+    it("L10: a concurrent caller waits for the pending failing read instead of reading storage itself") {
       val f = LoadFailureFixture()
       val reading = CountDownLatch(1)
       val release = CountDownLatch(1)
@@ -170,16 +171,21 @@ class OAuthTokenProviderLoadFailureTest : DescribeSpec({
         validToken("stored")
       }
 
-      // The first read is pending (its prompt is later cancelled) while a second read succeeds.
+      // Before single-flight the second caller read storage itself (a second prompt) and published the token.
       val loader = Thread { f.provider.hasToken() }.apply { start() }
       reading.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS) shouldBe true
-      f.provider.hasToken() shouldBe true
+      val second = AtomicReference<Boolean?>()
+      val waiter = Thread { second.set(f.provider.hasToken()) }.apply { start() }
+      awaitUntil { waitingInLoad(listOf(waiter)) == 1 } shouldBe true
       release.countDown()
       loader.join(AWAIT_TIMEOUT_MS)
+      waiter.join(AWAIT_TIMEOUT_MS)
       loader.isAlive shouldBe false
+      waiter.isAlive shouldBe false
 
-      f.notifications shouldBe emptyList()
-      f.provider.getToken() shouldBe "stored"
+      second.get() shouldBe false
+      reads.get() shouldBe 1
+      f.notifications shouldBe listOf(LOAD_FAILURE_MESSAGE)
       f.authType.get() shouldBe TokenProviderType.OAUTH.name
     }
   }
@@ -213,6 +219,8 @@ private class LoadFailureFixture {
     oAuthService = { service },
     clock = { NOW },
     notify = { notifications.add(it) },
+    // Headless: the default would load SWT's Display, which has no native library here.
+    isUiThread = { false },
   )
 
   init {
@@ -225,15 +233,17 @@ private class LoadFailureFixture {
   }
 }
 
-/** Runs [task] on [count] threads released together; returns their results once all have finished. */
-private fun <T> runConcurrently(count: Int, task: () -> T): List<T?> {
+/** Runs [task] on [count] threads (added to [threads]) released together; returns their results once all finish. */
+private fun <T> runConcurrently(count: Int, threads: MutableList<Thread>, task: () -> T): List<T?> {
   val start = CountDownLatch(1)
   val results = CopyOnWriteArrayList<T?>()
-  val threads = List(count) {
-    Thread {
-      start.await()
-      results.add(task())
-    }
+  repeat(count) {
+    threads.add(
+      Thread {
+        start.await()
+        results.add(task())
+      }
+    )
   }
   threads.forEach { it.start() }
   start.countDown()
@@ -241,6 +251,12 @@ private fun <T> runConcurrently(count: Int, task: () -> T): List<T?> {
   check(threads.none { it.isAlive }) { "workers did not finish" }
   return results.toList()
 }
+
+/** How many of [threads] are parked inside the first load, i.e. waiting for another thread's read. */
+private fun waitingInLoad(threads: Collection<Thread>): Int =
+  threads.count { t ->
+    t.state == Thread.State.WAITING && t.stackTrace.any { it.methodName.startsWith("loadCachedIfAbsent") }
+  }
 
 /** Polls [condition] until it holds or [AWAIT_TIMEOUT_MS] passes; returns whether it held. */
 private fun awaitUntil(condition: () -> Boolean): Boolean {
