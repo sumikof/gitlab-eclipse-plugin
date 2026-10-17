@@ -106,7 +106,7 @@ object DiscussionGenerationRegistry {
   /**
    * Clears [active] (and nothing else -- [epoch] is untouched). Must be called ON the UI thread:
    * the stop hook runs on an OSGi thread and therefore marshals this through `display.syncExec`
-   * (`GitLabEclipseStartup.stop` -> `shutdownJobLog`). Flipping the flag on the UI thread is what
+   * (`GitLabEclipseStartup.stop` -> its UI turn). Flipping the flag on the UI thread is what
    * totally orders the deactivation against every UI runnable's check-then-act on [shouldAct]; a
    * bare off-thread write would leave a torn window in which a runnable passes its gate and then
    * acts after deactivation. [active] stays @Volatile so that a display-less shutdown, where the
