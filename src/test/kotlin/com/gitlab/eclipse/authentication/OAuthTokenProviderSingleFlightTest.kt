@@ -349,7 +349,7 @@ private class SingleFlightFixture {
     storage,
     oAuthService = { service },
     clock = { NOW },
-    notify = { notifications.add(it) },
+    notify = { message, gate -> gate { notifications.add(message) } },
     isUiThread = { Thread.currentThread() === uiThread.get() },
   )
 
@@ -358,7 +358,7 @@ private class SingleFlightFixture {
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } answers {
       authType.set(secondArg())
     }
-    every { lsConfig.sendConfiguration() } just Runs
+    every { lsConfig.sendConfigurationIf(any()) } just Runs
     every { storage.setOAuthToken(any()) } just Runs
   }
 

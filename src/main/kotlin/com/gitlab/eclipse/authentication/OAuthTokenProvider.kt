@@ -27,7 +27,10 @@ import kotlin.concurrent.write
  *   only, so it never overwrites a token that is already published (including a refreshed one).
  * - Refreshes, authorization-flow updates and the drop after a rejection write under [refreshLock],
  *   so concurrent callers share one refresh instead of replaying the same refresh token.
- * - Notifications and `sendConfiguration` always run after [refreshLock] is released.
+ * - Notifications and configuration sends always run after [refreshLock] is released.
+ * - After [stopTokenRefreshTimer] no notice opens and no queued configuration send goes out: each re-checks the
+ *   stop when it runs (a notice in its UI turn, a send before it is built). Tokens are still stored after the
+ *   stop (the refresh token is single use, and a sign-in's result is kept).
  * - [startTokenRefreshTimer] registers one fixed-delay check every [refreshCheckPeriod]. Each run refreshes
  *   the published token once it has expired, so it also picks up a token published after the timer started
  *   (the first load at startup, a later sign-in). The timer never reads secure storage: the first load stays
@@ -54,7 +57,8 @@ class OAuthTokenProvider(
   // Resolved lazily: GitLabOAuthService itself looks up this provider (cycle).
   private val oAuthService: () -> GitLabOAuthService = { service() },
   private val clock: () -> Instant = Instant::now,
-  private val notify: (String) -> Unit = NotificationUtils::show,
+  private val notify: (message: String, gate: (show: () -> Unit) -> Unit) -> Unit =
+    { message, gate -> NotificationUtils.show(message, gate = gate) },
   private val refreshCheckPeriod: Duration = REFRESH_CHECK_PERIOD,
   private val isUiThread: () -> Boolean = { Display.getCurrent() != null },
 ) : TokenProvider {
@@ -77,9 +81,9 @@ class OAuthTokenProvider(
   private var refreshTask: ScheduledFuture<*>? = null
 
   /**
-   * Set by [stopTokenRefreshTimer]. From then on no refresh sends the configuration or notifies: the language
-   * server and the workbench are being torn down. A refreshed token is still stored, because the refresh token
-   * it replaced is single use.
+   * Set by [stopTokenRefreshTimer]. From then on nothing sends the configuration or notifies, including effects
+   * queued before (see [effectGate]): the language server and the workbench are being torn down. A refreshed
+   * token is still stored, because the refresh token it replaced is single use; so is a sign-in's token. Sticky.
    */
   @Volatile private var stopped = false
 
@@ -87,8 +91,27 @@ class OAuthTokenProvider(
    * Makes "check [stopped], then dispatch the effect" one step against [stopTokenRefreshTimer], so no effect
    * starts after the stop. Dispatches share the read lock, so they never exclude each other (an effect may
    * itself lead to another refresh); only the stop takes the write lock and waits for them. Held only while
-   * dispatching: `sendConfiguration` queues a coroutine and the notification an `asyncExec`, so neither
+   * dispatching: `sendConfigurationIf` queues a coroutine and the notification an `asyncExec`, so neither
    * waits. Never nested with [refreshLock] or [timerLock].
+   *
+   * Queued effects re-check [stopped] when they run (design §6):
+   * - A notice re-checks it in its UI turn, under this read lock, around `popup.open()` (see [postNotice]).
+   *   The stop's write either precedes that region (nothing is shown) or follows it (the popup opened before
+   *   the stop returned), so no OAuth popup opens after [stopTokenRefreshTimer] returns.
+   * - A configuration send re-checks it inside the service's outbound lock, before building the
+   *   configuration (`sendConfigurationIf { !stopped }`). The send is NOT wrapped in this lock: building the
+   *   configuration can refresh the token over the network (up to the HTTP timeouts) and
+   *   `didChangeConfiguration` can block on the language server's stdin, so a stop waiting for the send could
+   *   hang. A send whose check passed before the stop is in flight and may still complete; it ends
+   *   before the language server is stopped, or goes to a stopped server and is dropped by the send's catch.
+   *
+   * Invariants that keep the UI thread's read region safe (design §11 item 1, R-5):
+   * - (a) The only writer, [stopTokenRefreshTimer], must never be reachable from a UI runnable while a notice
+   *   runnable holds the read lock: a read→write upgrade on one thread deadlocks with itself.
+   * - (b) `popup.open()` does not run Synchronizer messages (the popup opens non-blocking, no nested event
+   *   loop), so the UI thread holds the read lock only briefly and no other UI runnable runs inside it.
+   * - (c) The lock is writer-preferring: once a stop is waiting, a UI-thread read waits for it, and so for
+   *   every dispatch in progress. Every dispatch region must therefore stay non-blocking.
    */
   private val effectGate = ReentrantReadWriteLock()
 
@@ -170,7 +193,19 @@ class OAuthTokenProvider(
     // A session whose startup failed before it registered the timer still gets refreshes after a sign-in.
     // Idempotent, and a no-op after stop. Outside every lock.
     startTokenRefreshTimer()
-    languageServiceConfigurationService.sendConfiguration()
+    // The token above is stored even after a stop; only the send is dropped, here and again right before it
+    // goes out (see [effectGate]).
+    effectGate.read { if (!stopped) languageServiceConfigurationService.sendConfigurationIf { !stopped } }
+  }
+
+  /**
+   * Dispatches a notice whose popup is shown only if, in its own UI turn, the provider has not stopped and
+   * [stillRelevant] still holds. Both are checked under [effectGate]'s read lock, so the popup either opens
+   * before [stopTokenRefreshTimer] returns or not at all. Call it while dispatching under that read lock, after
+   * the dispatch-time checks.
+   */
+  private fun postNotice(message: String, stillRelevant: () -> Boolean = { true }) {
+    notify(message) { show -> effectGate.read { if (!stopped && stillRelevant()) show() } }
   }
 
   private fun setOAuthInPreferenceStore(value: Boolean) {
@@ -233,7 +268,10 @@ class OAuthTokenProvider(
         // The token check is defensive: single-flight leaves no other load to publish one.
         effectGate.read {
           val current = loadAttempt.get() === failedAttempt && currentToken.get() == null
-          if (!stopped && current) notify(LOAD_FAILURE_MESSAGE)
+          if (!stopped && current) {
+            // Rechecked again in the notice's UI turn: a sign-in while it is queued makes it obsolete too.
+            postNotice(LOAD_FAILURE_MESSAGE) { loadAttempt.get() === failedAttempt && currentToken.get() == null }
+          }
         }
       }
       return
@@ -284,8 +322,8 @@ class OAuthTokenProvider(
 
   /**
    * Refreshes at most once across concurrent callers. The decision, the network call and the state
-   * writes happen under [refreshLock]; the outcome's effect (notification or `sendConfiguration`)
-   * runs only after the lock is released.
+   * writes happen under [refreshLock]; the outcome's effect (notification or configuration send)
+   * runs only after the lock is released, and not after [stopTokenRefreshTimer].
    *
    * @return whether this call refreshed the token.
    */
@@ -317,7 +355,8 @@ class OAuthTokenProvider(
             "The OAuth token has been refreshed and it expires at ${refreshedToken.tokenExpirationTimestamp}."
           )
           refreshed = true
-          languageServiceConfigurationService::sendConfiguration
+          val send: () -> Unit = { languageServiceConfigurationService.sendConfigurationIf { !stopped } }
+          send
         }
 
         is RefreshOutcome.Rejected -> {
@@ -330,7 +369,7 @@ class OAuthTokenProvider(
             setOAuthInPreferenceStore(false)
             rearmLoad()
           }
-          val reauthenticateNotice: () -> Unit = { notify(REAUTHENTICATE_MESSAGE) }
+          val reauthenticateNotice: () -> Unit = { postNotice(REAUTHENTICATE_MESSAGE) }
           reauthenticateNotice
         }
 
@@ -343,7 +382,7 @@ class OAuthTokenProvider(
             null
           } else {
             transientNotified = true
-            val transientNotice: () -> Unit = { notify(TRANSIENT_FAILURE_MESSAGE) }
+            val transientNotice: () -> Unit = { postNotice(TRANSIENT_FAILURE_MESSAGE) }
             transientNotice
           }
         }
@@ -394,9 +433,18 @@ class OAuthTokenProvider(
   private fun isOAuthEnabled(): Boolean =
     preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE) == TokenProviderType.OAUTH.name
 
+  /**
+   * Stops the periodic check and every effect not yet run: once this returns, no notice is shown and no
+   * configuration send whose check had not passed yet is sent (see [effectGate]). Token persistence continues:
+   * a refresh in flight still stores its token, and [updateToken] still stores and publishes one. Idempotent.
+   *
+   * The only writer of [effectGate]: it waits for dispatches in progress and for a notice's UI-thread check
+   * and `popup.open()`. Must never be called from a UI runnable while a notice runnable holds the read lock
+   * (read→write upgrade deadlock); the stop holds the write lock for one assignment only.
+   */
   fun stopTokenRefreshTimer() {
     logger.info("Canceling the timer for token refresh.")
-    // Waits for an effect being dispatched, so none starts after this returns.
+    // Waits for an effect being dispatched or a notice being shown, so none starts after this returns.
     effectGate.write { stopped = true }
     // Not shutdownNow: interrupting a refresh in flight could fail storing its new token, and the old
     // refresh token is single use. Shutdown already drops the periodic task.

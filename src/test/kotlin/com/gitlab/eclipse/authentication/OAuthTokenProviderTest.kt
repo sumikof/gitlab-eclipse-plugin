@@ -50,6 +50,11 @@ class OAuthTokenProviderTest : DescribeSpec({
 
   beforeEach {
     every { languageServerConfigurationService.sendConfiguration() } just Runs
+    // The provider sends through sendConfigurationIf; forward to sendConfiguration() only when its isCurrent
+    // check holds, so sendConfiguration() records an EFFECTIVE send (as the service would make it).
+    every { languageServerConfigurationService.sendConfigurationIf(any()) } answers {
+      if (firstArg<() -> Boolean>()()) languageServerConfigurationService.sendConfiguration()
+    }
     every {
       scopedPreferenceStore.setValue(PreferenceConstants.AUTHENTICATION_TYPE, TokenProviderType.OAUTH.name)
     } just Runs
@@ -817,9 +822,12 @@ private class Fixture(inertScheduler: Boolean = true) {
       clockReads.incrementAndGet()
       now.get()
     },
-    notify = { message ->
-      notifications.add(message)
-      onNotify(message)
+    // Synchronous: the gate runs at once on the dispatching thread, as if the UI turn came immediately.
+    notify = { message, gate ->
+      gate {
+        notifications.add(message)
+        onNotify(message)
+      }
     },
     refreshCheckPeriod = Duration.ofMillis(SCHEDULE_PERIOD_MS),
     // Headless: the default would load SWT's Display, which has no native library here.
@@ -835,6 +843,11 @@ private class Fixture(inertScheduler: Boolean = true) {
       authType.set(secondArg())
     }
     every { lsConfig.sendConfiguration() } just Runs
+    // The provider sends through sendConfigurationIf; forward to sendConfiguration() only when its isCurrent
+    // check holds, so sendConfiguration() records an EFFECTIVE send (as the service would make it).
+    every { lsConfig.sendConfigurationIf(any()) } answers {
+      if (firstArg<() -> Boolean>()()) lsConfig.sendConfiguration()
+    }
     every { storage.setOAuthToken(any()) } just Runs
   }
 
