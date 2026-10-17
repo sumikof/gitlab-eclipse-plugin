@@ -37,6 +37,7 @@ import org.eclipse.core.runtime.Platform
 import org.eclipse.jface.bindings.Binding
 import org.eclipse.jface.bindings.keys.KeyBinding
 import org.eclipse.jface.bindings.keys.KeySequence
+import org.eclipse.swt.SWT
 import org.eclipse.swt.SWTException
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.commands.ICommandService
@@ -46,8 +47,63 @@ import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
 import org.osgi.framework.BundleContext
 
+/**
+ * One turn on the UI thread, as the stop and start hooks take it: runs [syncExec]'s block there and
+ * waits for it. Returns false, without running the block, when the display is already disposed;
+ * throws when the workbench or its display cannot be reached at all (`IllegalStateException`) or
+ * the display is disposed while the caller waits (`SWTException`). A seam: tests replace it.
+ */
+internal fun interface UiTurn {
+  fun syncExec(block: () -> Unit): Boolean
+}
+
+/** The workbench display's [UiTurn]. Inline when the caller is already the UI thread, as syncExec is. */
+internal object WorkbenchUiTurn : UiTurn {
+  override fun syncExec(block: () -> Unit): Boolean {
+    val display = PlatformUI.getWorkbench().display
+    if (display.isDisposed) return false
+    display.syncExec { block() }
+    return true
+  }
+}
+
+/** A named cleanup or activation step; the name is what a failure logs. */
+internal class LifecycleStep(val name: String, val run: () -> Unit)
+
+/**
+ * Runs [block] behind its own exception boundary, so one failing [step] never skips the next one
+ * and never lets a lifecycle hook throw. Only the exception's class name is logged — never its
+ * message or stack: these paths quote language server state, URLs and tokens. The log call is
+ * itself contained, since a stop late enough to fail here can find the log gone too. `Error` is
+ * deliberately not caught.
+ */
+internal inline fun bestEffort(step: String, phase: String = "shutdown", block: () -> Unit) {
+  try {
+    block()
+  } catch (e: Exception) {
+    runCatching { logger<GitLabEclipseStartup>().warn("$step $phase skipped: ${e::class.simpleName}") }
+  }
+}
+
+/** Why a hook's UI turn was skipped: INFO on the normal exit path, WARN otherwise. Class name only; contained. */
+private fun logUiTurnSkipped(phase: String, e: Exception, normalExit: Boolean) {
+  runCatching {
+    val message = "UI $phase skipped: ${e::class.simpleName}"
+    if (normalExit) logger<GitLabEclipseStartup>().info(message) else logger<GitLabEclipseStartup>().warn(message)
+  }
+}
+
 @Suppress("unused", "SpreadOperator")
 class GitLabEclipseStartup : AbstractUIPlugin() {
+  /** How the hooks reach the UI thread. Defaults to the workbench display; tests replace it. */
+  internal var uiTurn: UiTurn = WorkbenchUiTurn
+
+  /** What the stop hook's UI turn runs, in order. Defaults to [productionUiShutdownSteps]. */
+  internal var uiShutdownSteps: List<LifecycleStep> = productionUiShutdownSteps()
+
+  /** What the start hook's UI turn runs, in order. Defaults to [productionActivationSteps]. */
+  internal var activationSteps: List<LifecycleStep> = productionActivationSteps()
+
   override fun start(context: BundleContext) {
     // Set system property for log4j2 configuration to use Eclipse's state location
     // This ensures logs are written to a consistent location regardless of working directory
@@ -70,7 +126,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     sweepPatchBackups()
 
     activateGenerationRegistries()
-    // Deliberately NOT inside activateGenerationRegistries()' display.syncExec: publishing and
+    // Deliberately NOT inside activateGenerationRegistries()' UI turn: publishing and
     // removing diagnostics markers never touches the UI thread, and putting this there would both
     // invent a dependency the feature does not have and skip activation entirely on a start that
     // runs before the workbench exists. Advancing the epoch here also strands anything a previous
@@ -123,21 +179,21 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     bindingService.savePreferences(bindingService.activeScheme, bindings.toTypedArray())
   }
 
+  /**
+   * Every step runs behind its own exception boundary ([bestEffort]), in this fixed order; a step
+   * that throws is logged by class name and the next one still runs. stop never throws.
+   */
   override fun stop(context: BundleContext) {
     // First, and independent of every step below: a step that throws must not leave the periodic
-    // OAuth refresh scheduled after this bundle has stopped. Guarded like the steps below: Koin can be
-    // closed by the time a late stop runs.
-    try {
-      service<OAuthTokenProvider>().stopTokenRefreshTimer()
-    } catch (e: Exception) {
-      logger<GitLabEclipseStartup>().warn("OAuth refresh timer shutdown skipped: ${e::class.simpleName}")
-    }
+    // OAuth refresh scheduled after this bundle has stopped. The service is resolved inside the
+    // boundary: Koin can be closed, or the singleton fail to build, by the time a late stop runs.
+    bestEffort("OAuth refresh timer") { service<OAuthTokenProvider>().stopTokenRefreshTimer() }
     uninstallDiagnosticsLogTap(context)
-    shutdownJobLog()
-    // Design §17 step 2: shutdownJobLog() above already discarded every Quick Chat popup on the UI
+    runUiTurn("shutdown", uiShutdownSteps)
+    // Design §17 step 2: the UI turn above already discarded every Quick Chat popup on the UI
     // thread (each session.end() closed its send gate and cancelled its job); only now is the Quick
-    // Chat scope cancelled, without joining. Never throws.
-    QuickChatRuntimeLifecycle.closeIfCreated()
+    // Chat scope cancelled, without joining. Never throws; bounded anyway, like every other step.
+    bestEffort("Quick Chat runtime") { QuickChatRuntimeLifecycle.closeIfCreated() }
     // Step 1 of the diagnostics shutdown: stopping the language server runs the connection teardown
     // (advance the epoch, cancel the waiting commands, remove the dead connection's markers) through
     // the same SecurityScanLifecycle.onServerStopped() the crash path uses. It has to happen BEFORE
@@ -146,50 +202,30 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // is already gone.
     stopLanguageServer()
     shutdownDiagnostics()
-    service<CodeSuggestionsManager>().endAllSessions()
-    service<GitLabHttpClient>().close()
+    // Still on the stop thread, as before; only contained now, so a session that fails to end (or a
+    // manager that cannot be resolved) no longer leaves the HTTP client open.
+    bestEffort("Code suggestion sessions") { service<CodeSuggestionsManager>().endAllSessions() }
+    bestEffort("HTTP client") { service<GitLabHttpClient>().close() }
   }
 
-  private fun shutdownJobLog() {
-    // (1) Disable late UI reflections/notifications from any in-flight trace fetch.
-    JobLogGenerationRegistry.active = false
-    // (2) Close in-memory trace editors + remove listeners on the UI thread; guard a disposed/absent display.
+  /**
+   * Takes one [uiTurn] and runs [steps] in it, each behind its own boundary, so that a step that
+   * throws — an SWT failure or any other — never skips the ones after it.
+   *
+   * Not reaching the UI thread is the normal exit path, not a failure: `IDEApplication` disposes
+   * the display before the bundles stop. So a disposed display is silent, and a workbench that
+   * cannot be reached or a display disposed while waiting is logged at INFO; anything else at WARN.
+   * Class name only, as everywhere in this hook.
+   */
+  private fun runUiTurn(phase: String, steps: List<LifecycleStep>) {
     try {
-      val display = PlatformUI.getWorkbench().display
-      if (!display.isDisposed) {
-        display.syncExec {
-          try {
-            // Deactivate CI lint ON the UI thread, before editor disposal: every CI-lint
-            // reflect/notify runnable runs on the UI thread, so flipping `active` here totally
-            // orders the deactivation with each runnable's gate-check-then-act — no runnable can
-            // pass its gate and then act after deactivation (a bare off-thread write left that
-            // torn window open). If the display is unavailable/disposed this syncExec is skipped
-            // and `active` stays true, which is inert: without a live display no reflect/notify
-            // runnable can run (currentDisplay throws IllegalStateException, asyncExec throws
-            // SWTException — both caught as no-ops), and the command handlers are unregistered
-            // once the bundle stops, so nothing reads `active` after a display-less stop.
-            CiLintGenerationRegistry.onDeactivate()
-            // Same reasoning as above: every discussion reflect runnable runs on the UI thread
-            // and gates on `active`, so the flip must happen here, not as a bare off-thread write.
-            DiscussionGenerationRegistry.onDeactivate()
-            // Thread popups first, without a copy-text prompt (no dialogs at stop); then the
-            // sessions. Editor review sessions gate on the same flag; with it down, release their
-            // annotations, ruler and part listeners in this same UI turn (FR-11). Never throws.
-            MrThreadPopups.discardAll()
-            // Design §17 step 1: the Quick Chat popups too, before stop() cancels their scope. Never throws.
-            QuickChatPopups.discardAll()
-            ReviewSessionRegistry.clear()
-            // No-op internally if the workbench is closing (editors die with it).
-            JobLogEditorOpener.disposeAtShutdown()
-            MergedYamlEditorOpener.disposeAtShutdown()
-          } catch (_: SWTException) {
-            /* Display disposed mid-shutdown: nothing left to release. */
-          }
-        }
-      }
+      uiTurn.syncExec { steps.forEach { step -> bestEffort(step.name, phase, step.run) } }
+    } catch (e: IllegalStateException) {
+      logUiTurnSkipped(phase, e, normalExit = true)
+    } catch (e: SWTException) {
+      logUiTurnSkipped(phase, e, normalExit = e.code == SWT.ERROR_DEVICE_DISPOSED)
     } catch (e: Exception) {
-      // Workbench/display already gone (headless or late shutdown): nothing to release. Never let stop throw.
-      logger<GitLabEclipseStartup>().warn("Job-log shutdown skipped: workbench/display unavailable.", e)
+      logUiTurnSkipped(phase, e, normalExit = false)
     }
   }
 
@@ -206,11 +242,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
    * stop throw.
    */
   private fun stopLanguageServer() {
-    try {
-      service<GitLabLanguageServerProcessProvider>().stop()
-    } catch (e: Exception) {
-      logger<GitLabEclipseStartup>().warn("Language server shutdown skipped: ${e::class.simpleName}")
-    }
+    bestEffort("Language server") { service<GitLabLanguageServerProcessProvider>().stop() }
   }
 
   /**
@@ -220,14 +252,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
    * Marker removal resolves the workspace root on this thread, which raises once the workspace is
    * closed, and the save trigger's detach walks a workbench that is usually half gone by now. Both
    * are contained inside [SecurityScanLifecycle]; this second layer is here for the same reason
-   * [shutdownJobLog] has one. Never let stop throw.
+   * every other step has one. Class name only. Never let stop throw.
    */
   private fun shutdownDiagnostics() {
-    try {
-      SecurityScanLifecycle.onBundleStopping()
-    } catch (e: Exception) {
-      logger<GitLabEclipseStartup>().warn("Diagnostics shutdown skipped.", e)
-    }
+    bestEffort("Diagnostics") { SecurityScanLifecycle.onBundleStopping() }
   }
 
   /**
@@ -299,30 +327,63 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     }
   }
 
-  private fun activateGenerationRegistries() {
-    try {
-      val display = PlatformUI.getWorkbench().display
-      if (!display.isDisposed) {
-        display.syncExec {
-          try {
-            CiLintGenerationRegistry.onActivate()
-            DiscussionGenerationRegistry.onActivate()
-            // Wires the review-session hooks (ruler click → popup, close on release, refresh on
-            // reload) in the same UI turn the discussion lifecycle comes up.
-            MrThreadPopups.install()
-            // The stop hook clears JobLogGenerationRegistry.active and nothing else restores it:
-            // without this call a stop->start cycle in the same class loader leaves every
-            // shouldAct() false forever and "Display Log" silently stops reflecting.
-            JobLogGenerationRegistry.onActivate()
-          } catch (_: SWTException) {
-            /* Display disposed mid-activation: registries stay at their initial fresh state. */
-          }
-        }
-      }
-    } catch (e: Exception) {
-      // First start may run before the workbench/display exists; each registry's initial
-      // state (active=true, epoch=0, empty latest) is already fresh. Never let start throw.
-      logger<GitLabEclipseStartup>().warn("Generation registry activation skipped: workbench/display unavailable.", e)
-    }
+  /**
+   * Restores what the stop hook's UI turn cleared, in one UI turn whose steps each run behind their
+   * own boundary ([productionActivationSteps]): a step that throws cannot keep a later registry
+   * down.
+   *
+   * First start may run before the workbench/display exists; each registry's initial state
+   * (active=true, epoch=0, empty latest) is already fresh, so skipping the turn is harmless. Never
+   * lets start throw.
+   */
+  internal fun activateGenerationRegistries() {
+    runUiTurn("activation", activationSteps)
+  }
+
+  companion object {
+    /**
+     * The stop hook's UI turn, in order. Every CI-lint, discussion and job-log reflect/notify
+     * runnable runs on the UI thread and gates on its registry's `active`, so flipping the flags
+     * here — not as a bare off-thread write — totally orders the deactivation with each runnable's
+     * gate-check-then-act: no runnable can pass its gate and then act after deactivation (#62). The
+     * flags go first, so they are down even if a later step throws. If the display is
+     * unavailable/disposed the whole turn is skipped and every `active` stays true, which is inert:
+     * without a live display no reflect/notify runnable can run (currentDisplay throws
+     * IllegalStateException, asyncExec throws SWTException — both caught as no-ops), and the
+     * command handlers are unregistered once the bundle stops, so nothing reads `active` after a
+     * display-less stop.
+     */
+    internal fun productionUiShutdownSteps(): List<LifecycleStep> = listOf(
+      LifecycleStep("CI lint registry") { CiLintGenerationRegistry.onDeactivate() },
+      LifecycleStep("Discussion registry") { DiscussionGenerationRegistry.onDeactivate() },
+      LifecycleStep("Job log registry") { JobLogGenerationRegistry.onDeactivate() },
+      // Thread popups first, without a copy-text prompt (no dialogs at stop); then the sessions.
+      // Editor review sessions gate on the discussion flag; with it down, release their
+      // annotations, ruler and part listeners in this same UI turn (FR-11). Never throws.
+      LifecycleStep("MR thread popups") { MrThreadPopups.discardAll() },
+      // Design §17 step 1: the Quick Chat popups too, before stop() cancels their scope. Never throws.
+      LifecycleStep("Quick Chat popups") { QuickChatPopups.discardAll() },
+      LifecycleStep("Review sessions") { ReviewSessionRegistry.clear() },
+      // Close in-memory trace / merged-YAML editors and remove their listeners. Each is a no-op
+      // internally if the workbench is closing (editors die with it).
+      LifecycleStep("Job log editors") { JobLogEditorOpener.disposeAtShutdown() },
+      LifecycleStep("Merged YAML editors") { MergedYamlEditorOpener.disposeAtShutdown() },
+    )
+
+    /**
+     * The start hook's UI turn, in order: the registries first, so a failing [MrThreadPopups.install]
+     * cannot keep any of them down. Each `onActivate` invalidates the generations a previous stop
+     * left in `latest` (stop lets in-flight work finish) and restores the `active` flag the stop
+     * hook cleared — without the job-log one, a stop->start cycle in the same class loader leaves
+     * every shouldAct() false forever and "Display Log" silently stops reflecting.
+     */
+    internal fun productionActivationSteps(): List<LifecycleStep> = listOf(
+      LifecycleStep("CI lint registry") { CiLintGenerationRegistry.onActivate() },
+      LifecycleStep("Discussion registry") { DiscussionGenerationRegistry.onActivate() },
+      LifecycleStep("Job log registry") { JobLogGenerationRegistry.onActivate() },
+      // Wires the review-session hooks (ruler click → popup, close on release, refresh on reload)
+      // in the same UI turn the discussion lifecycle comes up.
+      LifecycleStep("MR thread popups") { MrThreadPopups.install() },
+    )
   }
 }

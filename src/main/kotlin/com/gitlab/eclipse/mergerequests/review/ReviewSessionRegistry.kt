@@ -145,7 +145,7 @@ object ReviewSessionRegistry {
     tracker.documentOf(editor)?.let { attacher.threadIdsAt(it, oneBasedLine) }.orEmpty()
 
   /**
-   * UI thread, from the stop hook (`GitLabEclipseStartup.shutdownJobLog`, in the same `syncExec`
+   * UI thread, from the stop hook (`GitLabEclipseStartup.stop`'s UI turn, in the same `syncExec`
    * that deactivates [DiscussionGenerationRegistry]). Releases every editor (ruler and part
    * listeners), every session and every sub-model, firing [onEditorReleased] / [onSessionReleased]
    * as for a close (FR-11). Never throws, and no step depends on the previous one having

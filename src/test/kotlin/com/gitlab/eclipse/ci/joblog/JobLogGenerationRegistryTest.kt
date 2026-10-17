@@ -73,6 +73,39 @@ class JobLogGenerationRegistryTest : DescribeSpec({
     }
   }
 
+  describe("onDeactivate (the stop hook, on the UI thread)") {
+    it("fails the gate for the latest generation, so a late reflect/notify runnable does not act") {
+      val g = JobLogGenerationRegistry.nextGeneration(k1)
+
+      JobLogGenerationRegistry.onDeactivate()
+
+      // Still the latest generation for its key: only the activation flag fails it, which is
+      // exactly what reflectLatest (shouldAct) and notifyIfLatest (active && isLatest) both read.
+      JobLogGenerationRegistry.active shouldBe false
+      JobLogGenerationRegistry.isLatest(k1, g) shouldBe true
+      JobLogGenerationRegistry.shouldAct(k1, g) shouldBe false
+    }
+
+    it("is undone by onActivate, which also strands every generation numbered before the stop") {
+      val preStop = JobLogGenerationRegistry.nextGeneration(k1)
+      JobLogGenerationRegistry.onDeactivate()
+
+      JobLogGenerationRegistry.onActivate()
+
+      JobLogGenerationRegistry.active shouldBe true
+      JobLogGenerationRegistry.shouldAct(k1, preStop) shouldBe false
+      val fresh = JobLogGenerationRegistry.nextGeneration(k1)
+      JobLogGenerationRegistry.shouldAct(k1, fresh) shouldBe true
+    }
+
+    it("is idempotent (a second stop)") {
+      JobLogGenerationRegistry.onDeactivate()
+      JobLogGenerationRegistry.onDeactivate()
+
+      JobLogGenerationRegistry.active shouldBe false
+    }
+  }
+
   describe("onActivate (stop -> start in the same class loader)") {
     it("restores active after the stop hook cleared it, so shouldAct can pass again") {
       JobLogGenerationRegistry.active = false

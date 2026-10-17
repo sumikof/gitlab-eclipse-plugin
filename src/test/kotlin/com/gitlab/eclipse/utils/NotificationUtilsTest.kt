@@ -90,6 +90,64 @@ class NotificationUtilsTest : DescribeSpec({
       verify(exactly = 0) { NotificationUtils.showOnUiThread(any()) }
     }
 
+    it("opens nothing when the gate does not call show") {
+      every { NotificationUtils.showOnUiThread(any()) } just Runs
+      val scheduled = mutableListOf<Runnable>()
+      var gateRan = false
+
+      NotificationUtils.show(
+        "hello",
+        onUiThread = { scheduled += it },
+        isDisplayDisposed = { false },
+        gate = { gateRan = true },
+      )
+      scheduled.single().run()
+
+      gateRan shouldBe true
+      verify(exactly = 0) { NotificationUtils.showOnUiThread(any()) }
+    }
+
+    it("opens the popup inside the gate when the gate calls show") {
+      val events = mutableListOf<String>()
+      every { NotificationUtils.showOnUiThread(any()) } answers { events += "show:${firstArg<String>()}" }
+      val scheduled = mutableListOf<Runnable>()
+
+      NotificationUtils.show(
+        "hello",
+        onUiThread = { scheduled += it },
+        isDisplayDisposed = { false },
+        gate = { show ->
+          events += "gate-enter"
+          show()
+          events += "gate-exit"
+        },
+      )
+      events shouldBe emptyList()
+      scheduled.single().run()
+
+      events shouldBe listOf("gate-enter", "show:hello", "gate-exit")
+    }
+
+    it("does not enter the gate when the display is disposed by the time the runnable runs") {
+      every { NotificationUtils.showOnUiThread(any()) } just Runs
+      val scheduled = mutableListOf<Runnable>()
+      var gateRan = false
+
+      NotificationUtils.show(
+        "hello",
+        onUiThread = { scheduled += it },
+        isDisplayDisposed = { true },
+        gate = { show ->
+          gateRan = true
+          show()
+        },
+      )
+      scheduled.single().run()
+
+      gateRan shouldBe false
+      verify(exactly = 0) { NotificationUtils.showOnUiThread(any()) }
+    }
+
     it("does not cancel a shared scope when called from a coroutine's terminal catch") {
       // launchCiWrite's shape (#41): plain Job on a SHARED scope, show() in the terminal catch.
       // Pre-fix, show() rethrows there, the child fails, and the shared Job — and every other
