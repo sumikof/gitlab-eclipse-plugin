@@ -111,7 +111,8 @@ class OAuthTokenProvider(
    * - (a) The only writer, [stopTokenRefreshTimer], must never be reachable from a UI runnable while a notice
    *   runnable holds the read lock: a read→write upgrade on one thread deadlocks with itself.
    * - (b) `popup.open()` does not run Synchronizer messages (the popup opens non-blocking, no nested event
-   *   loop), so the UI thread holds the read lock only briefly and no other UI runnable runs inside it. On GTK,
+   *   loop), so the UI thread holds the read lock only briefly and no asyncExec/syncExec runnable runs inside it
+   *   (a `timerExec` runnable may, which is harmless for the same reason as below). On GTK,
    *   `Shell.setVisible(true)` iterates the GLib main context until the shell maps; SWT runs async messages
    *   there only while a native dialog has installed its idle proc, i.e. only if the notice runnable itself
    *   runs nested inside a native dialog's loop. Harmless: such a nested runnable is never the writer, and with
@@ -123,6 +124,10 @@ class OAuthTokenProvider(
    *   `Display.dispose()`: a dispatcher holding the read lock blocks in `asyncExec` on SWT's `Device.class`
    *   monitor, the UI thread holds that monitor while draining queued runnables and would wait for the read
    *   lock behind the queued stop, and the stop waits for the dispatcher.
+   *   Known residual: a dispatch region may itself run on the UI thread when the UI thread claims the first
+   *   load ([hasToken] is UI-safe) and the read fails, so the load-failure dispatch takes a waiting read there.
+   *   Reaching the same deadlock needs that first load still unclaimed at shutdown (the language server
+   *   configuration build normally claims it at startup) while the display is being disposed.
    *
    * Internal for tests only.
    */
