@@ -13,6 +13,7 @@ import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
+import com.gitlab.eclipse.lsp.messages.ExperimentFeaturesStateParams
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.messages.OpenFileParams
 import com.gitlab.eclipse.lsp.messages.OpenUrlParams
@@ -48,7 +49,10 @@ import org.eclipse.lsp4j.ShowDocumentResult
 import org.eclipse.lsp4j.Unregistration
 import org.eclipse.lsp4j.UnregistrationParams
 import org.eclipse.lsp4j.WorkspaceEdit
+import org.eclipse.lsp4j.jsonrpc.json.MessageJsonHandler
+import org.eclipse.lsp4j.jsonrpc.messages.NotificationMessage
 import org.eclipse.lsp4j.jsonrpc.services.GenericEndpoint
+import org.eclipse.lsp4j.jsonrpc.services.ServiceEndpoints
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.dsl.module
@@ -853,6 +857,37 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       arrived.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
       verify { openUrlHandler.open("mailto:a@b.c") }
+    }
+  }
+
+  describe("\$/gitlab/experimentFeaturesState") {
+    // LS 9.30.0 sends this on every configuration change; without a handler lsp4j logs an
+    // "unsupported notification" line each time. Building the supported-method table is also what
+    // fails on a duplicate method name across the client and its interfaces.
+    val method = "\$/gitlab/experimentFeaturesState"
+
+    fun parse(json: String): NotificationMessage {
+      val handler = MessageJsonHandler(ServiceEndpoints.getSupportedMethods(GitLabLanguageServerClient::class.java))
+      return handler.parseMessage("""{"jsonrpc":"2.0","method":"$method","params":$json}""") as NotificationMessage
+    }
+
+    it("is registered as a notification of the client") {
+      val methods = ServiceEndpoints.getSupportedMethods(GitLabLanguageServerClient::class.java)
+
+      methods[method].shouldNotBeNull().isNotification shouldBe true
+    }
+
+    it("parses the server's payload into its params") {
+      parse("""{"enabled":true,"reason":"flag"}""").params shouldBe ExperimentFeaturesStateParams(true, "flag")
+    }
+
+    it("accepts the payload with and without fields through lsp4j without throwing") {
+      shouldNotThrowAny {
+        listOf("""{"enabled":true}""", """{"enabled":false,"reason":"x"}""", "{}").forEach { json ->
+          val message = parse(json)
+          GenericEndpoint(client).notify(message.method, message.params)
+        }
+      }
     }
   }
 })
