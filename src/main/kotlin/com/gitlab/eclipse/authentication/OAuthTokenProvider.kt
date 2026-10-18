@@ -3,6 +3,7 @@ package com.gitlab.eclipse.authentication
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.preferences.storage.GitLabInstanceKey
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.equinox.security.storage.StorageException
@@ -181,6 +182,18 @@ class OAuthTokenProvider(
     loadCachedIfAbsent()
     return !currentToken.get()?.accessToken.isNullOrEmpty()
   }
+
+  /**
+   * The OAuth token for [instanceUrl]: the token is issued by [GitLabOAuthService.ISSUER_KEY], so any other instance
+   * gets "" without a first load (no secure-storage read, no switch to PAT) and never sees the cached token (#115).
+   */
+  fun getToken(instanceUrl: String): String = if (serves(instanceUrl)) getToken() else ""
+
+  /** [hasToken] for [instanceUrl]; false without a first load for an instance other than the issuer. */
+  fun hasToken(instanceUrl: String): Boolean = serves(instanceUrl) && hasToken()
+
+  /** Whether [instanceUrl] is the instance that issues the OAuth token. Pure; safe on the UI thread. */
+  fun serves(instanceUrl: String): Boolean = GitLabInstanceKey.of(instanceUrl) == GitLabOAuthService.ISSUER_KEY
 
   /**
    * True while OAuth is selected, no token is published, and the first load is in flight or has failed.
