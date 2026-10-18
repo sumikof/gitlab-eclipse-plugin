@@ -15,6 +15,7 @@ import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
+import com.gitlab.eclipse.preferences.storage.InstanceSecretStore
 import com.gitlab.eclipse.security.SecurityScanLauncher
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import com.gitlab.eclipse.security.SecurityScanSettings
@@ -25,7 +26,8 @@ import org.koin.dsl.bind
 import org.koin.dsl.module
 
 val languageServerModule = module {
-  single<PatTokenProvider> { PatTokenProvider() }
+  single<InstanceSecretStore> { InstanceSecretStore() }
+  single<PatTokenProvider> { PatTokenProvider(get()) }
   single<OAuthTokenProvider> { OAuthTokenProvider() }
   single<GitLabOAuthService> { GitLabOAuthService() }
   single<GitLabTokenProviderManager> { GitLabTokenProviderManager() }
