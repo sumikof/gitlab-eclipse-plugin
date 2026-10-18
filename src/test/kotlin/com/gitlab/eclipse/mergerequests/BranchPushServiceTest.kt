@@ -42,7 +42,7 @@ class BranchPushServiceTest : DescribeSpec({
   }
 
   fun service(): BranchPushService {
-    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns "" }
+    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "" }
     return BranchPushService(GitOperationGuard(), GitAuthConfigurer(tokenManager))
   }
 
@@ -127,7 +127,7 @@ class BranchPushServiceTest : DescribeSpec({
     it("returns Busy when another operation already holds the repository guard") {
       val fixture = pushFixture()
       val guard = GitOperationGuard()
-      val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns "" }
+      val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "" }
       val busyService = BranchPushService(guard, GitAuthConfigurer(tokenManager))
 
       val outcome = guard.withRepo(fixture.context.gitDir) {

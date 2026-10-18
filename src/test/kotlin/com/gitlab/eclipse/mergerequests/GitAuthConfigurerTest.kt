@@ -17,8 +17,17 @@ import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 class GitAuthConfigurerTest : StringSpec({
   val instance = "https://gitlab.example.com"
   fun configurer(token: String = "secret-token"): GitAuthConfigurer {
-    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns token }
+    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns token }
     return GitAuthConfigurer(tokenManager)
+  }
+
+  // #115: the credential is the token stored for the instance the remote was matched against.
+  "credentialsProviderFor: asks for the token of the instance it matched" {
+    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "secret-token" }
+
+    GitAuthConfigurer(tokenManager).credentialsProviderFor("https://gitlab.example.com/g/p.git", instance)
+
+    verify(exactly = 1) { tokenManager.getToken(instance) }
   }
 
   // --- hostMatchesInstance (pure logic) ---

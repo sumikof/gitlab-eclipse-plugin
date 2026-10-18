@@ -4,6 +4,7 @@ import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.api.ConnectionConfigGeneration
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.authentication.GitLabOAuthService
+import com.gitlab.eclipse.authentication.PatTokenProvider
 import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
 import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
 import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
@@ -13,7 +14,9 @@ import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationService
 import com.gitlab.eclipse.preferences.healthcheck.HealthCheckFieldEditor
-import com.gitlab.eclipse.preferences.storage.SecretStorage
+import com.gitlab.eclipse.preferences.storage.BoundSecret
+import com.gitlab.eclipse.preferences.storage.GitLabInstanceKey
+import com.gitlab.eclipse.preferences.storage.InstanceSecretStore
 import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
 import com.gitlab.eclipse.security.SecurityScanSettings
 import com.gitlab.eclipse.utils.currentDisplay
@@ -22,8 +25,10 @@ import com.gitlab.eclipse.utils.makeHintFont
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.jface.preference.*
+import org.eclipse.jface.util.PropertyChangeEvent
 import org.eclipse.swt.SWT
 import org.eclipse.swt.program.Program
+import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Label
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchPreferencePage
@@ -34,13 +39,15 @@ class GitLabPreferencePage(
   private val languageServiceConfigurationService: GitLabLanguageServerConfigurationService = service(),
   private val authenticationStateService: AuthenticationStateService = service()
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
+  private var urlField: StringFieldEditor? = null
+  private var tokenField: SecretStringWithButtonFieldEditor? = null
+
   public override fun createFieldEditors() {
     // Connection
     addLabel("Connection")
 
-    val urlField =
-      StringFieldEditor(PreferenceConstants.GITLAB_INSTANCE_URL, "URL to GitLab instance", fieldEditorParent)
-        .also(::addField)
+    val urlField = InstanceUrlFieldEditor(fieldEditorParent).also(::addField)
+    this.urlField = urlField
 
     addField(
       BooleanFieldEditor(
@@ -55,19 +62,23 @@ class GitLabPreferencePage(
     // Authentication
     addLabel("Authentication")
 
+    val instanceSecrets = service<InstanceSecretStore>()
     val tokenField = SecretStringWithButtonFieldEditor(
-      SecretStorage("gitlab.com"),
-      "personal_access_token",
+      BoundSecret({ url: String? -> instanceSecrets.storageFor(url) }, PatTokenProvider.SECRET_NAME),
+      { urlField.stringValue },
+      PatTokenProvider.SECRET_NAME,
       "Personal Access Token",
       "Generate token",
       fieldEditorParent
     ) {
-      val gitLabUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+      // The instance being edited, as the token field is bound to it (#115).
+      val gitLabUrl = urlField.stringValue.trim().trimEnd('/')
       val tokenUrl =
         "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
 
       Program.launch(tokenUrl)
     }.also(::addField)
+    this.tokenField = tokenField
 
     if (BuildConfig.OAUTH_ENABLED) {
       addField(
@@ -89,6 +100,9 @@ class GitLabPreferencePage(
       verifySetupText,
       fieldEditorParent
     ) {
+      // The URL field fires VALUE on key release and focus loss only: a URL pasted with the mouse may not have
+      // re-bound the token field yet, and the check must never send one instance's token to another (#115).
+      tokenField.syncWithUrl(urlField.stringValue)
       healthCheckFieldEditor?.resetStatus()
       verifySetupFieldEditor?.setButtonText("Verifying...")
       verifySetupFieldEditor?.setEnabled(false, fieldEditorParent)
@@ -301,6 +315,18 @@ class GitLabPreferencePage(
     }
   }
 
+  /**
+   * Keeps the token field on the instance in the URL field: when the URL names another instance, the token field
+   * shows that instance's token (#115).
+   */
+  override fun propertyChange(event: PropertyChangeEvent) {
+    super.propertyChange(event)
+    val urlField = urlField ?: return
+    if (event.source === urlField && event.property == FieldEditor.VALUE) {
+      tokenField?.syncWithUrl(urlField.stringValue)
+    }
+  }
+
   override fun init(workbench: IWorkbench) {
     preferenceStore = service<ScopedPreferenceStore>()
   }
@@ -342,6 +368,16 @@ class GitLabPreferencePage(
     }
 
     return true // super.performOk() always returns true
+  }
+
+  /** The instance URL field; it accepts only a URL a token can be scoped to ([GitLabInstanceKey]). */
+  private class InstanceUrlFieldEditor(parent: Composite) :
+    StringFieldEditor(PreferenceConstants.GITLAB_INSTANCE_URL, "URL to GitLab instance", parent) {
+    init {
+      errorMessage = "Enter an http(s) URL without credentials, query or fragment."
+    }
+
+    override fun doCheckState(): Boolean = GitLabInstanceKey.of(stringValue) != null
   }
 
   private companion object {

@@ -15,7 +15,7 @@ class GitLabApiClientFetchObjectTest : StringSpec({
   "fetchObject parses a single object" {
     val http = mockk<GitLabHttpClient>()
     val tokens = mockk<GitLabTokenProviderManager>()
-    every { tokens.getToken() } returns "t"
+    every { tokens.getToken(any()) } returns "t"
     val prefs = mockk<ScopedPreferenceStore>()
     every { prefs.getString(any()) } returns "https://gitlab.example.com"
     val resp = mockk<HttpResponse<String>>()
@@ -31,7 +31,7 @@ class GitLabApiClientFetchObjectTest : StringSpec({
   "fetchObject throws GitLabApiException on a non-2xx response" {
     val http = mockk<GitLabHttpClient>()
     val tokens = mockk<GitLabTokenProviderManager>()
-    every { tokens.getToken() } returns "t"
+    every { tokens.getToken(any()) } returns "t"
     val prefs = mockk<ScopedPreferenceStore>()
     every { prefs.getString(any()) } returns "https://gitlab.example.com"
     val resp = mockk<HttpResponse<String>>()

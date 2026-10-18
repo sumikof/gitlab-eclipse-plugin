@@ -12,21 +12,21 @@ class GitLabTokenProviderManager(private val preferenceStore: ScopedPreferenceSt
   )
 
   /**
-   * The selected provider's token, else the first other provider's. No fallback while OAuth is selected and its
-   * first load is in flight or has failed (see [skipFallback]).
+   * The token for [instanceUrl] (#115): the selected provider's, else the first other provider's, all asked for
+   * that same instance. No fallback while OAuth is selected for its issuer and its first load is in flight or has
+   * failed (see [skipFallback]). Callers read [instanceUrl] once and send the token there, never elsewhere.
    */
-  fun getToken(): String {
-    val authenticationType = preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE)
-    val tokenProviderType = TokenProviderType.valueOf(authenticationType)
+  fun getToken(instanceUrl: String): String {
+    val tokenProviderType = selectedType()
 
-    val tokenByType = tokenProviders[tokenProviderType]?.getToken()
+    val tokenByType = tokenProviders[tokenProviderType]?.getToken(instanceUrl)
     if (tokenByType?.isNotEmpty() == true) {
       return tokenByType
     }
-    if (skipFallback(tokenProviderType)) return ""
+    if (skipFallback(tokenProviderType, instanceUrl)) return ""
 
     for (provider in tokenProviders) {
-      val currentToken = provider.value.getToken()
+      val currentToken = provider.value.getToken(instanceUrl)
       if (currentToken.isNotEmpty()) {
         return currentToken
       }
@@ -35,29 +35,37 @@ class GitLabTokenProviderManager(private val preferenceStore: ScopedPreferenceSt
   }
 
   /**
-   * Whether any provider has a token, checked in the same order as [getToken]. Never calls [getToken],
-   * which may refresh the OAuth token over the network.
+   * Whether any provider has a token for [instanceUrl], checked in the same order as [getToken]. Never calls
+   * [getToken], which may refresh the OAuth token over the network.
    */
-  fun hasToken(): Boolean {
-    val authenticationType = preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE)
-    val tokenProviderType = TokenProviderType.valueOf(authenticationType)
+  fun hasToken(instanceUrl: String): Boolean {
+    val tokenProviderType = selectedType()
 
-    if (tokenProviders[tokenProviderType]?.hasToken() == true) {
+    if (tokenProviders[tokenProviderType]?.hasToken(instanceUrl) == true) {
       return true
     }
-    if (skipFallback(tokenProviderType)) return false
+    if (skipFallback(tokenProviderType, instanceUrl)) return false
 
-    return tokenProviders.values.any { it.hasToken() }
+    return tokenProviders.values.any { it.hasToken(instanceUrl) }
   }
 
+  /** [hasToken] for the configured instance: a gate only, for callers that do not send the token themselves. */
+  fun hasToken(): Boolean = hasToken(configuredInstanceUrl())
+
+  private fun selectedType(): TokenProviderType =
+    TokenProviderType.valueOf(preferenceStore.getString(PreferenceConstants.AUTHENTICATION_TYPE))
+
+  private fun configuredInstanceUrl(): String = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+
   /**
-   * Whether to answer "no token" instead of falling back to PAT: OAuth is selected and its first load is in
-   * flight or has failed. The PAT read goes to the same secure storage, so it would prompt for the master
-   * password again or block the UI thread on its lock. Checked after the OAuth call, so it sees that call's
-   * outcome.
+   * Whether to answer "no token" instead of falling back to PAT: OAuth is selected, [instanceUrl] is its issuer,
+   * and its first load is in flight or has failed. The PAT read goes to the same secure storage, so it would prompt
+   * for the master password again or block the UI thread on its lock. For another instance OAuth never loads, so
+   * that instance's PAT is used. Checked after the OAuth call, so it sees that call's outcome.
    */
-  private fun skipFallback(selected: TokenProviderType): Boolean =
-    selected == TokenProviderType.OAUTH && oAuthTokenProvider.isLoadPendingOrFailed()
+  private fun skipFallback(selected: TokenProviderType, instanceUrl: String): Boolean =
+    selected == TokenProviderType.OAUTH && oAuthTokenProvider.serves(instanceUrl) &&
+      oAuthTokenProvider.isLoadPendingOrFailed()
 }
 
 enum class TokenProviderType {

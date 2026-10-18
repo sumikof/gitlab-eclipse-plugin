@@ -39,22 +39,22 @@ class PinnedConnectionCredentialAccessTest : DescribeSpec({
   describe("pinnedConnectionFor over a real GitLabApiClient") {
     it("still reads the credential once, and rejects, when the url matches but the account changed") {
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "current-account-token"
+      every { tokens.getToken(any()) } returns "current-account-token"
 
       val pinned = pinnedConnectionFor(client, nodeUrl, "fp-of-a-different-account")
 
       pinned.shouldBeNull()
-      verify(exactly = 1) { tokens.getToken() }
+      verify(exactly = 1) { tokens.getToken(any()) }
     }
 
     it("never reads the credential when the configured instance url no longer matches the node") {
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://other.example.com"
-      every { tokens.getToken() } returns "current-account-token"
+      every { tokens.getToken(any()) } returns "current-account-token"
 
       val pinned = pinnedConnectionFor(client, nodeUrl, "fp-node")
 
       pinned.shouldBeNull()
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
   }
 })

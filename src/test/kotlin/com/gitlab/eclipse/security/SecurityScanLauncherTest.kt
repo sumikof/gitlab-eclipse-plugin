@@ -322,7 +322,7 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.advanceUntilIdle()
 
       verify(exactly = 0) { tokenManager.hasToken() }
-      verify(exactly = 0) { tokenManager.getToken() }
+      verify(exactly = 0) { tokenManager.getToken(any()) }
     }
 
     it("checks for a token without reading it, once, when the scan can go out") {
@@ -333,7 +333,7 @@ class SecurityScanLauncherTest : DescribeSpec({
       launcher(scope).launch(URI_A, SecurityScanSource.COMMAND) shouldBe SecurityScanLaunchOutcome.SENT
 
       verify(exactly = 1) { tokenManager.hasToken() }
-      verify(exactly = 0) { tokenManager.getToken() }
+      verify(exactly = 0) { tokenManager.getToken(any()) }
     }
 
     it("does not even read the token when there is nothing to scan") {
@@ -350,7 +350,7 @@ class SecurityScanLauncherTest : DescribeSpec({
       scope.testScheduler.advanceUntilIdle()
 
       verify(exactly = 0) { tokenManager.hasToken() }
-      verify(exactly = 0) { tokenManager.getToken() }
+      verify(exactly = 0) { tokenManager.getToken(any()) }
     }
 
     it("converges the suspended parity from the setting before it gates") {

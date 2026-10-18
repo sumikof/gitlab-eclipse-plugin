@@ -2,26 +2,29 @@ package com.gitlab.eclipse.preferences.storage
 
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.equinox.security.storage.ISecurePreferences
-import org.eclipse.equinox.security.storage.SecurePreferencesFactory
 import org.eclipse.equinox.security.storage.StorageException
 
 /**
  * Stubbed secret storage which supports environment variable resolution.
  * For formal support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/19
  * For Equo support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/20
+ *
+ * Opened on an instance node by [InstanceSecretStore]; nothing opens the host-less legacy node through it (#115).
+ *
+ * @param readGuard consulted when [node] does not hold the key being read: throwing [StorageException] there makes
+ *   the read count as "unreadable" instead of "empty" (see `InstanceSecretStore`).
  */
-class SecretStorage(rootURI: String?) {
+class SecretStorage internal constructor(
+  private val node: ISecurePreferences,
+  private val readGuard: () -> Unit = {},
+) {
   private val logger = logger<SecretStorage>()
 
-  private val node: ISecurePreferences = SecurePreferencesFactory.getDefault()
-    .node("gitlab")
-    .node("hosts")
-    .node(rootURI)
-
   fun getSecret(key: String?) = try {
-    node.get(key, null)
+    read(key)
   } catch (e: StorageException) {
-    logger.error(e.message, e)
+    // Type name only: an exception message is never logged next to a credential lookup.
+    logger.error("Failed to read a secret from secure storage: ${e::class.java.name}")
 
     envSecret(key)
   }
@@ -33,11 +36,16 @@ class SecretStorage(rootURI: String?) {
    */
   @Throws(StorageException::class)
   fun readSecret(key: String?): String? = try {
-    node.get(key, null)
+    read(key)
   } catch (e: StorageException) {
     // Type name only: the message is not needed to diagnose a failed read.
     logger.warn("Failed to read a secret from secure storage: ${e::class.java.name}")
     envSecret(key) ?: throw e
+  }
+
+  private fun read(key: String?): String? = node.get(key, null) ?: run {
+    readGuard()
+    null
   }
 
   private fun envSecret(key: String?): String? =
@@ -51,7 +59,11 @@ class SecretStorage(rootURI: String?) {
     try {
       node.put(key, value, true)
     } catch (e: StorageException) {
-      logger.error(e.message, e)
+      logger.error("Failed to write a secret to secure storage: ${e::class.java.name}")
     }
+  }
+
+  fun removeSecret(key: String?) {
+    node.remove(key)
   }
 }

@@ -44,7 +44,7 @@ class GitLabApiClientFetchTextTest : DescribeSpec({
     // Global settings deliberately DIFFERENT from the pinned connection: fetchText must
     // never read them, otherwise a mid-session settings change misroutes the read / leaks
     // the wrong credential.
-    every { tokens.getToken() } returns "global-token"
+    every { tokens.getToken(any()) } returns "global-token"
     every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://global.example.com"
   }
 
@@ -67,7 +67,7 @@ class GitLabApiClientFetchTextTest : DescribeSpec({
       captured.captured.uri().toString() shouldBe "https://pinned.example.com/api/v4/projects/1/jobs/9/trace?"
       captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
       verify(exactly = 0) { prefs.getString(any()) }
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
 
     it("falls through to the global-read path (captureConnection) when connection is omitted") {

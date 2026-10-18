@@ -53,7 +53,7 @@ class GitAuthConfigurer(private val tokenManager: GitLabTokenProviderManager = s
    */
   fun credentialsProviderFor(remoteUri: String, instanceUrl: String): CredentialsProvider? {
     if (!hostMatchesInstance(remoteUri, instanceUrl)) return null
-    val token = tokenManager.getToken()
+    val token = tokenManager.getToken(instanceUrl)
     if (token.isEmpty()) return null
     return UsernamePasswordCredentialsProvider(OAUTH2_USERNAME, token)
   }

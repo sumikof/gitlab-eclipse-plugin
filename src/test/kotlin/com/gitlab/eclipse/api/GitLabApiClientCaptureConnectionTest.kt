@@ -37,7 +37,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
     it("returns the current url and token with a SHA-256-prefix fingerprint at a stable even generation") {
       genFn = { 4L }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com/"
-      every { tokens.getToken() } returns "tok-123"
+      every { tokens.getToken(any()) } returns "tok-123"
 
       val snapshot = client.captureConnection()
 
@@ -47,16 +47,28 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       snapshot.configGeneration shouldBe 4L
     }
 
+    // #115: the token is looked up for the very URL the snapshot pins, so it can never belong to another instance.
+    it("asks for the token of the instance URL it captured") {
+      // A second read would see another instance: the token must come from the same read as the URL.
+      every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
+        listOf("https://gitlab.example.com/", "https://other.example")
+      every { tokens.getToken(any()) } answers { "token-for-${firstArg<String>()}" }
+
+      val snapshot = client.captureConnection()
+
+      snapshot.token shouldBe "token-for-${snapshot.instanceUrl}"
+    }
+
     it("produces identical fingerprints for the same token across captures") {
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "same-token"
+      every { tokens.getToken(any()) } returns "same-token"
 
       client.captureConnection().authFingerprint shouldBe client.captureConnection().authFingerprint
     }
 
     it("produces a different fingerprint for a different token") {
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returnsMany listOf("token-a", "token-b")
+      every { tokens.getToken(any()) } returnsMany listOf("token-a", "token-b")
 
       val first = client.captureConnection()
       val second = client.captureConnection()
@@ -66,7 +78,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
 
     it("returns an empty fingerprint for a blank token") {
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns ""
+      every { tokens.getToken(any()) } returns ""
 
       client.captureConnection().authFingerprint shouldBe ""
     }
@@ -76,7 +88,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       val generations = ArrayDeque(listOf(1L, 1L, 2L, 2L))
       genFn = { generations.removeFirst() }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "tok"
+      every { tokens.getToken(any()) } returns "tok"
 
       val snapshot = client.captureConnection()
 
@@ -84,7 +96,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       snapshot.token shouldBe "tok"
       snapshot.configGeneration shouldBe 2L
       // The odd attempts must not have touched the stores: exactly one value read each.
-      verify(exactly = 1) { tokens.getToken() }
+      verify(exactly = 1) { tokens.getToken(any()) }
       verify(exactly = 1) { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) }
     }
 
@@ -95,7 +107,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       genFn = { generations.removeFirst() }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
         listOf("https://new.example.com", "https://new.example.com")
-      every { tokens.getToken() } returnsMany listOf("old-token", "new-token")
+      every { tokens.getToken(any()) } returnsMany listOf("old-token", "new-token")
 
       val snapshot = client.captureConnection()
 
@@ -115,7 +127,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
         if (generationReads <= 3) 1L else 2L // in-progress window spans several reads, then settles
       }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://new.example.com"
-      every { tokens.getToken() } answers {
+      every { tokens.getToken(any()) } answers {
         if (generationReads <= 3) "old-token" else "new-token"
       }
 
@@ -131,7 +143,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
     it("throws UnstableConnectionException when the generation stays odd (update never completes)") {
       genFn = { 7L }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "tok"
+      every { tokens.getToken(any()) } returns "tok"
 
       shouldThrow<UnstableConnectionException> { client.captureConnection() }
     }
@@ -144,7 +156,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
         next
       }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "tok"
+      every { tokens.getToken(any()) } returns "tok"
 
       shouldThrow<UnstableConnectionException> { client.captureConnection() }
     }
@@ -158,13 +170,13 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
 
       snapshot shouldBe null
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
 
     it("returns the snapshot and reads the token exactly once when the predicate accepts") {
       genFn = { 4L }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://expected.example.com"
-      every { tokens.getToken() } returns "tok-123"
+      every { tokens.getToken(any()) } returns "tok-123"
 
       val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
 
@@ -173,7 +185,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       snapshot?.token shouldBe "tok-123"
       snapshot?.authFingerprint shouldBe sha256HexPrefix16("tok-123")
       snapshot?.configGeneration shouldBe 4L
-      verify(exactly = 1) { tokens.getToken() }
+      verify(exactly = 1) { tokens.getToken(any()) }
     }
 
     it("retries instead of rejecting when the url read raced an update, then accepts the settled url") {
@@ -184,7 +196,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       genFn = { generations.removeFirst() }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
         listOf("https://mid-update.example.com", "https://expected.example.com")
-      every { tokens.getToken() } returns "tok-123"
+      every { tokens.getToken(any()) } returns "tok-123"
 
       val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
 
@@ -192,7 +204,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       snapshot?.instanceUrl shouldBe "https://expected.example.com"
       snapshot?.token shouldBe "tok-123"
       snapshot?.configGeneration shouldBe 4L
-      verify(exactly = 1) { tokens.getToken() }
+      verify(exactly = 1) { tokens.getToken(any()) }
     }
 
     it("keeps returning null when the generation advances right after a settled rejection (no retry)") {
@@ -206,19 +218,19 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
       }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
         listOf("https://other.example.com", "https://expected.example.com")
-      every { tokens.getToken() } returns "tok-123"
+      every { tokens.getToken(any()) } returns "tok-123"
 
       val snapshot = client.captureConnectionIf { it == "https://expected.example.com" }
 
       snapshot shouldBe null
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
       verify(exactly = 1) { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) }
     }
 
     it("throws UnstableConnectionException when the generation stays odd (update never completes)") {
       genFn = { 7L }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "tok"
+      every { tokens.getToken(any()) } returns "tok"
 
       shouldThrow<UnstableConnectionException> { client.captureConnectionIf { true } }
     }
@@ -226,7 +238,7 @@ class GitLabApiClientCaptureConnectionTest : DescribeSpec({
     it("captureConnection() returns the same result as captureConnectionIf { true }") {
       genFn = { 4L }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com"
-      every { tokens.getToken() } returns "tok-123"
+      every { tokens.getToken(any()) } returns "tok-123"
 
       client.captureConnection() shouldBe client.captureConnectionIf { true }
     }

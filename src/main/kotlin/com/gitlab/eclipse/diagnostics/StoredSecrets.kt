@@ -3,6 +3,8 @@ package com.gitlab.eclipse.diagnostics
 import com.gitlab.eclipse.authentication.OAuthSecretStorage
 import com.gitlab.eclipse.authentication.PatTokenProvider
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.preferences.PreferenceConstants.GITLAB_INSTANCE_URL
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 
 /**
  * Reads the credentials this installation holds **from local storage only** (design §10.1).
@@ -50,7 +52,10 @@ internal object StoredSecrets {
    */
   fun publish(): List<String> = current().also(DiagnosticsSecrets::publishAll)
 
-  private fun pat(): String? = runCatching { service<PatTokenProvider>().getToken() }.getOrNull()
+  /** The PAT of the configured instance, the one whose requests the report describes. */
+  private fun pat(): String? = runCatching {
+    service<PatTokenProvider>().getToken(service<ScopedPreferenceStore>().getString(GITLAB_INSTANCE_URL))
+  }.getOrNull()
 
   /**
    * The OAuth **access and refresh** tokens as stored. The refresh token is included deliberately:
