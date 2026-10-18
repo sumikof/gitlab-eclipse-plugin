@@ -71,10 +71,24 @@ class GitLabLanguageServerProcessProvider(
   internal val isRunning: Boolean
     get() = synchronized(lifecycleLock) { process != null }
 
+  /**
+   * Starts the language server. Never throws: bundle activation calls this without a catch of its
+   * own, so a failure here (no install for this platform, a failed extraction, a spawn error) would
+   * skip the rest of activation. The failure is logged, the provider stays stopped, and a later
+   * [restart] retries from that clean state.
+   */
   fun start(bundle: Bundle) {
     // Fire-and-forget: workbench startup must never block on the initialize handshake,
     // so the future returned by startLocked is deliberately ignored here.
-    synchronized(lifecycleLock) { startLocked(bundle) }
+    synchronized(lifecycleLock) {
+      try {
+        startLocked(bundle)
+      } catch (e: Exception) {
+        logger.error("Failed to start the Language Server.", e)
+        // Only a start that got as far as a process has anything to undo.
+        if (process != null) stopLocked()
+      }
+    }
   }
 
   fun stop(): Unit = synchronized(lifecycleLock) { stopLocked() }
