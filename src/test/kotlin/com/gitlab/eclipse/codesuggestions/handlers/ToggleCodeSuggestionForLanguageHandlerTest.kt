@@ -90,6 +90,40 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
       }
     }
 
+    it("should toggle the language id of a supported language whose id is not its extension") {
+      every { fileEditorInput.file.fileExtension } returns "py"
+
+      handler.execute(executionEvent)
+
+      verify { codeSuggestionsLanguageService.toggleLanguage("python") }
+    }
+
+    it("should toggle csharp for a C# file") {
+      every { fileEditorInput.file.fileExtension } returns "cs"
+
+      handler.execute(executionEvent)
+
+      verify { codeSuggestionsLanguageService.toggleLanguage("csharp") }
+    }
+
+    it("should toggle the same lowercased language id that is sent to the language server for an unknown extension") {
+      every { fileEditorInput.file.fileExtension } returns "ZIG"
+      every { fileEditorInput.file.name } returns "build.ZIG"
+
+      handler.execute(executionEvent)
+
+      verify { codeSuggestionsLanguageService.toggleLanguage("zig") }
+    }
+
+    it("should toggle language based on the file name if its extension is empty") {
+      every { fileEditorInput.file.fileExtension } returns ""
+      every { fileEditorInput.file.name } returns "Notes."
+
+      handler.execute(executionEvent)
+
+      verify { codeSuggestionsLanguageService.toggleLanguage("notes.") }
+    }
+
     it("should toggle language based on the file name if it has no extension") {
       every { fileEditorInput.file.fileExtension } returns null
       every { fileEditorInput.file.name } returns "Makefile"
@@ -150,8 +184,32 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
       }
     }
 
+    it("should name C# in the UI element text for a C# file") {
+      every { fileEditorInput.file.fileExtension } returns "cs"
+      every { codeSuggestionsLanguageService.isEnabled("csharp") } returns true
+
+      handler.updateElement(uiElement, emptyMap<Any, Any>())
+
+      verify {
+        uiElement.setText("Disable Code Suggestions for C#")
+      }
+    }
+
+    it("should name the file in the UI element text if its extension is empty") {
+      every { fileEditorInput.file.fileExtension } returns ""
+      every { fileEditorInput.file.name } returns "Notes."
+      every { codeSuggestionsLanguageService.isEnabled("notes.") } returns false
+
+      handler.updateElement(uiElement, emptyMap<Any, Any>())
+
+      verify {
+        uiElement.setText("Enable Code Suggestions for Notes.")
+      }
+    }
+
     it("should update the UI element text when code suggestions are disabled") {
       every { fileEditorInput.file.fileExtension } returns "zig"
+      every { fileEditorInput.file.name } returns "build.zig"
       every { codeSuggestionsLanguageService.isEnabled("zig") } returns false
 
       handler.updateElement(uiElement, emptyMap<Any, Any>())
