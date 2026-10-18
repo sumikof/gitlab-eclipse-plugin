@@ -78,8 +78,10 @@ class McpWorkspaceConfigTargetTest : DescribeSpec({
           McpWorkspaceConfigResolution.Unavailable("app")
       }
 
-      it("is on a UNC share, whose URI the language server rejects") {
-        target.resolve(arrayOf(project("app", URI("file:////server/share/app")))) shouldBe
+      it("is on a UNC share, whose URI the language server rejects, even though the share is reachable") {
+        val everythingIsADirectory = McpWorkspaceConfigTarget(isDirectory = { true })
+
+        everythingIsADirectory.resolve(arrayOf(project("app", URI("file:////server/share/app")))) shouldBe
           McpWorkspaceConfigResolution.Unavailable("app")
       }
 

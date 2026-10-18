@@ -31,7 +31,10 @@ sealed interface McpWorkspaceConfigResolution {
  * There is no fallback to a later project: the server keeps reading the first folder (closed
  * projects are sent too), so a config written anywhere else would be ignored again.
  */
-class McpWorkspaceConfigTarget(private val service: McpConfigService = McpConfigService()) {
+class McpWorkspaceConfigTarget(
+  private val service: McpConfigService = McpConfigService(),
+  private val isDirectory: (Path) -> Boolean = { Files.isDirectory(it) },
+) {
   fun resolve(projects: Array<IProject>): McpWorkspaceConfigResolution {
     val first = projects.firstOrNull() ?: return McpWorkspaceConfigResolution.NoProject
     if (!first.isOpen) return McpWorkspaceConfigResolution.Closed(first.name)
@@ -53,6 +56,6 @@ class McpWorkspaceConfigTarget(private val service: McpConfigService = McpConfig
     } catch (_: FileSystemNotFoundException) {
       return null
     }
-    return directory.takeIf { Files.isDirectory(it) }
+    return directory.takeIf(isDirectory)
   }
 }
