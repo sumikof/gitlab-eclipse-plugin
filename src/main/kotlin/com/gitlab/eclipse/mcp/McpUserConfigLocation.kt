@@ -35,10 +35,10 @@ sealed interface McpUserConfigResolution {
 }
 
 /**
- * Where the bundled language server reads the user-scoped MCP config: **LS 9.3.0
- * `getDuoConfigFilePath("mcp.json")`** (`packages/lib_ai_configuration`, region `src/utils/paths.ts`,
- * `getDuoConfigDir`; the MCP manager, the MCP Dashboard and the knowledge graph all use it). Re-check this
- * rule on every server update (LS-12):
+ * Where the bundled language server reads the user-scoped MCP config: **LS 9.30.0
+ * `getDuoConfigFilePath("mcp.json")`** (`packages/core/ai_configuration`, region `src/utils/paths.ts`,
+ * `getDuoConfigDir`, the same rule as 9.3.0's `packages/lib_ai_configuration`; the MCP manager, the MCP
+ * Dashboard and the knowledge graph all use it). Re-check this rule on every server update (LS-12):
  *
  * - `process.platform === "win32"`: `APPDATA` (no user config when it is unset or empty) joined with
  *   `GitLab/duo`. `XDG_CONFIG_HOME` is not consulted.
