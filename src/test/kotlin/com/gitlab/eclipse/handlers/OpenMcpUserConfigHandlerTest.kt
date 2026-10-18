@@ -6,7 +6,7 @@ import com.gitlab.eclipse.mcp.McpUserConfigLocation
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
-import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
@@ -150,7 +150,7 @@ class OpenMcpUserConfigHandlerTest : DescribeSpec({
       fixture.env["XDG_CONFIG_HOME"] = "relative-secret"
       fixture.run() // refusal
 
-      messages.shouldNotBeEmpty()
+      messages shouldHaveSize 4 // one line per run: opened, open failure, creation failure, refusal
       messages.forEach { message ->
         message shouldNotContain fixture.disk.toString()
         message shouldNotContain "secret"

@@ -56,11 +56,15 @@ class McpUserConfigLocationTest : DescribeSpec({
       it("decides blankness as JavaScript's trim() does, not as Kotlin's isBlank() does") {
         val env = mapOf("HOME" to "/home/ann")
         // U+FEFF is white space to trim() (so the server uses HOME) but not to isBlank().
-        location(isWindows = false, env = env + ("XDG_CONFIG_HOME" to "﻿")).select() shouldBe
+        location(isWindows = false, env = env + ("XDG_CONFIG_HOME" to "\uFEFF")).select() shouldBe
           McpUserConfigSelection.Chosen(McpUserConfigSource.HOME, "/home/ann", listOf(".gitlab", "duo", "mcp.json"))
         // U+001C is white space to isBlank() but not to trim() (so the server uses it).
         location(isWindows = false, env = env + ("XDG_CONFIG_HOME" to "\u001C")).select() shouldBe
-          McpUserConfigSelection.Chosen(McpUserConfigSource.XDG_CONFIG_HOME, "\u001C", listOf("gitlab", "duo", "mcp.json"))
+          McpUserConfigSelection.Chosen(
+            McpUserConfigSource.XDG_CONFIG_HOME,
+            "\u001C",
+            listOf("gitlab", "duo", "mcp.json"),
+          )
       }
 
       it("falls back to user.home when HOME is unset, as os.homedir() falls back to the passwd entry") {
@@ -96,10 +100,20 @@ class McpUserConfigLocationTest : DescribeSpec({
        * segments it joins, or null where getDuoConfigDir returns undefined. Rows whose server result is a
        * relative path are refused later, by resolve().
        */
-      data class Row(val windows: Boolean, val env: Map<String, String>, val home: String?, val joins: Pair<String, String>?)
+      data class Row(
+        val windows: Boolean,
+        val env: Map<String, String>,
+        val home: String?,
+        val joins: Pair<String, String>?,
+      )
       val rows = listOf(
         Row(true, mapOf("APPDATA" to APPDATA), "C:\\Users\\Ann", APPDATA to "GitLab"),
-        Row(true, mapOf("APPDATA" to "$APPDATA\\", "XDG_CONFIG_HOME" to "D:\\xdg"), "C:\\Users\\Ann", "$APPDATA\\" to "GitLab"),
+        Row(
+          true,
+          mapOf("APPDATA" to "$APPDATA\\", "XDG_CONFIG_HOME" to "D:\\xdg"),
+          "C:\\Users\\Ann",
+          "$APPDATA\\" to "GitLab",
+        ),
         Row(true, mapOf("APPDATA" to "C:/Users/Ann/AppData/Roaming"), null, "C:/Users/Ann/AppData/Roaming" to "GitLab"),
         Row(true, mapOf("APPDATA" to "   "), null, "   " to "GitLab"),
         Row(true, mapOf("APPDATA" to "relative\\dir"), null, "relative\\dir" to "GitLab"),
@@ -130,7 +144,10 @@ class McpUserConfigLocationTest : DescribeSpec({
   describe("resolve (the path, on this OS)") {
     it("joins an absolute value with the segments") {
       location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "/home/ann/.config")).resolve() shouldBe
-        McpUserConfigResolution.Target(Path.of("/home/ann/.config/gitlab/duo/mcp.json"), McpUserConfigSource.XDG_CONFIG_HOME)
+        McpUserConfigResolution.Target(
+          Path.of("/home/ann/.config/gitlab/duo/mcp.json"),
+          McpUserConfigSource.XDG_CONFIG_HOME,
+        )
     }
 
     it("passes on a missing value: no path at all") {
@@ -165,8 +182,16 @@ class McpUserConfigLocationTest : DescribeSpec({
           "/home/ann/.config/gitlab/duo/mcp.json",
           McpUserConfigSource.XDG_CONFIG_HOME,
         ),
-        Triple(mapOf("XDG_CONFIG_HOME" to "  ", "HOME" to "/home/ann"), "/home/ann/.gitlab/duo/mcp.json", McpUserConfigSource.HOME),
-        Triple(mapOf("APPDATA" to "/appdata", "HOME" to "/home/ann"), "/home/ann/.gitlab/duo/mcp.json", McpUserConfigSource.HOME),
+        Triple(
+          mapOf("XDG_CONFIG_HOME" to "  ", "HOME" to "/home/ann"),
+          "/home/ann/.gitlab/duo/mcp.json",
+          McpUserConfigSource.HOME,
+        ),
+        Triple(
+          mapOf("APPDATA" to "/appdata", "HOME" to "/home/ann"),
+          "/home/ann/.gitlab/duo/mcp.json",
+          McpUserConfigSource.HOME,
+        ),
         Triple(
           mapOf("XDG_CONFIG_HOME" to "/Users/ann/.config"),
           "/Users/ann/.config/gitlab/duo/mcp.json",
@@ -197,7 +222,10 @@ class McpUserConfigLocationTest : DescribeSpec({
 
     it("normalizes lexically, as the server's path.join does") {
       location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "/home/ann/x/../.config/./")).resolve() shouldBe
-        McpUserConfigResolution.Target(Path.of("/home/ann/.config/gitlab/duo/mcp.json"), McpUserConfigSource.XDG_CONFIG_HOME)
+        McpUserConfigResolution.Target(
+          Path.of("/home/ann/.config/gitlab/duo/mcp.json"),
+          McpUserConfigSource.XDG_CONFIG_HOME,
+        )
     }
   }
 })

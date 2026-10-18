@@ -18,6 +18,7 @@ internal object McpUserConfigMessages {
       "The MCP user configuration cannot be opened: ${reason.source.name} is not an absolute path. " +
         "Set it to an absolute path and restart Eclipse."
     is McpUserConfigResolution.Invalid ->
-      "The MCP user configuration cannot be opened: ${reason.source.name} is not a valid path. Fix it and restart Eclipse."
+      "The MCP user configuration cannot be opened: ${reason.source.name} is not a valid path. " +
+        "Fix it and restart Eclipse."
   }
 }
