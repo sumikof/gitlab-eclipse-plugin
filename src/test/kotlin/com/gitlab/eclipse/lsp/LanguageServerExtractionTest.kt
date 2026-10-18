@@ -6,13 +6,20 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.longs.shouldBeGreaterThanOrEqual
+import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldMatch
 import io.kotest.matchers.string.shouldStartWith
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.delay
+import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.Platform
+import org.osgi.framework.Bundle
 import java.io.IOException
 import java.nio.channels.FileChannel
 import java.nio.channels.OverlappingFileLockException
@@ -67,6 +74,12 @@ private fun renameAtomically(source: Path, target: Path) {
   Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
 }
 
+private fun openLockFileForTest(file: Path): FileChannel =
+  FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
+
+/** Fails like opening a lock file on a file system without byte-range locks (NFS without lockd). */
+private val noLocksOnThisFileSystem: (Path) -> FileChannel = { throw IOException("No locks available") }
+
 /** Fails like a rename on Windows of a directory whose binary is running. */
 private val failingRename: (Path, Path) -> Unit = { _, _ -> throw IOException("in use") }
 
@@ -86,7 +99,13 @@ class LanguageServerExtractionTest : DescribeSpec({
   fun extraction(
     timeoutMillis: Long = 5_000,
     renameAside: (Path, Path) -> Unit = ::renameAtomically,
-  ) = LanguageServerExtraction(dataRoot, timeoutMillis.milliseconds, 20.milliseconds, renameAside)
+    openLockFile: (Path) -> FileChannel = ::openLockFileForTest,
+  ) = LanguageServerExtraction(dataRoot, timeoutMillis.milliseconds, 20.milliseconds, renameAside, openLockFile)
+
+  /** Stands in for Eclipse's own log, so a test can see what was reported. */
+  fun recordingLog(): ILog = mockk<ILog>(relaxUnitFun = true).also {
+    every { Platform.getLog(any<Bundle>()) } returns it
+  }
 
   beforeEach {
     workDir = createTempDirectory("ls-extraction")
@@ -450,6 +469,75 @@ class LanguageServerExtractionTest : DescribeSpec({
       extraction().install(KEY, openArchive()).shouldNotBeNull()
 
       dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+  }
+
+  describe("lock probes") {
+    // R1: a file system without byte-range locks (NFS without lockd, some FUSE/SMB mounts) must not
+    // look like "another instance holds the lock": that waited the full timeout and installed nothing.
+    it("installs promptly without the install lock, and sweeps nothing, when the file system cannot lock") {
+      Files.createDirectories(dataRoot.resolve("lsp-aaaaaaaaaaaa/bin"))
+      Files.createDirectories(dataRoot.resolve("lsp/bin"))
+      Files.createDirectories(dataRoot.resolve("lsp.tmp-crashed"))
+      val log = recordingLog()
+      val noLocks = extraction(timeoutMillis = 5_000, openLockFile = noLocksOnThisFileSystem)
+      val started = System.nanoTime()
+
+      val binary = noLocks.install(KEY, openArchive()).shouldNotBeNull()
+
+      TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) shouldBeLessThan 2_000
+      binary.readText() shouldBe "binary"
+      archiveOpens shouldBe 1
+      verify(exactly = 1) { log.warn(match<String> { it.contains("install lock") }) }
+
+      // The fast path never sweeps without the lock either.
+      noLocks.install(KEY, openArchive()).shouldNotBeNull()
+
+      archiveOpens shouldBe 1
+      dataRoot.names() shouldContainExactlyInAnyOrder
+        listOf(installDirectoryName(KEY), "lsp-aaaaaaaaaaaa", "lsp", "lsp.tmp-crashed")
+    }
+
+    // R2: the wait can freeze the activating thread; it has to be diagnosable from the log.
+    it("logs once that it waits for another instance's install") {
+      val log = recordingLog()
+      val channel = FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+
+      val install = CompletableFuture.supplyAsync { extraction(timeoutMillis = 10_000).install(KEY, openArchive()) }
+      delay(300)
+      held.release()
+      channel.close()
+
+      install.get(10, TimeUnit.SECONDS).shouldNotBeNull()
+      verify(exactly = 1) { log.info(match<String> { it.startsWith("Waiting for another Eclipse instance") }) }
+    }
+
+    // R3: an interrupted wait is not a timeout, and the interrupt flag survives.
+    it("reports an interrupted wait as interrupted and keeps the interrupt flag") {
+      val log = recordingLog()
+      val channel = FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+      var result: Path? = dataRoot
+      var stillInterrupted = false
+      try {
+        val waiter = Thread {
+          result = extraction(timeoutMillis = 10_000).install(KEY, openArchive())
+          stillInterrupted = Thread.currentThread().isInterrupted
+        }
+        waiter.start()
+        delay(300)
+        waiter.interrupt()
+        waiter.join(5_000)
+      } finally {
+        held.release()
+        channel.close()
+      }
+
+      result.shouldBeNull()
+      stillInterrupted shouldBe true
+      verify(exactly = 1) { log.error(match<String> { it.startsWith("Interrupted") }) }
+      verify(exactly = 0) { log.error(match<String> { it.startsWith("Timed out") }) }
     }
   }
 })

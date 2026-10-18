@@ -87,6 +87,7 @@ internal class LanguageServerExtraction(
   private val lockTimeout: Duration = DEFAULT_LOCK_TIMEOUT,
   private val lockPollInterval: Duration = DEFAULT_LOCK_POLL_INTERVAL,
   private val renameAside: (Path, Path) -> Unit = ::renameAtomically,
+  private val openLockFile: (Path) -> FileChannel = ::openLockFileForWrite,
 ) {
   private val logger by lazy { logger<LanguageServerExtraction>() }
 
@@ -107,8 +108,9 @@ internal class LanguageServerExtraction(
           // instance may sweep it while this one runs from it, as before in-use locks existed.
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
-        // Sweep only if nobody else is installing right now; never wait on the fast path.
-        tryExclusiveLock(dataRoot.resolve(LOCK_FILE))?.use { sweep(keep = installDir) }
+        // Sweep only if nobody else is installing right now (and locking works); never wait here.
+        (tryExclusiveLock(dataRoot.resolve(LOCK_FILE), openLockFile) as? LockAttempt.Acquired)
+          ?.lock?.use { sweep(keep = installDir) }
         return binaryOf(installDir)
       }
       // Incomplete, or being swept by another instance: let go and install under the install lock.
@@ -116,22 +118,44 @@ internal class LanguageServerExtraction(
     }
 
     Files.createDirectories(dataRoot)
-    val lock = pollExclusiveLock(dataRoot.resolve(LOCK_FILE), lockTimeout, lockPollInterval) ?: run {
-      logger.error("Timed out after $lockTimeout waiting for the language server install lock in $dataRoot.")
-      return null
+    val lockFile = dataRoot.resolve(LOCK_FILE)
+    val attempt = pollExclusiveLock(lockFile, lockTimeout, lockPollInterval, openLockFile) {
+      logger.info("Waiting for another Eclipse instance to finish installing the GitLab Language Server in $dataRoot.")
+    }
+    val lock = when (attempt) {
+      is LockAttempt.Acquired -> attempt.lock
+      is LockAttempt.Unavailable -> {
+        // As 9.3.0 did, which never locked: install anyway, but never sweep without the lock.
+        logger.warn(
+          "The language server install lock $lockFile is unavailable on this file system " +
+            "(${attempt.cause.javaClass.simpleName}: ${attempt.cause.message}); installing without it " +
+            "and skipping cleanup."
+        )
+        null
+      }
+      LockAttempt.Held -> {
+        logger.error("Timed out after $lockTimeout waiting for the language server install lock in $dataRoot.")
+        return null
+      }
+      LockAttempt.Interrupted -> {
+        logger.error("Interrupted while waiting for the language server install lock in $dataRoot.")
+        return null
+      }
     }
 
-    return lock.use {
+    return try {
       // Another instance may have finished the same install while this one waited.
       if (isComplete(installDir, key) || extract(key, installDir, openArchive)) {
         if (InUseLocks.acquire(installDir) != InUseLocks.Outcome.HELD) {
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
-        sweep(keep = installDir)
+        if (lock != null) sweep(keep = installDir)
         binaryOf(installDir)
       } else {
         null
       }
+    } finally {
+      lock?.close()
     }
   }
 
@@ -209,8 +233,10 @@ internal class LanguageServerExtraction(
     }
     // Only one key is used per JVM run; a hold this JVM still has on another install is stale.
     InUseLocks.release(dir)
-    val exclusive = tryExclusiveLock(dir.resolve(IN_USE_FILE)) ?: run {
-      logger.debug("Keeping $dir: another instance is using it.")
+    // Held by another instance, or not lockable at all: either way it is not provably unused.
+    val attempt = tryExclusiveLock(dir.resolve(IN_USE_FILE), openLockFile)
+    val exclusive = (attempt as? LockAttempt.Acquired)?.lock ?: run {
+      logger.debug("Keeping $dir: another instance may be using it.")
       return
     }
     moveToTrash(dir, exclusive)?.let { deleteQuietly(it) }
@@ -333,42 +359,74 @@ private object InUseLocks {
   }
 }
 
-/**
- * Tries an exclusive lock on [file] once, creating the file if needed. Null when another holder
- * (another process, or another channel of this JVM) has a lock on it, or when locking fails.
- */
-private fun tryExclusiveLock(file: Path): HeldLock? {
+private fun openLockFileForWrite(file: Path): FileChannel =
+  FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
+
+/** The outcome of trying for an exclusive lock. */
+private sealed interface LockAttempt {
+  /** This process now holds the lock. */
+  class Acquired(val lock: HeldLock) : LockAttempt
+
+  /** Another holder has it: another process, or another channel of this JVM. After polling: timed out. */
+  data object Held : LockAttempt
+
+  /** Locking does not work here at all (for example NFS without lockd): the probe itself failed. */
+  class Unavailable(val cause: IOException) : LockAttempt
+
+  /** The wait was interrupted; the interrupt flag is set again. */
+  data object Interrupted : LockAttempt
+}
+
+/** Tries an exclusive lock on [file] once, opening (and so creating) it with [open]. */
+private fun tryExclusiveLock(file: Path, open: (Path) -> FileChannel): LockAttempt {
   val channel = try {
-    FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
-  } catch (_: IOException) {
-    return null
+    open(file)
+  } catch (e: IOException) {
+    return LockAttempt.Unavailable(e)
   }
   val lock = try {
     channel.tryLock()
   } catch (_: OverlappingFileLockException) {
     null
-  } catch (_: IOException) {
-    null
+  } catch (e: IOException) {
+    channel.close()
+    return LockAttempt.Unavailable(e)
   }
   if (lock == null) {
     channel.close()
-    return null
+    return LockAttempt.Held
   }
-  return HeldLock(channel, lock)
+  return LockAttempt.Acquired(HeldLock(channel, lock))
 }
 
-/** Polls [tryExclusiveLock] until [timeout]; null on timeout or interruption. */
-private fun pollExclusiveLock(file: Path, timeout: Duration, interval: Duration): HeldLock? {
+/**
+ * Polls [tryExclusiveLock] until [timeout]. Returns at once when the lock is acquired or locking is
+ * unavailable; [LockAttempt.Held] means timed out. [onWait] runs once, when the first attempt finds
+ * the lock held.
+ */
+private fun pollExclusiveLock(
+  file: Path,
+  timeout: Duration,
+  interval: Duration,
+  open: (Path) -> FileChannel,
+  onWait: () -> Unit,
+): LockAttempt {
   val deadline = System.nanoTime() + timeout.inWholeNanoseconds
+  var waiting = false
   while (true) {
-    tryExclusiveLock(file)?.let { return it }
+    val attempt = tryExclusiveLock(file, open)
+    if (attempt !is LockAttempt.Held) return attempt
+    if (!waiting) {
+      waiting = true
+      onWait()
+    }
     val remaining = deadline - System.nanoTime()
-    if (remaining <= 0) return null
+    if (remaining <= 0) return LockAttempt.Held
     try {
       Thread.sleep(minOf(interval.inWholeMilliseconds, remaining / NANOS_PER_MILLI + 1))
     } catch (_: InterruptedException) {
       Thread.currentThread().interrupt()
-      return null
+      return LockAttempt.Interrupted
     }
   }
 }
