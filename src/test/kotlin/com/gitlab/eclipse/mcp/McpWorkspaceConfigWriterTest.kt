@@ -169,17 +169,15 @@ class McpWorkspaceConfigWriterTest : DescribeSpec({
       fixture.run() shouldBe McpWorkspaceConfigOutcome.Cancelled
     }
 
-    it("writes nothing under the workspace root or into the user-scoped config") {
+    it("writes nothing under the workspace root") {
       val fixture = WriterFixture()
-      val home = Files.createDirectories(fixture.disk.resolve("home"))
       fixture.projects = arrayOf(fixture.project("app"))
 
-      val writer = McpWorkspaceConfigWriter(fixture.workspace, service = McpConfigService(homeDir = home))
+      val writer = McpWorkspaceConfigWriter(fixture.workspace)
       writer.runInWorkspace(NullProgressMonitor())
 
       // `disk` stands in for the workspace root: the projects are its children.
       Files.exists(fixture.disk.resolve(".gitlab")) shouldBe false
-      Files.exists(home.resolve(".gitlab")) shouldBe false
       Files.exists(fixture.configOf("app")) shouldBe true
     }
   }

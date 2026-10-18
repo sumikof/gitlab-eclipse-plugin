@@ -7,13 +7,8 @@ import java.nio.file.Path
 
 class McpConfigServiceTest : DescribeSpec({
   describe("path resolution") {
-    it("resolves the user config path under the home directory") {
-      val service = McpConfigService(homeDir = Path.of("/home/tester"))
-      service.getUserConfigPath() shouldBe Path.of("/home/tester/.gitlab/duo/mcp.json")
-    }
-
     it("resolves the workspace config path under the workspace folder (a project directory)") {
-      val service = McpConfigService(homeDir = Path.of("/home/tester"))
+      val service = McpConfigService()
       service.getWorkspaceConfigPath(Path.of("/ws/project")) shouldBe
         Path.of("/ws/project/.gitlab/duo/mcp.json")
     }
