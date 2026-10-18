@@ -5,6 +5,7 @@ import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLangua
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.language
+import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
 import com.gitlab.eclipse.utils.PlatformUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
@@ -48,9 +49,10 @@ class ToggleCodeSuggestionForLanguageHandler : AbstractHandler(), IElementUpdate
     setText("No code suggestions action available.")
   }
 
+  // The same id the document is opened with in the language server, which is what its language settings match
   private val IFile.languageIdentifier: String?
-    get() = language?.id ?: fileExtension ?: name?.lowercase()
+    get() = name?.let { languageId }
 
   private val IFile.languageName: String?
-    get() = language?.humanReadableName ?: fileExtension ?: name
+    get() = language?.humanReadableName ?: fileExtension?.ifEmpty { null } ?: name
 }
