@@ -1,5 +1,10 @@
 package com.gitlab.eclipse.mcp
 
+import com.gitlab.eclipse.utils.system.OS
+import com.gitlab.eclipse.utils.system.SystemUtils
+import java.nio.file.InvalidPathException
+import java.nio.file.Path
+
 /** The environment value the user-scoped MCP config location comes from. */
 enum class McpUserConfigSource { APPDATA, XDG_CONFIG_HOME, HOME }
 
@@ -11,6 +16,9 @@ sealed interface McpUserConfigSelection {
 
 /** Where the user-scoped MCP config is, or why there is none the language server would read. */
 sealed interface McpUserConfigResolution {
+  /** The server reads [configFile], which comes from [source]. */
+  data class Target(val configFile: Path, val source: McpUserConfigSource) : McpUserConfigResolution
+
   /** Nothing may be created or opened, and the user is told why. */
   sealed interface Unavailable : McpUserConfigResolution {
     val source: McpUserConfigSource
@@ -18,6 +26,12 @@ sealed interface McpUserConfigResolution {
 
   /** [source] is not set, so the language server has no user-scoped config at all. */
   data class Missing(override val source: McpUserConfigSource) : Unavailable, McpUserConfigSelection
+
+  /** [source] is not an absolute path: the server would resolve it against its working directory. */
+  data class NotAbsolute(override val source: McpUserConfigSource) : Unavailable
+
+  /** [source] is not a path this OS accepts. */
+  data class Invalid(override val source: McpUserConfigSource) : Unavailable
 }
 
 /**
@@ -39,10 +53,25 @@ sealed interface McpUserConfigResolution {
  * what reads the file. Deliberately separate from the workspace-scoped rule (`McpWorkspaceConfigTarget`).
  */
 class McpUserConfigLocation(
-  private val isWindows: Boolean,
-  private val env: (String) -> String?,
-  private val userHome: () -> String?,
+  private val isWindows: Boolean = SystemUtils.os == OS.WINDOWS,
+  private val env: (String) -> String? = System::getenv,
+  private val userHome: () -> String? = { System.getProperty("user.home") },
 ) {
+  fun resolve(): McpUserConfigResolution {
+    val chosen = when (val selection = select()) {
+      is McpUserConfigResolution.Missing -> return selection
+      is McpUserConfigSelection.Chosen -> selection
+    }
+    val base = try {
+      Path.of(chosen.value)
+    } catch (_: InvalidPathException) {
+      return McpUserConfigResolution.Invalid(chosen.source)
+    }
+    if (!base.isAbsolute) return McpUserConfigResolution.NotAbsolute(chosen.source)
+    val configFile = chosen.segments.fold(base) { path, segment -> path.resolve(segment) }.normalize()
+    return McpUserConfigResolution.Target(configFile, chosen.source)
+  }
+
   /** Step 1: the value the server joins and the segments it appends, as plain strings (any OS can test it). */
   internal fun select(): McpUserConfigSelection {
     if (!isWindows) {

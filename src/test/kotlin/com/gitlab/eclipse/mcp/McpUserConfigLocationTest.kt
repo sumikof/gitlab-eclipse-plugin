@@ -1,7 +1,10 @@
 package com.gitlab.eclipse.mcp
 
+import com.gitlab.eclipse.utils.system.OS
+import com.gitlab.eclipse.utils.system.SystemUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import java.nio.file.Path
 
 private const val APPDATA = "C:\\Users\\Ann\\AppData\\Roaming"
 
@@ -121,6 +124,80 @@ class McpUserConfigLocationTest : DescribeSpec({
           }
         }
       }
+    }
+  }
+
+  describe("resolve (the path, on this OS)") {
+    it("joins an absolute value with the segments") {
+      location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "/home/ann/.config")).resolve() shouldBe
+        McpUserConfigResolution.Target(Path.of("/home/ann/.config/gitlab/duo/mcp.json"), McpUserConfigSource.XDG_CONFIG_HOME)
+    }
+
+    it("passes on a missing value: no path at all") {
+      location(isWindows = true, userHome = "C:\\Users\\Ann").resolve() shouldBe
+        McpUserConfigResolution.Missing(McpUserConfigSource.APPDATA)
+      location(isWindows = false).resolve() shouldBe McpUserConfigResolution.Missing(McpUserConfigSource.HOME)
+    }
+
+    it("refuses a value that is not absolute (the server would resolve it against its working directory)") {
+      val home = mapOf("HOME" to "/home/ann")
+      listOf("rel/cfg", " /x ", "~/.config").forEach { xdg ->
+        location(isWindows = false, env = home + ("XDG_CONFIG_HOME" to xdg)).resolve() shouldBe
+          McpUserConfigResolution.NotAbsolute(McpUserConfigSource.XDG_CONFIG_HOME)
+      }
+      listOf("", "relative/home").forEach { value ->
+        location(isWindows = false, env = mapOf("HOME" to value), userHome = "/home/ann").resolve() shouldBe
+          McpUserConfigResolution.NotAbsolute(McpUserConfigSource.HOME)
+      }
+    }
+
+    it("refuses a value that is not a valid path, without throwing") {
+      location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "/home/ann/\u0000cfg")).resolve() shouldBe
+        McpUserConfigResolution.Invalid(McpUserConfigSource.XDG_CONFIG_HOME)
+    }
+
+    it("matches LS 9.3.0 on POSIX: the server's absolute results, and a refusal where it gets a relative one") {
+      // Server result (from running its getDuoConfigDir) -> what this command does.
+      val rows = listOf(
+        Triple(mapOf("HOME" to "/home/ann"), "/home/ann/.gitlab/duo/mcp.json", McpUserConfigSource.HOME),
+        Triple(
+          mapOf("XDG_CONFIG_HOME" to "/home/ann/.config/", "HOME" to "/home/ann"),
+          "/home/ann/.config/gitlab/duo/mcp.json",
+          McpUserConfigSource.XDG_CONFIG_HOME,
+        ),
+        Triple(mapOf("XDG_CONFIG_HOME" to "  ", "HOME" to "/home/ann"), "/home/ann/.gitlab/duo/mcp.json", McpUserConfigSource.HOME),
+        Triple(mapOf("APPDATA" to "/appdata", "HOME" to "/home/ann"), "/home/ann/.gitlab/duo/mcp.json", McpUserConfigSource.HOME),
+        Triple(
+          mapOf("XDG_CONFIG_HOME" to "/Users/ann/.config"),
+          "/Users/ann/.config/gitlab/duo/mcp.json",
+          McpUserConfigSource.XDG_CONFIG_HOME,
+        ),
+      )
+      rows.forEach { (env, serverPath, source) ->
+        location(isWindows = false, env = env).resolve() shouldBe
+          McpUserConfigResolution.Target(Path.of(serverPath), source)
+      }
+      // " /x /gitlab/duo/mcp.json", "rel/cfg/gitlab/duo/mcp.json", ".gitlab/duo/mcp.json": relative on the server.
+      location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to " /x ")).resolve() shouldBe
+        McpUserConfigResolution.NotAbsolute(McpUserConfigSource.XDG_CONFIG_HOME)
+      location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "rel/cfg")).resolve() shouldBe
+        McpUserConfigResolution.NotAbsolute(McpUserConfigSource.XDG_CONFIG_HOME)
+      location(isWindows = false, env = mapOf("HOME" to "")).resolve() shouldBe
+        McpUserConfigResolution.NotAbsolute(McpUserConfigSource.HOME)
+    }
+
+    it("defaults to this JVM's OS, environment and user.home") {
+      McpUserConfigLocation().resolve() shouldBe
+        McpUserConfigLocation(
+          isWindows = SystemUtils.os == OS.WINDOWS,
+          env = System::getenv,
+          userHome = { System.getProperty("user.home") },
+        ).resolve()
+    }
+
+    it("normalizes lexically, as the server's path.join does") {
+      location(isWindows = false, env = mapOf("XDG_CONFIG_HOME" to "/home/ann/x/../.config/./")).resolve() shouldBe
+        McpUserConfigResolution.Target(Path.of("/home/ann/.config/gitlab/duo/mcp.json"), McpUserConfigSource.XDG_CONFIG_HOME)
     }
   }
 })
