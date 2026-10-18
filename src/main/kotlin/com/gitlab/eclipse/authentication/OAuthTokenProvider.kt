@@ -162,7 +162,8 @@ class OAuthTokenProvider(
     Thread(runnable, REFRESH_THREAD_NAME).apply { isDaemon = true }
   }
 
-  override fun getToken(): String {
+  /** The issuer's token, whatever instance is configured; callers that send it use [getToken] with a URL. */
+  fun getToken(): String {
     if (currentToken.get() == null) loadCachedIfAbsent()
     val token = currentToken.get() ?: return ""
     if (token.tokenExpirationTimestamp > clock()) return token.accessToken
@@ -178,7 +179,7 @@ class OAuthTokenProvider(
    * request refreshes it. Never takes [refreshLock] and never refreshes, so it does not wait for an
    * in-flight refresh and is safe on the UI thread (design §11).
    */
-  override fun hasToken(): Boolean {
+  fun hasToken(): Boolean {
     loadCachedIfAbsent()
     return !currentToken.get()?.accessToken.isNullOrEmpty()
   }
@@ -187,10 +188,10 @@ class OAuthTokenProvider(
    * The OAuth token for [instanceUrl]: the token is issued by [GitLabOAuthService.ISSUER_KEY], so any other instance
    * gets "" without a first load (no secure-storage read, no switch to PAT) and never sees the cached token (#115).
    */
-  fun getToken(instanceUrl: String): String = if (serves(instanceUrl)) getToken() else ""
+  override fun getToken(instanceUrl: String): String = if (serves(instanceUrl)) getToken() else ""
 
   /** [hasToken] for [instanceUrl]; false without a first load for an instance other than the issuer. */
-  fun hasToken(instanceUrl: String): Boolean = serves(instanceUrl) && hasToken()
+  override fun hasToken(instanceUrl: String): Boolean = serves(instanceUrl) && hasToken()
 
   /** Whether [instanceUrl] is the instance that issues the OAuth token. Pure; safe on the UI thread. */
   fun serves(instanceUrl: String): Boolean = GitLabInstanceKey.of(instanceUrl) == GitLabOAuthService.ISSUER_KEY
