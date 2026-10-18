@@ -24,7 +24,7 @@ class AssignmentValidatorTest : DescribeSpec({
 
   /** The real host matching is exercised; only the token manager it never consults is mocked. */
   fun validator(): AssignmentValidator {
-    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns "t" }
+    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "t" }
     return AssignmentValidator(GitAuthConfigurer(tokenManager))
   }
 

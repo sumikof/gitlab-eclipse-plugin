@@ -94,7 +94,7 @@ class GitLabGraphQlClientTest : DescribeSpec({
     // Global settings deliberately DIFFERENT from the pinned connection: execute() must never
     // read them, otherwise a mid-session settings change misroutes the request / leaks the
     // wrong credential.
-    every { tokens.getToken() } returns "global-token"
+    every { tokens.getToken(any()) } returns "global-token"
     every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://global.example.com"
   }
 
@@ -164,7 +164,7 @@ class GitLabGraphQlClientTest : DescribeSpec({
       captured.captured.uri().host shouldBe "pinned.example.com"
       captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
       verify(exactly = 0) { prefs.getString(any()) }
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
   }
 

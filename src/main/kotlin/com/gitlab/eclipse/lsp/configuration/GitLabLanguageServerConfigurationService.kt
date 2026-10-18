@@ -145,10 +145,13 @@ class GitLabLanguageServerConfigurationService(
     // Published for the diagnostics redactor while we have it. This call site already runs off
     // the logging path, which is the whole point: asking for the token from inside a log listener
     // would refresh it over the network (see DiagnosticsSecrets).
-    val currentToken = service<GitLabTokenProviderManager>().getToken()
+    // Read once: the token is the one stored for exactly the instance sent as baseUrl (#115), so a URL change
+    // between two reads can never pair one instance's token with another instance's URL.
+    val baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL)
+    val currentToken = service<GitLabTokenProviderManager>().getToken(baseUrl)
     DiagnosticsSecrets.publish(currentToken)
     return GitLabLanguageServerConfigurationParams(
-      baseUrl = preferenceStore.getString(GITLAB_INSTANCE_URL),
+      baseUrl = baseUrl,
       codeCompletion = CodeCompletion(
         enabled = preferenceStore.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED),
         enableSecretRedaction = true,

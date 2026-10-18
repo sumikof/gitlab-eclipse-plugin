@@ -210,7 +210,8 @@ class GitLabApiClient(
         if (readGeneration() == g1) return null // settled mismatch -> bail, credentials untouched
         return@repeat // read raced an update -> retry
       }
-      val token = tokenManager.getToken() // only reached when the predicate accepted
+      // Only reached when the predicate accepted; the token is the one stored for this very URL (#115).
+      val token = tokenManager.getToken(url)
       val g2 = readGeneration()
       if (g1 == g2) { // even and unchanged -> consistent pair
         return ConnectionSnapshot(url, token, authFingerprint(token), g1)

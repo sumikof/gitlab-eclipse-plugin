@@ -39,7 +39,7 @@ class MrBranchCheckoutServiceTest : DescribeSpec({
   }
 
   fun service(): MrBranchCheckoutService {
-    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns "" }
+    val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "" }
     return MrBranchCheckoutService(GitOperationGuard(), GitAuthConfigurer(tokenManager))
   }
 
@@ -153,7 +153,7 @@ class MrBranchCheckoutServiceTest : DescribeSpec({
       val fixture = cloneFixture()
       val featureTip = fixture.addRemoteFeatureBranch()
       val guard = GitOperationGuard()
-      val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken() } returns "" }
+      val tokenManager = mockk<GitLabTokenProviderManager> { every { getToken(any()) } returns "" }
       val busyService = MrBranchCheckoutService(guard, GitAuthConfigurer(tokenManager))
 
       val result = guard.withRepo(fixture.context.gitDir) {

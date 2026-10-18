@@ -86,7 +86,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
     every { wrapper.currentSnapshot } returns handle(languageServer)
     every { languageService.getAdditionalLanguages() } returns emptyList()
     every { languageService.getDisabledLanguages() } returns emptyList()
-    every { tokenManager.getToken() } returns "token"
+    every { tokenManager.getToken(any()) } returns "token"
     // sensible defaults; individual tests override
     every { preferenceStore.getString(any()) } returns ""
     every { preferenceStore.getBoolean(any()) } returns false
@@ -173,7 +173,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       service.sendConfigurationIf { false }
 
       verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
-      verify(exactly = 0) { tokenManager.getToken() }
+      verify(exactly = 0) { tokenManager.getToken(any()) }
     }
 
     it("logs one payload-free line when the send is dropped because isCurrent is false") {
@@ -226,6 +226,21 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
 
       verify(exactly = 1) { serverA.didChangeConfiguration(any()) }
       verify(exactly = 0) { serverB.didChangeConfiguration(any()) }
+    }
+  }
+
+  // #115: the token goes to the instance it was stored for, so it is looked up for the very URL sent as baseUrl.
+  describe("token and baseUrl") {
+    it("pairs the token with the baseUrl from one read of the instance URL") {
+      every { preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returnsMany
+        listOf("https://a.example", "https://b.example")
+      every { tokenManager.getToken(any()) } answers { "token-for-${firstArg<String>()}" }
+
+      service.sendConfiguration()
+
+      val params = capturedParams()
+      params.token shouldBe "token-for-${params.baseUrl}"
+      verify(exactly = 1) { preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL) }
     }
   }
 
@@ -360,7 +375,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       service.sendConfiguration()
       retainOneFinding()
 
-      every { tokenManager.getToken() } returns "another-token"
+      every { tokenManager.getToken(any()) } returns "another-token"
       service.sendConfiguration()
 
       intake.read(path, epoch()).shouldBeNull()
@@ -386,7 +401,7 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       intake.onRequestSent(path, epoch())
       intake.onResponse(path, listOf(mapOf("title" to "live")), 2L, epoch())
 
-      every { tokenManager.getToken() } returns "another-token"
+      every { tokenManager.getToken(any()) } returns "another-token"
       service.sendConfiguration(stale)
 
       // Stale: the live connection's context was not moved, so its finding stands. The send itself
@@ -399,13 +414,13 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
       service.sendConfiguration()
       retainOneFinding()
       every { wrapper.currentSnapshot } returns null
-      every { tokenManager.getToken() } returns "another-token"
+      every { tokenManager.getToken(any()) } returns "another-token"
 
       service.sendConfiguration()
 
       intake.read(path, epoch()).shouldNotBeNull()
       verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
-      verify(exactly = 1) { tokenManager.getToken() }
+      verify(exactly = 1) { tokenManager.getToken(any()) }
     }
 
     it("still sends, and logs only the class name, when the intake fails (A7)") {

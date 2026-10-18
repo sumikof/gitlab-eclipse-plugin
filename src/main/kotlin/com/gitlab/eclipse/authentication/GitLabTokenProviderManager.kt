@@ -34,9 +34,6 @@ class GitLabTokenProviderManager(private val preferenceStore: ScopedPreferenceSt
     return ""
   }
 
-  /** Temporary: [getToken] for the configured instance, until its callers pass the URL they send to. */
-  fun getToken(): String = getToken(configuredInstanceUrl())
-
   /**
    * Whether any provider has a token for [instanceUrl], checked in the same order as [getToken]. Never calls
    * [getToken], which may refresh the OAuth token over the network.

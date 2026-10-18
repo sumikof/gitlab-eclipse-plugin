@@ -63,7 +63,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
     // Global settings deliberately DIFFERENT from the pinned connection: a pinned read must
     // never fall back to them, otherwise a mid-refresh settings change misroutes the read or
     // sends the wrong credential.
-    every { tokens.getToken() } returns "global-token"
+    every { tokens.getToken(any()) } returns "global-token"
     every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://global.example.com"
   }
 
@@ -77,7 +77,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
       captured.captured.uri().toString() shouldBe "https://pinned.example.com/api/v4/user?"
       captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
       verify(exactly = 0) { prefs.getString(any()) }
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
 
     it("falls back to the global preference URL and token when connection is null (backward compat)") {
@@ -105,7 +105,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
         // Mutate the globals BETWEEN pages: a real settings change mid-fetch must not leak
         // into a later page's request when the fetch is pinned to a connection.
         every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://changed-$call.example.com"
-        every { tokens.getToken() } returns "changed-token-$call"
+        every { tokens.getToken(any()) } returns "changed-token-$call"
         page
       }
 
@@ -135,7 +135,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
         // Mutate the globals BETWEEN pages: a real settings change mid-fetch must not leak
         // into a later page's request when the fetch is pinned to a connection.
         every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://changed-$call.example.com"
-        every { tokens.getToken() } returns "changed-token-$call"
+        every { tokens.getToken(any()) } returns "changed-token-$call"
         page
       }
 
@@ -155,7 +155,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
       val result = client.fetchListWithinDeadline(req(), Duration.ofSeconds(15))
 
       result shouldBe listOf(Item(1))
-      verify(exactly = 1) { tokens.getToken() }
+      verify(exactly = 1) { tokens.getToken(any()) }
     }
   }
 
@@ -172,7 +172,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
         if (generationReads <= 3) 1L else 2L // write in progress, then settles
       }
       every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://new.example.com"
-      every { tokens.getToken() } answers { if (generationReads <= 3) "old-token" else "new-token" }
+      every { tokens.getToken(any()) } answers { if (generationReads <= 3) "old-token" else "new-token" }
       val captured = slot<HttpRequest>()
       every { http.send(capture(captured)) } returns response("""{"id":1}""")
 
@@ -195,7 +195,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
       }
 
       verify(exactly = 0) { http.send(any()) }
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
       verify(exactly = 0) { prefs.getString(any()) }
     }
 
@@ -222,7 +222,7 @@ class GitLabApiClientReadPinningTest : DescribeSpec({
       captured.captured.uri().toString() shouldBe "https://pinned.example.com/api/v4/user?"
       captured.captured.headers().firstValue("Authorization").get() shouldBe "Bearer pinned-token"
       verify(exactly = 0) { prefs.getString(any()) }
-      verify(exactly = 0) { tokens.getToken() }
+      verify(exactly = 0) { tokens.getToken(any()) }
     }
   }
 })

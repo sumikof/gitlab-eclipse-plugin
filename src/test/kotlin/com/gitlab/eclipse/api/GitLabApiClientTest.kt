@@ -43,7 +43,7 @@ class GitLabApiClientTest : DescribeSpec({
 
   beforeEach {
     clearMocks(http)
-    every { tokens.getToken() } returns "tok-123"
+    every { tokens.getToken(any()) } returns "tok-123"
     every { prefs.getString(PreferenceConstants.GITLAB_INSTANCE_URL) } returns "https://gitlab.example.com/"
   }
 
