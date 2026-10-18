@@ -469,9 +469,10 @@ tasks.register("lspDownloadBinaries") {
 
     // Verify before touching bin/: the EquoIDE fallback runs the binary from there, so a
     // rejected download must leave the previous extraction in place.
-    val actualSha256 = sha256Hex(outputFile)
-    val reportedSha256 = lspTarball["file_sha256"]?.toString()
-    if (actualSha256 != expectedSha256 || actualSha256 != reportedSha256) {
+    // Hex case is not significant: compare all three in lowercase.
+    val actualSha256 = sha256Hex(outputFile).lowercase()
+    val reportedSha256 = lspTarball["file_sha256"]?.toString()?.lowercase()
+    if (actualSha256 != expectedSha256.lowercase() || actualSha256 != reportedSha256) {
       outputFile.delete()
       error(
         "gitlab-lsp tarball digest mismatch: expected $expectedSha256 (gitlabLspTarballSha256), " +
@@ -523,8 +524,10 @@ subprojects {
         if (System.getenv("EQUO_IDE") != "true" || !installedLspVersion.exists() || installedLspVersion.readText() != currentLspVersion) {
           dependsOn(":lspDownloadBinaries")
 
+          // Source maps are never shipped; 9.30.0 puts one next to each binary and stale ones may linger.
           from(gitlabLspDir) {
             include("bin/gitlab-lsp-$languageServerPlatform")
+            exclude("**/*.map")
             rename { "gitlab-lsp" }
           }
 
@@ -532,6 +535,7 @@ subprojects {
             include("bin/vendor/**")
             include("bin/webviews/**")
             include("bin/tree-sitter.wasm")
+            exclude("**/*.map")
           }
         }
 
