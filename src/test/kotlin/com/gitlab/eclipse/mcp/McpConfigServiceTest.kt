@@ -12,10 +12,10 @@ class McpConfigServiceTest : DescribeSpec({
       service.getUserConfigPath() shouldBe Path.of("/home/tester/.gitlab/duo/mcp.json")
     }
 
-    it("resolves the workspace config path under the workspace root") {
+    it("resolves the workspace config path under the workspace folder (a project directory)") {
       val service = McpConfigService(homeDir = Path.of("/home/tester"))
-      service.getWorkspaceConfigPath(Path.of("/ws/root")) shouldBe
-        Path.of("/ws/root/.gitlab/duo/mcp.json")
+      service.getWorkspaceConfigPath(Path.of("/ws/project")) shouldBe
+        Path.of("/ws/project/.gitlab/duo/mcp.json")
     }
   }
 
