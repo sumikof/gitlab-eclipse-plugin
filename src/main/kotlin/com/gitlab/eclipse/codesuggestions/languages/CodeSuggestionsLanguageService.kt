@@ -55,7 +55,7 @@ class CodeSuggestionsLanguageService(
 
     preferenceStore.putValue(
       PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES,
-      disabledLanguages.joinToString(",") { it.lowercase() }
+      disabledLanguages.joinToString(",")
     )
 
     removeFromAdditionalLanguages(supportedLanguage.id)
@@ -81,12 +81,12 @@ class CodeSuggestionsLanguageService(
 
     preferenceStore.putValue(
       PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES,
-      additionalLanguages.joinToString(",") { it.lowercase() }
+      additionalLanguages.joinToString(",")
     )
   }
 
   private fun toggleItemInList(list: MutableList<String>, item: String) {
-    val itemWasRemoved = list.removeIf { it.equals(item, ignoreCase = true) }
+    val itemWasRemoved = list.remove(item)
     if (!itemWasRemoved) {
       list.add(item)
     }

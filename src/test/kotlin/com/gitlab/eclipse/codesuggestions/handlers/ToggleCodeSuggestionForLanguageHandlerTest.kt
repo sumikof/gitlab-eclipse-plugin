@@ -80,6 +80,7 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
 
     it("should toggle language based on the file extension if present") {
       every { fileEditorInput.file.fileExtension } returns "kt"
+      every { fileEditorInput.file.name } returns "Main.kt"
 
       handler.execute(executionEvent)
 
@@ -92,6 +93,7 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
 
     it("should toggle the language id of a supported language whose id is not its extension") {
       every { fileEditorInput.file.fileExtension } returns "py"
+      every { fileEditorInput.file.name } returns "main.py"
 
       handler.execute(executionEvent)
 
@@ -100,6 +102,7 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
 
     it("should toggle csharp for a C# file") {
       every { fileEditorInput.file.fileExtension } returns "cs"
+      every { fileEditorInput.file.name } returns "Program.cs"
 
       handler.execute(executionEvent)
 
@@ -175,6 +178,7 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
 
     it("should update the UI element text based on the current file language") {
       every { fileEditorInput.file.fileExtension } returns "kt"
+      every { fileEditorInput.file.name } returns "Main.kt"
       every { codeSuggestionsLanguageService.isEnabled("kotlin") } returns true
 
       handler.updateElement(uiElement, emptyMap<Any, Any>())
@@ -186,6 +190,7 @@ class ToggleCodeSuggestionForLanguageHandlerTest : DescribeSpec({
 
     it("should name C# in the UI element text for a C# file") {
       every { fileEditorInput.file.fileExtension } returns "cs"
+      every { fileEditorInput.file.name } returns "Program.cs"
       every { codeSuggestionsLanguageService.isEnabled("csharp") } returns true
 
       handler.updateElement(uiElement, emptyMap<Any, Any>())

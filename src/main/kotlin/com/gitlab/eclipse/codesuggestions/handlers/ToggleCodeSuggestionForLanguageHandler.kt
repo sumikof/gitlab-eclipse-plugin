@@ -51,7 +51,7 @@ class ToggleCodeSuggestionForLanguageHandler : AbstractHandler(), IElementUpdate
 
   // The same id the document is opened with in the language server, which is what its language settings match
   private val IFile.languageIdentifier: String?
-    get() = language?.id ?: name?.let { languageId }
+    get() = name?.let { languageId }
 
   private val IFile.languageName: String?
     get() = language?.humanReadableName ?: fileExtension?.ifEmpty { null } ?: name
