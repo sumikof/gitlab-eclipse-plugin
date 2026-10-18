@@ -7,77 +7,59 @@ import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.core.runtime.FileLocator
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
-import java.io.File
-import java.io.FileOutputStream
+import java.nio.file.Path
 import java.util.jar.JarFile
-import kotlin.sequences.forEach
 
-@Suppress("NestedBlockDepth")
-class LanguageServerInstaller {
+/** Manifest header of each language server fragment naming the bundled server version (set by the build). */
+internal const val LSP_VERSION_HEADER = "GitLab-Lsp-Version"
+
+class LanguageServerInstaller internal constructor(
+  /** The running platform; a seam so tests can pick one. */
+  private val platform: () -> Pair<OS, Arch>,
+) {
+  constructor() : this({ SystemUtils.os to SystemUtils.arch })
+
   private val logger = logger<LanguageServerInstaller>()
 
+  /** Returns the path of the language server binary to run, or null when it cannot be installed. */
   fun install(): String? {
-    val os = SystemUtils.os
-    val arch = SystemUtils.arch
+    val (os, arch) = platform()
     val target = languageServerTarget(os, arch)
     if (target == null) {
       logger.error("GitLab Language Server is not bundled for ${platformLabel(os, arch)}.")
       return null
     }
 
-    try {
-      val bundle: Bundle? = Platform.getBundle(target.bundleSymbolicName)
-
-      val bundleJar = if (bundle != null) {
-        FileLocator.getBundleFileLocation(bundle).map { JarFile(it) }.orElse(null)
-      } else {
+    return try {
+      val bundle = Platform.getBundle(target.bundleSymbolicName)
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
-        return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
-      }
+        ?: return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
 
-      return bundleJar?.let { jar ->
-        val destination = bundle.getDataFile("lsp")
-
-        if (!destination.exists()) {
-          logger.info("Installing language server binary to ${destination.absolutePath}.")
-
-          destination.mkdir()
-          jar.use { it.extractTo(destination) }
-        }
-
-        val lspBinary = destination.resolve("bin/gitlab-lsp")
-        if (!lspBinary.canExecute()) {
-          lspBinary.setExecutable(true, false)
-          logger.info("Successfully made file ${lspBinary.absolutePath} executable.")
-        }
-
-        logger.info("Successfully installed language server binaries in ${destination.absolutePath}.")
-        return@let lspBinary.absolutePath
-      }
-    } catch (e: Throwable) {
-      logger.error(e.message, e)
+      installFrom(bundle)?.toAbsolutePath()?.toString()
+    } catch (e: Exception) {
+      logger.error("Failed to install the language server: ${e.message}", e)
+      null
     }
-
-    return null
   }
 
-  @Suppress("NestedBlockDepth")
-  private fun JarFile.extractTo(destination: File) {
-    entries().asSequence().forEach { entry ->
-      val file = File(destination, entry.name)
-
-      if (entry.isDirectory) {
-        file.mkdirs()
-      } else {
-        file.parentFile?.mkdirs()
-
-        getInputStream(entry).use { input ->
-          FileOutputStream(file).use { output ->
-            input.copyTo(output)
-          }
-        }
-      }
+  private fun installFrom(bundle: Bundle): Path? {
+    val bundleFile = FileLocator.getBundleFileLocation(bundle).orElse(null) ?: run {
+      logger.error("Cannot locate the file of ${bundle.symbolicName}.")
+      return null
     }
+    // Equinox gives a fragment its own data area (OSGi allows null here). The parent of "lsp" is
+    // that area's root, where the installer before versioned installs extracted into "lsp".
+    val dataRoot = bundle.getDataFile(LEGACY_DATA_FILE)?.parentFile ?: run {
+      logger.error("${bundle.symbolicName} has no data area to install the language server into.")
+      return null
+    }
+
+    val key = installKey(bundle.version.toString(), bundle.headers?.get(LSP_VERSION_HEADER))
+    return LanguageServerExtraction(dataRoot.toPath()).install(key) { JarFile(bundleFile) }
+  }
+
+  private companion object {
+    const val LEGACY_DATA_FILE = "lsp"
   }
 }
 
