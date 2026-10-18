@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.messages.InlineCompletionContext
@@ -17,7 +18,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 class CodeSuggestionsProvider(
   private val gitLabLanguageServerWrapper: GitLabLanguageServerWrapper,
-  private val codeFormatter: CodeFormatter
+  private val codeFormatter: CodeFormatter,
+  private val codeSuggestionsLanguageService: CodeSuggestionsLanguageService,
 ) {
   companion object {
     private const val SUGGESTION_ACCEPTED_COMMAND = "gitlab.ls.codeSuggestionAccepted"
@@ -33,12 +35,14 @@ class CodeSuggestionsProvider(
   suspend fun provideAutomaticSuggestion(
     fileUri: String,
     cursorLine: Int,
-    cursorColumn: Int
+    cursorColumn: Int,
+    languageId: String?,
   ): CodeSuggestion? {
     return fetchSuggestions(
       fileUri,
       cursorLine,
       cursorColumn,
+      languageId,
       InlineCompletionTriggerKind.AUTOMATIC
     ).firstOrNull()
   }
@@ -46,12 +50,14 @@ class CodeSuggestionsProvider(
   suspend fun provideInvokedSuggestions(
     fileUri: String,
     cursorLine: Int,
-    cursorColumn: Int
+    cursorColumn: Int,
+    languageId: String?,
   ): List<CodeSuggestion> {
     return fetchSuggestions(
       fileUri,
       cursorLine,
       cursorColumn,
+      languageId,
       InlineCompletionTriggerKind.INVOKED
     )
   }
@@ -60,8 +66,16 @@ class CodeSuggestionsProvider(
     fileUri: String,
     cursorLine: Int,
     cursorColumn: Int,
+    languageId: String?,
     triggerKind: InlineCompletionTriggerKind
   ): List<CodeSuggestion> {
+    // Since LS 9.24 the server answers for every language but plaintext and no longer reports
+    // unsupported or disabled languages, so the user's per-language choice is applied here, before
+    // the server is contacted. A null id (no workspace file) is not gated, as before.
+    if (languageId != null && !codeSuggestionsLanguageService.isEnabled(languageId)) {
+      return emptyList()
+    }
+
     try {
       val languageServer: GitLabLanguageServer = checkNotNull(gitLabLanguageServerWrapper.languageServer)
 

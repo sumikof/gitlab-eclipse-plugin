@@ -36,14 +36,16 @@ val codeSuggestionsModule = module {
       streamingCodeSuggestionsManager = get(),
       codeSuggestionsCommandContext = CodeSuggestionsCommandContext(get()),
       coroutineScope = get(),
-      telemetryService = get()
+      telemetryService = get(),
+      fileLanguageId = { fileLanguageIdOf(textEditor.editorInput) },
     )
   }
 
   single<CodeSuggestionsProvider> {
     CodeSuggestionsProvider(
       gitLabLanguageServerWrapper = get(),
-      codeFormatter = get()
+      codeFormatter = get(),
+      codeSuggestionsLanguageService = get(),
     )
   }
 

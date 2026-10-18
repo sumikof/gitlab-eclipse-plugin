@@ -1,17 +1,21 @@
 package com.gitlab.eclipse.codesuggestions
 
+import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServer
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.CodeFormatter
 import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.delay
@@ -20,6 +24,7 @@ import org.eclipse.lsp4j.Command
 import org.eclipse.lsp4j.CompletionItem
 import org.eclipse.lsp4j.CompletionList
 import org.eclipse.lsp4j.jsonrpc.messages.Either
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.util.concurrent.CompletableFuture
 
 class CodeSuggestionsProviderTest : DescribeSpec({
@@ -30,14 +35,19 @@ class CodeSuggestionsProviderTest : DescribeSpec({
   val formattedText = "val x = 5"
   val trackingId = "tracking-123"
   val optionId = 42
+  val languageId = "kotlin"
 
   val languageServerWrapper = mockk<GitLabLanguageServerWrapper>()
   val languageServer = mockk<GitLabLanguageServer>()
   val codeFormatter = mockk<CodeFormatter>()
+  val preferenceStore = mockk<ScopedPreferenceStore>()
+  // The real decision, over preferences the tests set: the gate must apply exactly its semantics.
+  val languageService = CodeSuggestionsLanguageService(preferenceStore)
 
   var codeSuggestionsProvider = CodeSuggestionsProvider(
     gitLabLanguageServerWrapper = languageServerWrapper,
-    codeFormatter = codeFormatter
+    codeFormatter = codeFormatter,
+    codeSuggestionsLanguageService = languageService,
   )
 
   extensions(LoggingKotestExtension)
@@ -45,10 +55,13 @@ class CodeSuggestionsProviderTest : DescribeSpec({
   beforeEach {
     every { languageServerWrapper.languageServer } returns languageServer
     every { codeFormatter.format(any()) } returns formattedText
+    every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES) } returns ""
+    every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES) } returns ""
 
     codeSuggestionsProvider = CodeSuggestionsProvider(
       gitLabLanguageServerWrapper = languageServerWrapper,
-      codeFormatter = codeFormatter
+      codeFormatter = codeFormatter,
+      codeSuggestionsLanguageService = languageService,
     )
   }
 
@@ -82,25 +95,25 @@ class CodeSuggestionsProviderTest : DescribeSpec({
     it("returns null when language server is null") {
       every { languageServerWrapper.languageServer } returns null
 
-      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, languageId).shouldBeNull()
     }
 
     it("returns null when language server throws exception") {
       coEvery { languageServer.inlineCompletion(any()) } throws RuntimeException("Test exception")
 
-      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, languageId).shouldBeNull()
     }
 
     it("returns null when language server returns empty list") {
       emptyList<String>().asLeftResponse()
 
-      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn).shouldBeNull()
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, languageId).shouldBeNull()
     }
 
     it("returns a formatted suggestion when language server returns a valid suggestion") {
       listOf(suggestionText).asLeftResponse()
 
-      val result = codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn)
+      val result = codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, languageId)
 
       result?.text shouldBe formattedText
       result?.trackingId shouldBe trackingId
@@ -112,19 +125,19 @@ class CodeSuggestionsProviderTest : DescribeSpec({
     it("returns empty list when language server is null") {
       every { languageServerWrapper.languageServer } returns null
 
-      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, languageId).shouldBeEmpty()
     }
 
     it("returns empty list when language server throws exception") {
       coEvery { languageServer.inlineCompletion(any()) } throws RuntimeException("Test exception")
 
-      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, languageId).shouldBeEmpty()
     }
 
     it("returns empty list when language server returns empty list") {
       emptyList<String>().asLeftResponse()
 
-      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn).shouldBeEmpty()
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, languageId).shouldBeEmpty()
     }
 
     it("returns all suggestions when language server returns a list of CompletionItems") {
@@ -134,7 +147,7 @@ class CodeSuggestionsProviderTest : DescribeSpec({
       every { codeFormatter.format("val y=10") } returns "val y = 10"
       every { codeFormatter.format("val z=15") } returns "val z = 15"
 
-      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn)
+      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, languageId)
 
       results shouldHaveSize 3
       results[0].text shouldBe formattedText
@@ -148,7 +161,7 @@ class CodeSuggestionsProviderTest : DescribeSpec({
 
       every { codeFormatter.format("val y=10") } returns "val y = 10"
 
-      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn)
+      val results = codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, languageId)
 
       results shouldHaveSize 2
       results[0].text shouldBe formattedText
@@ -169,13 +182,76 @@ class CodeSuggestionsProviderTest : DescribeSpec({
       )
       coEvery { languageServer.inlineCompletion(any()) } returnsMany listOf(firstRequest, secondRequest)
 
-      val job1 = launch { codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn) }
+      suspend fun request() =
+        codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, languageId)
+      val job1 = launch { request() }
       delay(100)
-      val job2 = launch { codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn) }
+      val job2 = launch { request() }
       job2.join()
 
       firstRequest.isCancelled shouldBe true
       job1.join()
+    }
+  }
+
+  // LS 9.30.0 no longer refuses unsupported or disabled languages itself, so the provider applies the
+  // client-side decision before contacting it (the 9.3.0 behaviour).
+  describe("language gate") {
+    fun preferences(additional: String = "", disabled: String = "") {
+      every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES) } returns additional
+      every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES) } returns disabled
+    }
+
+    beforeEach { listOf(suggestionText).asLeftResponse() }
+
+    it("does not contact the server for txt when it is not an additional language") {
+      preferences()
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "txt").shouldBeNull()
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, "txt").shouldBeEmpty()
+
+      coVerify(exactly = 0) { languageServer.inlineCompletion(any()) }
+    }
+
+    it("does not contact the server for xml when it is not an additional language") {
+      preferences(additional = "yaml")
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "xml").shouldBeNull()
+
+      coVerify(exactly = 0) { languageServer.inlineCompletion(any()) }
+    }
+
+    it("asks the server for xml when it is an additional language") {
+      preferences(additional = "xml")
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "xml").shouldNotBeNull()
+
+      coVerify(exactly = 1) { languageServer.inlineCompletion(any()) }
+    }
+
+    it("does not contact the server for java when java is disabled") {
+      preferences(disabled = "java")
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "java").shouldBeNull()
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, "java").shouldBeEmpty()
+
+      coVerify(exactly = 0) { languageServer.inlineCompletion(any()) }
+    }
+
+    it("asks the server for java") {
+      preferences()
+
+      codeSuggestionsProvider.provideInvokedSuggestions(fileUri, cursorLine, cursorColumn, "java") shouldHaveSize 1
+
+      coVerify(exactly = 1) { languageServer.inlineCompletion(any()) }
+    }
+
+    it("asks the server, as before, when the editor has no workspace file") {
+      preferences()
+
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, null).shouldNotBeNull()
+
+      coVerify(exactly = 1) { languageServer.inlineCompletion(any()) }
     }
   }
 })
