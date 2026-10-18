@@ -168,6 +168,67 @@ class GitLabLanguageServerConfigurationServiceTest : DescribeSpec({
     }
   }
 
+  describe("sendConfigurationIf") {
+    it("sends nothing, builds nothing and counts nothing when isCurrent is false") {
+      service.sendConfigurationIf { false }
+
+      verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
+      verify(exactly = 0) { tokenManager.getToken() }
+    }
+
+    it("logs one payload-free line when the send is dropped because isCurrent is false") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val loggingService = GitLabLanguageServerConfigurationService(
+        preferenceStore,
+        wrapper,
+        CoroutineScope(UnconfinedTestDispatcher()),
+        Mutex()
+      )
+
+      loggingService.sendConfigurationIf { false }
+
+      verify(exactly = 1) { log.info("Configuration send dropped: its owner is no longer current.") }
+      verify(exactly = 0) { log.error(any<String>()) }
+    }
+
+    it("sends to the current server when isCurrent is true") {
+      service.sendConfigurationIf { true }
+
+      verify(exactly = 1) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("evaluates isCurrent when the queued send runs, not when it was queued") {
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
+      var current = true
+
+      queuedService.sendConfigurationIf { current }
+      // The owner stops between queueing and the coroutine running.
+      current = false
+      testScope.testScheduler.runCurrent()
+
+      verify(exactly = 0) { languageServer.didChangeConfiguration(any()) }
+    }
+
+    it("sends to the server captured at call time when isCurrent is true at run time") {
+      val serverA = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      val serverB = mockk<GitLabLanguageServer>(relaxUnitFun = true)
+      val testScope = TestScope(StandardTestDispatcher())
+      val queuedService = GitLabLanguageServerConfigurationService(preferenceStore, wrapper, testScope, Mutex())
+      every { wrapper.currentSnapshot } returns handle(serverA)
+      var current = false
+
+      queuedService.sendConfigurationIf { current }
+      every { wrapper.currentSnapshot } returns handle(serverB)
+      current = true
+      testScope.testScheduler.runCurrent()
+
+      verify(exactly = 1) { serverA.didChangeConfiguration(any()) }
+      verify(exactly = 0) { serverB.didChangeConfiguration(any()) }
+    }
+  }
+
   describe("httpAgentOptions") {
     it("forwards client cert and key paths when set") {
       every { preferenceStore.getString(PreferenceConstants.CA_CERTIFICATE) } returns "/tmp/ca.pem"

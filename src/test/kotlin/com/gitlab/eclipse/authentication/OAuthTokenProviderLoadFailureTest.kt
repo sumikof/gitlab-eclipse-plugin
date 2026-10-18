@@ -218,7 +218,7 @@ private class LoadFailureFixture {
     storage,
     oAuthService = { service },
     clock = { NOW },
-    notify = { notifications.add(it) },
+    notify = { message, gate -> gate { notifications.add(message) } },
     // Headless: the default would load SWT's Display, which has no native library here.
     isUiThread = { false },
   )
@@ -228,7 +228,7 @@ private class LoadFailureFixture {
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } answers {
       authType.set(secondArg())
     }
-    every { lsConfig.sendConfiguration() } just Runs
+    every { lsConfig.sendConfigurationIf(any()) } just Runs
     every { storage.setOAuthToken(any()) } just Runs
   }
 }

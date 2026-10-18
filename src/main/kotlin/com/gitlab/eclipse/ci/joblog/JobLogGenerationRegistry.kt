@@ -10,8 +10,9 @@ package com.gitlab.eclipse.ci.joblog
  */
 object JobLogGenerationRegistry {
   /**
-   * False once the plugin activation is stopped (set by the stop hook, possibly via a syncExec
-   * marshaled off the caller thread — hence @Volatile); read by the UI runnables (design §7.3).
+   * False once the plugin activation is stopped; read by the UI runnables (design §7.3). Written
+   * only by [onDeactivate] (the stop hook, on the UI thread via a syncExec marshaled off the OSGi
+   * stop thread) and [onActivate] (the start hook, likewise) -- hence @Volatile.
    */
   @Volatile
   var active: Boolean = true
@@ -49,6 +50,21 @@ object JobLogGenerationRegistry {
   fun onActivate() {
     latest.clear()
     active = true
+  }
+
+  /**
+   * Clears [active] (and nothing else -- [latest] and [counter] are untouched). Must be called ON
+   * the UI thread: the stop hook runs on an OSGi thread and therefore marshals this through
+   * `display.syncExec` (`GitLabEclipseStartup.stop`'s UI turn). Flipping the flag on the UI thread
+   * is what totally orders the deactivation against every UI runnable's gate-check-then-act on
+   * [shouldAct] (reflect) and [active] (notify); a bare off-thread write would leave a torn window
+   * in which a runnable passes its gate and then acts after deactivation. [active] stays @Volatile
+   * so that a display-less shutdown, where the syncExec is skipped, still cannot publish a torn
+   * value. That display-less stop leaves [active] true, which is inert: without a live display no
+   * reflect/notify runnable can run, and the command handlers are unregistered with the bundle.
+   */
+  fun onDeactivate() {
+    active = false
   }
 
   /**

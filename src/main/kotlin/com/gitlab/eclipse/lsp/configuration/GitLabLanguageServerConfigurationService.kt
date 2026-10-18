@@ -43,6 +43,21 @@ class GitLabLanguageServerConfigurationService(
   fun sendConfiguration() = sendConfiguration(languageServerWrapper.currentSnapshot)
 
   /**
+   * [sendConfiguration] to the server current at call time, but only if [isCurrent] still holds when
+   * the queued send runs.
+   *
+   * [isCurrent] is evaluated inside the outbound `Mutex` region, before the configuration is built:
+   * when it returns false nothing is built, sent or counted. This lets an owner that has stopped
+   * (e.g. the OAuth token provider at shutdown) drop sends it queued earlier, including ones waiting
+   * for the lock. A send whose check passed before the owner stopped is in flight and may complete.
+   *
+   * A separate method, not a default parameter on [sendConfiguration]: MockK matches lambdas by
+   * equality, and a default would change what every existing stub and verification of
+   * [sendConfiguration] has to match.
+   */
+  fun sendConfigurationIf(isCurrent: () -> Boolean) = send(languageServerWrapper.currentSnapshot, isCurrent)
+
+  /**
    * Sends the full configuration to [handle]'s server; with no handle nothing is sent and nothing is
    * counted.
    *
@@ -51,7 +66,9 @@ class GitLabLanguageServerConfigurationService(
    * happens inside the outbound region, right before the send, with the epoch taken from the same
    * [handle] as the proxy. A failure there is contained and never stops the send.
    */
-  fun sendConfiguration(handle: LanguageServerHandle?) {
+  fun sendConfiguration(handle: LanguageServerHandle?) = send(handle) { true }
+
+  private fun send(handle: LanguageServerHandle?, isCurrent: () -> Boolean) {
     logger.info("Sending configuration change notification to Language Server.")
     // Send to the server captured at CALL time, never the wrapper's current proxy at
     // coroutine-execution time: a rapid restart may register a new pre-initialize server
@@ -72,6 +89,12 @@ class GitLabLanguageServerConfigurationService(
           // builds its params inside its own lock region for the same reason.
           // No handle: nothing is built, sent or counted, exactly as before.
           val target = handle ?: return@withLock
+          // Checked here, under the lock and before anything is built: a send queued (or waiting for
+          // the lock) when its owner stopped is dropped without reading the token.
+          if (!isCurrent()) {
+            logger.info("Configuration send dropped: its owner is no longer current.")
+            return@withLock
+          }
           val params = buildParams()
           trackScanContext(params, target.connectionEpoch)
           target.proxy.didChangeConfiguration(DidChangeConfigurationParams(params))

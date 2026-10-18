@@ -25,18 +25,26 @@ object NotificationUtils {
    * [onUiThread] and [isDisplayDisposed] are seams with production defaults (same pattern as
    * `EditorSelectionContextProvider`): a Display cannot exist in a headless test JVM, so the
    * display-touching lambdas are injectable while every call site keeps calling `show(message)`.
+   *
+   * [gate] wraps the popup inside the UI runnable (after the disposal check): it receives `show` and
+   * decides, in the same UI turn as the popup, whether to call it. The default always shows. A
+   * caller whose notice can go stale while the runnable is queued (e.g. `OAuthTokenProvider` once it
+   * has stopped) re-checks its own state there, under whatever lock orders that check against its
+   * state changes; the gate must not block the UI thread for long. A gate that throws
+   * [SWTException] is swallowed like the popup's own.
    */
   fun show(
     message: String,
     onUiThread: (Runnable) -> Unit = { currentDisplay.asyncExec(it) },
     isDisplayDisposed: () -> Boolean = { currentDisplay.isDisposed },
+    gate: (show: () -> Unit) -> Unit = { it() },
   ) {
     try {
       onUiThread(
         Runnable {
           try {
             if (isDisplayDisposed()) return@Runnable
-            showOnUiThread(message)
+            gate { showOnUiThread(message) }
           } catch (ignored: SWTException) {
             /* display disposed mid-turn: no-op */
           }

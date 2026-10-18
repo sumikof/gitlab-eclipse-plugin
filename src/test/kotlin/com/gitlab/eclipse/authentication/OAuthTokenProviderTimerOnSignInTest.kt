@@ -155,7 +155,7 @@ private class TimerFixture {
     storage,
     oAuthService = { service },
     clock = { NOW },
-    notify = {},
+    notify = { _, _ -> },
     refreshCheckPeriod = Duration.ofMillis(PERIOD_MS),
     // Headless: the default would load SWT's Display, which has no native library here.
     isUiThread = { false },
@@ -164,7 +164,7 @@ private class TimerFixture {
   init {
     every { prefs.getString(PreferenceConstants.AUTHENTICATION_TYPE) } returns TokenProviderType.OAUTH.name
     every { prefs.setValue(PreferenceConstants.AUTHENTICATION_TYPE, any<String>()) } just Runs
-    every { lsConfig.sendConfiguration() } just Runs
+    every { lsConfig.sendConfigurationIf(any()) } just Runs
     every { storage.setOAuthToken(any()) } just Runs
   }
 
