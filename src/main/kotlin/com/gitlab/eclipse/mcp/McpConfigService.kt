@@ -14,8 +14,9 @@ class McpConfigService(
 ) {
   fun getUserConfigPath(): Path = homeDir.resolve(CONFIG_RELATIVE_PATH)
 
-  fun getWorkspaceConfigPath(workspaceRoot: Path): Path =
-    workspaceRoot.resolve(CONFIG_RELATIVE_PATH)
+  /** The workspace-scoped config inside [workspaceFolder] (a project directory, see [McpWorkspaceConfigTarget]). */
+  fun getWorkspaceConfigPath(workspaceFolder: Path): Path =
+    workspaceFolder.resolve(CONFIG_RELATIVE_PATH)
 
   /**
    * Creates [path] with [DEFAULT_CONFIG_TEMPLATE] if it does not exist yet.
