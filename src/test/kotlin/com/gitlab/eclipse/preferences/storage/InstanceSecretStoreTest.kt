@@ -1,11 +1,9 @@
 package com.gitlab.eclipse.preferences.storage
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
-import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
-import org.eclipse.equinox.security.storage.StorageException
 
 class InstanceSecretStoreTest : DescribeSpec({
   extensions(LoggingKotestExtension)

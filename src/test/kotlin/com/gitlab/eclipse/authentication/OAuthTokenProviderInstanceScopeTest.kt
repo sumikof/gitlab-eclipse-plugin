@@ -61,6 +61,7 @@ class OAuthTokenProviderInstanceScopeTest : DescribeSpec({
   describe("the issuer") {
     it("is gitlab.com") {
       GitLabOAuthService.ISSUER_KEY shouldBe GitLabInstanceKey.GITLAB_COM
+      GitLabInstanceKey.of(GitLabOAuthService.ISSUER_URL) shouldBe GitLabOAuthService.ISSUER_KEY
     }
   }
 

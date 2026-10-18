@@ -36,9 +36,10 @@ class GitLabOAuthService(
     private const val CLIENT_ID = "ee276bb6507af1f6a7eb086d1a07c5cd1bc3c192b631a214d9f8bba35fb9178a"
     private const val CALLBACK_PORT = 63343
     private const val REDIRECT_URI = "http://127.0.0.1:$CALLBACK_PORT/api/oauth/gitlab/authorization"
+
     /** The instance that issues the OAuth tokens; they are stored under it and sent to it only (#115). */
     const val ISSUER_URL = "https://gitlab.com"
-    val ISSUER_KEY: GitLabInstanceKey = GitLabInstanceKey.of(ISSUER_URL)!!
+    val ISSUER_KEY: GitLabInstanceKey = GitLabInstanceKey.GITLAB_COM
     private const val AUTHORIZATION_ENDPOINT = "$ISSUER_URL/oauth/authorize"
     private const val TOKEN_ENDPOINT = "$ISSUER_URL/oauth/token"
     private const val SCOPE = "api"

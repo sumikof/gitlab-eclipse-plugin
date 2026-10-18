@@ -70,12 +70,13 @@ internal class LegacySecretMigration(
   private fun moveToGitLabCom(legacy: ISecurePreferences, instances: ISecurePreferences) {
     val target = instances.node(EncodingUtils.encodeSlashes(GitLabInstanceKey.GITLAB_COM.canonical))
     var moved = 0
-    for (name in SECRET_NAMES) {
-      if (target.get(name, null) != null) continue
+    // Never over a token the instance already holds: it is newer than the legacy one.
+    for (name in SECRET_NAMES.filter { target.get(it, null) == null }) {
       val value = legacy.get(name, null)
-      if (value.isNullOrEmpty()) continue
-      target.put(name, value, true)
-      moved++
+      if (!value.isNullOrEmpty()) {
+        target.put(name, value, true)
+        moved++
+      }
     }
     logger.info("Migrated $moved token(s) saved by a previous version to gitlab.com.")
   }
