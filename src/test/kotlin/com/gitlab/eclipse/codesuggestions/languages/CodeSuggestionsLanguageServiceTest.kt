@@ -14,6 +14,11 @@ class CodeSuggestionsLanguageServiceTest : DescribeSpec({
 
   val codeSuggestionsLanguageService = CodeSuggestionsLanguageService(preferenceStore)
 
+  beforeEach {
+    every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES) } returns ""
+    every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES) } returns ""
+  }
+
   afterEach {
     clearAllMocks(answers = false)
   }
@@ -53,6 +58,24 @@ class CodeSuggestionsLanguageServiceTest : DescribeSpec({
       val result = codeSuggestionsLanguageService.getAdditionalLanguages()
 
       result shouldBe listOf("java", "kotlin", "python")
+    }
+  }
+
+  describe("normalizing stored languages") {
+    it("drops leading dots and duplicates from additional languages, as the language server does") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES)
+      } returns " .ZIG,zig, Gleam,.gleam"
+
+      codeSuggestionsLanguageService.getAdditionalLanguages() shouldBe listOf("zig", "gleam")
+    }
+
+    it("drops leading dots and duplicates from disabled languages") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES)
+      } returns "python,Python, .rust"
+
+      codeSuggestionsLanguageService.getDisabledLanguages() shouldBe listOf("python", "rust")
     }
   }
 
@@ -117,6 +140,14 @@ class CodeSuggestionsLanguageServiceTest : DescribeSpec({
       result shouldBe false
     }
 
+    it("should normalize the language id it is asked about") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES)
+      } returns "rust"
+
+      codeSuggestionsLanguageService.isEnabled(" Python ") shouldBe true
+    }
+
     it("should be enabled if additional language that is explicitly added") {
       every {
         preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES)
@@ -166,6 +197,85 @@ class CodeSuggestionsLanguageServiceTest : DescribeSpec({
           PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES,
           "python,javascript"
         )
+      }
+    }
+
+    // Their id never matches one of their extensions, which is how the toggle used to tell supported languages apart
+    listOf("python", "kotlin", "typescript", "javascript", "ruby", "rust", "csharp").forEach { languageId ->
+      it("should add $languageId to disabled list when disabling it") {
+        codeSuggestionsLanguageService.toggleLanguage(languageId)
+
+        verify {
+          preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, languageId)
+        }
+        verify(exactly = 0) {
+          preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, any())
+        }
+      }
+    }
+
+    it("should normalize the language id before toggling it") {
+      codeSuggestionsLanguageService.toggleLanguage(" .Python ")
+
+      verify {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, "python")
+      }
+    }
+
+    it("should re-enable a disabled language without leaving a duplicate behind") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES)
+      } returns "Python,rust,python"
+
+      codeSuggestionsLanguageService.toggleLanguage("python")
+
+      verify {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, "rust")
+      }
+    }
+
+    it("should not add a duplicate when disabling a language that is stored with a leading dot") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES)
+      } returns ".zig,gleam"
+
+      codeSuggestionsLanguageService.toggleLanguage("zig")
+
+      verify {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, "gleam")
+      }
+    }
+
+    it("should drop a supported language from additional list where the old toggle used to put it") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES)
+      } returns "zig,Python"
+
+      codeSuggestionsLanguageService.toggleLanguage("python")
+
+      verify {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_DISABLED_SUPPORTED_LANGUAGES, "python")
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, "zig")
+      }
+    }
+
+    it("should leave additional list untouched once it no longer holds the supported language") {
+      every {
+        preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES)
+      } returns "zig"
+
+      codeSuggestionsLanguageService.toggleLanguage("python")
+
+      verify(exactly = 0) {
+        preferenceStore.putValue(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES, any())
+      }
+    }
+
+    it("should do nothing for a blank language id") {
+      codeSuggestionsLanguageService.toggleLanguage(" . ")
+
+      verify(exactly = 0) {
+        preferenceStore.putValue(any(), any())
       }
     }
 
