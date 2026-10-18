@@ -21,6 +21,9 @@ class FakeSecurePreferences private constructor(
     var failDecrypt = false
     var decryptedReads = 0
     var flushes = 0
+
+    /** Runs on every read of an encrypted value, before it decrypts (a test can interleave work there). */
+    var onDecrypt: (() -> Unit)? = null
   }
 
   private val values = linkedMapOf<String, Pair<String, Boolean>>()
@@ -30,6 +33,11 @@ class FakeSecurePreferences private constructor(
     get() = shared.failDecrypt
     set(value) {
       shared.failDecrypt = value
+    }
+  var onDecrypt: (() -> Unit)?
+    get() = shared.onDecrypt
+    set(value) {
+      shared.onDecrypt = value
     }
   val decryptedReads: Int get() = shared.decryptedReads
   val flushes: Int get() = shared.flushes
@@ -44,6 +52,7 @@ class FakeSecurePreferences private constructor(
     val (value, encrypted) = values[key] ?: return def
     if (encrypted) {
       shared.decryptedReads++
+      shared.onDecrypt?.invoke()
       if (failDecrypt) throw StorageException(StorageException.NO_PASSWORD, "cancelled")
     }
     return value

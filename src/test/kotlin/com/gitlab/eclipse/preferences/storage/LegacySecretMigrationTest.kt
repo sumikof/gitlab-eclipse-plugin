@@ -153,6 +153,28 @@ class LegacySecretMigrationTest : DescribeSpec({
     }
   }
 
+  // Review N1: two first accesses may run the migration at once; one may fail after the other recorded it.
+  describe("when another run records the decision while this run fails") {
+    it("does not leave absent tokens unreadable for the rest of the session") {
+      lateinit var store: InstanceSecretStore
+      var first = true
+      root.onDecrypt = {
+        if (first) {
+          first = false
+          // The concurrent run, completing (and recording the decision) before this one's read fails.
+          store.storageFor("https://gitlab.com")
+          throw StorageException(StorageException.NO_PASSWORD, "cancelled")
+        }
+      }
+      store = newSession()
+
+      val gitlabCom = store.storageFor("https://gitlab.com")!!
+
+      gitlabCom.readSecret("not_stored").shouldBeNull()
+      gitlabCom.readSecret("oauth_token") shouldBe "legacy-oauth"
+    }
+  }
+
   describe("logging") {
     it("logs no token and no instance URL") {
       val log = CapturedLog().also { it.install() }

@@ -18,9 +18,11 @@ class BoundSecret(
 
   /** The secret saved for [instanceUrl]'s instance, or "" when there is none or the URL names no instance. */
   fun load(instanceUrl: String?): String {
-    val value = storageFor(instanceUrl)?.getSecret(name).orEmpty()
+    // Recorded before the read: it may open the master-password dialog, whose nested event loop can ask
+    // [needsReload] again for this same instance, which must not start a second read (and a second prompt).
     loaded = true
     loadedKey = GitLabInstanceKey.of(instanceUrl)
+    val value = storageFor(instanceUrl)?.getSecret(name).orEmpty()
     loadedValue = value
     return value
   }

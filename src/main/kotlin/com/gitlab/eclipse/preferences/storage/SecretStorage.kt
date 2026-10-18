@@ -2,13 +2,14 @@ package com.gitlab.eclipse.preferences.storage
 
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.equinox.security.storage.ISecurePreferences
-import org.eclipse.equinox.security.storage.SecurePreferencesFactory
 import org.eclipse.equinox.security.storage.StorageException
 
 /**
  * Stubbed secret storage which supports environment variable resolution.
  * For formal support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/19
  * For Equo support https://gitlab.com/gitlab-org/editor-extensions/gitlab-eclipse-plugin/-/issues/20
+ *
+ * Opened on an instance node by [InstanceSecretStore]; nothing opens the host-less legacy node through it (#115).
  *
  * @param readGuard consulted when [node] does not hold the key being read: throwing [StorageException] there makes
  *   the read count as "unreadable" instead of "empty" (see `InstanceSecretStore`).
@@ -17,9 +18,6 @@ class SecretStorage internal constructor(
   private val node: ISecurePreferences,
   private val readGuard: () -> Unit = {},
 ) {
-  /** The legacy, host-less node `gitlab/hosts/<rootURI>`. */
-  constructor(rootURI: String?) : this(SecurePreferencesFactory.getDefault().node("gitlab").node("hosts").node(rootURI))
-
   private val logger = logger<SecretStorage>()
 
   fun getSecret(key: String?) = try {

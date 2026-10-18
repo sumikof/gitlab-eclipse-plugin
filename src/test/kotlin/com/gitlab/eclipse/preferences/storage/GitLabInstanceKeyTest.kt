@@ -49,6 +49,11 @@ class GitLabInstanceKeyTest : DescribeSpec({
       ).forEach { canonicalOf(it) shouldBe null }
     }
 
+    it("keeps an IPv6 host and refuses a host java.net.URI cannot parse as a server") {
+      canonicalOf("https://[::1]:8443/") shouldBe "https://[::1]:8443"
+      canonicalOf("https://my_host") shouldBe null
+    }
+
     it("keeps a percent-encoded path as written and refuses non-ASCII the storage cannot name") {
       canonicalOf("https://example.com/%E3%82%AE/") shouldBe "https://example.com/%E3%82%AE"
       canonicalOf("https://example.com/ギット") shouldBe null

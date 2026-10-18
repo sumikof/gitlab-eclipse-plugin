@@ -19,6 +19,9 @@ class SecretStringWithButtonFieldEditor(
   private val buttonAction: () -> Unit
 ) : StringButtonFieldEditor(secretName, labelText, parent) {
 
+  /** Set while [syncWithUrl] runs, on the UI thread. */
+  private var syncing = false
+
   init {
     setChangeButtonText(buttonText)
   }
@@ -37,7 +40,14 @@ class SecretStringWithButtonFieldEditor(
    * saved is dropped then, so it is never saved under, or sent to, an instance it was not typed for.
    */
   fun syncWithUrl(url: String?) {
-    if (secret.needsReload(url)) doLoad()
+    // Re-entered when the read's master-password dialog moves the focus off the URL field (a nested VALUE event).
+    if (syncing) return
+    syncing = true
+    try {
+      if (secret.needsReload(url)) doLoad()
+    } finally {
+      syncing = false
+    }
   }
 
   override fun doLoadDefault() {

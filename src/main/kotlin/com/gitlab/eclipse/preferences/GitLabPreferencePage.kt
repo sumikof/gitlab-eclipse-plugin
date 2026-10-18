@@ -71,7 +71,8 @@ class GitLabPreferencePage(
       "Generate token",
       fieldEditorParent
     ) {
-      val gitLabUrl = preferenceStore.getString(PreferenceConstants.GITLAB_INSTANCE_URL)
+      // The instance being edited, as the token field is bound to it (#115).
+      val gitLabUrl = urlField.stringValue.trim().trimEnd('/')
       val tokenUrl =
         "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
 

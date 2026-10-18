@@ -43,6 +43,24 @@ class BoundSecretTest : DescribeSpec({
     }
   }
 
+  // Review S1: the read may open the master-password dialog, whose nested event loop delivers the URL field's
+  // focus-lost VALUE event again before load returns. That nested check must not start a second read.
+  describe("a reload requested while the read is in progress") {
+    it("is not needed for the instance being loaded") {
+      var reads = 0
+      lateinit var reentrant: BoundSecret
+      reentrant = BoundSecret({ url: String? ->
+        reads++
+        if (reads == 1 && reentrant.needsReload(url)) reentrant.load(url)
+        store.storageFor(url)
+      }, "personal_access_token")
+
+      reentrant.load("https://a.example") shouldBe "token-a"
+
+      reads shouldBe 1
+    }
+  }
+
   describe("store") {
     it("writes nothing when the token was not changed") {
       secret.load("https://b.example")

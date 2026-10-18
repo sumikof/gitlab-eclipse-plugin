@@ -53,7 +53,10 @@ internal class LegacySecretMigration(
 
   private fun run() {
     val instances = root.node(InstanceSecretStore.INSTANCES_NODE)
-    if (instances.get(MARKER_KEY, null) == MARKER_DONE) return
+    if (isRecorded()) {
+      failed = false
+      return
+    }
     if (root.nodeExists(LEGACY_NODE)) {
       val legacy = root.node(LEGACY_NODE)
       if (GitLabInstanceKey.of(configuredInstanceUrl()) == GitLabInstanceKey.GITLAB_COM) {
@@ -64,8 +67,13 @@ internal class LegacySecretMigration(
       }
     }
     instances.put(MARKER_KEY, MARKER_DONE, false)
+    failed = false
     flush()
   }
+
+  /** Whether a run (this one or a concurrent one) has recorded its decision. The marker is unencrypted. */
+  private fun isRecorded(): Boolean =
+    root.node(InstanceSecretStore.INSTANCES_NODE).get(MARKER_KEY, null) == MARKER_DONE
 
   private fun moveToGitLabCom(legacy: ISecurePreferences, instances: ISecurePreferences) {
     val target = instances.node(EncodingUtils.encodeSlashes(GitLabInstanceKey.GITLAB_COM.canonical))
@@ -90,7 +98,8 @@ internal class LegacySecretMigration(
   }
 
   private fun fail(e: Exception) {
-    failed = true
+    // A concurrent run may have recorded the decision meanwhile: then nothing is pending (review N1).
+    failed = !runCatching(::isRecorded).getOrDefault(false)
     // Type name only: the decision is retried next session.
     logger.warn("Failed to migrate tokens saved by a previous version: ${e::class.java.name}")
   }

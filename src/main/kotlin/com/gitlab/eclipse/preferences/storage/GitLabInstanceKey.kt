@@ -9,6 +9,7 @@ import java.util.Locale
  * same instance share one key and different instances never do. Tokens are stored and looked up under this key,
  * so a token saved for one instance is never handed to another.
  */
+@ConsistentCopyVisibility
 data class GitLabInstanceKey private constructor(val canonical: String) {
   companion object {
     private const val HTTPS_PORT = 443
