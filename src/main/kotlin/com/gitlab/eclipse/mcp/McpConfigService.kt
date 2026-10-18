@@ -5,15 +5,11 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
 /**
- * Resolves and idempotently provisions the GitLab Duo MCP config files.
- * Pure filesystem logic (no SWT / no network) so it is unit-testable.
- * Mirrors the VS Code extension's mcp_config.ts / mcp_workspace_config.ts.
+ * Resolves the workspace-scoped GitLab Duo MCP config and idempotently provisions MCP config files.
+ * Pure filesystem logic (no SWT / no network) so it is unit-testable. The user-scoped location has its
+ * own rule, [McpUserConfigLocation].
  */
-class McpConfigService(
-  private val homeDir: Path = Path.of(System.getProperty("user.home")),
-) {
-  fun getUserConfigPath(): Path = homeDir.resolve(CONFIG_RELATIVE_PATH)
-
+class McpConfigService {
   /** The workspace-scoped config inside [workspaceFolder] (a project directory, see [McpWorkspaceConfigTarget]). */
   fun getWorkspaceConfigPath(workspaceFolder: Path): Path =
     workspaceFolder.resolve(CONFIG_RELATIVE_PATH)
