@@ -17,14 +17,22 @@ class LanguageServerInstaller {
   private val logger = logger<LanguageServerInstaller>()
 
   fun install(): String? {
+    val os = SystemUtils.os
+    val arch = SystemUtils.arch
+    val target = languageServerTarget(os, arch)
+    if (target == null) {
+      logger.error("GitLab Language Server is not bundled for ${platformLabel(os, arch)}.")
+      return null
+    }
+
     try {
-      val bundle: Bundle? = Platform.getBundle("com.gitlab.eclipse.$languageServerBundle")
+      val bundle: Bundle? = Platform.getBundle(target.bundleSymbolicName)
 
       val bundleJar = if (bundle != null) {
         FileLocator.getBundleFileLocation(bundle).map { JarFile(it) }.orElse(null)
       } else {
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
-        return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/$languageServerBinary"
+        return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
       }
 
       return bundleJar?.let { jar ->
@@ -71,24 +79,40 @@ class LanguageServerInstaller {
       }
     }
   }
-
-  private val languageServerBundle
-    get() = when {
-      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.win32.win32.aarch64"
-      SystemUtils.os == OS.WINDOWS -> "gitlab-language-server.win32.win32.x86_64"
-      SystemUtils.os == OS.LINUX -> "gitlab-language-server.gtk.linux.x86_64"
-      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.cocoa.macosx.aarch64"
-      SystemUtils.os == OS.MAC -> "gitlab-language-server.cocoa.macosx.x86_64"
-      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
-    }
-
-  private val languageServerBinary
-    get() = when {
-      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-win-arm64.exe"
-      SystemUtils.os == OS.WINDOWS -> "gitlab-lsp-win-x64.exe"
-      SystemUtils.os == OS.LINUX -> "gitlab-lsp-linux-x64"
-      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-macos-arm64"
-      SystemUtils.os == OS.MAC -> "gitlab-lsp-macos-x64"
-      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
-    }
 }
+
+/** The fragment bundle that carries the language server for a platform, and the binary's name inside it. */
+internal data class LanguageServerTarget(val bundleSymbolicName: String, val binaryName: String)
+
+/**
+ * Maps a platform to its language server fragment, or null when no fragment is built for it.
+ * Linux on ARM64 has a server binary upstream but no Eclipse fragment, so it is reported as
+ * unsupported rather than resolved to the x86_64 fragment, whose binary it cannot run.
+ */
+internal fun languageServerTarget(os: OS, arch: Arch): LanguageServerTarget? = when (os) {
+  OS.WINDOWS -> when (arch) {
+    Arch.ARM64 -> target("win32.win32.aarch64", "gitlab-lsp-win-arm64.exe")
+    Arch.X86_64 -> target("win32.win32.x86_64", "gitlab-lsp-win-x64.exe")
+  }
+  OS.MAC -> when (arch) {
+    Arch.ARM64 -> target("cocoa.macosx.aarch64", "gitlab-lsp-macos-arm64")
+    Arch.X86_64 -> target("cocoa.macosx.x86_64", "gitlab-lsp-macos-x64")
+  }
+  OS.LINUX -> when (arch) {
+    Arch.ARM64 -> null
+    Arch.X86_64 -> target("gtk.linux.x86_64", "gitlab-lsp-linux-x64")
+  }
+  OS.UNKNOWN -> null
+}
+
+/** The platform as the logs name it, e.g. `linux/aarch64`. */
+internal fun platformLabel(os: OS, arch: Arch): String {
+  val archLabel = when (arch) {
+    Arch.ARM64 -> "aarch64"
+    Arch.X86_64 -> "x86_64"
+  }
+  return "${os.name.lowercase()}/$archLabel"
+}
+
+private fun target(platform: String, binaryName: String) =
+  LanguageServerTarget("com.gitlab.eclipse.gitlab-language-server.$platform", binaryName)
