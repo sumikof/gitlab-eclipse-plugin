@@ -861,9 +861,10 @@ class GitLabLanguageServerClientTest : DescribeSpec({
   }
 
   describe("\$/gitlab/experimentFeaturesState") {
-    // LS 9.30.0 sends this on every configuration change; without a handler lsp4j logs an
-    // "unsupported notification" line each time. Building the supported-method table is also what
-    // fails on a duplicate method name across the client and its interfaces.
+    // LS 9.30.0 sends this once the API configuration is valid, for users with a default Duo
+    // namespace; without a handler lsp4j logs an "unsupported notification" line each time. Building
+    // the supported-method table is also what fails on a duplicate method name across the client and
+    // its interfaces.
     val method = "\$/gitlab/experimentFeaturesState"
 
     fun parse(json: String): NotificationMessage {
@@ -878,12 +879,12 @@ class GitLabLanguageServerClientTest : DescribeSpec({
     }
 
     it("parses the server's payload into its params") {
-      parse("""{"enabled":true,"reason":"flag"}""").params shouldBe ExperimentFeaturesStateParams(true, "flag")
+      parse("""{"enabled":false,"reason":"disabled"}""").params shouldBe ExperimentFeaturesStateParams(false, "disabled")
     }
 
     it("accepts the payload with and without fields through lsp4j without throwing") {
       shouldNotThrowAny {
-        listOf("""{"enabled":true}""", """{"enabled":false,"reason":"x"}""", "{}").forEach { json ->
+        listOf("""{"enabled":true}""", """{"enabled":false,"reason":"unsupported"}""", "{}").forEach { json ->
           val message = parse(json)
           GenericEndpoint(client).notify(message.method, message.params)
         }

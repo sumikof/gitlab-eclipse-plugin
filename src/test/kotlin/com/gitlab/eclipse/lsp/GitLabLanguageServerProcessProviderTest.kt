@@ -624,11 +624,15 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     // start() runs inside bundle activation, which has no catch of its own: a throw there would skip
     // the rest of activation (token refresh, save listener, key bindings).
     it("logs and stays stopped without throwing when the process cannot be created") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
       val provider = newProvider(factory = { throw IOException("spawn refused") })
 
       shouldNotThrowAny { provider.start(bundle) }
 
       provider.isRunning shouldBe false
+      // Unlike a missing installation, nothing else has reported this failure: it must stay an error.
+      verify(exactly = 1) { log.error("Failed to start the Language Server.", any<Throwable>()) }
     }
 
     it("logs and stays stopped without throwing when the language server cannot be installed") {

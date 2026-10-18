@@ -242,9 +242,11 @@ class GitLabLanguageServerClient(
   }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   /**
-   * LS 9.30.0 reports whether its experimental features are on — `$/gitlab/experimentFeaturesState`,
-   * sent on every configuration change. Nothing in Eclipse consumes it; the handler exists so lsp4j
-   * does not log the notification as unsupported each time. Only the flag is logged, never the reason.
+   * LS 9.30.0 reports whether experimental features are on for the user's root group —
+   * `$/gitlab/experimentFeaturesState`. It is sent once the API configuration becomes valid (and at
+   * initialization when it already is), and only for users with a default Duo namespace
+   * (`experiment_features_notifier.ts`). Nothing in Eclipse consumes it; the handler exists so lsp4j
+   * does not log the notification as unsupported. Only the flag is logged, never the reason.
    */
   @JsonNotification("$/gitlab/experimentFeaturesState")
   fun gitlabExperimentFeaturesState(params: ExperimentFeaturesStateParams?) {
