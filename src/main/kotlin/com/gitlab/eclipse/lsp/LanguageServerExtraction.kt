@@ -3,6 +3,7 @@ package com.gitlab.eclipse.lsp
 import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import java.io.IOException
+import java.nio.channels.ClosedByInterruptException
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.channels.OverlappingFileLockException
@@ -172,6 +173,12 @@ internal class LanguageServerExtraction(
       Files.createFile(tempDir.resolve(IN_USE_FILE))
       tempDir.resolve(INSTALL_MARKER).writeText(key)
 
+      if (isComplete(installDir, key)) {
+        // Completed by another instance meanwhile (possible only without the install lock): use it.
+        deleteQuietly(tempDir)
+        installed = true
+        return true
+      }
       // A directory under this name without a valid marker is an interrupted install; replace it.
       if (Files.exists(installDir, LinkOption.NOFOLLOW_LINKS)) deleteRecursively(installDir)
       moveIntoPlace(tempDir, installDir)
@@ -377,10 +384,17 @@ private sealed interface LockAttempt {
   data object Interrupted : LockAttempt
 }
 
-/** Tries an exclusive lock on [file] once, opening (and so creating) it with [open]. */
+/**
+ * Tries an exclusive lock on [file] once, opening (and so creating) it with [open]. An interrupted
+ * thread is reported as [LockAttempt.Interrupted]: its channel calls fail with
+ * [ClosedByInterruptException], an IOException that must not read as "locking unavailable".
+ */
 private fun tryExclusiveLock(file: Path, open: (Path) -> FileChannel): LockAttempt {
+  if (Thread.currentThread().isInterrupted) return LockAttempt.Interrupted
   val channel = try {
     open(file)
+  } catch (_: ClosedByInterruptException) {
+    return LockAttempt.Interrupted
   } catch (e: IOException) {
     return LockAttempt.Unavailable(e)
   }
@@ -388,9 +402,12 @@ private fun tryExclusiveLock(file: Path, open: (Path) -> FileChannel): LockAttem
     channel.tryLock()
   } catch (_: OverlappingFileLockException) {
     null
+  } catch (_: ClosedByInterruptException) {
+    channel.close()
+    return LockAttempt.Interrupted
   } catch (e: IOException) {
     channel.close()
-    return LockAttempt.Unavailable(e)
+    return if (Thread.currentThread().isInterrupted) LockAttempt.Interrupted else LockAttempt.Unavailable(e)
   }
   if (lock == null) {
     channel.close()

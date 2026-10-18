@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -41,6 +42,7 @@ import kotlin.io.path.name
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 private const val KEY = "1.0.0.100|9.30.0"
 private const val OTHER_KEY = "1.0.0.200|9.31.0"
@@ -78,6 +80,8 @@ private fun openLockFileForTest(file: Path): FileChannel =
   FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
 
 /** Fails like opening a lock file on a file system without byte-range locks (NFS without lockd). */
+private const val WAITING = "Waiting for another Eclipse instance"
+
 private val noLocksOnThisFileSystem: (Path) -> FileChannel = { throw IOException("No locks available") }
 
 /** Fails like a rename on Windows of a directory whose binary is running. */
@@ -505,12 +509,13 @@ class LanguageServerExtractionTest : DescribeSpec({
       val held = channel.lock()
 
       val install = CompletableFuture.supplyAsync { extraction(timeoutMillis = 10_000).install(KEY, openArchive()) }
-      delay(300)
+      // Release only once the wait has been reported, however slowly the worker got going.
+      eventually(5.seconds) { verify { log.info(match<String> { it.startsWith(WAITING) }) } }
       held.release()
       channel.close()
 
       install.get(10, TimeUnit.SECONDS).shouldNotBeNull()
-      verify(exactly = 1) { log.info(match<String> { it.startsWith("Waiting for another Eclipse instance") }) }
+      verify(exactly = 1) { log.info(match<String> { it.startsWith(WAITING) }) }
     }
 
     // R3: an interrupted wait is not a timeout, and the interrupt flag survives.
@@ -526,7 +531,9 @@ class LanguageServerExtractionTest : DescribeSpec({
           stillInterrupted = Thread.currentThread().isInterrupted
         }
         waiter.start()
-        delay(300)
+        // Interrupt only once it is waiting; where the interrupt then lands (sleep or a lock probe)
+        // must not matter.
+        eventually(5.seconds) { verify { log.info(match<String> { it.startsWith(WAITING) }) } }
         waiter.interrupt()
         waiter.join(5_000)
       } finally {
@@ -538,6 +545,56 @@ class LanguageServerExtractionTest : DescribeSpec({
       stillInterrupted shouldBe true
       verify(exactly = 1) { log.error(match<String> { it.startsWith("Interrupted") }) }
       verify(exactly = 0) { log.error(match<String> { it.startsWith("Timed out") }) }
+    }
+
+    // N3: an interrupted thread makes FileChannel calls throw ClosedByInterruptException, an
+    // IOException. That is an interruption, not a file system without locks.
+    it("reports an install started on an interrupted thread as interrupted, not as locking unavailable") {
+      val log = recordingLog()
+      var result: Path? = dataRoot
+      var stillInterrupted = false
+      val worker = Thread {
+        Thread.currentThread().interrupt()
+        result = extraction().install(KEY, openArchive())
+        stillInterrupted = Thread.currentThread().isInterrupted
+      }
+      worker.start()
+      worker.join(5_000)
+
+      result.shouldBeNull()
+      stillInterrupted shouldBe true
+      archiveOpens shouldBe 0
+      verify(exactly = 1) { log.error(match<String> { it.startsWith("Interrupted") }) }
+      verify(exactly = 0) { log.warn(any<String>()) }
+    }
+
+    it("keeps a stale install whose in-use file cannot be locked") {
+      Files.createDirectories(dataRoot.resolve("lsp-aaaaaaaaaaaa/bin"))
+      dataRoot.resolve("lsp-aaaaaaaaaaaa/bin/gitlab-lsp").writeText("old")
+      val inUseUnlockable: (Path) -> FileChannel = { file ->
+        if (file.name == IN_USE_FILE) throw IOException("No locks available") else openLockFileForTest(file)
+      }
+
+      extraction(openLockFile = inUseUnlockable).install(KEY, openArchive()).shouldNotBeNull()
+
+      dataRoot.resolve("lsp-aaaaaaaaaaaa/bin/gitlab-lsp").readText() shouldBe "old"
+    }
+
+    // N1: without the install lock, another instance may complete the same install while this one
+    // extracts; its finished directory is reused rather than deleted and replaced.
+    it("reuses an install another instance completed during an unlocked extraction") {
+      val installDir = dataRoot.resolve(installDirectoryName(KEY))
+      val finishedByOther: () -> ZipFile = {
+        Files.createDirectories(installDir.resolve("bin"))
+        installDir.resolve(INSTALLED_BINARY).writeText("from the other instance")
+        installDir.resolve(INSTALL_MARKER).writeText(KEY)
+        openArchive()()
+      }
+
+      val binary = extraction(openLockFile = noLocksOnThisFileSystem).install(KEY, finishedByOther).shouldNotBeNull()
+
+      binary.readText() shouldBe "from the other instance"
+      dataRoot.names().filter { it.startsWith("lsp.tmp-") }.shouldBeEmpty()
     }
   }
 })
