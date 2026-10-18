@@ -172,6 +172,19 @@ class LanguageServerExtractionTest : DescribeSpec({
       dataRoot.resolve(installDirectoryName(KEY)).resolve(INSTALL_MARKER).readText() shouldBe KEY
     }
 
+    it("re-extracts a keyed directory whose marker names a different key") {
+      val installDir = dataRoot.resolve(installDirectoryName(KEY))
+      Files.createDirectories(installDir.resolve("bin"))
+      installDir.resolve(INSTALLED_BINARY).writeText("other")
+      installDir.resolve(INSTALL_MARKER).writeText(OTHER_KEY)
+
+      val binary = extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      binary.readText() shouldBe "binary"
+      archiveOpens shouldBe 1
+      installDir.resolve(INSTALL_MARKER).readText() shouldBe KEY
+    }
+
     it("re-extracts a keyed directory whose marker is there but whose binary is gone") {
       extraction().install(KEY, openArchive()).shouldNotBeNull()
       Files.delete(dataRoot.resolve(installDirectoryName(KEY)).resolve(INSTALLED_BINARY))
@@ -391,6 +404,43 @@ class LanguageServerExtractionTest : DescribeSpec({
       renames.map { it.first } shouldBe listOf(dataRoot.resolve("lsp"))
       renames.single().second.name shouldStartWith "lsp.trash-"
       dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+
+    // The cross-instance race the in-use lock exists for: another instance's sweep holds the
+    // exclusive in-use lock of this very install (and the install lock) while it moves it aside. The
+    // fast path must not hand out that directory; it waits for the install lock and re-extracts.
+    it("takes the slow path while a sweeper holds the in-use lock, and re-extracts once the install is gone") {
+      val installDir = dataRoot.resolve(installDirectoryName(KEY))
+      Files.createDirectories(installDir.resolve("bin"))
+      installDir.resolve(INSTALLED_BINARY).writeText("being swept")
+      installDir.resolve(INSTALL_MARKER).writeText(KEY)
+      installDir.resolve(IN_USE_FILE).writeText("")
+
+      val inUseFile = installDir.resolve(IN_USE_FILE)
+      val inUse = FileChannel.open(inUseFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
+      val lockFile = dataRoot.resolve("lsp.lock")
+      val installLock = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val sweeperInUse = inUse.lock()
+      val sweeperInstall = installLock.lock()
+
+      val install = CompletableFuture.supplyAsync {
+        extraction(timeoutMillis = 10_000).install(KEY, openArchive())
+      }
+      delay(300)
+      // Still waiting for the sweeper: it neither returned the directory being swept nor extracted.
+      install.isDone shouldBe false
+      archiveOpens shouldBe 0
+
+      Files.move(installDir, dataRoot.resolve("lsp.trash-sweeper"), StandardCopyOption.ATOMIC_MOVE)
+      sweeperInUse.release()
+      inUse.close()
+      sweeperInstall.release()
+      installLock.close()
+
+      val binary = install.get(10, TimeUnit.SECONDS).shouldNotBeNull()
+      binary shouldBe installDir.resolve(INSTALLED_BINARY)
+      binary.readText() shouldBe "binary"
+      archiveOpens shouldBe 1
     }
 
     it("deletes leftover trash directories") {

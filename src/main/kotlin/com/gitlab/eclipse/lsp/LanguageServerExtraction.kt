@@ -76,6 +76,11 @@ internal fun installDirectoryName(key: String): String {
  *   is logged at debug level and retried on the next start.
  *
  * [renameAside] is the rename used for that; a seam so tests can make it fail as Windows does.
+ *
+ * Callers must serialize installs within one JVM (today the provider's lifecycle lock does). Locks
+ * here are per process on POSIX: closing any channel on a locked file, as each lock probe does,
+ * drops every lock this process holds on that file, so a concurrent second install in the same JVM
+ * could silently release the other's install or in-use lock for other processes.
  */
 internal class LanguageServerExtraction(
   private val dataRoot: Path,

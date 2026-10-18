@@ -83,6 +83,10 @@ class GitLabLanguageServerProcessProvider(
     synchronized(lifecycleLock) {
       try {
         startLocked(bundle)
+      } catch (_: LanguageServerNotInstalledException) {
+        // The installer has already logged the reason as one clear error (for example "not bundled
+        // for linux/aarch64"); a second error with a stack trace would only bury it.
+        logger.info("The Language Server stays stopped: it could not be installed.")
       } catch (e: Exception) {
         logger.error("Failed to start the Language Server.", e)
         // Only a start that got as far as a process has anything to undo.
@@ -132,7 +136,7 @@ class GitLabLanguageServerProcessProvider(
 
   private fun startLocked(bundle: Bundle): CompletableFuture<InitializeResult> {
     val languageServerInstallationPath = languageServerInstaller.install()
-      ?: error("Language server installation failed")
+      ?: throw LanguageServerNotInstalledException()
 
     val startedProcess = try {
       processFactory(createProcessBuilder(languageServerInstallationPath))
@@ -403,3 +407,6 @@ private fun resetTerminalContextState(logger: ILog) {
   runCatching { service<TerminalContextSourceProvider>().reset() }
     .onFailure { logger.warn("Skipped the terminal context state reset: ${it.javaClass.simpleName}") }
 }
+
+/** [LanguageServerInstaller.install] returned null; the installer has logged why. */
+private class LanguageServerNotInstalledException : IllegalStateException("Language server installation failed")

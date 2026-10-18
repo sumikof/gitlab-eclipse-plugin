@@ -641,6 +641,21 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       spawnedProcesses.size shouldBe 0
     }
 
+    // The installer has already logged why (for example "not bundled for linux/aarch64"): a second
+    // error with a stack trace would only bury that one clear line.
+    it("adds no error of its own when there is no installation") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { installer.install() } returns null
+      val provider = newProvider()
+
+      provider.start(bundle)
+
+      verify(exactly = 0) { log.error(any(), any<Throwable>()) }
+      verify(exactly = 0) { log.error(any<String>()) }
+      provider.isRunning shouldBe false
+    }
+
     it("can still be restarted after a start that failed to install") {
       every { installer.install() } returns null
       val provider = newProvider()
