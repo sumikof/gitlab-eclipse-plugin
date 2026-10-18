@@ -16,9 +16,11 @@ import java.nio.file.Path
  *
  * One plain `asyncExec` to reach the UI thread, **with no scheduling rule**: the write is already
  * done, and taking a rule on the UI thread is what could block it behind a build. The workspace file
- * is opened when it exists, so the editor shares the workspace buffer; otherwise the file on disk
- * (a resource filter can hide `.gitlab`). Neither — the config was removed after the job — is a
- * notice.
+ * is opened when it exists **and is the file the job wrote** (a linked `.gitlab` would make the
+ * handle name another file, a virtual folder gives it no location), so the editor shares the
+ * workspace buffer; otherwise the file on disk (also when a resource filter hides `.gitlab`).
+ * Neither — the config was removed after the job — is a notice. That fallback check is the one
+ * file system read on the UI thread: a single `stat` of a local file.
  *
  * Every UI and platform touch is a constructor seam with a production default, so the class is
  * headless-testable; nothing it does on the UI thread escapes into the event loop.
@@ -48,19 +50,26 @@ class McpWorkspaceConfigOpener(
   private fun openOnUiThread(window: IWorkbenchWindow?, ready: McpWorkspaceConfigOutcome.Ready) {
     try {
       val target = window ?: fallbackWindow()
-      val file = ready.file.takeIf { it.exists() }
+      if (target == null) {
+        logger.error("$LOG_PREFIX no workbench window to open in")
+        notify(McpConfigMessages.OPEN_FAILED)
+        return
+      }
+      val file = ready.file.takeIf { it.exists() && it.location?.toPath() == ready.configFile }
       val store = if (file == null) ready.configFile.takeIf { Files.isRegularFile(it) } else null
-      val opened = when {
-        target == null -> false.also { logger.error("$LOG_PREFIX no workbench window to open in") }
-        file == null && store == null -> false.also { logger.error("$LOG_PREFIX the config is gone") }
-        else -> openEditor(target, file, store).also { if (!it) logger.error("$LOG_PREFIX no active page") }
+      if (file == null && store == null) {
+        logger.error("$LOG_PREFIX the config is gone")
+        notify(McpConfigMessages.OPEN_FAILED)
+        return
       }
-      when {
-        !opened -> notify(McpConfigMessages.OPEN_FAILED)
-        // With several projects the first one is often not the one in use (and not the first the
-        // Project Explorer shows: the order is by `String.compareTo`), so say which one it was.
-        ready.projectCount > 1 -> notify(McpConfigMessages.openedIn(ready.projectName))
+      if (!openEditor(target, file, store)) {
+        logger.error("$LOG_PREFIX no active page")
+        notify(McpConfigMessages.OPEN_FAILED)
+        return
       }
+      // With several projects the first one is often not the one in use (and not the first the
+      // Project Explorer shows: the order is by `String.compareTo`), so say which one it was.
+      if (ready.projectCount > 1) notify(McpConfigMessages.openedIn(ready.projectName))
     } catch (e: Exception) {
       logger.error("$LOG_PREFIX could not open the config: ${e.javaClass.name}")
       notify(McpConfigMessages.OPEN_FAILED)

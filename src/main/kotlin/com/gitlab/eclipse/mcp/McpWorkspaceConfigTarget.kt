@@ -10,9 +10,12 @@ import java.nio.file.Paths
 /** Where the workspace-scoped MCP config goes, or why it cannot go anywhere. */
 sealed interface McpWorkspaceConfigResolution {
   data class Target(val project: IProject, val configFile: Path) : McpWorkspaceConfigResolution
-  data object NoProject : McpWorkspaceConfigResolution
-  data class Closed(val projectName: String) : McpWorkspaceConfigResolution
-  data class Unavailable(val projectName: String) : McpWorkspaceConfigResolution
+  /** Every resolution but [Target]: nothing may be written, and the user is told why. */
+  sealed interface Refusal : McpWorkspaceConfigResolution
+
+  data object NoProject : Refusal
+  data class Closed(val projectName: String) : Refusal
+  data class Unavailable(val projectName: String) : Refusal
 }
 
 /**

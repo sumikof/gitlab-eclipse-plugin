@@ -44,7 +44,7 @@ class OpenMcpWorkspaceConfigHandler(
     logger.info("MCP workspace configuration: ${outcome::class.simpleName}")
     when (outcome) {
       is McpWorkspaceConfigOutcome.Ready -> opener.open(window, outcome)
-      is McpWorkspaceConfigOutcome.Refused -> McpConfigMessages.refusal(outcome.resolution)?.let(notify)
+      is McpWorkspaceConfigOutcome.Refused -> notify(McpConfigMessages.refusal(outcome.refusal))
       is McpWorkspaceConfigOutcome.Failed -> notify(McpConfigMessages.failed(outcome.projectName))
       McpWorkspaceConfigOutcome.Cancelled -> Unit
     }

@@ -9,6 +9,7 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import org.eclipse.core.resources.IFile
+import org.eclipse.core.runtime.IPath
 import org.eclipse.swt.SWTException
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.PartInitException
@@ -39,7 +40,11 @@ private class OpenerFixture {
   val window: IWorkbenchWindow = mockk()
   val configFile: Path = createTempDirectory("mcp-opener").resolve(".gitlab/duo/mcp.json")
   var fileExists = true
-  val file: IFile = mockk { every { exists() } answers { fileExists } }
+  var fileLocation: IPath? = IPath.fromPath(configFile)
+  val file: IFile = mockk {
+    every { exists() } answers { fileExists }
+    every { location } answers { fileLocation }
+  }
 
   val opener = McpWorkspaceConfigOpener(
     onUiThread = { uiQueue.addLast(it) },
@@ -90,6 +95,28 @@ class McpWorkspaceConfigOpenerTest : DescribeSpec({
       val fixture = OpenerFixture()
       fixture.fileExists = false
       fixture.writeConfigOnDisk()
+
+      fixture.opener.open(fixture.window, fixture.ready())
+      fixture.drainUi()
+
+      fixture.opened shouldContainExactly listOf(Opened(fixture.window, null, fixture.configFile))
+    }
+
+    it("opens the file on disk when the workspace file is elsewhere (.gitlab is a linked folder)") {
+      val fixture = OpenerFixture()
+      fixture.writeConfigOnDisk()
+      fixture.fileLocation = IPath.fromPath(Path.of("/somewhere/else/duo/mcp.json"))
+
+      fixture.opener.open(fixture.window, fixture.ready())
+      fixture.drainUi()
+
+      fixture.opened shouldContainExactly listOf(Opened(fixture.window, null, fixture.configFile))
+    }
+
+    it("opens the file on disk when the workspace file has no location (.gitlab/duo is a virtual folder)") {
+      val fixture = OpenerFixture()
+      fixture.writeConfigOnDisk()
+      fixture.fileLocation = null
 
       fixture.opener.open(fixture.window, fixture.ready())
       fixture.drainUi()

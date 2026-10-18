@@ -146,16 +146,18 @@ class McpWorkspaceConfigWriterTest : DescribeSpec({
         fixture.run() shouldBe McpWorkspaceConfigOutcome.Failed("app")
         Files.readString(fixture.disk.resolve("app/.gitlab")) shouldBe "x"
       }
+    }
 
-      it("reports a failure when the workspace cannot be refreshed") {
-        val fixture = WriterFixture()
-        val app = fixture.project("app")
-        every { app.getFolder(".gitlab").refreshLocal(any(), any()) } throws
-          CoreException(Status.error("refresh failed"))
-        fixture.projects = arrayOf(app)
+    it("still hands the created config back when only the refresh fails (it is opened from disk)") {
+      val fixture = WriterFixture()
+      val app = fixture.project("app")
+      every { app.getFolder(".gitlab").refreshLocal(any(), any()) } throws
+        CoreException(Status.error("refresh failed"))
+      fixture.projects = arrayOf(app)
 
-        fixture.run() shouldBe McpWorkspaceConfigOutcome.Failed("app")
-      }
+      fixture.run() shouldBe
+        McpWorkspaceConfigOutcome.Ready(app.getFile(".gitlab/duo/mcp.json"), fixture.configOf("app"), 1, "app")
+      Files.readString(fixture.configOf("app")) shouldBe McpConfigService.DEFAULT_CONFIG_TEMPLATE
     }
 
     it("reports a cancellation, not a failure, when the user cancels the refresh") {

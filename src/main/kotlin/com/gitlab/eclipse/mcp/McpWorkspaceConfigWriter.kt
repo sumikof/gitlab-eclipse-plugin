@@ -22,10 +22,10 @@ sealed interface McpWorkspaceConfigOutcome {
     val projectName: String,
   ) : McpWorkspaceConfigOutcome
 
-  /** Nothing was written: [resolution] is the reason (anything but a Target). */
-  data class Refused(val resolution: McpWorkspaceConfigResolution) : McpWorkspaceConfigOutcome
+  /** Nothing was written, for [refusal]. */
+  data class Refused(val refusal: McpWorkspaceConfigResolution.Refusal) : McpWorkspaceConfigOutcome
 
-  /** Creating or refreshing the config in [projectName] failed; the log has the exception class. */
+  /** Creating the config in [projectName] failed; the log has the exception class. */
   data class Failed(val projectName: String) : McpWorkspaceConfigOutcome
 
   /** The job never ran (cancelled while queued) or was cancelled: nothing to report. */
@@ -64,25 +64,32 @@ class McpWorkspaceConfigWriter(
 
   override fun runInWorkspace(monitor: IProgressMonitor?): IStatus {
     val projects = workspace.root.projects
-    val resolution = target.resolve(projects)
-    if (resolution !is McpWorkspaceConfigResolution.Target) {
-      outcome = McpWorkspaceConfigOutcome.Refused(resolution)
+    val destination = when (val resolution = target.resolve(projects)) {
+      is McpWorkspaceConfigResolution.Refusal -> {
+        outcome = McpWorkspaceConfigOutcome.Refused(resolution)
+        return Status.OK_STATUS
+      }
+      is McpWorkspaceConfigResolution.Target -> resolution
+    }
+    val project = destination.project
+    try {
+      service.ensureConfigFile(destination.configFile)
+    } catch (e: Exception) {
+      // Class name only: the message carries the local path (ensureConfigFile puts it in on purpose).
+      logger.error("$JOB_NAME: could not create the config in project '${project.name}': ${e.javaClass.name}")
+      outcome = McpWorkspaceConfigOutcome.Failed(project.name)
       return Status.OK_STATUS
     }
-    val project = resolution.project
-    outcome = try {
-      service.ensureConfigFile(resolution.configFile)
+    try {
       project.getFolder(GITLAB_FOLDER).refreshLocal(IResource.DEPTH_INFINITE, monitor)
-      McpWorkspaceConfigOutcome.Ready(project.getFile(CONFIG_FILE), resolution.configFile, projects.size, project.name)
     } catch (_: OperationCanceledException) {
       logger.info("$JOB_NAME: cancelled")
-      outcome = McpWorkspaceConfigOutcome.Cancelled
       return Status.CANCEL_STATUS
     } catch (e: Exception) {
-      // Class name only: the messages carry the local path (ensureConfigFile puts it in on purpose).
-      logger.error("$JOB_NAME: could not create the config in project '${project.name}': ${e.javaClass.name}")
-      McpWorkspaceConfigOutcome.Failed(project.name)
+      // The file is on disk: the opener falls back to it when the workspace handle does not exist.
+      logger.warn("$JOB_NAME: could not refresh project '${project.name}': ${e.javaClass.name}")
     }
+    outcome = McpWorkspaceConfigOutcome.Ready(project.getFile(CONFIG_FILE), destination.configFile, projects.size, project.name)
     return Status.OK_STATUS
   }
 

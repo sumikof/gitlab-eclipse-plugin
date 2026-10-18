@@ -19,11 +19,9 @@ internal object McpConfigMessages {
     "Opened the MCP workspace configuration of project '$projectName'. " +
       "GitLab Duo reads it from the first project in the workspace, sorted by name."
 
-  /** The notice for a refused [resolution]; null for a `Target`, which is not a refusal. */
-  fun refusal(resolution: McpWorkspaceConfigResolution): String? = when (resolution) {
+  fun refusal(refusal: McpWorkspaceConfigResolution.Refusal): String = when (refusal) {
     McpWorkspaceConfigResolution.NoProject -> NO_PROJECT
-    is McpWorkspaceConfigResolution.Closed -> closed(resolution.projectName)
-    is McpWorkspaceConfigResolution.Unavailable -> unavailable(resolution.projectName)
-    is McpWorkspaceConfigResolution.Target -> null
+    is McpWorkspaceConfigResolution.Closed -> closed(refusal.projectName)
+    is McpWorkspaceConfigResolution.Unavailable -> unavailable(refusal.projectName)
   }
 }
