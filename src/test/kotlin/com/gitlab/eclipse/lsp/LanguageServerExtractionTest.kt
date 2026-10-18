@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
@@ -10,10 +11,14 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldMatch
+import io.kotest.matchers.string.shouldStartWith
 import kotlinx.coroutines.delay
+import java.io.IOException
 import java.nio.channels.FileChannel
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
@@ -58,6 +63,13 @@ private fun defaultEntries() = linkedMapOf(
 
 private fun Path.names() = listDirectoryEntries().map { it.name }
 
+private fun renameAtomically(source: Path, target: Path) {
+  Files.move(source, target, StandardCopyOption.ATOMIC_MOVE)
+}
+
+/** Fails like a rename on Windows of a directory whose binary is running. */
+private val failingRename: (Path, Path) -> Unit = { _, _ -> throw IOException("in use") }
+
 class LanguageServerExtractionTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
@@ -71,8 +83,10 @@ class LanguageServerExtractionTest : DescribeSpec({
     ZipFile(path.toFile())
   }
 
-  fun extraction(timeoutMillis: Long = 5_000) =
-    LanguageServerExtraction(dataRoot, timeoutMillis.milliseconds, 20.milliseconds)
+  fun extraction(
+    timeoutMillis: Long = 5_000,
+    renameAside: (Path, Path) -> Unit = ::renameAtomically,
+  ) = LanguageServerExtraction(dataRoot, timeoutMillis.milliseconds, 20.milliseconds, renameAside)
 
   beforeEach {
     workDir = createTempDirectory("ls-extraction")
@@ -264,6 +278,128 @@ class LanguageServerExtractionTest : DescribeSpec({
       extraction().install(KEY, openArchive()).shouldNotBeNull()
 
       dataRoot.names().filter { it.startsWith("lsp.tmp-") }.shouldBeEmpty()
+    }
+  }
+
+  describe("in-use protection") {
+    fun staleInstall(name: String = "lsp-aaaaaaaaaaaa"): Path {
+      val dir = dataRoot.resolve(name)
+      Files.createDirectories(dir.resolve("bin/webviews"))
+      dir.resolve(INSTALLED_BINARY).writeText("old")
+      dir.resolve("bin/webviews/index.html").writeText("<html/>")
+      dir.resolve(INSTALL_MARKER).writeText("0.0.1|9.3.0")
+      dir.resolve(IN_USE_FILE).writeText("")
+      return dir
+    }
+
+    // Within one JVM a second lock on the same file throws instead of returning null, which is how
+    // another holder shows up here; a lock held by another process makes tryLock return null.
+    fun assertHeldByThisJvm(installDir: Path) {
+      val inUseFile = installDir.resolve(IN_USE_FILE)
+      FileChannel.open(inUseFile, StandardOpenOption.READ, StandardOpenOption.WRITE).use { channel ->
+        shouldThrow<OverlappingFileLockException> { channel.tryLock() }
+      }
+    }
+
+    it("holds a shared lock on the install it returns") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      assertHeldByThisJvm(dataRoot.resolve(installDirectoryName(KEY)))
+    }
+
+    it("keeps holding it through repeated installs of the same key, without locking twice") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      archiveOpens shouldBe 1
+      assertHeldByThisJvm(dataRoot.resolve(installDirectoryName(KEY)))
+    }
+
+    it("leaves an install that another holder is using untouched, and sweeps it once released") {
+      val stale = staleInstall()
+      val channel = FileChannel.open(stale.resolve(IN_USE_FILE), StandardOpenOption.READ)
+      val held = channel.lock(0, Long.MAX_VALUE, true)
+      try {
+        extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+        stale.resolve(INSTALLED_BINARY).readText() shouldBe "old"
+        stale.resolve("bin/webviews/index.html").readText() shouldBe "<html/>"
+        stale.resolve(INSTALL_MARKER).exists() shouldBe true
+      } finally {
+        held.release()
+        channel.close()
+      }
+
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      stale.exists() shouldBe false
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+
+    it("removes a stale install nobody uses by renaming it aside to a trash directory first") {
+      val stale = staleInstall()
+      val renames = mutableListOf<Pair<Path, Path>>()
+
+      val recordingRename = { source: Path, target: Path ->
+        renames += source to target
+        renameAtomically(source, target)
+      }
+      extraction(renameAside = recordingRename).install(KEY, openArchive()).shouldNotBeNull()
+
+      renames.map { it.first } shouldBe listOf(stale)
+      renames.single().second.name shouldStartWith "lsp.trash-"
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+
+    it("removes a stale install that has no in-use file") {
+      val stale = staleInstall()
+      Files.delete(stale.resolve(IN_USE_FILE))
+
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+
+    it("leaves a stale install whole when it cannot be renamed aside (Windows: binary in use)") {
+      val stale = staleInstall()
+
+      extraction(renameAside = failingRename).install(KEY, openArchive()).shouldNotBeNull()
+
+      stale.resolve(INSTALLED_BINARY).readText() shouldBe "old"
+      stale.resolve("bin/webviews/index.html").readText() shouldBe "<html/>"
+      stale.resolve(INSTALL_MARKER).exists() shouldBe true
+    }
+
+    it("removes the legacy lsp directory only by renaming it aside") {
+      Files.createDirectories(dataRoot.resolve("lsp/bin/webviews"))
+      dataRoot.resolve("lsp/bin/gitlab-lsp").writeText("9.3.0")
+      dataRoot.resolve("lsp/bin/webviews/index.html").writeText("<html/>")
+
+      extraction(renameAside = failingRename).install(KEY, openArchive()).shouldNotBeNull()
+
+      dataRoot.resolve("lsp/bin/gitlab-lsp").readText() shouldBe "9.3.0"
+      dataRoot.resolve("lsp/bin/webviews/index.html").readText() shouldBe "<html/>"
+
+      val renames = mutableListOf<Pair<Path, Path>>()
+      val recordingRename = { source: Path, target: Path ->
+        renames += source to target
+        renameAtomically(source, target)
+      }
+      extraction(renameAside = recordingRename).install(KEY, openArchive()).shouldNotBeNull()
+
+      renames.map { it.first } shouldBe listOf(dataRoot.resolve("lsp"))
+      renames.single().second.name shouldStartWith "lsp.trash-"
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
+    }
+
+    it("deletes leftover trash directories") {
+      Files.createDirectories(dataRoot.resolve("lsp.trash-crashed/bin"))
+      dataRoot.resolve("lsp.trash-crashed/bin/gitlab-lsp").writeText("old")
+
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock")
     }
   }
 })
