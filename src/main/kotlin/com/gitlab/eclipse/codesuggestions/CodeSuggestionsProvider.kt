@@ -69,6 +69,9 @@ class CodeSuggestionsProvider(
     languageId: String?,
     triggerKind: InlineCompletionTriggerKind
   ): List<CodeSuggestion> {
+    // Every new request supersedes the one in flight, gated or not: this provider serves all editors.
+    ongoingRequest?.cancel(true)
+
     // Since LS 9.24 the server answers for every language but plaintext and no longer reports
     // unsupported or disabled languages, so the user's per-language choice is applied here, before
     // the server is contacted. A null id (no workspace file) is not gated, as before.
@@ -78,8 +81,6 @@ class CodeSuggestionsProvider(
 
     try {
       val languageServer: GitLabLanguageServer = checkNotNull(gitLabLanguageServerWrapper.languageServer)
-
-      ongoingRequest?.cancel(true)
 
       val request = languageServer.inlineCompletion(
         InlineCompletionParams(

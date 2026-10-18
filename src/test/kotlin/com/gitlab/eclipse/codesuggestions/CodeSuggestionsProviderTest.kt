@@ -192,6 +192,23 @@ class CodeSuggestionsProviderTest : DescribeSpec({
       firstRequest.isCancelled shouldBe true
       job1.join()
     }
+
+    // One provider serves every editor, so a request for a gated file still supersedes the one
+    // in flight for the previous file; its answer would otherwise arrive for an editor that moved on.
+    it("cancels the ongoing request even when the new one is gated") {
+      every { preferenceStore.getString(PreferenceConstants.CODE_SUGGESTIONS_ADDITIONAL_LANGUAGES) } returns ""
+      val firstRequest = CompletableFuture<Either<List<CompletionItem>, CompletionList>>()
+      coEvery { languageServer.inlineCompletion(any()) } returns firstRequest
+
+      val job1 = launch {
+        codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "java")
+      }
+      delay(100)
+      codeSuggestionsProvider.provideAutomaticSuggestion(fileUri, cursorLine, cursorColumn, "txt").shouldBeNull()
+
+      firstRequest.isCancelled shouldBe true
+      job1.join()
+    }
   }
 
   // LS 9.30.0 no longer refuses unsupported or disabled languages itself, so the provider applies the
