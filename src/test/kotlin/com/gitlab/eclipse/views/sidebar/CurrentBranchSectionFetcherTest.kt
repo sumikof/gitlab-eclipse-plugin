@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.mergerequests.CurrentBranch
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
@@ -22,7 +23,9 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.eclipse.jgit.api.Git
 import java.io.File
+import java.nio.file.Files
 
 private const val GIT_DIR = "/repo/.git"
 private const val PROJECT = "grp%2Fproj"
@@ -36,6 +39,7 @@ private class FetcherRig {
   val jobs = mockk<JobService>()
   val api = mockk<GitLabApiClient>()
   val errors = mutableListOf<Pair<String, Throwable?>>()
+  val warnings = mutableListOf<String>()
 
   /** The slot value as the view would hold it, and every value it took, in order. */
   var current: CurrentBranchSectionInput? = null
@@ -60,6 +64,7 @@ private class FetcherRig {
     jobs,
     api,
     errorLog = { m, t -> errors += m to t },
+    warnLog = { warnings += it },
   )
 
   init {
@@ -69,6 +74,13 @@ private class FetcherRig {
   }
 
   fun branch(name: String? = "feature", sha: String? = "abc123") = CurrentBranch(name, null, false, null, sha)
+
+  /** Every collaborator answers successfully with fresh-but-equal payloads on every call. */
+  fun answerSuccessfully(mrInfo: () -> CurrentBranchInfo = { mr() }) {
+    every { mrLookup.lookup(any(), any()) } answers { mrInfo() }
+    every { pipelines.getLatestPipelineForRef(any(), any(), any()) } answers { PIPELINE.copy() }
+    every { jobs.getJobsForPipeline(any(), any(), any(), any()) } answers { JOBS.toList() }
+  }
 
   suspend fun fetch(soft: Boolean = false, previous: CurrentBranchSectionInput? = current): TrackedHead? =
     fetcher.fetch(null, previous, soft) { update ->
@@ -95,6 +107,7 @@ private val PIPELINE = GitLabPipeline(id = 5, status = "running", updatedAt = "t
 private val JOBS = listOf(GitLabJob(id = 9, name = "build", status = "running", stage = "build"))
 
 class CurrentBranchSectionFetcherTest : StringSpec({
+  extensions(LoggingKotestExtension)
   "1a. no repository settles NoRepository only and tracks nothing" {
     val rig = FetcherRig()
     every { rig.resolver.resolveNonInteractive(any()) } returns null
@@ -172,5 +185,137 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     val (placeholder, mrSide, pipelineSide) = updates
     val settled = mrSide(pipelineSide(placeholder(null)))
     settled shouldBe Resolved(Result.success(mr()), Result.success(null))
+  }
+
+  "2. soft with unchanged data keeps both previous Result instances and applies nothing" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    val before = rig.current as Resolved
+    val appliedBefore = rig.applied.size
+
+    rig.fetch(soft = true) shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"))
+
+    rig.applied.size shouldBe appliedBefore
+    rig.current shouldBeSameInstanceAs before
+  }
+
+  "3. soft with a changed MR applies a new MR Result only; the pipeline Result instance is kept" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    val before = rig.current as Resolved
+    rig.answerSuccessfully { mr(updatedAt = "t2") }
+
+    rig.fetch(soft = true)
+
+    rig.applied.size shouldBe 4
+    val after = rig.current as Resolved
+    after.mr shouldBe Result.success(mr(updatedAt = "t2"))
+    after.pipeline shouldBeSameInstanceAs before.pipeline
+  }
+
+  "4a. soft after NoRepository paints the placeholder first" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.resolver.resolveNonInteractive(any()) } returns null
+    rig.fetch()
+    every { rig.resolver.resolveNonInteractive(any()) } returns rig.context
+
+    rig.fetch(soft = true)
+
+    rig.applied[1] shouldBe Resolved(null, null)
+    rig.applied.size shouldBe 4
+  }
+
+  "4b. soft on a different repository paints the placeholder and both sides, even when equal" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    val other = rig.context.copy(gitDir = "/other/.git")
+    every { rig.resolver.resolveNonInteractive(any()) } returns other
+    every { rig.reader.read(File("/other/.git")) } returns rig.branch()
+
+    rig.fetch(soft = true) shouldBe TrackedHead("/other/.git", HeadKey.Branch("feature"))
+
+    rig.applied.drop(3).first() shouldBe Resolved(null, null)
+    rig.applied.size shouldBe 6
+  }
+
+  "5a. soft failures log one WARN line per failure streak, class name only, and nothing to the Error Log" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    every { rig.mrLookup.lookup(any(), any()) } throws IllegalStateException("secret mr detail")
+
+    rig.fetch(soft = true)
+    rig.fetch(soft = true)
+
+    rig.warnings shouldContainExactly listOf("Current-branch mr refresh failed: java.lang.IllegalStateException")
+    rig.errors shouldBe emptyList()
+  }
+
+  "5b. a success ends the streak, so the next soft failure is logged again" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws IllegalArgumentException("x")
+    rig.fetch(soft = true)
+    rig.answerSuccessfully()
+    rig.fetch(soft = true)
+    every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws IllegalArgumentException("y")
+    rig.fetch(soft = true)
+
+    rig.warnings shouldContainExactly listOf(
+      "Current-branch pipeline refresh failed: java.lang.IllegalArgumentException",
+      "Current-branch pipeline refresh failed: java.lang.IllegalArgumentException",
+    )
+  }
+
+  "5c. a soft jobs failure is its own stage, logged once per streak" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.jobs.getJobsForPipeline(any(), any(), any(), any()) } throws IllegalStateException("jobs")
+    rig.fetch(soft = true)
+    rig.fetch(soft = true)
+
+    rig.warnings shouldContainExactly listOf("Current-branch jobs refresh failed: java.lang.IllegalStateException")
+    rig.errors shouldBe emptyList()
+  }
+
+  "5d. a failure the full path already logged is not logged again by the soft path in the same streak" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.mrLookup.lookup(any(), any()) } throws IllegalStateException("down")
+    rig.fetch()
+    rig.fetch(soft = true)
+
+    rig.errors.map { it.first } shouldContainExactly listOf("Failed to load current-branch merge request.")
+    rig.warnings shouldBe emptyList()
+  }
+
+  "6a. HeadKey: a branch name wins, else the detached SHA, else Unavailable" {
+    headKeyOf(CurrentBranch("main", null, false, null, "abc")) shouldBe HeadKey.Branch("main")
+    headKeyOf(CurrentBranch(null, null, false, null, "abc")) shouldBe HeadKey.Detached("abc")
+    headKeyOf(CurrentBranch(null, null, false, null, null)) shouldBe HeadKey.Unavailable
+  }
+
+  "6b. HeadKey from real repositories: unborn is its branch, detached is its SHA, a deleted repository is Unavailable" {
+    val dir = Files.createTempDirectory("ci04-head").toFile()
+    try {
+      Git.init().setDirectory(dir).setInitialBranch("main").call().use { git ->
+        val gitDir = File(dir, ".git")
+        headKeyOf(CurrentBranchGitReader().read(gitDir)) shouldBe HeadKey.Branch("main")
+
+        File(dir, "a.txt").writeText("a")
+        git.add().addFilepattern(".").call()
+        val sha = git.commit().setMessage("c").setAuthor("t", "t@e").setCommitter("t", "t@e").call().name
+        git.checkout().setName(sha).call()
+        headKeyOf(CurrentBranchGitReader().read(gitDir)) shouldBe HeadKey.Detached(sha)
+      }
+      dir.deleteRecursively()
+      headKeyOf(CurrentBranchGitReader().read(File(dir, ".git"))) shouldBe HeadKey.Unavailable
+    } finally {
+      dir.deleteRecursively()
+    }
   }
 })

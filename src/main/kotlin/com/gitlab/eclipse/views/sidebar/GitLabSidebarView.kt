@@ -97,6 +97,7 @@ class GitLabSidebarView : ViewPart() {
       jobService,
       apiClient,
       errorLog = { message, e -> logger.error(message, e) },
+      warnLog = { logger.warn(it) },
     )
   }
 

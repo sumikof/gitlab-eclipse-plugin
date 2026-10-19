@@ -61,12 +61,19 @@ sealed interface Slot<out T> {
  * slots on the UI thread as each unit's fetch settles, and re-composes via
  * [SidebarRefreshCoordinator.compose] after each mutation. A superseded generation's instance
  * is simply abandoned — the coordinator resets its memo when [generation] changes, so a stale
- * generation's values can never leak into a newer compose. Each settled value must carry a
- * freshly constructed payload (CurrentBranchInfo/PipelineSnapshot/Throwable): the coordinator
- * memo keys by payload identity, so reusing a prior fetch's instance is treated as unchanged
- * and skips a rebuild.
+ * generation's values can never leak into a newer compose. The coordinator memo keys by payload
+ * identity, so an instance it has already composed is treated as unchanged and skips a rebuild:
+ * a full refresh therefore settles freshly constructed payloads (CurrentBranchInfo/PipelineSnapshot/
+ * Throwable), while the CI-04 soft refresh deliberately keeps the shown `Result` instance of a side
+ * whose new value is structurally equal — that is how an auto refresh avoids rebuilding (and
+ * collapsing) unchanged nodes ([CurrentBranchSectionFetcher]).
+ *
+ * [currentBranchEpoch] orders the soft refreshes of the current-branch section within one
+ * generation: a soft refresh bumps it instead of [generation] (so the assigned slot and the memo
+ * survive), and its updates apply only while their epoch is still the latest. UI thread only.
  */
 class RefreshSlots(val generation: Long) {
   var assigned: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>> = Slot.Pending
   var currentBranch: Slot<CurrentBranchSectionInput> = Slot.Pending
+  var currentBranchEpoch: Long = 0
 }
