@@ -1,14 +1,25 @@
 package com.gitlab.eclipse.api
 
+import com.sun.net.httpserver.HttpServer
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpHeaders
+import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.nio.ByteBuffer
+import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Flow
 import java.util.concurrent.TimeUnit
 
@@ -36,6 +47,17 @@ private fun info(status: Int, headers: Map<String, List<String>> = emptyMap()) =
 
     override fun version(): HttpClient.Version = HttpClient.Version.HTTP_1_1
   }
+
+/** A deadline the test fires by hand: records the armed timeout and holds the expiry action. */
+private class ManualDeadline : BodyDeadline {
+  val armed = CompletableFuture<Pair<Duration, () -> Unit>>()
+
+  override fun arm(timeout: Duration, onExpiry: () -> Unit) {
+    armed.complete(timeout to onExpiry)
+  }
+
+  fun fire() = armed.get(5, TimeUnit.SECONDS).second()
+}
 
 private fun buffers(vararg chunks: String): List<ByteBuffer> = chunks.map { ByteBuffer.wrap(it.toByteArray()) }
 
@@ -101,6 +123,72 @@ class BoundedBytesHandlerTest : DescribeSpec({
       val (body, _) = drive(404, publishes = listOf(buffers("secret error body")))
 
       body.shouldBeNull()
+    }
+  }
+
+  describe("BoundedBytesHandler body deadline (R1)") {
+    it("arms a 30 s deadline by default when the body starts") {
+      val deadline = ManualDeadline()
+      BoundedBytesHandler(CAP, deadline = deadline).apply(info(200)).onSubscribe(FakeSubscription())
+
+      deadline.armed.get(1, TimeUnit.SECONDS).first shouldBe Duration.ofSeconds(30)
+    }
+
+    it("on expiry cancels the subscription and fails the body with HttpTimeoutException") {
+      val deadline = ManualDeadline()
+      val subscriber = BoundedBytesHandler(CAP, Duration.ofSeconds(3), deadline).apply(info(200))
+      val subscription = FakeSubscription()
+      subscriber.onSubscribe(subscription)
+      subscriber.onNext(buffers("abc"))
+
+      deadline.fire()
+
+      subscription.cancelled shouldBe true
+      val e = shouldThrow<ExecutionException> { subscriber.body.toCompletableFuture().get(1, TimeUnit.SECONDS) }
+      (e.cause is HttpTimeoutException) shouldBe true
+    }
+
+    it("an expiry after the body completed changes nothing") {
+      val deadline = ManualDeadline()
+      val subscriber = BoundedBytesHandler(CAP, deadline = deadline).apply(info(200))
+      val subscription = FakeSubscription()
+      subscriber.onSubscribe(subscription)
+      subscriber.onNext(buffers("ok"))
+      subscriber.onComplete()
+
+      deadline.fire()
+
+      subscription.cancelled shouldBe false
+      subscriber.body.toCompletableFuture().get(1, TimeUnit.SECONDS)
+        .shouldBeInstanceOf<BoundedBytes.Ok>().bytes.decodeToString() shouldBe "ok"
+    }
+
+    it("makes a real HttpClient send() throw HttpTimeoutException when the server stalls mid-body") {
+      val release = CountDownLatch(1)
+      val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+      server.createContext("/raw") { exchange ->
+        exchange.sendResponseHeaders(200, 0) // chunked, no Content-Length
+        exchange.responseBody.write("abc".toByteArray())
+        exchange.responseBody.flush()
+        release.await(30, TimeUnit.SECONDS) // stalls until the test is done
+        runCatching { exchange.close() }
+      }
+      server.start()
+      val client = HttpClient.newHttpClient()
+      try {
+        val deadline = ManualDeadline()
+        val request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:${server.address.port}/raw")).build()
+        val sent = CompletableFuture.supplyAsync { client.send(request, BoundedBytesHandler(CAP, deadline = deadline)) }
+
+        deadline.fire()
+
+        val e = shouldThrow<ExecutionException> { sent.get(10, TimeUnit.SECONDS) }
+        (e.cause is HttpTimeoutException) shouldBe true
+      } finally {
+        release.countDown()
+        client.shutdownNow()
+        server.stop(0)
+      }
     }
   }
 })

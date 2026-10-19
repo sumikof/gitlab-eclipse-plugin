@@ -58,6 +58,15 @@ class GitLabApiClientFetchBytesTest : DescribeSpec({
       verify(exactly = 0) { tokens.getToken(any()) }
     }
 
+    it("reads the body under the cap with a 30 s body deadline (R1)") {
+      val handler = slot<HttpResponse.BodyHandler<BoundedBytes?>>()
+      every { http.send(any<HttpRequest>(), capture(handler)) } returns response(BoundedBytes.Ok(byteArrayOf()), 200)
+
+      client.fetchBytes("/p", emptyMap(), 16, connection)
+
+      handler.captured.shouldBeInstanceOf<BoundedBytesHandler>().bodyTimeout shouldBe Duration.ofSeconds(30)
+    }
+
     it("returns the handler's bytes on 2xx") {
       every { http.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<BoundedBytes?>>()) } returns
         response(BoundedBytes.Ok("hello".toByteArray()), 200)

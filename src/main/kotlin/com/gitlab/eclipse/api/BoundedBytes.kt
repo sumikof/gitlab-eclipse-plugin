@@ -2,10 +2,13 @@ package com.gitlab.eclipse.api
 
 import java.io.ByteArrayOutputStream
 import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.nio.ByteBuffer
+import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.Flow
+import java.util.concurrent.TimeUnit
 
 /** A response body read under a size cap: the whole body, or the fact that it exceeded the cap. */
 sealed interface BoundedBytes {
@@ -15,6 +18,20 @@ sealed interface BoundedBytes {
   /** The body was larger than the cap; nothing beyond the cap was kept. */
   object TooLarge : BoundedBytes
 }
+
+/** Arms a one-shot timer; [onExpiry] runs on some other thread once [timeout] has passed. */
+fun interface BodyDeadline {
+  fun arm(timeout: Duration, onExpiry: () -> Unit)
+}
+
+/** Production [BodyDeadline]: the JDK's shared delayed executor (one daemon thread, no pool of ours). */
+internal val SHARED_BODY_DEADLINE = BodyDeadline { timeout, onExpiry ->
+  CompletableFuture.delayedExecutor(timeout.toMillis(), TimeUnit.MILLISECONDS).execute(onExpiry)
+}
+
+/** How long a body may take once its headers arrived; the request timeout covers only the headers. */
+private const val DEFAULT_BODY_TIMEOUT_SECONDS = 30L
+private val DEFAULT_BODY_TIMEOUT: Duration = Duration.ofSeconds(DEFAULT_BODY_TIMEOUT_SECONDS)
 
 /** Inclusive bounds of the HTTP 2xx status class. */
 private const val SUCCESS_MIN = 200
@@ -29,14 +46,18 @@ private const val SUCCESS_MAX = 299
  * - otherwise the body is accumulated and, the moment it passes the cap (chunked responses carry
  *   no length), the subscription is cancelled and the result is [BoundedBytes.TooLarge].
  */
-internal class BoundedBytesHandler(private val maxBytes: Int) : HttpResponse.BodyHandler<BoundedBytes?> {
+internal class BoundedBytesHandler(
+  private val maxBytes: Int,
+  internal val bodyTimeout: Duration = DEFAULT_BODY_TIMEOUT,
+  private val deadline: BodyDeadline = SHARED_BODY_DEADLINE,
+) : HttpResponse.BodyHandler<BoundedBytes?> {
   override fun apply(responseInfo: HttpResponse.ResponseInfo): HttpResponse.BodySubscriber<BoundedBytes?> {
     if (responseInfo.statusCode() !in SUCCESS_MIN..SUCCESS_MAX) {
       return HttpResponse.BodySubscribers.replacing(null)
     }
     val declared = responseInfo.headers().firstValueAsLong("Content-Length")
     if (declared.isPresent && declared.asLong > maxBytes) return RejectingSubscriber()
-    return LimitingSubscriber(maxBytes)
+    return LimitingSubscriber(maxBytes, bodyTimeout, deadline)
   }
 }
 
@@ -62,10 +83,22 @@ private class RejectingSubscriber : HttpResponse.BodySubscriber<BoundedBytes?> {
   }
 }
 
-/** Accumulates the body until it completes or passes [maxBytes]; the HTTP client calls it serially. */
-private class LimitingSubscriber(private val maxBytes: Int) : HttpResponse.BodySubscriber<BoundedBytes?> {
+/**
+ * Accumulates the body until it completes, passes [maxBytes], or outlives [bodyTimeout]. The HTTP
+ * client calls it serially; the deadline fires on another thread, which is why [subscription] is
+ * volatile and every completion goes through the (thread-safe, first-wins) [result] future. On
+ * expiry the subscription is cancelled and the body fails with [HttpTimeoutException], which
+ * `HttpClient.send` rethrows as such — a stalled or trickling body cannot block the caller forever.
+ */
+private class LimitingSubscriber(
+  private val maxBytes: Int,
+  private val bodyTimeout: Duration,
+  private val deadline: BodyDeadline,
+) : HttpResponse.BodySubscriber<BoundedBytes?> {
   private val result = CompletableFuture<BoundedBytes?>()
   private val buffer = ByteArrayOutputStream()
+
+  @Volatile
   private var subscription: Flow.Subscription? = null
   private var total = 0L
 
@@ -73,6 +106,9 @@ private class LimitingSubscriber(private val maxBytes: Int) : HttpResponse.BodyS
 
   override fun onSubscribe(subscription: Flow.Subscription) {
     this.subscription = subscription
+    deadline.arm(bodyTimeout) {
+      if (result.completeExceptionally(HttpTimeoutException(BODY_TIMED_OUT))) subscription.cancel()
+    }
     subscription.request(Long.MAX_VALUE)
   }
 
@@ -96,6 +132,10 @@ private class LimitingSubscriber(private val maxBytes: Int) : HttpResponse.BodyS
   }
 
   override fun onComplete() {
-    result.complete(BoundedBytes.Ok(buffer.toByteArray()))
+    if (!result.isDone) result.complete(BoundedBytes.Ok(buffer.toByteArray()))
+  }
+
+  private companion object {
+    const val BODY_TIMED_OUT = "Response body not received in time"
   }
 }
