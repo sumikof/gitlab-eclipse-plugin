@@ -128,6 +128,29 @@ class CustomQueryListModelTest : StringSpec({
     model.saveAction() shouldBeSameInstanceAs SaveAction.Nothing
   }
 
+  "restoring defaults sets the default even when the custom list equals the defaults" {
+    val model = CustomQueryListModel(QueryConfig.Custom(CustomQueryDefaults.queries))
+    model.saveAction() shouldBeSameInstanceAs SaveAction.Nothing
+    model.restoreDefaults()
+    model.saveAction() shouldBeSameInstanceAs SaveAction.SetToDefault
+  }
+
+  "restore, edit and edit back sets the default" {
+    val model = CustomQueryListModel(custom("A"))
+    model.restoreDefaults()
+    model.moveDown(0)
+    model.saveAction().shouldBeInstanceOf<SaveAction.Write>()
+    model.moveUp(1)
+    model.saveAction() shouldBeSameInstanceAs SaveAction.SetToDefault
+  }
+
+  "unreadable, replaced from JSON, then restored sets the default" {
+    val model = CustomQueryListModel(unreadable)
+    model.replaceAllFromJson(listOf(query("a", "A")))
+    model.restoreDefaults()
+    model.saveAction() shouldBeSameInstanceAs SaveAction.SetToDefault
+  }
+
   "an edit after restoring defaults writes" {
     val model = CustomQueryListModel(custom("A"), ids())
     model.restoreDefaults()
@@ -154,6 +177,27 @@ class CustomQueryListModelTest : StringSpec({
     model.names() shouldBe listOf("A", "A (copy)", "B")
     model.rows[1].id shouldBe "new-1"
     model.rows[0].name shouldBe "A"
+  }
+
+  "duplicate keeps a name that is not text as is" {
+    val numbered = CustomQuery("n", JsonObject().apply { addProperty("name", 7) })
+    val unnamed = CustomQuery("u", JsonObject())
+    val model = CustomQueryListModel(QueryConfig.Custom(listOf(numbered, unnamed)), ids())
+    model.duplicate(0)
+    model.duplicate(2)
+    model.rows[1].json.get("name") shouldBe JsonPrimitive(7)
+    model.rows[3].json.has("name") shouldBe false
+  }
+
+  "add and replace store a copy of the query json" {
+    val added = query("a", "A")
+    val replacement = query("x", "B")
+    val model = CustomQueryListModel(custom("Z"))
+    model.add(added)
+    model.replace(0, replacement)
+    added.json.addProperty("search", "x")
+    replacement.json.addProperty("search", "x")
+    model.rows.none { it.json.has("search") } shouldBe true
   }
 
   "duplicate deep-copies the json" {

@@ -26,6 +26,8 @@ sealed interface SaveAction {
  * An [QueryConfig.Unreadable] initial config is read-only with no rows: list edits are ignored and nothing is saved
  * until [restoreDefaults] or [replaceAllFromJson] is used, so the stored value is never replaced implicitly. Saving
  * compares the encoded rows with the encoded initial rows, so edits that end equal to the start save nothing.
+ * After [restoreDefaults] rows equal to the defaults always remove the stored value (unless nothing was stored), so
+ * the user is back to "unset" and receives future default changes.
  * Out-of-range indices (and moves past the ends) are no-ops.
  */
 class CustomQueryListModel(
@@ -54,21 +56,21 @@ class CustomQueryListModel(
   fun add(query: CustomQuery) {
     if (isReadOnly) return
     val id = query.id.takeIf { it.isNotBlank() && current.none { row -> row.id == it } } ?: newId()
-    current += CustomQuery(id, query.json, query.invalidElement)
+    current += CustomQuery(id, query.json.deepCopy(), query.invalidElement?.deepCopy())
   }
 
   /** Replaces the row at [index] with [query]'s content; the row keeps its id. */
   fun replace(index: Int, query: CustomQuery) = edit(index) {
-    current[index] = CustomQuery(current[index].id, query.json, query.invalidElement)
+    current[index] = CustomQuery(current[index].id, query.json.deepCopy(), query.invalidElement?.deepCopy())
   }
 
-  /** Inserts a deep copy after [index] with a new id and the name suffixed " (copy)". */
+  /** Inserts a deep copy after [index] with a new id; a text name is suffixed " (copy)", any other name kept. */
   fun duplicate(index: Int) = edit(index) {
     val source = current[index]
     val copy = source.invalidElement?.let { CustomQuery(newId(), JsonObject(), it.deepCopy()) }
       ?: CustomQuery(
         newId(),
-        source.json.deepCopy().apply { addProperty(NAME, source.string(NAME).orEmpty() + COPY_SUFFIX) },
+        source.json.deepCopy().apply { source.string(NAME)?.let { addProperty(NAME, it + COPY_SUFFIX) } },
       )
     current.add(index + 1, copy)
   }
@@ -99,8 +101,9 @@ class CustomQueryListModel(
     if (isReadOnly) return SaveAction.Nothing
     val value = CustomQueryCodec.encode(current)
     return when {
+      restored && initial !is QueryConfig.Defaults && value == CustomQueryCodec.encode(CustomQueryDefaults.queries) ->
+        SaveAction.SetToDefault
       value == initialEncoded -> SaveAction.Nothing
-      restored && value == CustomQueryCodec.encode(CustomQueryDefaults.queries) -> SaveAction.SetToDefault
       else -> SaveAction.Write(value)
     }
   }

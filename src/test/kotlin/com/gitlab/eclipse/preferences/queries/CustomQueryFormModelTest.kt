@@ -100,12 +100,37 @@ class CustomQueryFormModelTest : StringSpec({
     model.toQuery("x").json.has("draft") shouldBe false
   }
 
-  "a stored wip is kept as is when draft changes" {
-    val model = CustomQueryFormModel(stored("""{"wip":"yes"}"""))
+  "draft shows a stored wip when only wip is set" {
+    CustomQueryFormModel(stored("""{"wip":"yes"}""")).get("draft") shouldBe "yes"
+  }
+
+  "draft shows wip when wip and draft conflict, as the request does" {
+    CustomQueryFormModel(stored("""{"wip":"no","draft":"yes"}""")).get("draft") shouldBe "no"
+  }
+
+  "draft ignores a blank or non-text wip like the request does" {
+    CustomQueryFormModel(stored("""{"wip":" ","draft":"yes"}""")).get("draft") shouldBe "yes"
+    CustomQueryFormModel(stored("""{"wip":1,"draft":"no"}""")).get("draft") shouldBe "no"
+  }
+
+  "changing draft writes draft and removes wip" {
+    val model = CustomQueryFormModel(stored("""{"wip":"yes","draft":"yes"}"""))
     model.set("draft", "no")
-    val json = model.toQuery("q1").json
-    json.get("wip") shouldBe JsonPrimitive("yes")
-    json.get("draft") shouldBe JsonPrimitive("no")
+    model.toQuery("q1").json shouldBe obj("""{"draft":"no"}""")
+  }
+
+  "clearing draft removes both draft and wip" {
+    val model = CustomQueryFormModel(stored("""{"wip":"yes"}"""))
+    model.set("draft", "")
+    model.toQuery("q1").json shouldBe obj("""{}""")
+  }
+
+  "an untouched draft keeps a stored wip byte for byte" {
+    val original = """{"wip":"yes","draft":"no","name":"N"}"""
+    val model = CustomQueryFormModel(stored(original))
+    model.set("draft", model.get("draft"))
+    model.set("name", "M")
+    model.toQuery("q1").json shouldBe obj("""{"wip":"yes","draft":"no","name":"M"}""")
   }
 
   "confidential is tri-state yes/no mapped to a boolean" {

@@ -15,10 +15,10 @@ import com.google.gson.JsonPrimitive
  * unknown keys survive and the original is never mutated.
  *
  * Text forms: blank text removes the key; labels are `"a, b"` ↔ `["a","b"]` (trimmed, empties dropped); max results
- * is integer text; draft is `""` / `"yes"` / `"no"` (a stored `wip` is kept as is); confidential is `""` / `"yes"` /
- * `"no"` ↔ absent / `true` / `false`; enums are their wire text. Text that cannot be converted is stored as a JSON
- * string, so [problems] reports it. Setting a field to the text [get] shows is a no-op, so an unedited field keeps its
- * stored JSON exactly.
+ * is integer text; draft is `""` / `"yes"` / `"no"` showing the effective `wip ?: draft`, and changing it writes
+ * `draft` and removes `wip`; confidential is `""` / `"yes"` / `"no"` ↔ absent / `true` / `false`; enums are their
+ * wire text. Text that cannot be converted is stored as a JSON string, so [problems] reports it. Setting a field to
+ * the text [get] shows is a no-op, so an unedited field keeps its stored JSON exactly.
  */
 class CustomQueryFormModel(query: CustomQuery?) {
   private enum class Kind { TEXT, LABELS, NUMBER, BOOLEAN }
@@ -34,7 +34,9 @@ class CustomQueryFormModel(query: CustomQuery?) {
   /** The field's text form; `""` when absent or JSON `null`. */
   fun get(field: String): String {
     val kind = kindOf(field)
-    val element = json.get(field)?.takeUnless { it.isJsonNull } ?: return ""
+    // Draft shows the value the request sends: a non-blank text `wip` wins (CustomQueryRequestBuilder).
+    val shown = if (field == DRAFT && CustomQuery("", json).string(WIP)?.isNotBlank() == true) WIP else field
+    val element = json.get(shown)?.takeUnless { it.isJsonNull } ?: return ""
     return when (kind) {
       Kind.TEXT -> element.show()
       Kind.LABELS -> if (element.isJsonArray) element.asJsonArray.joinToString(", ") { it.show() } else element.show()
@@ -47,6 +49,7 @@ class CustomQueryFormModel(query: CustomQuery?) {
     val kind = kindOf(field)
     if (text == get(field)) return
     edited = true
+    if (field == DRAFT) json.remove(WIP)
     val value = if (text.isBlank()) null else parse(kind, text)
     if (value == null) json.remove(field) else json.add(field, value)
   }
@@ -94,6 +97,8 @@ class CustomQueryFormModel(query: CustomQuery?) {
 
   companion object {
     private const val TYPE = "type"
+    private const val DRAFT = "draft"
+    private const val WIP = "wip"
     private const val YES = "yes"
     private const val NO = "no"
 
