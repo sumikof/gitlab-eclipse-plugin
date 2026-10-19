@@ -9,6 +9,7 @@ import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.treewalk.TreeWalk
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CancellationException
 
 /** What the local object database says about one diff side. */
 sealed interface LocalBlob {
@@ -37,7 +38,10 @@ sealed interface LocalBlob {
  * no `GitOperationGuard` for the same reason. Each of [gitDirs] is opened for one read and closed
  * again; the first whose object database holds the commit answers.
  */
-class LocalBlobReader(private val gitDirs: () -> List<File>) {
+class LocalBlobReader(
+  private val openRepository: (File) -> Repository = ::openExistingGitDir,
+  private val gitDirs: () -> List<File>,
+) {
   /** The blob for [side], capped at [maxBytes]. */
   fun read(side: SideRef, maxBytes: Int): LocalBlob {
     // JGit's ObjectId is SHA-1 only: a 64-hex (SHA-256) SHA cannot be read locally and goes to REST.
@@ -50,14 +54,20 @@ class LocalBlobReader(private val gitDirs: () -> List<File>) {
     return LocalBlob.Unavailable
   }
 
-  /** The answer from [gitDir], or `null` when it lacks the commit or cannot be read. */
+  /**
+   * The answer from [gitDir], or `null` when it lacks the commit or cannot be read — an I/O error or
+   * any JGit runtime failure (a corrupt pack, a malformed object) — so the next candidate, and in
+   * the end REST, is tried. Cancellation is not a read failure and propagates.
+   */
   private fun readFrom(gitDir: File, commitId: ObjectId, path: String, maxBytes: Int): LocalBlob? = try {
-    FileRepositoryBuilder().setGitDir(gitDir).setMustExist(true).build().use { repository ->
+    openRepository(gitDir).use { repository ->
       if (repository.objectDatabase.has(commitId)) blobAt(repository, commitId, path, maxBytes) else null
     }
+  } catch (e: CancellationException) {
+    throw e
   } catch (_: IOException) {
     null
-  } catch (_: IllegalArgumentException) {
+  } catch (_: RuntimeException) {
     null
   }
 
@@ -77,3 +87,7 @@ class LocalBlobReader(private val gitDirs: () -> List<File>) {
     }
   }
 }
+
+/** Opens the existing repository whose git directory is exactly [gitDir]; never creates one. */
+private fun openExistingGitDir(gitDir: File): Repository =
+  FileRepositoryBuilder().setGitDir(gitDir).setMustExist(true).build()

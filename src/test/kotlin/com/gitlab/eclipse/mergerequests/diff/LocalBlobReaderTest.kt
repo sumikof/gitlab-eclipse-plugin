@@ -5,12 +5,17 @@ import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.every
+import io.mockk.mockk
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.api.errors.JGitInternalException
 import org.eclipse.jgit.dircache.DirCacheEditor
 import org.eclipse.jgit.dircache.DirCacheEntry
 import org.eclipse.jgit.lib.FileMode
 import org.eclipse.jgit.lib.ObjectId
+import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.revwalk.RevCommit
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import java.io.File
 
 private const val MAX = 1024
@@ -119,6 +124,35 @@ class LocalBlobReaderTest : DescribeSpec({
     it("is Unavailable when there are no candidates") {
       LocalBlobReader { emptyList() }.read(SideRef("f.txt", "1".repeat(40)), MAX) shouldBeSameInstanceAs
         LocalBlob.Unavailable
+    }
+  }
+
+  describe("LocalBlobReader on a candidate that throws a runtime exception (R5)") {
+    fun brokenRepository(): Repository = mockk<Repository>(relaxed = true).also {
+      every { it.objectDatabase.has(any()) } throws JGitInternalException("corrupt pack")
+    }
+
+    fun realOpen(dir: File): Repository = FileRepositoryBuilder().setGitDir(dir).setMustExist(true).build()
+
+    it("skips it and reads from the next candidate") {
+      val good = Git.init().setDirectory(tempdir()).setInitialBranch("main").call()
+      val commit = good.commitFile("f.txt", "good", "1")
+      val broken = File(tempdir(), ".git")
+
+      val reader = LocalBlobReader(
+        gitDirs = { listOf(broken, good.repository.directory) },
+        openRepository = { dir -> if (dir == broken) brokenRepository() else realOpen(dir) },
+      )
+
+      reader.read(SideRef("f.txt", commit.name), MAX).text() shouldBe "good"
+    }
+
+    it("is Unavailable (so REST is tried) when it is the only candidate") {
+      val broken = File(tempdir(), ".git")
+
+      val reader = LocalBlobReader(gitDirs = { listOf(broken) }, openRepository = { brokenRepository() })
+
+      reader.read(SideRef("f.txt", "1".repeat(40)), MAX) shouldBeSameInstanceAs LocalBlob.Unavailable
     }
   }
 })
