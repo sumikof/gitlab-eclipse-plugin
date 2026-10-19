@@ -50,6 +50,12 @@ private val rows: List<Row> = buildList {
   add(Row("non-string type", ERROR to "type") { addProperty("type", 1) })
   add(Row("unknown target", ERROR to "target") { addProperty("target", "group") })
   add(Row("non-string target", ERROR to "target") { addProperty("target", true) })
+  this += Row("object in a string field", ERROR to "milestone") { set("milestone", """{"title":"m"}""") }
+  this += Row("array in a string field", ERROR to "search") { set("search", """["s"]""") }
+  this += Row("array in maxResults", ERROR to "maxResults") { set("maxResults", "[20]") }
+  this += Row("object in maxResults", ERROR to "maxResults") { set("maxResults", """{"n":20}""") }
+  this += Row("object in a date field", ERROR to "createdAfter") { set("createdAfter", """{"d":"2024-01-02"}""") }
+  this += Row("array in a date field", ERROR to "updatedBefore") { set("updatedBefore", """["2024-01-02"]""") }
   stringFields.forEach { field ->
     add(Row("non-string $field", ERROR to field, baseFor(field)) { addProperty(field, 3) })
   }
@@ -94,6 +100,10 @@ private val rows: List<Row> = buildList {
   this += Row("instance issues without scope (runtime default all)", WARNING to "scope") {
     addProperty("target", "instance")
     remove("scope")
+  }
+  this += Row("instance issues with a blank scope (runtime default all)", WARNING to "scope") {
+    addProperty("target", "instance")
+    addProperty("scope", "  ")
   }
   this += Row("instance issues with excludeSearch", WARNING to "excludeSearch") {
     addProperty("target", "instance")
@@ -142,12 +152,14 @@ class CustomQueryValidatorTest : StringSpec({
     problemsOf(issueBase().apply { addProperty("maxResults", 100) }).shouldBeEmpty()
   }
 
-  "empty sort and orderBy count as absent" {
-    val json = mrBase().apply {
-      addProperty("sort", " ")
-      addProperty("orderBy", "")
+  val blankFields = (listOf("type", "target") + enumFields + stringFields - "name").distinct()
+  blankFields.forEach { field ->
+    listOf("", "  ").forEach { blank ->
+      "a blank $field (\"$blank\") counts as absent on issues and merge requests" {
+        problemsOf(issueBase().apply { addProperty(field, blank) }).shouldBeEmpty()
+        problemsOf(mrBase().apply { addProperty(field, blank) }).shouldBeEmpty()
+      }
     }
-    problemsOf(json).shouldBeEmpty()
   }
 
   "explicit nulls count as absent" {
@@ -188,6 +200,14 @@ class CustomQueryValidatorTest : StringSpec({
     problemsOf(issueBase(), listOf("Q", " Q ", null)).map { it.severity to it.field } shouldBe
       listOf(WARNING to "name")
     problemsOf(issueBase(), listOf("Q", "q", null)).shouldBeEmpty()
+  }
+
+  "warning texts read naturally" {
+    val orderBy = mrBase().apply { addProperty("orderBy", "weight") }
+    val instanceAll = issueBase().apply { addProperty("target", "instance") }
+    problemsOf(orderBy).map { it.message } shouldBe listOf("This order by value applies to issues only.")
+    problemsOf(instanceAll).map { it.message } shouldBe
+      listOf("The all scope for issues in All projects may be rejected on GitLab.com.")
   }
 
   "errors are listed before warnings" {
@@ -232,6 +252,8 @@ class CustomQueryValidatorTest : StringSpec({
 
   "effectiveType defaults to merge requests and rejects unknown values" {
     CustomQueryValidator.effectiveType(query(JsonObject())) shouldBe CustomQueryType.MERGE_REQUESTS
+    CustomQueryValidator.effectiveType(query(parse("""{"type":""}"""))) shouldBe CustomQueryType.MERGE_REQUESTS
+    CustomQueryValidator.effectiveType(query(parse("""{"type":" "}"""))) shouldBe CustomQueryType.MERGE_REQUESTS
     CustomQueryValidator.effectiveType(query(parse("""{"type":"issues"}"""))) shouldBe CustomQueryType.ISSUES
     CustomQueryValidator.effectiveType(query(parse("""{"type":"epics"}"""))) shouldBe CustomQueryType.EPICS
     CustomQueryValidator.effectiveType(query(parse("""{"type":"bugs"}"""))) shouldBe null
@@ -240,6 +262,8 @@ class CustomQueryValidatorTest : StringSpec({
 
   "effectiveTarget defaults to project and rejects invalid values" {
     CustomQueryValidator.effectiveTarget(query(JsonObject())) shouldBe QueryTarget.PROJECT
+    CustomQueryValidator.effectiveTarget(query(parse("""{"target":""}"""))) shouldBe QueryTarget.PROJECT
+    CustomQueryValidator.effectiveTarget(query(parse("""{"target":" "}"""))) shouldBe QueryTarget.PROJECT
     CustomQueryValidator.effectiveTarget(query(parse("""{"target":"instance"}"""))) shouldBe QueryTarget.INSTANCE
     CustomQueryValidator.effectiveTarget(query(parse("""{"target":"group"}"""))) shouldBe null
     CustomQueryValidator.effectiveTarget(query(parse("""{"target":[]}"""))) shouldBe null

@@ -13,7 +13,8 @@ data class QueryProblem(val severity: ProblemSeverity, val field: String, val me
 
 /**
  * Validates one stored query field by field (design §6). Pure. An ERROR means the query is not run; a WARNING is
- * shown in the preference dialog only. Explicit JSON `null` counts as absent.
+ * shown in the preference dialog only. Explicit JSON `null` and a string that is blank after trim count as absent
+ * (VS Code runtime `value || default`, gitlab_service.ts:730-734); a blank name is still an ERROR.
  */
 object CustomQueryValidator {
   private const val MAX_RESULTS_LIMIT = 100
@@ -32,9 +33,6 @@ object CustomQueryValidator {
     "wip" to listOf("yes", "no"),
     "draft" to listOf("yes", "no"),
   )
-
-  /** Blank values of these enum fields count as absent (design §3: empty → not sent). */
-  private val BLANK_AS_ABSENT = setOf("sort", "orderBy")
 
   private val TEXT_FIELDS = listOf(
     "noItemText", "milestone", "excludeMilestone", "author", "excludeAuthor", "assignee", "excludeAssignee",
@@ -73,7 +71,7 @@ object CustomQueryValidator {
     ENUMS.forEach { (field, values) ->
       this += Rule(field, "${label(field)} must be one of: ${values.joinToString()}.") { e ->
         val value = e.text()?.trim()
-        value != null && (value in values || (value.isEmpty() && field in BLANK_AS_ABSENT))
+        value != null && value in values
       }
     }
     this += Rule("maxResults", "Max results must be a whole number from 1 to $MAX_RESULTS_LIMIT.", ::isMaxResults)
@@ -138,7 +136,7 @@ object CustomQueryValidator {
         ISSUE_ONLY_FIELDS.filter { json.present(it) != null }
           .forEach { found += it to "${label(it)} applies to issues only and is ignored for merge requests." }
         if (json.present("orderBy")?.text()?.trim() in ISSUE_ONLY_ORDER_BY) {
-          found += "orderBy" to "This Order by value applies to issues only."
+          found += "orderBy" to "This order by value applies to issues only."
         }
       }
       CustomQueryType.ISSUES -> {
@@ -159,7 +157,7 @@ object CustomQueryValidator {
   private fun instanceIssueWarnings(json: JsonObject): List<Pair<String, String>> {
     val scope = json.present("scope")
     val scopeIsAll = scope == null || scope.text()?.trim() == SCOPE_ALL
-    val scopeWarning = "scope" to "Scope all for issues in All projects may be rejected on GitLab.com."
+    val scopeWarning = "scope" to "The all scope for issues in All projects may be rejected on GitLab.com."
     return listOfNotNull(scopeWarning.takeIf { scopeIsAll }) +
       listOf("excludeSearch", "excludeSearchIn").filter { json.present(it) != null }
         .map { it to "${label(it)} is not supported for issues in All projects." }
@@ -188,8 +186,9 @@ object CustomQueryValidator {
     field.replace(Regex("([A-Z])")) { " " + it.value.lowercase() }.replaceFirstChar { it.uppercase() }
 }
 
-/** The field's element unless it is absent or JSON `null`. */
-private fun JsonObject.present(field: String): JsonElement? = get(field)?.takeUnless { it.isJsonNull }
+/** The field's element unless it is absent, JSON `null` or a string that is blank after trim. */
+private fun JsonObject.present(field: String): JsonElement? =
+  get(field)?.takeUnless { it.isJsonNull || it.text()?.isBlank() == true }
 
 /** The element's value when it is a JSON string, else null. */
 private fun JsonElement.text(): String? = takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
