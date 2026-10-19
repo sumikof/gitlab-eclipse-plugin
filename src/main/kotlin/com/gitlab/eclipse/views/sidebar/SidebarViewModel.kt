@@ -12,6 +12,7 @@ import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiAction
 import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.configErrorMessage
@@ -187,6 +188,9 @@ class SidebarViewModel {
    *
    * The changed files carry a [MergeRequestRef] taken from that very section node, so they have
    * one exactly when the section is built, with the same tags, GID and namespace (design §8.3).
+   * They also carry an [MrDiffSource] built directly from [mr], the two tags and the version — not
+   * from the section — so a merge request without `references.full` can still open a diff
+   * (REVIEW-01 design §5.2).
    */
   fun buildMrChildren(
     webUrl: String,
@@ -201,9 +205,32 @@ class SidebarViewModel {
     return listOf(OverviewNode(webUrl)) +
       section +
       versionResult.fold(
-        onSuccess = { version -> buildChangedFileNodes(version, mode, webUrl, mrRef) },
+        onSuccess = { version ->
+          val diffSource = diffSourceOf(mr, sourceInstanceUrl, sourceAuthFingerprint, version)
+          buildChangedFileNodes(version, mode, webUrl, mrRef, diffSource)
+        },
         onFailure = { error -> failureChildren(error) },
       )
+  }
+
+  /** The per-version diff facts, or `null` when [mr] or either connection tag is missing. */
+  private fun diffSourceOf(
+    mr: GitLabMergeRequest?,
+    sourceInstanceUrl: String?,
+    sourceAuthFingerprint: String?,
+    version: GitLabMrVersion?,
+  ): MrDiffSource? {
+    if (mr == null || sourceInstanceUrl == null || sourceAuthFingerprint == null) return null
+    return MrDiffSource(
+      instanceUrl = sourceInstanceUrl,
+      authFingerprint = sourceAuthFingerprint,
+      projectId = mr.projectId,
+      mrIid = mr.iid,
+      namespaceWithPath = mr.references?.full?.let(DiscussionService::namespaceWithPath),
+      baseSha = version?.baseCommitSha,
+      startSha = version?.startCommitSha,
+      headSha = version?.headCommitSha,
+    )
   }
 
   private fun DiscussionsSectionNode.toMergeRequestRef() =
@@ -223,17 +250,19 @@ class SidebarViewModel {
    * has no diff versions at all) renders the same "No changed files" message as empty diffs.
    * [mrWebUrl] is the enclosing MR's web URL, stamped on each [ChangedFileNode] so
    * `OpenMrFileHandler` can match the node back to a workspace repository; [mrRef] is stamped the
-   * same way, for the editor review session that handler begins (`null`: no session).
+   * same way, for the editor review session that handler begins (`null`: no session), and so is
+   * [diffSource], for opening a base↔head diff (`null`: the diff cannot be opened).
    */
   fun buildChangedFileNodes(
     version: GitLabMrVersion?,
     mode: SidebarViewMode,
     mrWebUrl: String? = null,
     mrRef: MergeRequestRef? = null,
+    diffSource: MrDiffSource? = null,
   ): List<SidebarNode> {
     val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
-    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef) }
+    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef, diffSource) }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
       SidebarViewMode.TREE -> buildChangedFileTree(fileNodes)
@@ -245,6 +274,7 @@ class SidebarViewModel {
     headCommitSha: String?,
     mrWebUrl: String?,
     mrRef: MergeRequestRef?,
+    diffSource: MrDiffSource?,
   ): ChangedFileNode {
     val changeType =
       when {
@@ -253,7 +283,17 @@ class SidebarViewModel {
         diff.renamedFile -> ChangeType.RENAMED
         else -> ChangeType.MODIFIED
       }
-    return ChangedFileNode(diff.oldPath, diff.newPath, changeType, headCommitSha, mrWebUrl, mrRef)
+    return ChangedFileNode(
+      diff.oldPath,
+      diff.newPath,
+      changeType,
+      headCommitSha,
+      mrWebUrl,
+      mrRef,
+      diffSource = diffSource,
+      aMode = diff.aMode,
+      bMode = diff.bMode,
+    )
   }
 
   /**

@@ -26,5 +26,9 @@ data class GitLabMrVersion(
     @SerializedName("too_large") val tooLarge: Boolean? = null,
     /** Whether GitLab omitted [diff] because the file was auto-generated (design §12.2.1). */
     val collapsed: Boolean? = null,
+    /** Git file mode on the base side (e.g. `100644`, `160000` for a submodule); `null` when absent. */
+    @SerializedName("a_mode") val aMode: String? = null,
+    /** Git file mode on the head side; `null` when absent. */
+    @SerializedName("b_mode") val bMode: String? = null,
   )
 }

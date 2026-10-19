@@ -168,6 +168,7 @@ val eclipseDependencies = mapOf(
   "org.eclipse.core.resources" to "0.0.0",
   "org.eclipse.core.net" to "0.0.0",
   "org.eclipse.core.filesystem" to "0.0.0",
+  "org.eclipse.compare" to "0.0.0",
   // Required at runtime because CiActionPropertyTester subclasses
   // org.eclipse.core.expressions.PropertyTester: org.eclipse.ui requires this bundle WITHOUT
   // visibility:=reexport and no other required bundle re-exports it, so our bundle needs its own

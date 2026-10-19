@@ -13,6 +13,7 @@ import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
@@ -261,12 +262,16 @@ class GitLabSidebarView : ViewPart() {
 
     viewer.addDoubleClickListener { event ->
       val node = (event.selection as? IStructuredSelection)?.firstElement as? SidebarNode
-      val url = node?.activationUrl ?: return@addDoubleClickListener
       // Inline rather than a member (keeps the class under the TooManyFunctions threshold).
-      try {
-        PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
-      } catch (e: Exception) {
-        logger.error("Failed to open URL: $url", e)
+      when (val action = sidebarDoubleClick(node)) {
+        is SidebarDoubleClick.OpenDiff -> MrFileDiffEntryPoint.open(action.node)
+        is SidebarDoubleClick.OpenUrl ->
+          try {
+            PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(action.url).toURL())
+          } catch (e: Exception) {
+            logger.error("Failed to open URL: ${action.url}", e)
+          }
+        SidebarDoubleClick.None -> Unit
       }
     }
 
@@ -790,6 +795,24 @@ class GitLabSidebarView : ViewPart() {
  * stable key ([remapInSection]). Only those: an MR expanded under a query root keeps its own
  * identity rather than being mapped onto the current-branch copy of the same MR.
  */
+/** What a double-click on a sidebar node does. */
+internal sealed interface SidebarDoubleClick {
+  /** A changed file opens its base/head diff (REVIEW-01). */
+  class OpenDiff(val node: ChangedFileNode) : SidebarDoubleClick
+
+  /** A node with an activation URL opens it in the external browser. */
+  class OpenUrl(val url: String) : SidebarDoubleClick
+
+  object None : SidebarDoubleClick
+}
+
+/** Routes a double-click on [node]: changed files to the diff, other nodes to their URL if any. */
+internal fun sidebarDoubleClick(node: SidebarNode?): SidebarDoubleClick {
+  if (node is ChangedFileNode) return SidebarDoubleClick.OpenDiff(node)
+  val url = node?.activationUrl ?: return SidebarDoubleClick.None
+  return SidebarDoubleClick.OpenUrl(url)
+}
+
 internal fun remapExpandedElements(
   expanded: List<Any>,
   newInput: List<SidebarNode>,
