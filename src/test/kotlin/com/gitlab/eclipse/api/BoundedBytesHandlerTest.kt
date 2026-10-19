@@ -232,6 +232,14 @@ class BoundedBytesHandlerTest : DescribeSpec({
       deadline.disarmed shouldBe 1
     }
 
+    it("the production deadline thread ends when idle, so it cannot pin a stopped bundle (F2)") {
+      val timer = SharedBodyDeadline.timerForTest()
+
+      timer.allowsCoreThreadTimeOut() shouldBe true
+      (timer.getKeepAliveTime(TimeUnit.SECONDS) in 1L..30L) shouldBe true
+      timer.removeOnCancelPolicy shouldBe true
+    }
+
     it("the production deadline forgets a disarmed timer at once") {
       val before = SharedBodyDeadline.pendingForTest()
 

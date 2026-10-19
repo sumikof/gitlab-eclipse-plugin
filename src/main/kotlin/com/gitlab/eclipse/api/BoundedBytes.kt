@@ -27,20 +27,32 @@ fun interface BodyDeadline {
 }
 
 /**
- * Production [BodyDeadline]: one shared daemon timer thread. A disarmed timer is removed from the
- * queue at once, so a completed body is not kept reachable by its pending deadline.
+ * Production [BodyDeadline]: one shared daemon timer thread that ends after a short idle period. A
+ * disarmed timer is removed from the queue at once, so a completed body is not kept reachable by its
+ * pending deadline.
  */
 internal object SharedBodyDeadline : BodyDeadline {
+  private const val IDLE_KEEP_ALIVE_SECONDS = 5L
+
   private val timer: ScheduledThreadPoolExecutor by lazy {
     ScheduledThreadPoolExecutor(1) { runnable ->
       Thread(runnable, "GitLab MR diff body deadline").apply { isDaemon = true }
-    }.apply { removeOnCancelPolicy = true }
+    }.apply {
+      removeOnCancelPolicy = true
+      // Let the thread die when idle: a lingering worker would pin this bundle's classloader
+      // after the bundle stops; the next arm starts a fresh one.
+      setKeepAliveTime(IDLE_KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
+      allowCoreThreadTimeOut(true)
+    }
   }
 
   override fun arm(timeout: Duration, onExpiry: () -> Unit): () -> Unit {
     val pending = timer.schedule(onExpiry, timeout.toMillis(), TimeUnit.MILLISECONDS)
     return { pending.cancel(false) }
   }
+
+  /** Test-only: the executor, to check its configuration. */
+  internal fun timerForTest(): ScheduledThreadPoolExecutor = timer
 
   /** Test-only: timers still queued. */
   internal fun pendingForTest(): Int = timer.queue.size
