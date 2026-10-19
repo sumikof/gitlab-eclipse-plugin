@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.sidebar.queries
 
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
@@ -44,6 +45,18 @@ class CustomQueryCodecTest : StringSpec({
     unreadable("""{"version":"1","queries":[]}""").reason shouldBe UnreadableReason.WRONG_SHAPE
   }
 
+  "a version that is not a positive integer is the wrong shape" {
+    listOf("0", "-1", "1.5").forEach {
+      unreadable("""{"version":$it,"queries":[]}""").reason shouldBe UnreadableReason.WRONG_SHAPE
+    }
+  }
+
+  "a version above 1 is unsupported however large it is" {
+    listOf("2147483648", "4294967297", "1e999999999").forEach {
+      unreadable("""{"version":$it,"queries":[]}""").reason shouldBe UnreadableReason.UNSUPPORTED_VERSION
+    }
+  }
+
   "unparsable JSON is malformed and a scalar top level is the wrong shape" {
     unreadable("{not json").reason shouldBe UnreadableReason.MALFORMED_JSON
     unreadable("42").reason shouldBe UnreadableReason.WRONG_SHAPE
@@ -67,7 +80,9 @@ class CustomQueryCodecTest : StringSpec({
   "a non-object element is kept as an invalid entry and written back unchanged" {
     val config = custom("""[{"name":"A"}, 7]""")
     config.queries.size shouldBe 2
-    config.queries[1].json.has(INVALID_ELEMENT_FIELD) shouldBe true
+    config.queries[0].invalidElement shouldBe null
+    config.queries[1].invalidElement shouldBe JsonPrimitive(7)
+    config.queries[1].json.size() shouldBe 0
     JsonParser.parseString(CustomQueryCodec.encode(config.queries)) shouldBe
       JsonParser.parseString("""{"version":1,"queries":[{"name":"A","id":"entry-0"},7]}""")
   }
@@ -82,6 +97,13 @@ class CustomQueryCodecTest : StringSpec({
     CustomQueryType.fromWire("nope") shouldBe null
     QueryTarget.fromWire("instance") shouldBe QueryTarget.INSTANCE
     QueryTarget.fromWire("x") shouldBe null
+  }
+
+  "an object that happens to contain the key __invalidElement round-trips unchanged" {
+    val text = """{"version":1,"queries":[{"id":"a","name":"A","__invalidElement":5}]}"""
+    val config = custom(text)
+    config.queries[0].invalidElement shouldBe null
+    JsonParser.parseString(CustomQueryCodec.encode(config.queries)) shouldBe JsonParser.parseString(text)
   }
 
   "decodeText rejects blank text and accepts an empty array" {
