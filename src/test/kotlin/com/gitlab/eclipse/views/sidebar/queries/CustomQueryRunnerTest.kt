@@ -58,7 +58,7 @@ private fun issue(id: Long) = GitLabIssue(id, id, "t$id", "https://gitlab.exampl
 
 private fun mr(id: Long) = GitLabMergeRequest(id, id, "t$id", 1L, "https://gitlab.example.com/m/$id", "opened")
 
-private class Settled(val id: String, val outcome: QueryOutcome, val plan: QueryPlan)
+private class Settled(val id: String, val outcome: QueryOutcome, val executed: QueryPlan.Run?)
 
 /** A fake API answering `fetchListPages` by the request's `search` param. */
 private class FakeApi {
@@ -95,10 +95,14 @@ private class Harness(parallelism: Int = 4) {
 
   fun run(queries: List<CustomQuery>, project: QueryProject? = null, isActive: () -> Boolean = { true }) =
     TestScope(dispatcher).runTest {
-      runner.run(queries, project, connection, isActive) { id, outcome, plan -> settled += Settled(id, outcome, plan) }
+      runner.run(queries, project, connection, isActive) { id, outcome, executed ->
+        settled += Settled(id, outcome, executed)
+      }
     }
 
   fun outcome(id: String): QueryOutcome = settled.single { it.id == id }.outcome
+
+  fun executed(id: String): QueryPlan.Run? = settled.single { it.id == id }.executed
 }
 
 class CustomQueryRunnerTest : StringSpec({
@@ -131,16 +135,20 @@ class CustomQueryRunnerTest : StringSpec({
     h.outcome("invalid").shouldBeInstanceOf<QueryOutcome.Invalid>().message shouldNotContain "nope"
     h.outcome("unsupported") shouldBeSameInstanceAs QueryOutcome.Unsupported
     h.outcome("projectless") shouldBeSameInstanceAs QueryOutcome.NeedsProject
-    h.settled.single { it.id == "ok" }.plan.shouldBeInstanceOf<QueryPlan.Run>().path shouldBe "/issues"
-    h.settled.single { it.id == "unsupported" }.plan shouldBeSameInstanceAs QueryPlan.Unsupported
+    h.executed("ok")?.path shouldBe "/issues"
+    h.executed("forbidden")?.path shouldBe "/merge_requests"
+    h.executed("broken")?.path shouldBe "/issues"
+    listOf("invalid", "unsupported", "projectless").forEach { h.executed(it) shouldBe null }
     h.warnings shouldHaveSize 2
   }
 
   "Invalid outcome carries the validator problem's message" {
     val h = Harness()
     h.run(listOf(query("invalid", """{"name":"x","type":"issues","target":"instance","state":"nope"}""")))
-    val plan = h.settled.single().plan.shouldBeInstanceOf<QueryPlan.Invalid>()
-    h.outcome("invalid").shouldBeInstanceOf<QueryOutcome.Invalid>().message shouldBe plan.problem.message
+    val stored = query("invalid", """{"name":"x","type":"issues","target":"instance","state":"nope"}""")
+    val problem = CustomQueryValidator.validate(stored).first { it.severity == ProblemSeverity.ERROR }
+    h.outcome("invalid").shouldBeInstanceOf<QueryOutcome.Invalid>().message shouldBe problem.message
+    h.executed("invalid") shouldBe null
     h.warnings.shouldBeEmpty()
   }
 
@@ -186,6 +194,8 @@ class CustomQueryRunnerTest : StringSpec({
     verify(exactly = 1) { h.users.getCurrentUser(connection) }
     h.api.requests.map { it.query["author_username"] ?: it.query["reviewer_username"] } shouldContainExactly
       listOf("alice", "alice")
+    h.executed("a")?.params?.get("author_username") shouldBe "alice"
+    h.executed("b")?.params?.get("reviewer_username") shouldBe "alice"
     h.outcome("a").shouldBeInstanceOf<QueryOutcome.Issues>()
     h.outcome("b").shouldBeInstanceOf<QueryOutcome.MergeRequests>()
   }
@@ -217,6 +227,9 @@ class CustomQueryRunnerTest : StringSpec({
     )
     verify(exactly = 1) { h.users.getCurrentUser(connection) }
     h.outcome("me1").shouldBeInstanceOf<QueryOutcome.Failed>().kind shouldBe QueryFailureKind.CURRENT_USER
+    h.executed("me1") shouldBe null
+    h.executed("me2") shouldBe null
+    h.executed("plain")?.params?.get("search") shouldBe "plain"
     h.outcome("me2").shouldBeInstanceOf<QueryOutcome.Failed>().kind shouldBe QueryFailureKind.CURRENT_USER
     h.outcome("plain").shouldBeInstanceOf<QueryOutcome.Issues>()
     h.api.requests.map { it.query["search"] } shouldContainExactly listOf("plain")
@@ -317,5 +330,97 @@ class CustomQueryRunnerTest : StringSpec({
     }
     h.settled.shouldBeEmpty()
     h.warnings.shouldBeEmpty()
+    h.api.requests.map { it.query["search"] } shouldContainExactly listOf("a")
+  }
+  "a failure seen after the refresh became inactive is not logged" {
+    val h = Harness(parallelism = 1)
+    var active = true
+    h.api.responses["a"] = { _, _ ->
+      active = false
+      throw GitLabApiException(500, "{}", null)
+    }
+    shouldThrow<CancellationException> {
+      h.run(listOf(q("a", "issues", "a")), isActive = { active })
+    }
+    h.settled.shouldBeEmpty()
+    h.warnings.shouldBeEmpty()
+  }
+
+  "a throwing callback is logged and affects neither the other queries nor run" {
+    val h = Harness()
+    h.api.ok("a", PagedResult(listOf(issue(1)), truncated = false))
+    h.api.ok("b", PagedResult(listOf(issue(2)), truncated = false))
+    val seen = mutableListOf<String>()
+    TestScope(h.dispatcher).runTest {
+      h.runner.run(listOf(q("a", "issues", "a"), q("b", "issues", "b")), null, connection, { true }) { id, _, _ ->
+        seen += id
+        check(id != "a") { EXCEPTION_TEXT }
+      }
+    }
+    seen shouldContainExactly listOf("a", "b")
+    h.warnings shouldContainExactly listOf(
+      "Sidebar query callback failed: position=1 exceptionType=java.lang.IllegalStateException",
+    )
+  }
+
+  "the callback runs without holding a permit" {
+    val pool = Executors.newFixedThreadPool(4)
+    try {
+      val api = FakeApi()
+      val fetched = mapOf("a" to CountDownLatch(1), "b" to CountDownLatch(1))
+      fetched.forEach { (tag, latch) ->
+        api.responses[tag] = { _, _ ->
+          latch.countDown()
+          PagedResult(listOf(issue(1)), truncated = false)
+        }
+      }
+      val dispatcher = pool.asCoroutineDispatcher()
+      val runner = CustomQueryRunner(api.client, mockk(), {}, parallelism = 1, dispatcher = dispatcher)
+      val callbacks = AtomicInteger()
+      var otherFetchedDuringFirstCallback = false
+      runBlocking(pool.asCoroutineDispatcher()) {
+        runner.run(listOf(q("a", "issues", "a"), q("b", "issues", "b")), null, connection, { true }) { id, _, _ ->
+          if (callbacks.getAndIncrement() == 0) {
+            val other = fetched.getValue(if (id == "a") "b" else "a")
+            otherFetchedDuringFirstCallback = other.await(10, TimeUnit.SECONDS)
+          }
+        }
+      }
+      otherFetchedDuringFirstCallback shouldBe true
+    } finally {
+      pool.shutdownNow()
+    }
+  }
+
+  "cancelling the caller while a query is in flight settles nothing afterwards" {
+    val pool = Executors.newFixedThreadPool(2)
+    try {
+      val api = FakeApi()
+      val arrived = CountDownLatch(1)
+      val gate = CountDownLatch(1)
+      val finished = CountDownLatch(1)
+      api.responses["a"] = { _, _ ->
+        arrived.countDown()
+        check(gate.await(10, TimeUnit.SECONDS)) { "gate never opened" }
+        finished.countDown()
+        PagedResult(listOf(issue(1)), truncated = false)
+      }
+      val runner = CustomQueryRunner(api.client, mockk(), {}, dispatcher = pool.asCoroutineDispatcher())
+      val settled = Collections.synchronizedList(mutableListOf<String>())
+      runBlocking {
+        val job = launch(pool.asCoroutineDispatcher()) {
+          runner.run(listOf(q("a", "issues", "a")), null, connection, { true }) { id, _, _ -> settled += id }
+        }
+        check(arrived.await(10, TimeUnit.SECONDS))
+        job.cancel()
+        gate.countDown()
+        job.join()
+        job.isCancelled shouldBe true
+      }
+      finished.count shouldBe 0L
+      settled.shouldBeEmpty()
+    } finally {
+      pool.shutdownNow()
+    }
   }
 })

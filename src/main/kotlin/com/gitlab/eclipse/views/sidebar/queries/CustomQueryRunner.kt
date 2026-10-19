@@ -24,10 +24,6 @@ private const val DEFAULT_PARALLELISM = 4
 private const val UNKNOWN_TYPE = "unknown"
 private const val ABSENT = "-"
 
-/** Stands in for a plan when building one threw unexpectedly; the query settles as Failed(GENERIC). */
-private val UNPLANNED =
-  QueryPlan.Invalid(QueryProblem(ProblemSeverity.ERROR, "query", "Query could not be prepared."))
-
 /**
  * Runs custom queries in isolation (design §7): one query's failure never affects another, at most [parallelism]
  * are in flight, `<current_user>` is resolved at most once and only when a runnable query uses it. Network work runs
@@ -49,18 +45,19 @@ class CustomQueryRunner(
     project: QueryProject?,
     connection: ConnectionSnapshot,
     isActive: () -> Boolean,
-    onSettled: (queryId: String, outcome: QueryOutcome, plan: QueryPlan) -> Unit,
+    onSettled: (queryId: String, outcome: QueryOutcome, executed: QueryPlan.Run?) -> Unit,
   ) {
     val semaphore = Semaphore(parallelism)
-    val run = Run(project, connection, isActive)
+    val state = RunState(project, connection, isActive)
     coroutineScope {
       queries.mapIndexed { index, query ->
         async(dispatcher) {
-          semaphore.withPermit {
-            val (outcome, plan) = run.settle(index, query)
-            currentCoroutineContext().ensureActive()
-            if (!isActive()) throw CancellationException("Sidebar queries refresh is no longer active")
-            onSettled(query.id, outcome, plan)
+          val (outcome, executed) = semaphore.withPermit { state.settle(index, query) }
+          currentCoroutineContext().ensureActive()
+          state.ensureActive()
+          runCatching { onSettled(query.id, outcome, executed) }.onFailure { e ->
+            if (e is CancellationException) throw e
+            log("Sidebar query callback failed: position=${index + 1} exceptionType=${e.javaClass.name}")
           }
         }
       }.awaitAll()
@@ -68,7 +65,7 @@ class CustomQueryRunner(
   }
 
   /** One [run] call's shared state. */
-  private inner class Run(
+  private inner class RunState(
     private val project: QueryProject?,
     private val connection: ConnectionSnapshot,
     private val isActive: () -> Boolean,
@@ -76,14 +73,22 @@ class CustomQueryRunner(
     private val userMutex = Mutex()
     private var currentUser: Result<String>? = null
 
-    suspend fun settle(index: Int, query: CustomQuery): Pair<QueryOutcome, QueryPlan> {
+    /** Throws [CancellationException] once the refresh is no longer active. */
+    fun ensureActive() {
+      if (!isActive()) throw CancellationException("Sidebar queries refresh is no longer active")
+    }
+
+    /** The query's outcome and the request actually sent (null when none was sent). */
+    suspend fun settle(index: Int, query: CustomQuery): Pair<QueryOutcome, QueryPlan.Run?> {
+      ensureActive()
       val draft = runCatching { CustomQueryRequestBuilder.plan(query, project, CURRENT_USER_PLACEHOLDER) }
-        .getOrElse { return failed(index, query, it, UNPLANNED) }
-      if (draft !is QueryPlan.Run) return notRunnable(draft) to draft
+        .getOrElse { return failed(index, query, it, executed = null) }
+      if (draft !is QueryPlan.Run) return notRunnable(draft) to null
       val plan = if (CustomQueryRequestBuilder.usesCurrentUser(query)) {
-        val username = currentUsername().getOrElse { return failed(index, query, it, draft, currentUser = true) }
+        val username = currentUsername()
+          .getOrElse { return failed(index, query, it, executed = null, forCurrentUser = true) }
         runCatching { CustomQueryRequestBuilder.plan(query, project, username) as QueryPlan.Run }
-          .getOrElse { return failed(index, query, it, UNPLANNED) }
+          .getOrElse { return failed(index, query, it, executed = null) }
       } else {
         draft
       }
@@ -116,17 +121,19 @@ class CustomQueryRunner(
           .also { currentUser = it }
       }
 
-    private fun failed(
+    private suspend fun failed(
       index: Int,
       query: CustomQuery,
       e: Throwable,
-      plan: QueryPlan,
-      currentUser: Boolean = false,
-    ): Pair<QueryOutcome, QueryPlan> {
+      executed: QueryPlan.Run?,
+      forCurrentUser: Boolean = false,
+    ): Pair<QueryOutcome, QueryPlan.Run?> {
       if (e is CancellationException) throw e
-      val outcome = if (currentUser) QueryOutcome.Failed(QueryFailureKind.CURRENT_USER) else classifyFailure(e)
+      currentCoroutineContext().ensureActive()
+      ensureActive()
+      val outcome = if (forCurrentUser) QueryOutcome.Failed(QueryFailureKind.CURRENT_USER) else classifyFailure(e)
       warn(index, query, outcome.kind, e)
-      return outcome to plan
+      return outcome to executed
     }
   }
 
