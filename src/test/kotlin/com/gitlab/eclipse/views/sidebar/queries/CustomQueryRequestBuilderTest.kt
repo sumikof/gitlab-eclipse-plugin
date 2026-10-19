@@ -241,7 +241,9 @@ class CustomQueryRequestBuilderTest : StringSpec({
       addProperty("name", " ")
       addProperty("scope", "nope")
     }
-    plan(json) shouldBe QueryPlan.Invalid(CustomQueryValidator.validate(CustomQuery("q", json)).first())
+    val problems = CustomQueryValidator.validate(CustomQuery("q", json))
+    val firstError = problems.first { it.severity == ProblemSeverity.ERROR }
+    plan(json) shouldBe QueryPlan.Invalid(firstError)
     (plan(json) as QueryPlan.Invalid).problem.field shouldBe "name"
   }
 
@@ -266,14 +268,40 @@ class CustomQueryRequestBuilderTest : StringSpec({
     params["labels"] shouldBe "x&y,日本"
   }
 
-  "usesCurrentUser looks at the five user fields, trimmed" {
-    fun uses(field: String, value: String) =
-      CustomQueryRequestBuilder.usesCurrentUser(CustomQuery("q", base(MRS).apply { addProperty(field, value) }))
-    listOf("author", "assignee", "reviewer", "excludeAuthor", "excludeAssignee").forEach { field ->
-      uses(field, " $ME ") shouldBe true
+  "usesCurrentUser looks only at the user fields sent for the type, trimmed" {
+    fun uses(type: String, field: String, value: String = " $ME ") =
+      CustomQueryRequestBuilder.usesCurrentUser(CustomQuery("q", base(type).apply { addProperty(field, value) }))
+    listOf("author", "assignee", "excludeAuthor", "excludeAssignee").forEach { uses(ISSUES, it) shouldBe true }
+    listOf("author", "assignee", "reviewer").forEach { uses(MRS, it) shouldBe true }
+    uses(ISSUES, "reviewer") shouldBe false
+    uses(MRS, "excludeAuthor") shouldBe false
+    uses(MRS, "excludeAssignee") shouldBe false
+    uses(MRS, "search", ME) shouldBe false
+    uses(MRS, "author", "bob") shouldBe false
+    uses("snippets", "author") shouldBe false
+    uses("Issues", "author") shouldBe false
+  }
+
+  "a current-user value in a field not sent for the type needs no username" {
+    plan(base(MRS).apply { addProperty("excludeAuthor", ME) }, user = null).shouldBeInstanceOf<QueryPlan.Run>()
+    plan(base(ISSUES).apply { addProperty("reviewer", ME) }, user = null).shouldBeInstanceOf<QueryPlan.Run>()
+  }
+
+  "Any and None are classified on the stored value, before the current user is substituted" {
+    fun params(type: String, field: String) =
+      (plan(base(type).apply { addProperty(field, ME) }, user = "none") as QueryPlan.Run).params
+    params(ISSUES, "assignee").let {
+      it["assignee_username"] shouldBe "none"
+      it shouldNotContainKey "assignee_id"
     }
-    uses("search", ME) shouldBe false
-    uses("author", "bob") shouldBe false
+    params(MRS, "assignee").let {
+      it["assignee_username[]"] shouldBe "none"
+      it shouldNotContainKey "assignee_id"
+    }
+    params(MRS, "reviewer").let {
+      it["reviewer_username"] shouldBe "none"
+      it shouldNotContainKey "reviewer_id"
+    }
   }
 
   "a current-user query without a resolved username is a caller error" {

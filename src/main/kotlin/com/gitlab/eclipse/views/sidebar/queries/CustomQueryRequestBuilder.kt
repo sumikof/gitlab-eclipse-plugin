@@ -26,13 +26,24 @@ sealed interface QueryPlan {
 object CustomQueryRequestBuilder {
   private const val SCOPE_ALL = "all"
   private const val SEARCH_IN_ALL = "title,description"
-  private val USER_FIELDS = listOf("author", "assignee", "reviewer", "excludeAuthor", "excludeAssignee")
+  private val ISSUE_USER_FIELDS = listOf("author", "assignee", "excludeAuthor", "excludeAssignee")
+  private val MR_USER_FIELDS = listOf("author", "assignee", "reviewer")
   private val KEPT_SCOPES = setOf("assigned_to_me", "created_by_me")
   private val ANY_OR_NONE = listOf("Any", "None")
 
-  /** True when any user field holds [CURRENT_USER_PLACEHOLDER] (trimmed); the caller resolves `/user` first. */
-  fun usesCurrentUser(query: CustomQuery): Boolean =
-    USER_FIELDS.any { query.string(it)?.trim() == CURRENT_USER_PLACEHOLDER }
+  /**
+   * True when a user field sent for the query's effective type holds [CURRENT_USER_PLACEHOLDER] (trimmed): issues
+   * author, assignee, excludeAuthor, excludeAssignee; MRs author, assignee, reviewer. Unsupported or invalid type →
+   * false. The caller resolves `/user` first.
+   */
+  fun usesCurrentUser(query: CustomQuery): Boolean {
+    val fields = when (CustomQueryValidator.effectiveType(query)) {
+      CustomQueryType.ISSUES -> ISSUE_USER_FIELDS
+      CustomQueryType.MERGE_REQUESTS -> MR_USER_FIELDS
+      else -> emptyList()
+    }
+    return fields.any { query.string(it)?.trim() == CURRENT_USER_PLACEHOLDER }
+  }
 
   /**
    * Invalid (first validator ERROR) → Unsupported type → NeedsProject → Run. Throws [IllegalStateException] when
@@ -59,16 +70,19 @@ object CustomQueryRequestBuilder {
       map["state"] = text("state") ?: "opened"
       map["scope"] = text("scope")?.takeIf { it in KEPT_SCOPES } ?: SCOPE_ALL
       put("author_username", user("author"))
-      val assignee = user("assignee")
+      val assigneeAnyOrNone = anyOrNone("assignee")
       when {
-        anyOrNone(assignee) != null -> put("assignee_id", anyOrNone(assignee))
-        issues -> put("assignee_username", assignee)
-        else -> put("assignee_username[]", assignee)
+        assigneeAnyOrNone != null -> put("assignee_id", assigneeAnyOrNone)
+        issues -> put("assignee_username", user("assignee"))
+        else -> put("assignee_username[]", user("assignee"))
       }
       if (!issues) {
-        val reviewer = user("reviewer")
-        val reviewerAnyOrNone = anyOrNone(reviewer)
-        if (reviewerAnyOrNone != null) put("reviewer_id", reviewerAnyOrNone) else put("reviewer_username", reviewer)
+        val reviewerAnyOrNone = anyOrNone("reviewer")
+        if (reviewerAnyOrNone != null) {
+          put("reviewer_id", reviewerAnyOrNone)
+        } else {
+          put("reviewer_username", user("reviewer"))
+        }
       }
       put("in", searchIn("searchIn"))
       if (!issues) put("wip", text("wip") ?: text("draft"))
@@ -111,7 +125,11 @@ object CustomQueryRequestBuilder {
         ?.mapNotNull { e -> e.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() } }
         ?.takeIf { it.isNotEmpty() }?.joinToString(",")
 
-    private fun anyOrNone(value: String?): String? = ANY_OR_NONE.firstOrNull { it.equals(value, ignoreCase = true) }
+    /** `Any` / `None` when the stored value (trimmed, before `<current_user>` substitution) is one of them. */
+    private fun anyOrNone(field: String): String? {
+      val value = text(field)
+      return ANY_OR_NONE.firstOrNull { it.equals(value, ignoreCase = true) }
+    }
   }
 
   private fun JsonElement.isBoolean() = isJsonPrimitive && asJsonPrimitive.isBoolean
