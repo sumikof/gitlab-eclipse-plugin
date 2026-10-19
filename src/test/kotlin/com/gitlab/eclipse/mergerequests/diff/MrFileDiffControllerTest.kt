@@ -382,4 +382,20 @@ class MrFileDiffControllerTest : DescribeSpec({
       world.jobs.map { it.cancelled } shouldBe listOf(true, true)
     }
   }
+
+  describe("a non-current delivery (F6)") {
+    it("still releases its generation in finally") {
+      val controller = controller()
+      controller.open(ok(request(head = HEAD_1)))
+      controller.open(ok(request(head = HEAD_2)))
+      val (oldJob, _) = world.jobs
+      val tracked = MrFileDiffRegistry.trackedForTest()
+
+      world.run(oldJob)
+      world.drainUi()
+
+      world.opened.shouldBeEmpty()
+      MrFileDiffRegistry.trackedForTest() shouldBe tracked - 1
+    }
+  }
 })
