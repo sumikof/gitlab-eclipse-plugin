@@ -11,7 +11,6 @@ import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
-import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
@@ -23,8 +22,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import org.eclipse.jface.action.MenuManager
@@ -91,6 +88,17 @@ class GitLabSidebarView : ViewPart() {
   private val currentBranchMrLookup by lazy { CurrentBranchMrLookup() }
   private val pipelineService by lazy { PipelineService() }
   private val jobService by lazy { JobService() }
+  private val currentBranchFetcher by lazy {
+    CurrentBranchSectionFetcher(
+      repositoryContextResolver,
+      currentBranchGitReader,
+      currentBranchMrLookup,
+      pipelineService,
+      jobService,
+      apiClient,
+      errorLog = { message, e -> logger.error(message, e) },
+    )
+  }
 
   private lateinit var viewer: TreeViewer
 
@@ -307,103 +315,14 @@ class GitLabSidebarView : ViewPart() {
   }
 
   /**
-   * Unit B: the "For current branch" section. Shared pre-step, ONCE per refresh: resolve
-   * the repository, then read the branch snapshot and its effective ref, so the MR lookup
-   * and the pipeline ref work from the SAME branch state — a checkout switch mid-refresh
-   * cannot make them diverge (R2-1). No repository settles the slot as [NoRepository]
-   * without starting sub-tasks. Otherwise the MR and pipeline fetches run as independent
-   * sub-tasks, each settling its own side of the [Resolved] payload; the other side is
-   * preserved by re-reading the slot inside [applyCompose]'s UI-thread update step, so the
-   * two sub-tasks never race each other's halves.
+   * Unit B: the "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
+   * §2.3). Each of its updates is applied to the generation's live slot inside [applyCompose]'s
+   * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
    */
   private suspend fun fetchCurrentBranch(slots: RefreshSlots, activeEditorFile: File?) {
-    // JGit enumeration/resolution (IO). resolveNonInteractive and read never throw by
-    // contract; a null context means no repository resolved non-interactively (none, or
-    // several and no active editor to disambiguate) — distinct from a resolved repository
-    // with no MR, which renders as "No merge request found".
-    val context = repositoryContextResolver.resolveNonInteractive(activeEditorFile)
-    if (context == null) {
-      applyCompose(slots) { slots.currentBranch = Slot.Settled(NoRepository) }
-      return
-    }
-    val branch = currentBranchGitReader.read(File(context.gitDir))
-    val effectiveRef = EffectiveRef.resolve(branch, context.remoteName)
-    // Repository resolved, both sides still loading: paint the two placeholders now.
-    applyCompose(slots) { slots.currentBranch = Slot.Settled(Resolved(mr = null, pipeline = null)) }
-
-    // Fresh-payload invariant (RefreshSlots KDoc): each sub-task's payload below is freshly
-    // constructed by its own fetch — never a cached/reused instance — so the coordinator's
-    // identity-keyed memo sees every settle as a change. The blocking fetches inside have no
-    // suspension points, so cancellation (a newer refresh() or dispose() cancelling fetchJob)
-    // is observed explicitly: ensureActive between the two GETs, isActive between jobs pages.
-    // The resulting CancellationException must propagate (never be runCatching'd into a
-    // rendered failure) — it cancels this child cleanly and paints nothing.
-    suspend fun fetchSnapshot(ref: String): PipelineSnapshot? {
-      // Captured ONCE per snapshot fetch (design doc §8.5): both GETs below are pinned to
-      // this connection, and its non-secret tags ride the snapshot onto the nodes, so a
-      // concurrent gitlab.url/token change can neither split the two GETs across instances
-      // nor leave the nodes tagged with a connection they were not fetched over. May throw
-      // UnstableConnectionException, which settles as a pipeline-load failure in the
-      // enclosing launch's catch — acceptable, no special handling.
-      val connection = apiClient.captureConnection()
-      val pipeline = pipelineService.getLatestPipelineForRef(context.projectId, ref, connection) ?: return null
-      // Cancelled during the synchronous pipeline GET: stop here instead of starting the
-      // jobs fetch (which would otherwise run to its 15s paging deadline for nothing).
-      currentCoroutineContext().ensureActive()
-      val job = currentCoroutineContext()[Job]
-      val jobsResult = try {
-        Result.success(
-          jobService.getJobsForPipeline(
-            context.projectId,
-            pipeline.id,
-            isActive = { job?.isActive != false },
-            connection = connection,
-          ),
-        )
-      } catch (e: CancellationException) {
-        throw e // Cancelled between jobs pages: cancel the coroutine, don't render a failure.
-      } catch (e: Exception) {
-        Result.failure(e)
-      }
-      // Logged so the "Failed to load jobs" child has a matching Error Log entry; the
-      // pipeline row itself still renders from the successfully fetched pipeline.
-      jobsResult.exceptionOrNull()?.let {
-        logger.error("Failed to load jobs for pipeline #${pipeline.id}.", it)
-      }
-      return PipelineSnapshot(pipeline, jobsResult, connection.instanceUrl, connection.authFingerprint)
-    }
-
-    supervisorScope {
-      launch {
-        val mrResult = runCatching { currentBranchMrLookup.lookup(context, branch) }
-        mrResult.exceptionOrNull()?.let {
-          logger.error("Failed to load current-branch merge request.", it)
-        }
-        applyCompose(slots) {
-          slots.currentBranch = Slot.Settled(resolvedOf(slots).copy(mr = mrResult))
-        }
-      }
-      launch {
-        // A detached HEAD has no ref to query pipelines for: a settled "no pipeline"
-        // (success(null) → no row at all), not an error.
-        val pipelineResult: Result<PipelineSnapshot?> =
-          if (effectiveRef == null) {
-            Result.success(null)
-          } else {
-            try {
-              Result.success(fetchSnapshot(effectiveRef))
-            } catch (e: CancellationException) {
-              throw e // Propagate: a cancelled refresh paints nothing (not a failure row).
-            } catch (e: Exception) {
-              Result.failure(e)
-            }
-          }
-        pipelineResult.exceptionOrNull()?.let {
-          logger.error("Failed to load current-branch pipeline.", it)
-        }
-        applyCompose(slots) {
-          slots.currentBranch = Slot.Settled(resolvedOf(slots).copy(pipeline = pipelineResult))
-        }
+    currentBranchFetcher.fetch(activeEditorFile, previous = null, soft = false) { update ->
+      applyCompose(slots) {
+        slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
       }
     }
   }
@@ -674,9 +593,6 @@ class GitLabSidebarView : ViewPart() {
  * happen once the resolved pre-step has run). Read on the UI thread only, inside
  * `applyCompose`'s update step.
  */
-private fun resolvedOf(slots: RefreshSlots): Resolved =
-  (slots.currentBranch as? Slot.Settled)?.value as? Resolved ?: Resolved(mr = null, pipeline = null)
-
 /**
  * Remaps a captured expanded-elements list onto a freshly composed [newInput] (R9): the
  * top-level node INSTANCES change per compose — [QueryRootNode]s and the
