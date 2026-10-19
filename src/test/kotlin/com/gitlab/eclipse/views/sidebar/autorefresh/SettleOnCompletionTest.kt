@@ -72,4 +72,9 @@ class SettleOnCompletionTest : StringSpec({
     job.cancel()
     settled shouldContainExactly listOf(6L to SettleOutcome.Unknown)
   }
+
+  "settleOutcomeOf: no head means no repository (tracking cleared), a head means Looked" {
+    settleOutcomeOf(null) shouldBe SettleOutcome.NoRepository
+    settleOutcomeOf(HEAD) shouldBe SettleOutcome.Looked(HEAD)
+  }
 })
