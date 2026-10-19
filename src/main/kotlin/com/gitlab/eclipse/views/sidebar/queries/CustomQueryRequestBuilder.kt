@@ -58,7 +58,11 @@ object CustomQueryRequestBuilder {
     if (target == QueryTarget.PROJECT && project == null) return QueryPlan.NeedsProject
     check(!usesCurrentUser(query) || currentUsername != null) { "current user not resolved" }
     val prefix = project?.takeIf { target == QueryTarget.PROJECT }?.let { "/projects/${it.encodedId}" }.orEmpty()
-    val maxItems = query.json.get("maxResults")?.takeIf { it.isJsonPrimitive }?.asDouble?.toInt()
+    // Only a JSON number counts: a blank string is absent (the validator rejects any other non-number).
+    val maxItems = query.json.get("maxResults")
+      ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+      ?.asDouble
+      ?.toInt()
     return QueryPlan.Run("$prefix/${type.wire}", Params(query, currentUsername).build(type), maxItems)
   }
 

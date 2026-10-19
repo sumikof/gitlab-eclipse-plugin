@@ -225,6 +225,14 @@ class CustomQueryRequestBuilderTest : StringSpec({
     (plan(base(MRS)) as QueryPlan.Run).maxItems shouldBe null
   }
 
+  "a blank maxResults is absent: the query runs with no item limit" {
+    listOf("", "  ").forEach { blank ->
+      val plan = plan(base(MRS).apply { addProperty("maxResults", blank) })
+      plan.shouldBeInstanceOf<QueryPlan.Run>()
+      plan.maxItems shouldBe null
+    }
+  }
+
   "unsupported types are not run" {
     listOf("snippets", "epics", "vulnerabilities").forEach { type ->
       plan(base(type)) shouldBe QueryPlan.Unsupported

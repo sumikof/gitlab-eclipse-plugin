@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.sidebar.queries
 
 import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.views.sidebar.ApplyScope
 import com.gitlab.eclipse.views.sidebar.RefreshSlots
 import com.gitlab.eclipse.views.sidebar.Slot
 import com.gitlab.eclipse.views.sidebar.acceptsApply
@@ -68,6 +69,7 @@ private class ControllerHarness(val fake: FakeStore = FakeStore()) {
   val scope = CoroutineScope(StandardTestDispatcher(scheduler) + parent)
   val calls = mutableListOf<WorkCall>()
   val logs = mutableListOf<String>()
+  val applies = mutableListOf<ApplyScope>()
   var slots: RefreshSlots? = null
   var fullRefreshes = 0
   private var nextGeneration = 1L
@@ -84,6 +86,7 @@ private class ControllerHarness(val fake: FakeStore = FakeStore()) {
     resolveProject = { _: File? -> null },
     uiHop = { it() },
     apply = { target, applyScope, update ->
+      applies += applyScope
       if (target.acceptsApply({ it == slots?.generation }, applyScope)) update()
     },
     currentSlots = { slots },
@@ -241,5 +244,27 @@ class SidebarQueriesControllerTest : StringSpec({
     h.logs shouldContainExactly listOf("Sidebar queries setting unreadable: reason=UNSUPPORTED_VERSION")
     h.controller.refreshQueries()
     h.logs shouldHaveSize 2
+  }
+
+  // (d) a full refresh with nothing to run still composes the queries section
+
+  "a full refresh of an empty list requests exactly one queries apply under the current epoch" {
+    val h = ControllerHarness()
+    h.fake.stored = """{"version":1,"queries":[]}"""
+    val slots = h.fullRefresh()
+    h.applies shouldContainExactly listOf(ApplyScope.Queries(slots.queriesEpoch))
+  }
+
+  "a full refresh of an unreadable setting requests exactly one queries apply under the current epoch" {
+    val h = ControllerHarness()
+    h.fake.stored = "not json"
+    val slots = h.fullRefresh()
+    h.applies shouldContainExactly listOf(ApplyScope.Queries(slots.queriesEpoch))
+  }
+
+  "a full refresh with queries to run requests no apply of its own: the settles compose" {
+    val h = ControllerHarness()
+    h.fullRefresh()
+    h.applies.shouldBeEmpty()
   }
 })

@@ -62,12 +62,15 @@ class SidebarQueriesController(
   /**
    * UI thread, from the view's full refresh with the new generation's [slots]: decodes the setting into a fresh
    * [QueriesSlot], drops every cached result and re-runs ALL queries (no reuse), replacing the previous queries job.
+   * With no query to run (an empty list or an unreadable setting) no settle will ever compose the queries section, so
+   * one queries apply is requested here instead.
    */
   fun onFullRefresh(slots: RefreshSlots, activeEditorFile: File?) {
     if (disposed) return
     slots.queries = QueriesSlot(readConfig())
     cache.clear()
     launch(slots, QueryReuse.None, activeEditorFile)
+    if (slots.queries.queries.isEmpty()) apply(slots, ApplyScope.Queries(slots.queriesEpoch)) {}
   }
 
   /**
