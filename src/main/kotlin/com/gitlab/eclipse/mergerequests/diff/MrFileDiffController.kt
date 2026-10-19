@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.mergerequests.diff
 
 import com.gitlab.eclipse.utils.logger
+import java.util.concurrent.CancellationException
 
 /**
  * The platform seams of [MrFileDiffController]: Jobs, the UI thread, the Compare editor and
@@ -12,9 +13,16 @@ interface MrDiffPorts {
 
   /**
    * Runs [work] in the background under [name]. [onCancelHandle] receives, on the calling (UI)
-   * thread, a function that cancels this work; `isCancelled` reflects it.
+   * thread, a function that cancels this work; `isCancelled` reflects it. [onEndedWithoutRunning]
+   * is called (any thread) when the work ends without ever having run — a Job cancelled while it
+   * was still waiting — so the caller can release what it reserved for it.
    */
-  fun schedule(name: String, work: (isCancelled: () -> Boolean) -> Unit, onCancelHandle: (() -> Unit) -> Unit)
+  fun schedule(
+    name: String,
+    work: (isCancelled: () -> Boolean) -> Unit,
+    onCancelHandle: (() -> Unit) -> Unit,
+    onEndedWithoutRunning: () -> Unit,
+  )
 
   /** Runs [block] on the UI thread later, if the display is still alive. */
   fun uiHop(block: () -> Unit)
@@ -56,14 +64,24 @@ class MrFileDiffController(private val loader: MrFileDiffLoader, private val por
     val identity = request.fileIdentity
     cancelHandles.remove(identity)?.second?.invoke()
     ports.schedule(
-      JOB_NAME,
-      { isCancelled ->
-        val outcome = loader.load(request) { isCancelled() || !MrFileDiffRegistry.active }
-        ports.uiHop { deliver(request, generation, outcome) }
+      name = JOB_NAME,
+      work = { isCancelled ->
+        var outcome: LoadOutcome = LoadOutcome.Cancelled
+        try {
+          outcome = loader.load(request) { isCancelled() || !MrFileDiffRegistry.active }
+        } catch (_: CancellationException) {
+          outcome = LoadOutcome.Cancelled
+        } finally {
+          // Always hop, whatever escaped: deliver's finally is what releases the generation.
+          val delivered = outcome
+          ports.uiHop { deliver(request, generation, delivered) }
+        }
       },
-    ) { cancel ->
-      if (MrFileDiffRegistry.isCurrent(key, generation)) cancelHandles[identity] = generation to cancel
-    }
+      onCancelHandle = { cancel ->
+        if (MrFileDiffRegistry.isCurrent(key, generation)) cancelHandles[identity] = generation to cancel
+      },
+      onEndedWithoutRunning = { ports.uiHop { deliver(request, generation, LoadOutcome.Cancelled) } },
+    )
   }
 
   private fun deliver(request: MrFileDiffRequest, generation: Long, outcome: LoadOutcome) {

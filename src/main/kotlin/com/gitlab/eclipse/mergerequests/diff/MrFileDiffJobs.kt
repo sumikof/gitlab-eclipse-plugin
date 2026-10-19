@@ -99,15 +99,12 @@ internal class EclipseMrDiffPorts(
     return activateExisting(key, page)
   }
 
-  override fun schedule(name: String, work: DiffWork, onCancelHandle: (() -> Unit) -> Unit) =
-    schedule(name, work, onCancelHandle) {}
-
   /**
    * UI thread. Creates the Job, registers its cancel handle, and only then schedules it, so the
    * handle exists before the Job can finish. [onEndedWithoutRunning] fires if the Job is cancelled
-   * before it ever ran (any thread); [MrDiffPorts.schedule] cannot pass one yet and uses a no-op.
+   * before it ever ran (any thread).
    */
-  fun schedule(
+  override fun schedule(
     name: String,
     work: DiffWork,
     onCancelHandle: (() -> Unit) -> Unit,

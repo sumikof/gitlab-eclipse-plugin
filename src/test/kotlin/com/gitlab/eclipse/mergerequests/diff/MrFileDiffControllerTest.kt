@@ -46,7 +46,11 @@ private class FakeWorld(var existingEditors: Set<MrFileDiffKey> = emptySet()) : 
   val notified = mutableListOf<String>()
   val findOpenCalls = mutableListOf<MrFileDiffKey>()
 
-  inner class PendingJob(val name: String, val work: (() -> Boolean) -> Unit) {
+  inner class PendingJob(
+    val name: String,
+    val work: (() -> Boolean) -> Unit,
+    val onEndedWithoutRunning: () -> Unit,
+  ) {
     var cancelled = false
     var ran = false
   }
@@ -63,8 +67,9 @@ private class FakeWorld(var existingEditors: Set<MrFileDiffKey> = emptySet()) : 
     name: String,
     work: (isCancelled: () -> Boolean) -> Unit,
     onCancelHandle: (() -> Unit) -> Unit,
+    onEndedWithoutRunning: () -> Unit,
   ) {
-    val job = PendingJob(name, work)
+    val job = PendingJob(name, work, onEndedWithoutRunning)
     jobs += job
     onCancelHandle { job.cancelled = true }
   }
@@ -81,12 +86,25 @@ private class FakeWorld(var existingEditors: Set<MrFileDiffKey> = emptySet()) : 
     notified += message
   }
 
-  /** Runs [job] on the "background" tag, then drains the UI queue on the "ui" tag. */
+  /** Runs [job] on the "background" tag; whatever escapes the work is recorded, as a Job would swallow it. */
   fun run(job: PendingJob) {
     tag = "background"
     job.ran = true
-    job.work { job.cancelled }
-    tag = "ui"
+    try {
+      job.work { job.cancelled }
+    } catch (e: Throwable) {
+      escaped += e
+    } finally {
+      tag = "ui"
+    }
+  }
+
+  val escaped = mutableListOf<Throwable>()
+
+  /** The job manager ends [job] without ever running it (cancelled while waiting). */
+  fun endWithoutRunning(job: PendingJob) {
+    job.ran = true
+    job.onEndedWithoutRunning()
   }
 
   fun drainUi() {
@@ -104,6 +122,7 @@ class MrFileDiffControllerTest : DescribeSpec({
 
   lateinit var world: FakeWorld
   var sourceAnswer: (SideRef) -> SideContent = { SideContent.Bytes(it.sha.toByteArray()) }
+  var captureAnswer: () -> ConnectionSnapshot = { SNAPSHOT }
 
   fun controller(): MrFileDiffController {
     val source = MrFileContentSource { _, side, _ ->
@@ -112,7 +131,7 @@ class MrFileDiffControllerTest : DescribeSpec({
     }
     val capture = {
       world.loaderTags += world.tag
-      SNAPSHOT
+      captureAnswer()
     }
     return MrFileDiffController(MrFileDiffLoader(capture, source), world)
   }
@@ -121,6 +140,7 @@ class MrFileDiffControllerTest : DescribeSpec({
     MrFileDiffRegistry.resetForTest()
     world = FakeWorld()
     sourceAnswer = { side -> SideContent.Bytes(side.sha.toByteArray()) }
+    captureAnswer = { SNAPSHOT }
   }
   afterSpec { MrFileDiffRegistry.resetForTest() }
 
@@ -308,6 +328,38 @@ class MrFileDiffControllerTest : DescribeSpec({
       MrDiffMessages.message(DiffFailure.NOT_FOUND_OR_DENIED) shouldBe
         "The file is not available at this revision, or you do not have access. Refresh the merge request."
       DiffFailure.entries.map(MrDiffMessages::message).forEach { it shouldNotContain "null" }
+    }
+  }
+
+  describe("a load that never delivers still releases its key (R2)") {
+    it("a job that ends without running lets the same key be scheduled again") {
+      val controller = controller()
+
+      controller.open(ok(request()))
+      world.endWithoutRunning(world.jobs.single())
+      world.drainUi()
+      controller.open(ok(request()))
+
+      world.jobs shouldHaveSize 2
+      world.notified.shouldBeEmpty()
+      world.runAll()
+      world.opened shouldHaveSize 1
+    }
+
+    it("a CancellationException thrown by the loader is a silent Cancelled and the key can be opened again") {
+      captureAnswer = { throw java.util.concurrent.CancellationException() }
+      val controller = controller()
+
+      controller.open(ok(request()))
+      world.runAll()
+      captureAnswer = { SNAPSHOT }
+      controller.open(ok(request()))
+      world.runAll()
+
+      world.escaped.shouldBeEmpty()
+      world.notified.shouldBeEmpty()
+      world.jobs shouldHaveSize 2
+      world.opened shouldHaveSize 1
     }
   }
 })

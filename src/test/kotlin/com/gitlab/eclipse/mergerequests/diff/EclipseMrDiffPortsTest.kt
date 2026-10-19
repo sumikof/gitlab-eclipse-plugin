@@ -54,7 +54,7 @@ class EclipseMrDiffPortsTest : DescribeSpec({
       val world = World()
       var handle: (() -> Unit)? = null
 
-      world.ports.schedule("n", {}) { handle = it }
+      world.ports.schedule("n", {}, { handle = it }) {}
 
       verifyOrder {
         world.job.isUser = false
