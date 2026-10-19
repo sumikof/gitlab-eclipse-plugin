@@ -8,6 +8,7 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import io.mockk.verifyOrder
@@ -52,10 +53,20 @@ class EclipseMrDiffPortsTest : DescribeSpec({
   describe("schedule") {
     it("hands out the cancel handle before scheduling, and the handle cancels the job") {
       val world = World()
+      val calls = mutableListOf<String>()
+      every { world.job.schedule() } answers { calls += "schedule" }
       var handle: (() -> Unit)? = null
 
-      world.ports.schedule("n", {}, { handle = it }) {}
+      world.ports.schedule(
+        "n",
+        {},
+        {
+          calls += "handle"
+          handle = it
+        },
+      ) {}
 
+      calls shouldContainExactly listOf("handle", "schedule")
       verifyOrder {
         world.job.isUser = false
         world.job.schedule()

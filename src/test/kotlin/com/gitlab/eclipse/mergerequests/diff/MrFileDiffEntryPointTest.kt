@@ -85,6 +85,24 @@ class MrFileDiffEntryPointTest : DescribeSpec({
       MrFileDiffRegistry.active shouldBe false
     }
 
+    it("the production stop never builds a controller that was not used yet (R2-1)") {
+      MrFileDiffEntryPoint.controllerCreatedForTest() shouldBe false
+      var built = 0
+      val original = MrFileDiffEntryPoint.controllerFactory
+      MrFileDiffEntryPoint.controllerFactory = {
+        built++
+        error("stop must not build the controller")
+      }
+      try {
+        MrFileDiffEntryPoint.onStop(cancelJobs = {}, closeEditors = {})
+      } finally {
+        MrFileDiffEntryPoint.controllerFactory = original
+      }
+
+      built shouldBe 0
+      MrFileDiffEntryPoint.controllerCreatedForTest() shouldBe false
+    }
+
     it("the production stop is safe headless and start re-activates the registry") {
       MrFileDiffEntryPoint.onStop()
       MrFileDiffRegistry.active shouldBe false

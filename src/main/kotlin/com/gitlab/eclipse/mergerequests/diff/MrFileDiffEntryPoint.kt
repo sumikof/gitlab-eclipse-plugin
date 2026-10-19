@@ -14,7 +14,10 @@ import java.io.File
  * cancel the older load. UI thread only.
  */
 object MrFileDiffEntryPoint {
-  private val controllerHolder = lazy { MrFileDiffController(productionLoader(), EclipseMrDiffPorts()) }
+  /** Builds the controller on the first open; a seam so a test can prove stop never calls it. */
+  internal var controllerFactory: () -> MrFileDiffController =
+    { MrFileDiffController(productionLoader(), EclipseMrDiffPorts()) }
+  private val controllerHolder = lazy { controllerFactory() }
   private val controller by controllerHolder
 
   /** UI thread. Opens the diff of [node], or explains why it cannot. Never throws. */
@@ -50,6 +53,9 @@ object MrFileDiffEntryPoint {
   private fun deactivateControllerIfCreated() {
     if (controllerHolder.isInitialized()) controller.onDeactivate()
   }
+
+  /** Test-only: whether the controller has been built. */
+  internal fun controllerCreatedForTest(): Boolean = controllerHolder.isInitialized()
 
   /** Bundle start, UI thread: loads may deliver again; generations from before the stop never do. */
   fun onStart() {
