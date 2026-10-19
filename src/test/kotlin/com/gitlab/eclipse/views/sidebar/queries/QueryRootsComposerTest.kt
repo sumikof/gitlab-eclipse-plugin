@@ -182,6 +182,7 @@ class QueryRootsComposerTest : StringSpec({
     c.reset()
     c.compose(slot, SidebarViewMode.LIST).single() shouldNotBeSameInstanceAs first
   }
+
   "queryOutcomeMessage never throws for an item outcome (generic text fallback)" {
     queryOutcomeMessage(QueryOutcome.Issues(emptyList(), false)) shouldBe LOAD_FAILED_MESSAGE
     queryOutcomeMessage(QueryOutcome.MergeRequests(emptyList(), true)) shouldBe LOAD_FAILED_MESSAGE

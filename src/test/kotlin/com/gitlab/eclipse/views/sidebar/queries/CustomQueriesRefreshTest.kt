@@ -177,4 +177,16 @@ class CustomQueriesRefreshTest : StringSpec({
     h.run(listOf(instanceQuery), reuse, isActive = { active })
     h.settled.shouldBeEmpty()
   }
+
+  "an Error is handled like any other unexpected failure: pending queries settle GENERIC" {
+    val h = RefreshHarness()
+    val reuse = object : QueryReuse {
+      override fun isSettled(queryId: String) = false
+      override fun outcomeFor(queryId: String, plan: QueryPlan.Run): QueryOutcome? =
+        throw StackOverflowError(SECRET_TEXT)
+    }
+    h.run(listOf(instanceQuery), reuse)
+    h.outcome("inst").shouldBeInstanceOf<QueryOutcome.Failed>().kind shouldBe QueryFailureKind.GENERIC
+    h.warnings shouldContainExactly listOf("Sidebar queries failed: exceptionType=java.lang.StackOverflowError")
+  }
 })

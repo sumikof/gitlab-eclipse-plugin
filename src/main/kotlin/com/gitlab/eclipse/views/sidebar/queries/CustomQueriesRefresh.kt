@@ -49,7 +49,8 @@ class CustomQueriesRefresh(
       runner.run(queries, project, connection, isActive, reuse, settle)
     } catch (e: CancellationException) {
       throw e
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+      // Throwable, not Exception: an Error (e.g. StackOverflowError) must not strand the roots nor reach the scope.
       log("Sidebar queries failed: exceptionType=${e.javaClass.name}")
       if (isActive()) {
         toRun.filterNot { it.id in done }.forEach { query ->

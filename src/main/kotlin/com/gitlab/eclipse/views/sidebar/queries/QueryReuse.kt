@@ -49,9 +49,11 @@ fun carryOverUnchanged(previous: List<CustomQuery>, next: List<CustomQuery>): Li
 }
 
 /**
- * Stage (a) and the stage (b) snapshot for [queries] (design §7): a query whose [previous] slot is settled and whose
- * config print equals the cached one is settled with the cached outcome; every other query with a cached list
- * outcome and request print goes into the stage (b) snapshot. UI thread (the cache is not thread-safe).
+ * Stage (a) and the stage (b) snapshot for [queries] (design §7): a query whose [previous] slot is settled with a LIST
+ * outcome ([QueryOutcome.Issues] / [QueryOutcome.MergeRequests]) and whose config print equals the cached one is
+ * settled with the cached outcome; a failure or message outcome (Failed, NeedsProject, …) always re-runs, so a
+ * settings change is also a retry. Every other query with a cached list outcome and request print goes into the stage
+ * (b) snapshot. UI thread (the cache is not thread-safe).
  */
 fun CustomQueryResultCache.reuseFor(
   queries: List<CustomQuery>,
@@ -61,7 +63,8 @@ fun CustomQueryResultCache.reuseFor(
   val requests = HashMap<String, Pair<String, QueryOutcome>>()
   queries.forEach { query ->
     val wasSettled = previous[query.id] is Slot.Settled
-    val reusable = if (wasSettled) reusableOutcome(query.id, QueryFingerprints.config(query)) else null
+    val cached = if (wasSettled) reusableOutcome(query.id, QueryFingerprints.config(query)) else null
+    val reusable = cached?.takeIf(::isList)
     if (reusable != null) {
       settled[query.id] = reusable
     } else {
@@ -70,3 +73,6 @@ fun CustomQueryResultCache.reuseFor(
   }
   return CachedQueryReuse(settled, requests)
 }
+
+private fun isList(outcome: QueryOutcome): Boolean =
+  outcome is QueryOutcome.Issues || outcome is QueryOutcome.MergeRequests

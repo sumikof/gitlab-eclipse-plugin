@@ -35,11 +35,26 @@ class QueryReuseTest : StringSpec({
     reuse.isSettled("a") shouldBe true
   }
 
-  "stage (a): a non-list outcome (failure, message) is reused too" {
+  "stage (a): a non-list outcome (failure, NeedsProject, Unsupported, Invalid) is not reused: it re-runs" {
     val old = q("a", """{"type":"issues"}""")
-    val failed = QueryOutcome.Failed(QueryFailureKind.GENERIC)
-    val reuse = cacheWith(old, failed, executed = null).reuseFor(listOf(old), mapOf("a" to Slot.Settled(failed)))
-    reuse.settled["a"] shouldBeSameInstanceAs failed
+    val outcomes = listOf(
+      QueryOutcome.Failed(QueryFailureKind.GENERIC),
+      QueryOutcome.NeedsProject,
+      QueryOutcome.Unsupported,
+      QueryOutcome.Invalid("x"),
+    )
+    outcomes.forEach { outcome ->
+      val reuse = cacheWith(old, outcome, executed = null).reuseFor(listOf(old), mapOf("a" to Slot.Settled(outcome)))
+      reuse.isSettled("a") shouldBe false
+      reuse.settled.shouldBeEmpty()
+    }
+  }
+
+  "stage (a): a merge request list outcome is reused" {
+    val old = q("a", """{"type":"merge_requests"}""")
+    val outcome = QueryOutcome.MergeRequests(emptyList(), truncated = true)
+    val reuse = cacheWith(old, outcome).reuseFor(listOf(old), mapOf("a" to Slot.Settled(outcome)))
+    reuse.settled["a"] shouldBeSameInstanceAs outcome
   }
 
   "stage (a): a previous outcome still Pending is not reused (Loading)" {

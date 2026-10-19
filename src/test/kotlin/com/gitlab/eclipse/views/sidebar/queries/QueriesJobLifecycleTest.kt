@@ -95,4 +95,15 @@ class QueriesJobLifecycleTest : StringSpec({
     h.logs.single() shouldNotContain "secret-message-text"
     sibling.cancel()
   }
+
+  "an Error thrown by the body does not cancel the shared scope either" {
+    val h = LifecycleHarness()
+    val sibling = h.scope.launch { awaitCancellation() }
+    h.lifecycle.launch { throw StackOverflowError("secret-message-text") }
+    h.drain()
+    h.parent.isActive shouldBe true
+    sibling.isActive shouldBe true
+    h.logs shouldContainExactly listOf("Sidebar queries refresh failed: exceptionType=java.lang.StackOverflowError")
+    sibling.cancel()
+  }
 })
