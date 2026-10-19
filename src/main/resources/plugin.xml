@@ -129,6 +129,12 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.OpenMrFileDiff"
+                name="Open Diff"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.RetryPipeline"
                 name="Retry Pipeline"
                 categoryId="gitlab-eclipse-plugin">
@@ -827,6 +833,11 @@
         <handler
                 commandId="com.gitlab.eclipse.commands.OpenMrFile"
                 class="com.gitlab.eclipse.mergerequests.OpenMrFileHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.OpenMrFileDiff"
+                class="com.gitlab.eclipse.mergerequests.diff.OpenMrFileDiffHandler"
         />
 
         <handler
@@ -1568,6 +1579,18 @@
             <command
                     commandId="com.gitlab.eclipse.commands.OpenMrFile"
                     label="Open Merge Request File">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <instanceof value="com.gitlab.eclipse.views.sidebar.ChangedFileNode"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.OpenMrFileDiff"
+                    label="Open Diff">
                 <visibleWhen checkEnabled="false">
                     <with variable="activeMenuSelection">
                         <iterate ifEmpty="false">

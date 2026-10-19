@@ -11,6 +11,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.mergerequests.diff.MrFileDiffRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import io.kotest.assertions.throwables.shouldNotThrowAny
@@ -81,6 +82,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
     JobLogGenerationRegistry.resetForTest()
     CiLintGenerationRegistry.resetForTest()
     DiscussionGenerationRegistry.resetForTest()
+    MrFileDiffRegistry.resetForTest()
   }
 
   /** A UI turn that runs the block inline, as syncExec does when stop() is already on the UI thread. */
@@ -266,7 +268,15 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "Review sessions",
         "Job log editors",
         "Merged YAML editors",
+        "MR diff editors",
       )
+    }
+
+    it("the production steps stop the MR diff registry") {
+      shouldNotThrowAny { startup(inlineTurn).stop(mockk<BundleContext>()) }
+
+      MrFileDiffRegistry.active shouldBe false
+      verifyLaterStepsRan()
     }
 
     it("the production steps deactivate all three registries") {
@@ -396,6 +406,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
       shouldNotThrowAny { startup.activateGenerationRegistries() }
 
       registriesActive() shouldBe listOf(true, true, true)
+      MrFileDiffRegistry.active shouldBe true
       JobLogGenerationRegistry.shouldAct(key, preStop) shouldBe false
     }
 
@@ -423,6 +434,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "CI lint registry",
         "Discussion registry",
         "Job log registry",
+        "MR diff registry",
         "MR thread popups",
       )
     }

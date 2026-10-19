@@ -21,6 +21,7 @@ import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.plugins.pluginModule
+import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.review.MrThreadPopups
 import com.gitlab.eclipse.mergerequests.review.ReviewSessionRegistry
@@ -368,6 +369,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // internally if the workbench is closing (editors die with it).
       LifecycleStep("Job log editors") { JobLogEditorOpener.disposeAtShutdown() },
       LifecycleStep("Merged YAML editors") { MergedYamlEditorOpener.disposeAtShutdown() },
+      // MR file diffs (REVIEW-01): flag down first, then cancel the diff Job family, then close the
+      // diff editors unless the workbench is closing. Contained inside; never throws.
+      LifecycleStep("MR diff editors") { MrFileDiffEntryPoint.onStop() },
     )
 
     /**
@@ -381,6 +385,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       LifecycleStep("CI lint registry") { CiLintGenerationRegistry.onActivate() },
       LifecycleStep("Discussion registry") { DiscussionGenerationRegistry.onActivate() },
       LifecycleStep("Job log registry") { JobLogGenerationRegistry.onActivate() },
+      LifecycleStep("MR diff registry") { MrFileDiffEntryPoint.onStart() },
       // Wires the review-session hooks (ruler click → popup, close on release, refresh on reload)
       // in the same UI turn the discussion lifecycle comes up.
       LifecycleStep("MR thread popups") { MrThreadPopups.install() },
