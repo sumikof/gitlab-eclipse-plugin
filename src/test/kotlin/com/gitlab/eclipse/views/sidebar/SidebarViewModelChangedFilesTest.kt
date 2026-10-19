@@ -1,6 +1,8 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.google.gson.Gson
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
@@ -205,5 +207,120 @@ class SidebarViewModelChangedFilesTest : StringSpec({
     nodes shouldHaveSize 2
     (nodes[0] is OverviewNode) shouldBe true
     (nodes[1] as MessageNode).label shouldBe "Failed to load — see the Error Log."
+  }
+
+  fun mr(references: GitLabMergeRequest.Reference? = null) =
+    GitLabMergeRequest(
+      id = 900L,
+      iid = 12L,
+      title = "t",
+      projectId = 42L,
+      webUrl = "https://gl.example/g/p/-/merge_requests/12",
+      state = "opened",
+      references = references,
+    )
+
+  fun fullVersion(diffs: List<GitLabMrVersion.Diff>) =
+    GitLabMrVersion(
+      id = 3L,
+      headCommitSha = "h".repeat(40),
+      baseCommitSha = "b".repeat(40),
+      startCommitSha = "s".repeat(40),
+      diffs = diffs,
+    )
+
+  fun expectedSource(namespaceWithPath: String?) =
+    MrDiffSource(
+      instanceUrl = "https://gl.example",
+      authFingerprint = "fp",
+      projectId = 42L,
+      mrIid = 12L,
+      namespaceWithPath = namespaceWithPath,
+      baseSha = "b".repeat(40),
+      startSha = "s".repeat(40),
+      headSha = "h".repeat(40),
+    )
+
+  fun mrChildren(
+    v: GitLabMrVersion,
+    mode: SidebarViewMode = SidebarViewMode.LIST,
+    mr: GitLabMergeRequest? = mr(),
+    instanceUrl: String? = "https://gl.example",
+    fingerprint: String? = "fp",
+  ) = vm.buildMrChildren("https://gl.example/mr", Result.success(v), mode, mr, instanceUrl, fingerprint)
+
+  "buildMrChildren: stamps the version's diff source on every ChangedFileNode even without references" {
+    val v = fullVersion(listOf(diff(oldPath = "a.kt", newPath = "a.kt"), diff(oldPath = "b.kt", newPath = "b.kt")))
+
+    val nodes = mrChildren(v)
+
+    nodes.filterIsInstance<DiscussionsSectionNode>() shouldHaveSize 0
+    val files = nodes.filterIsInstance<ChangedFileNode>()
+    files shouldHaveSize 2
+    files.forEach { it.diffSource shouldBe expectedSource(namespaceWithPath = null) }
+  }
+
+  "buildMrChildren: the diff source carries the namespace path when references are present" {
+    val v = fullVersion(listOf(diff(oldPath = "a.kt", newPath = "a.kt")))
+    val withRefs = mr(GitLabMergeRequest.Reference("group/project!12"))
+
+    val nodes = mrChildren(v, mr = withRefs)
+
+    nodes.filterIsInstance<ChangedFileNode>().single().diffSource shouldBe expectedSource("group/project")
+  }
+
+  "buildMrChildren: copies a_mode / b_mode onto the node" {
+    val v = fullVersion(listOf(diff(oldPath = "sub", newPath = "sub").copy(aMode = "160000", bMode = "100644")))
+
+    val node = mrChildren(v).filterIsInstance<ChangedFileNode>().single()
+
+    node.aMode shouldBe "160000"
+    node.bMode shouldBe "100644"
+  }
+
+  "buildMrChildren: without connection tags or without an MR the diff source is null" {
+    val v = fullVersion(listOf(diff(oldPath = "a.kt", newPath = "a.kt")))
+
+    val noTags = mrChildren(v, instanceUrl = null, fingerprint = null)
+    val noFp = mrChildren(v, fingerprint = null)
+    val noMr = mrChildren(v, mr = null)
+
+    listOf(noTags, noFp, noMr).forEach { nodes ->
+      nodes.filterIsInstance<ChangedFileNode>().single().diffSource shouldBe null
+    }
+  }
+
+  "buildMrChildren: nodes are 1:1 with diffs in API order, same basenames in different dirs kept" {
+    val v =
+      fullVersion(
+        listOf(
+          diff(oldPath = "b/Main.kt", newPath = "b/Main.kt"),
+          diff(oldPath = "a/Main.kt", newPath = "a/Main.kt"),
+          diff(oldPath = null, newPath = "c/Main.kt", newFile = true),
+        ),
+      )
+
+    val files = mrChildren(v).filterIsInstance<ChangedFileNode>()
+
+    files.map { it.newPath } shouldBe listOf("b/Main.kt", "a/Main.kt", "c/Main.kt")
+    files.forEach { it.diffSource shouldBe expectedSource(null) }
+  }
+
+  "TREE mode keeps diffSource and modes on the leaf nodes" {
+    val v =
+      fullVersion(
+        listOf(
+          diff(oldPath = "src/main/A.kt", newPath = "src/main/A.kt").copy(aMode = "100644", bMode = "100755"),
+          diff(oldPath = "README.md", newPath = "README.md"),
+        ),
+      )
+
+    val tree = mrChildren(v, SidebarViewMode.TREE)
+
+    val leaf = tree.filterIsInstance<ChangedDirectoryNode>().single().children.single() as ChangedFileNode
+    leaf.diffSource shouldBe expectedSource(null)
+    leaf.aMode shouldBe "100644"
+    leaf.bMode shouldBe "100755"
+    tree.filterIsInstance<ChangedFileNode>().single().diffSource shouldBe expectedSource(null)
   }
 })

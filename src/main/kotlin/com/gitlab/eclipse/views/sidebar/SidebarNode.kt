@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.model.GitLabNotePermissions
 import com.gitlab.eclipse.api.model.GitLabNotePosition
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiStatus
+import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 
 /**
@@ -132,6 +133,11 @@ enum class ChangeType { NEW, DELETED, RENAMED, MODIFIED }
  * once the file is open (editor-thread-ui design §8.3, FR-1). It is non-null exactly when the
  * sibling [DiscussionsSectionNode] could be built — same connection tags, same GID and namespace —
  * and `null` otherwise, in which case the file opens as before without a session.
+ *
+ * [diffSource] holds the version's base/start/head SHAs, the target project and iid, and the
+ * connection tags the list was fetched with, so the node alone can open a base↔head diff
+ * (REVIEW-01 design §5.2). Unlike [mrRef] it does not require `references.full`; it is `null` only
+ * when the MR or a connection tag was unavailable. [aMode]/[bMode] are the diff's git file modes.
  */
 class ChangedFileNode(
   val oldPath: String?,
@@ -140,6 +146,9 @@ class ChangedFileNode(
   val diffHeadSha: String?,
   val mrWebUrl: String? = null,
   val mrRef: MergeRequestRef? = null,
+  val diffSource: MrDiffSource? = null,
+  val aMode: String? = null,
+  val bMode: String? = null,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()
