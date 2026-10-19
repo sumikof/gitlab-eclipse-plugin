@@ -71,10 +71,28 @@ class GitLabLanguageServerProcessProvider(
   internal val isRunning: Boolean
     get() = synchronized(lifecycleLock) { process != null }
 
+  /**
+   * Starts the language server. Never throws: bundle activation calls this without a catch of its
+   * own, so a failure here (no install for this platform, a failed extraction, a spawn error) would
+   * skip the rest of activation. The failure is logged, the provider stays stopped, and a later
+   * [restart] retries from that clean state.
+   */
   fun start(bundle: Bundle) {
     // Fire-and-forget: workbench startup must never block on the initialize handshake,
     // so the future returned by startLocked is deliberately ignored here.
-    synchronized(lifecycleLock) { startLocked(bundle) }
+    synchronized(lifecycleLock) {
+      try {
+        startLocked(bundle)
+      } catch (_: LanguageServerNotInstalledException) {
+        // The installer has already logged the reason as one clear error (for example "not bundled
+        // for linux/aarch64"); a second error with a stack trace would only bury it.
+        logger.info("The Language Server stays stopped: it could not be installed.")
+      } catch (e: Exception) {
+        logger.error("Failed to start the Language Server.", e)
+        // Only a start that got as far as a process has anything to undo.
+        if (process != null) stopLocked()
+      }
+    }
   }
 
   fun stop(): Unit = synchronized(lifecycleLock) { stopLocked() }
@@ -118,7 +136,7 @@ class GitLabLanguageServerProcessProvider(
 
   private fun startLocked(bundle: Bundle): CompletableFuture<InitializeResult> {
     val languageServerInstallationPath = languageServerInstaller.install()
-      ?: error("Language server installation failed")
+      ?: throw LanguageServerNotInstalledException()
 
     val startedProcess = try {
       processFactory(createProcessBuilder(languageServerInstallationPath))
@@ -389,3 +407,6 @@ private fun resetTerminalContextState(logger: ILog) {
   runCatching { service<TerminalContextSourceProvider>().reset() }
     .onFailure { logger.warn("Skipped the terminal context state reset: ${it.javaClass.simpleName}") }
 }
+
+/** [LanguageServerInstaller.install] returned null; the installer has logged why. */
+private class LanguageServerNotInstalledException : IllegalStateException("Language server installation failed")

@@ -7,6 +7,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.time.Instant
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.Path
@@ -338,7 +339,9 @@ tasks.register("lspDownloadGenericPackageJson") {
   val outputDir = rootProject.layout.buildDirectory.dir("gitlab-lsp")
   val outputFile = outputDir.get().file("generic_packages.json")
 
-  outputs.dir(outputDir)
+  inputs.property("lspVersion", extractGitLabLspVersion())
+  inputs.property("lspSha256", pinnedGitLabLspTarballSha256())
+  outputs.file(outputFile)
 
   doLast {
     // Ask for the pinned version by name rather than listing every generic package: the
@@ -357,6 +360,26 @@ tasks.register("lspDownloadGenericPackageJson") {
       }
     }
   }
+}
+
+// The sha256 of the gitlab-lsp release tarball, pinned in gradle.properties next to the version in package.json.
+fun pinnedGitLabLspTarballSha256(): String =
+  providers.gradleProperty("gitlabLspTarballSha256").orNull
+    ?.takeIf { it.isNotBlank() }
+    ?: error("Missing gitlabLspTarballSha256 in gradle.properties: the gitlab-lsp tarball cannot be verified.")
+
+// Streams the file through SHA-256 and returns the lowercase hex digest.
+fun sha256Hex(file: File): String {
+  val digest = MessageDigest.getInstance("SHA-256")
+  file.inputStream().buffered().use { input ->
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+      val read = input.read(buffer)
+      if (read < 0) break
+      digest.update(buffer, 0, read)
+    }
+  }
+  return digest.digest().joinToString("") { "%02x".format(it) }
 }
 
 // Parse package.json to get gitlab-lsp version
@@ -379,7 +402,9 @@ tasks.register("lspDownloadGenericPackageFilesJson") {
   val gitlabLspDir = buildDir.resolve("gitlab-lsp")
 
   inputs.file(gitlabLspDir.resolve("generic_packages.json"))
-  outputs.dir(gitlabLspDir)
+  inputs.property("lspVersion", extractGitLabLspVersion())
+  inputs.property("lspSha256", pinnedGitLabLspTarballSha256())
+  outputs.file(gitlabLspDir.resolve("package_files.json"))
 
   @Suppress("UNCHECKED_CAST")
   doLast {
@@ -412,8 +437,12 @@ tasks.register("lspDownloadBinaries") {
   val buildDir = rootProject.layout.buildDirectory
   val gitlabLspDir = buildDir.get().asFile.resolve("gitlab-lsp")
   val outputFile = gitlabLspDir.resolve("lsp-binaries.tar.gz")
+  val binDir = gitlabLspDir.resolve("bin")
+  val expectedSha256 = pinnedGitLabLspTarballSha256()
 
-  outputs.dir(gitlabLspDir)
+  inputs.property("lspVersion", extractGitLabLspVersion())
+  inputs.property("lspSha256", expectedSha256)
+  outputs.dir(binDir)
 
   doLast {
     val packageFiles = JsonSlurper().parse(gitlabLspDir.resolve("package_files.json")) as? List<Map<String, Any>>
@@ -437,6 +466,23 @@ tasks.register("lspDownloadBinaries") {
           input.copyTo(output)
         }
       }
+
+    // Verify before touching bin/: the EquoIDE fallback runs the binary from there, so a
+    // rejected download must leave the previous extraction in place.
+    // Hex case is not significant: compare all three in lowercase.
+    val actualSha256 = sha256Hex(outputFile).lowercase()
+    val reportedSha256 = lspTarball["file_sha256"]?.toString()?.lowercase()
+    if (actualSha256 != expectedSha256.lowercase() || actualSha256 != reportedSha256) {
+      outputFile.delete()
+      error(
+        "gitlab-lsp tarball digest mismatch: expected $expectedSha256 (gitlabLspTarballSha256), " +
+          "package_files.json reports $reportedSha256, downloaded file is $actualSha256."
+      )
+    }
+
+    // Start from an empty bin/ so files of the previous release (old webview assets, source
+    // maps) are not packed into the fragments.
+    delete(binDir)
 
     copy {
       from(tarTree(outputFile))
@@ -478,8 +524,10 @@ subprojects {
         if (System.getenv("EQUO_IDE") != "true" || !installedLspVersion.exists() || installedLspVersion.readText() != currentLspVersion) {
           dependsOn(":lspDownloadBinaries")
 
+          // Source maps are never shipped; 9.30.0 puts one next to each binary and stale ones may linger.
           from(gitlabLspDir) {
             include("bin/gitlab-lsp-$languageServerPlatform")
+            exclude("**/*.map")
             rename { "gitlab-lsp" }
           }
 
@@ -487,6 +535,7 @@ subprojects {
             include("bin/vendor/**")
             include("bin/webviews/**")
             include("bin/tree-sitter.wasm")
+            exclude("**/*.map")
           }
         }
 
@@ -500,6 +549,7 @@ subprojects {
           attributes["Automatic-Module-Name"] = "com.gitlab.eclipse.${project.name}"
           attributes["Fragment-Host"] = "com.gitlab.eclipse.gitlab-language-server"
           attributes["Eclipse-PlatformFilter"] = platformFilter
+          attributes["GitLab-Lsp-Version"] = currentLspVersion
         }
 
         doLast {

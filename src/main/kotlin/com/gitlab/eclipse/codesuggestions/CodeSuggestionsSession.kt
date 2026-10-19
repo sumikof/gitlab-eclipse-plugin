@@ -6,6 +6,8 @@ import com.gitlab.eclipse.codesuggestions.listeners.*
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.codesuggestions.tooltip.CodeSuggestionsTooltip
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
+import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.languageId
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.telemetry.TelemetryService
 import com.gitlab.eclipse.telemetry.params.TelemetryAction
@@ -22,6 +24,8 @@ import org.eclipse.jface.text.DocumentEvent
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.IDocumentListener
 import org.eclipse.swt.custom.StyledText
+import org.eclipse.ui.IEditorInput
+import org.eclipse.ui.IFileEditorInput
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -36,6 +40,11 @@ class CodeSuggestionsSession(
   private val codeSuggestionsCommandContext: CodeSuggestionsCommandContext,
   private val telemetryService: TelemetryService,
   private val coroutineScope: CoroutineScope,
+  /**
+   * The language id of the editor's workspace file — the one didOpen sends — or null for an editor
+   * with no workspace file. Read per request, so it follows the editor input.
+   */
+  private val fileLanguageId: () -> String?,
 ) : IDocumentListener, StreamingCodeSuggestionsListener {
   private val logger by lazy { logger<CodeSuggestionsSession>() }
 
@@ -125,7 +134,8 @@ class CodeSuggestionsSession(
         val suggestion = codeSuggestionsProvider.provideAutomaticSuggestion(
           fileUri = document.uri,
           cursorLine = line,
-          cursorColumn = column
+          cursorColumn = column,
+          languageId = fileLanguageId(),
         )
 
         if (suggestion != null) {
@@ -188,7 +198,8 @@ class CodeSuggestionsSession(
         codeSuggestionsProvider.provideInvokedSuggestions(
           fileUri = document.uri,
           cursorLine = line,
-          cursorColumn = column
+          cursorColumn = column,
+          languageId = fileLanguageId(),
         ).let(codeSuggestions::addAll)
       } catch (e: Exception) {
         logger.error("Error loading additional suggestions.", e)
@@ -503,3 +514,12 @@ class CodeSuggestionsSession(
     private val KEY_PRESS_DEBOUNCE = 150.milliseconds
   }
 }
+
+/**
+ * The language id Code Suggestions are gated on: that of the editor's workspace file, exactly as
+ * didOpen sends it ([LanguageServerLanguage.languageId]), or null when the editor shows no workspace
+ * file. Never derived from the document URI, which would differ for linked resources and
+ * extension-less names.
+ */
+internal fun fileLanguageIdOf(editorInput: IEditorInput?): String? =
+  (editorInput as? IFileEditorInput)?.file?.languageId

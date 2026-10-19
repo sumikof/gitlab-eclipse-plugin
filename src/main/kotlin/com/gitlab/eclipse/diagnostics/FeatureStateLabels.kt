@@ -4,10 +4,11 @@ package com.gitlab.eclipse.diagnostics
  * The language server's own user-readable text for each feature-state check (design §8.3, U3).
  *
  * **Extracted from the bundled language server, not from memory.** The table lives in
- * `STATE_CHECK_USER_READABLE_LABELS` in `@gitlab-org/core`; these values were read out of the
- * shipped bundle's source map at `build/gitlab-lsp/bin/main.js.map` for the pinned version
- * (`package.json` → `@gitlab-org/gitlab-lsp` 9.3.0), together with the `checkId` literals they are
- * keyed by (`const AUTHENTICATION_REQUIRED = "authentication-required"` and its siblings).
+ * `STATE_CHECK_USER_READABLE_LABELS` in `@gitlab-org/core` (`packages/core/core`, region
+ * `src/feature_state_management/types.ts`); these values were read out of the shipped binary's source map
+ * at `build/gitlab-lsp/bin/gitlab-lsp-<platform>.map` for the pinned version (`package.json` →
+ * `@gitlab-org/gitlab-lsp` 9.30.0; unchanged entry for entry since 9.3.0), together with the `checkId`
+ * literals they are keyed by (`const AUTHENTICATION_REQUIRED = "authentication-required"` and its siblings).
  *
  * The reference extension imports this table from the language server package. Eclipse has no such
  * import, so it is transcribed here and [labelFor] falls back to the raw `checkId` for anything a

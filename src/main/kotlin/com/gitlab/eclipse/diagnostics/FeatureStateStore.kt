@@ -47,8 +47,9 @@ object FeatureStateStore {
 
   /**
    * Feature ids as the bundled language server defines them, read out of the shipped bundle
-   * (`const CODE_SUGGESTIONS = "code_suggestions"` and siblings in `build/gitlab-lsp/bin/main.js.map`),
-   * not from memory. The order matches the reference's `FeatureStateDiagnosticsRenderer`.
+   * (`const CODE_SUGGESTIONS = "code_suggestions"` and siblings in `@gitlab-org/core`, read from
+   * `build/gitlab-lsp/bin/gitlab-lsp-<platform>.map` for LS 9.30.0), not from memory. The order matches
+   * the reference's `FeatureStateDiagnosticsRenderer`.
    */
   private val ORDER = listOf(
     "authentication",

@@ -17,6 +17,7 @@ import com.gitlab.eclipse.lsp.edit.WorkspaceEditApplier
 import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
+import com.gitlab.eclipse.lsp.messages.ExperimentFeaturesStateParams
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
 import com.gitlab.eclipse.lsp.messages.OpenFileParams
 import com.gitlab.eclipse.lsp.messages.OpenUrlParams
@@ -33,6 +34,7 @@ import com.gitlab.eclipse.security.details.VulnerabilityRegistry
 import com.gitlab.eclipse.security.details.withIntakeContained
 import com.gitlab.eclipse.security.securityScanPathKey
 import com.gitlab.eclipse.utils.NotificationUtils
+import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.JsonObject
 import org.eclipse.lsp4j.*
@@ -238,6 +240,18 @@ class GitLabLanguageServerClient(
   ): CompletableFuture<Void> = CompletableFuture.runAsync {
     service<OpenUrlHandler>().open(params?.url)
   }.orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
+
+  /**
+   * LS 9.30.0 reports whether experimental features are on for the user's root group —
+   * `$/gitlab/experimentFeaturesState`. It is sent once the API configuration becomes valid (and at
+   * initialization when it already is), and only for users with a default Duo namespace
+   * (`experiment_features_notifier.ts`). Nothing in Eclipse consumes it; the handler exists so lsp4j
+   * does not log the notification as unsupported. Only the flag is logged, never the reason.
+   */
+  @JsonNotification("$/gitlab/experimentFeaturesState")
+  fun gitlabExperimentFeaturesState(params: ExperimentFeaturesStateParams?) {
+    logger.debug { "Language server experiment features state: enabled=${params?.enabled}" }
+  }
 
   @JsonNotification("$/gitlab/token/check")
   fun gitlabTokenCheck(params: Any?) {

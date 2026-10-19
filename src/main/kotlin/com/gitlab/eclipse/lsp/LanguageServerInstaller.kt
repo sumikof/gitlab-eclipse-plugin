@@ -7,88 +7,94 @@ import com.gitlab.eclipse.utils.system.SystemUtils
 import org.eclipse.core.runtime.FileLocator
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
-import java.io.File
-import java.io.FileOutputStream
+import java.nio.file.Path
 import java.util.jar.JarFile
-import kotlin.sequences.forEach
 
-@Suppress("NestedBlockDepth")
-class LanguageServerInstaller {
+/** Manifest header of each language server fragment naming the bundled server version (set by the build). */
+internal const val LSP_VERSION_HEADER = "GitLab-Lsp-Version"
+
+class LanguageServerInstaller internal constructor(
+  /** The running platform; a seam so tests can pick one. */
+  private val platform: () -> Pair<OS, Arch>,
+) {
+  constructor() : this({ SystemUtils.os to SystemUtils.arch })
+
   private val logger = logger<LanguageServerInstaller>()
 
+  /** Returns the path of the language server binary to run, or null when it cannot be installed. */
   fun install(): String? {
-    try {
-      val bundle: Bundle? = Platform.getBundle("com.gitlab.eclipse.$languageServerBundle")
+    val (os, arch) = platform()
+    val target = languageServerTarget(os, arch)
+    if (target == null) {
+      logger.error("GitLab Language Server is not bundled for ${platformLabel(os, arch)}.")
+      return null
+    }
 
-      val bundleJar = if (bundle != null) {
-        FileLocator.getBundleFileLocation(bundle).map { JarFile(it) }.orElse(null)
-      } else {
+    return try {
+      val bundle = Platform.getBundle(target.bundleSymbolicName)
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
-        return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/$languageServerBinary"
-      }
+        ?: return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
 
-      return bundleJar?.let { jar ->
-        val destination = bundle.getDataFile("lsp")
-
-        if (!destination.exists()) {
-          logger.info("Installing language server binary to ${destination.absolutePath}.")
-
-          destination.mkdir()
-          jar.use { it.extractTo(destination) }
-        }
-
-        val lspBinary = destination.resolve("bin/gitlab-lsp")
-        if (!lspBinary.canExecute()) {
-          lspBinary.setExecutable(true, false)
-          logger.info("Successfully made file ${lspBinary.absolutePath} executable.")
-        }
-
-        logger.info("Successfully installed language server binaries in ${destination.absolutePath}.")
-        return@let lspBinary.absolutePath
-      }
-    } catch (e: Throwable) {
-      logger.error(e.message, e)
-    }
-
-    return null
-  }
-
-  @Suppress("NestedBlockDepth")
-  private fun JarFile.extractTo(destination: File) {
-    entries().asSequence().forEach { entry ->
-      val file = File(destination, entry.name)
-
-      if (entry.isDirectory) {
-        file.mkdirs()
-      } else {
-        file.parentFile?.mkdirs()
-
-        getInputStream(entry).use { input ->
-          FileOutputStream(file).use { output ->
-            input.copyTo(output)
-          }
-        }
-      }
+      installFrom(bundle)?.toAbsolutePath()?.toString()
+    } catch (e: Exception) {
+      logger.error("Failed to install the language server: ${e.message}", e)
+      null
     }
   }
 
-  private val languageServerBundle
-    get() = when {
-      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.win32.win32.aarch64"
-      SystemUtils.os == OS.WINDOWS -> "gitlab-language-server.win32.win32.x86_64"
-      SystemUtils.os == OS.LINUX -> "gitlab-language-server.gtk.linux.x86_64"
-      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-language-server.cocoa.macosx.aarch64"
-      SystemUtils.os == OS.MAC -> "gitlab-language-server.cocoa.macosx.x86_64"
-      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
+  private fun installFrom(bundle: Bundle): Path? {
+    val bundleFile = FileLocator.getBundleFileLocation(bundle).orElse(null) ?: run {
+      logger.error("Cannot locate the file of ${bundle.symbolicName}.")
+      return null
+    }
+    // Equinox gives a fragment its own data area (OSGi allows null here). The parent of "lsp" is
+    // that area's root, where the installer before versioned installs extracted into "lsp".
+    val dataRoot = bundle.getDataFile(LEGACY_DATA_FILE)?.parentFile ?: run {
+      logger.error("${bundle.symbolicName} has no data area to install the language server into.")
+      return null
     }
 
-  private val languageServerBinary
-    get() = when {
-      SystemUtils.os == OS.WINDOWS && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-win-arm64.exe"
-      SystemUtils.os == OS.WINDOWS -> "gitlab-lsp-win-x64.exe"
-      SystemUtils.os == OS.LINUX -> "gitlab-lsp-linux-x64"
-      SystemUtils.os == OS.MAC && SystemUtils.arch == Arch.ARM64 -> "gitlab-lsp-macos-arm64"
-      SystemUtils.os == OS.MAC -> "gitlab-lsp-macos-x64"
-      else -> error("Unsupported OS and architecture. os=${SystemUtils.os}, arch=${SystemUtils.arch}")
-    }
+    val key = installKey(bundle.version.toString(), bundle.headers?.get(LSP_VERSION_HEADER))
+    return LanguageServerExtraction(dataRoot.toPath()).install(key) { JarFile(bundleFile) }
+  }
+
+  private companion object {
+    const val LEGACY_DATA_FILE = "lsp"
+  }
 }
+
+/** The fragment bundle that carries the language server for a platform, and the binary's name inside it. */
+internal data class LanguageServerTarget(val bundleSymbolicName: String, val binaryName: String)
+
+/**
+ * Maps a platform to its language server fragment, or null when no fragment is built for it.
+ * Linux on ARM64 has a server binary upstream but no Eclipse fragment, so it is reported as
+ * unsupported rather than resolved to the x86_64 fragment, whose binary it cannot run.
+ */
+internal fun languageServerTarget(os: OS, arch: Arch): LanguageServerTarget? = when (os) {
+  OS.WINDOWS -> when (arch) {
+    Arch.ARM64 -> target("win32.win32.aarch64", "gitlab-lsp-win-arm64.exe")
+    Arch.X86_64 -> target("win32.win32.x86_64", "gitlab-lsp-win-x64.exe")
+  }
+  OS.MAC -> when (arch) {
+    Arch.ARM64 -> target("cocoa.macosx.aarch64", "gitlab-lsp-macos-arm64")
+    Arch.X86_64 -> target("cocoa.macosx.x86_64", "gitlab-lsp-macos-x64")
+  }
+  OS.LINUX -> when (arch) {
+    Arch.ARM64 -> null
+    Arch.X86_64 -> target("gtk.linux.x86_64", "gitlab-lsp-linux-x64")
+  }
+  OS.UNKNOWN -> null
+}
+
+/** The platform as the logs name it, e.g. `linux/aarch64`. */
+internal fun platformLabel(os: OS, arch: Arch): String {
+  val archLabel = when (arch) {
+    Arch.ARM64 -> "aarch64"
+    Arch.X86_64 -> "x86_64"
+  }
+  return "${os.name.lowercase()}/$archLabel"
+}
+
+private fun target(platform: String, binaryName: String) =
+  LanguageServerTarget("com.gitlab.eclipse.gitlab-language-server.$platform", binaryName)

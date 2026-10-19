@@ -12,6 +12,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.google.gson.JsonParser
 import io.kotest.assertions.nondeterministic.continually
 import io.kotest.assertions.nondeterministic.eventually
+import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -620,12 +621,55 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       provider.stop()
     }
 
-    it("fails fast and stays stopped when the process cannot be created") {
+    // start() runs inside bundle activation, which has no catch of its own: a throw there would skip
+    // the rest of activation (token refresh, save listener, key bindings).
+    it("logs and stays stopped without throwing when the process cannot be created") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
       val provider = newProvider(factory = { throw IOException("spawn refused") })
 
-      shouldThrow<IllegalStateException> { provider.start(bundle) }
+      shouldNotThrowAny { provider.start(bundle) }
 
       provider.isRunning shouldBe false
+      // Unlike a missing installation, nothing else has reported this failure: it must stay an error.
+      verify(exactly = 1) { log.error("Failed to start the Language Server.", any<Throwable>()) }
+    }
+
+    it("logs and stays stopped without throwing when the language server cannot be installed") {
+      every { installer.install() } returns null
+      val provider = newProvider()
+
+      shouldNotThrowAny { provider.start(bundle) }
+
+      provider.isRunning shouldBe false
+      spawnedProcesses.size shouldBe 0
+    }
+
+    // The installer has already logged why (for example "not bundled for linux/aarch64"): a second
+    // error with a stack trace would only bury that one clear line.
+    it("adds no error of its own when there is no installation") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { installer.install() } returns null
+      val provider = newProvider()
+
+      provider.start(bundle)
+
+      verify(exactly = 0) { log.error(any(), any<Throwable>()) }
+      verify(exactly = 0) { log.error(any<String>()) }
+      provider.isRunning shouldBe false
+    }
+
+    it("can still be restarted after a start that failed to install") {
+      every { installer.install() } returns null
+      val provider = newProvider()
+      provider.start(bundle)
+
+      every { installer.install() } returns "/fake/language-server"
+      provider.restart(bundle) shouldBe true
+      provider.isRunning shouldBe true
+
+      provider.stop()
     }
   }
 })
