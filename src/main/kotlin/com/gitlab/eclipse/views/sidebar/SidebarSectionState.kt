@@ -76,4 +76,11 @@ class RefreshSlots(val generation: Long) {
   var assigned: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>> = Slot.Pending
   var currentBranch: Slot<CurrentBranchSectionInput> = Slot.Pending
   var currentBranchEpoch: Long = 0
+
+  /**
+   * The repository (git dir) [currentBranch]'s value describes; null for [NoRepository] or before
+   * anything settled. Written in the same UI-thread step as [currentBranch], so a soft refresh can
+   * tell whether the shown payload belongs to the repository it is about to fetch.
+   */
+  var currentBranchGitDir: String? = null
 }

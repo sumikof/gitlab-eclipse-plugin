@@ -321,9 +321,15 @@ class GitLabSidebarView : ViewPart() {
    * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
    */
   private suspend fun fetchCurrentBranch(slots: RefreshSlots, activeEditorFile: File?) {
-    currentBranchFetcher.fetch(activeEditorFile, previous = null, soft = false) { update ->
+    currentBranchFetcher.fetch(
+      activeEditorFile,
+      previous = null,
+      previousGitDir = null,
+      soft = false,
+    ) { gitDir, update ->
       applyCompose(slots) {
         slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
+        slots.currentBranchGitDir = gitDir
       }
     }
   }

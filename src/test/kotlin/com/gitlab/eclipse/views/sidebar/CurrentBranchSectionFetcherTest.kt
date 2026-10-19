@@ -16,13 +16,19 @@ import com.gitlab.eclipse.mergerequests.RepositoryContext
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.views.sidebar.autorefresh.HeadKey
 import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.eclipse.jgit.api.Git
 import java.io.File
 import java.nio.file.Files
@@ -43,6 +49,7 @@ private class FetcherRig {
 
   /** The slot value as the view would hold it, and every value it took, in order. */
   var current: CurrentBranchSectionInput? = null
+  var currentGitDir: String? = null
   val applied = mutableListOf<CurrentBranchSectionInput>()
 
   val connection = ConnectionSnapshot("https://gitlab.example.com", "tok", "fp", 1L)
@@ -83,9 +90,10 @@ private class FetcherRig {
   }
 
   suspend fun fetch(soft: Boolean = false, previous: CurrentBranchSectionInput? = current): TrackedHead? =
-    fetcher.fetch(null, previous, soft) { update ->
+    fetcher.fetch(null, previous, currentGitDir, soft) { gitDir, update ->
       val next = update(current)
       current = next
+      currentGitDir = gitDir
       applied += next
     }
 }
@@ -180,7 +188,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     every { rig.mrLookup.lookup(any(), any()) } returns mr()
     every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null)
     val updates = mutableListOf<(CurrentBranchSectionInput?) -> CurrentBranchSectionInput>()
-    rig.fetcher.fetch(null, null, soft = false) { updates += it }
+    rig.fetcher.fetch(null, null, null, soft = false) { _, update -> updates += update }
 
     val (placeholder, mrSide, pipelineSide) = updates
     val settled = mrSide(pipelineSide(placeholder(null)))
@@ -316,6 +324,101 @@ class CurrentBranchSectionFetcherTest : StringSpec({
       headKeyOf(CurrentBranchGitReader().read(File(dir, ".git"))) shouldBe HeadKey.Unavailable
     } finally {
       dir.deleteRecursively()
+    }
+  }
+
+  "4c. a fetch for B whose applies were all dropped does not make a later soft fetch for B treat A's payload as shown" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    val other = rig.context.copy(gitDir = "/other/.git")
+    every { rig.resolver.resolveNonInteractive(any()) } returns other
+    every { rig.reader.read(File("/other/.git")) } returns rig.branch()
+    rig.fetcher.fetch(null, null, null, soft = false) { _, _ -> } // superseded: nothing it settles is applied
+
+    rig.fetch(soft = true)
+
+    rig.applied.drop(3).first() shouldBe Resolved(null, null)
+  }
+
+  "1g. the full path always paints the placeholder and applies both sides, even when given an equal previous" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+
+    rig.fetch(soft = false)
+
+    rig.applied.size shouldBe 6
+    rig.applied[3] shouldBe Resolved(null, null)
+  }
+
+  "8a. cancelled during the pipeline GET: no jobs fetch, no pipeline-side apply, nothing logged, fetch ends cancelled" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    lateinit var fetchJob: Job
+    every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } answers {
+      fetchJob.cancel()
+      PIPELINE
+    }
+
+    coroutineScope {
+      val fetch = async { rig.fetch() }
+      fetchJob = fetch
+      shouldThrow<CancellationException> { fetch.await() }
+    }
+
+    verify(exactly = 0) { rig.jobs.getJobsForPipeline(any(), any(), any(), any()) }
+    rig.applied shouldBe listOf(Resolved(null, null), Resolved(Result.success(mr()), null))
+    rig.errors shouldBe emptyList()
+    rig.warnings shouldBe emptyList()
+  }
+
+  "8b. the jobs fetch's isActive turns false once the fetch is cancelled" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    lateinit var fetchJob: Job
+    val isActive = slot<() -> Boolean>()
+    val seen = mutableListOf<Boolean>()
+    every { rig.jobs.getJobsForPipeline(any(), any(), capture(isActive), any()) } answers {
+      seen += isActive.captured()
+      fetchJob.cancel()
+      seen += isActive.captured()
+      JOBS
+    }
+
+    coroutineScope {
+      val fetch = async { rig.fetch() }
+      fetchJob = fetch
+      runCatching { fetch.await() }
+    }
+
+    seen shouldBe listOf(true, false)
+  }
+
+  "8c. a CancellationException from the jobs fetch is not rendered or logged as a failure" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.jobs.getJobsForPipeline(any(), any(), any(), any()) } throws CancellationException("between pages")
+
+    runCatching { rig.fetch() }
+
+    rig.applied shouldBe listOf(Resolved(null, null), Resolved(Result.success(mr()), null))
+    rig.errors shouldBe emptyList()
+    rig.warnings shouldBe emptyList()
+  }
+
+  "8d. a CancellationException from the MR lookup is not rendered or logged as a failure, on either path" {
+    listOf(false, true).forEach { soft ->
+      val rig = FetcherRig()
+      rig.answerSuccessfully()
+      every { rig.mrLookup.lookup(any(), any()) } throws CancellationException("cancelled")
+      every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } returns null
+
+      runCatching { rig.fetch(soft = soft) }
+
+      rig.applied shouldBe listOf(Resolved(null, null), Resolved(null, Result.success(null)))
+      rig.errors shouldBe emptyList()
+      rig.warnings shouldBe emptyList()
     }
   }
 })

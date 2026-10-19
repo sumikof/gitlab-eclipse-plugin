@@ -5,6 +5,7 @@ import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.mergerequests.CurrentBranch
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
+import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.mergerequests.RepositoryContext
@@ -36,11 +37,6 @@ class CurrentBranchSectionFetcher(
   private val errorLog: (String, Throwable?) -> Unit,
   private val warnLog: (String) -> Unit,
 ) {
-  // The repository the previous fetch resolved (null: none). A soft refresh's `previous` payload
-  // only describes the repository it was fetched for, so it is shown on only while this matches.
-  // Written from the IO fetch coroutines, hence volatile; a stale read costs at most one placeholder.
-  @Volatile private var lastGitDir: String? = null
-
   // Stages (mr / pipeline / jobs) whose latest outcome was a failure. The soft path logs a failure
   // only when it starts such a streak, so an unreachable server is reported once, not every 30 s.
   private val failingStages: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -54,8 +50,13 @@ class CurrentBranchSectionFetcher(
    * is preserved because each `update` re-reads the slot it is applied to, so the two sub-tasks
    * never race each other's halves.
    *
+   * Every slot change goes out as `apply(gitDir, update)`: the caller runs `update` on the slot's
+   * current value and records `gitDir` (null for [NoRepository]) as the repository that value now
+   * describes — in the same UI-thread step, so the two never disagree.
+   *
    * [soft] (the CI-04 auto refresh) differs from the full path in three ways only: with a
-   * [previous] [Resolved] for the same repository it paints no placeholder; it applies nothing for
+   * [previous] [Resolved] displayed for this same repository ([previousGitDir], as recorded by
+   * `apply`) it paints no placeholder; it applies nothing for
    * a side whose new success equals the shown one; and failures are logged by [report]'s soft rule.
    *
    * Returns the repository and HEAD this fetch looked at, or null when no repository resolved.
@@ -63,18 +64,17 @@ class CurrentBranchSectionFetcher(
   suspend fun fetch(
     activeEditorFile: File?,
     previous: CurrentBranchSectionInput?,
+    previousGitDir: String?,
     soft: Boolean,
-    apply: (update: (current: CurrentBranchSectionInput?) -> CurrentBranchSectionInput) -> Unit,
+    apply: SectionApply,
   ): TrackedHead? {
     // JGit enumeration/resolution (IO). resolveNonInteractive and read never throw by
     // contract; a null context means no repository resolved non-interactively (none, or
     // several and no active editor to disambiguate) — distinct from a resolved repository
     // with no MR, which renders as "No merge request found".
     val context = resolver.resolveNonInteractive(activeEditorFile)
-    val previousGitDir = lastGitDir
-    lastGitDir = context?.gitDir
     if (context == null) {
-      apply { NoRepository }
+      apply(null) { NoRepository }
       return null
     }
     val branch = reader.read(File(context.gitDir))
@@ -83,35 +83,48 @@ class CurrentBranchSectionFetcher(
     // flicker), and keep each side whose new value equals the shown one (see [unchanged]).
     val shown = if (soft && previousGitDir == context.gitDir) previous as? Resolved else null
     // Repository resolved, both sides still loading: paint the two placeholders now.
-    if (shown == null) apply { Resolved(mr = null, pipeline = null) }
+    if (shown == null) apply(context.gitDir) { Resolved(mr = null, pipeline = null) }
 
     supervisorScope {
       launch {
-        val mrResult = runCatching { mrLookup.lookup(context, branch) }
+        val mrResult = mrResultFor(context, branch)
         report(STAGE_MR, soft, mrResult.exceptionOrNull()) { "Failed to load current-branch merge request." }
-        if (!unchanged(shown?.mr, mrResult)) apply { resolvedOf(it).copy(mr = mrResult) }
+        if (!unchanged(shown?.mr, mrResult)) apply(context.gitDir) { resolvedOf(it).copy(mr = mrResult) }
       }
       launch {
-        // A detached HEAD has no ref to query pipelines for: a settled "no pipeline"
-        // (success(null) → no row at all), not an error.
-        val pipelineResult: Result<PipelineSnapshot?> =
-          if (effectiveRef == null) {
-            Result.success(null)
-          } else {
-            try {
-              Result.success(fetchSnapshot(context, effectiveRef, soft))
-            } catch (e: CancellationException) {
-              throw e // Propagate: a cancelled refresh paints nothing (not a failure row).
-            } catch (e: Exception) {
-              Result.failure(e)
-            }
-          }
+        val pipelineResult = pipelineResultFor(context, effectiveRef, soft)
         report(STAGE_PIPELINE, soft, pipelineResult.exceptionOrNull()) { "Failed to load current-branch pipeline." }
-        if (!unchanged(shown?.pipeline, pipelineResult)) apply { resolvedOf(it).copy(pipeline = pipelineResult) }
+        if (!unchanged(shown?.pipeline, pipelineResult)) {
+          apply(context.gitDir) { resolvedOf(it).copy(pipeline = pipelineResult) }
+        }
       }
     }
     return TrackedHead(context.gitDir, headKeyOf(branch))
   }
+
+  private fun mrResultFor(context: RepositoryContext, branch: CurrentBranch): Result<CurrentBranchInfo> =
+    try {
+      Result.success(mrLookup.lookup(context, branch))
+    } catch (e: CancellationException) {
+      throw e // Like the pipeline side: a cancelled refresh paints and logs nothing.
+    } catch (e: Throwable) {
+      Result.failure(e) // Throwable, as the runCatching this replaces: any other error renders as before.
+    }
+
+  private suspend fun pipelineResultFor(context: RepositoryContext, effectiveRef: String?, soft: Boolean): Result<PipelineSnapshot?> =
+    // A detached HEAD has no ref to query pipelines for: a settled "no pipeline"
+    // (success(null) → no row at all), not an error.
+    if (effectiveRef == null) {
+      Result.success(null)
+    } else {
+      try {
+        Result.success(fetchSnapshot(context, effectiveRef, soft))
+      } catch (e: CancellationException) {
+        throw e // Propagate: a cancelled refresh paints nothing (not a failure row).
+      } catch (e: Exception) {
+        Result.failure(e)
+      }
+    }
 
   // Fresh-payload invariant (RefreshSlots KDoc): each sub-task's payload is freshly constructed
   // by its own fetch — never a cached/reused instance — so the coordinator's identity-keyed memo
@@ -179,6 +192,15 @@ class CurrentBranchSectionFetcher(
     const val STAGE_JOBS = "jobs"
   }
 }
+
+/**
+ * How [CurrentBranchSectionFetcher.fetch] hands out a slot change: the caller applies `update` to
+ * the slot's current value and records `gitDir` as the repository that value describes.
+ */
+typealias SectionApply = (gitDir: String?, update: SectionUpdate) -> Unit
+
+/** One slot change: the new value computed from the slot's current one. */
+typealias SectionUpdate = (current: CurrentBranchSectionInput?) -> CurrentBranchSectionInput
 
 /**
  * Whether a soft refresh's [fresh] result for one side equals the [shown] one, so the shown
