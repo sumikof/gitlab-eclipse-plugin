@@ -84,3 +84,13 @@ class RefreshSlots(val generation: Long) {
    */
   var currentBranchGitDir: String? = null
 }
+
+/**
+ * Whether an apply scheduled for these slots may still touch them (CI-04 design §2.4/§4): only
+ * while their [RefreshSlots.generation] is current, and — for a current-branch apply, which
+ * carries the [epoch] it was launched under — only while that epoch is still the latest, so a
+ * superseded soft refresh paints nothing. [epoch] null: an apply not tied to the section's epoch
+ * (assigned roots, a mode change). UI thread only.
+ */
+internal fun RefreshSlots.acceptsApply(isCurrentGeneration: (Long) -> Boolean, epoch: Long?): Boolean =
+  isCurrentGeneration(generation) && (epoch == null || currentBranchEpoch == epoch)

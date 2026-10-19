@@ -20,6 +20,7 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
+import com.gitlab.eclipse.views.sidebar.autorefresh.AutoRefreshLifecycle
 import com.gitlab.eclipse.views.sidebar.autorefresh.CurrentBranchAutoRefresher
 import com.gitlab.eclipse.views.sidebar.autorefresh.DisplayAutoRefreshTimer
 import com.gitlab.eclipse.views.sidebar.autorefresh.GitHeadProbe
@@ -120,14 +121,11 @@ class GitLabSidebarView : ViewPart() {
 
   @Volatile private var fetchJob: Job? = null
 
-  // CI-04 auto refresh (UI thread only): created and started in createPartControl BEFORE the first
-  // refresh() (so that refresh's ticket is adopted), stopped in dispose(). Null if it could not be
-  // created; the view then works exactly as before, with its manual Refresh.
-  private var autoRefresher: CurrentBranchAutoRefresher? = null
+  // CI-04 auto refresh (UI thread only): the refresher is created and started in createPartControl
+  // BEFORE the first refresh() (so that refresh's ticket is adopted); dispose() stops it and cancels
+  // the running soft refresh. With no refresher the view works exactly as before (manual Refresh).
+  private val autoRefresh = AutoRefreshLifecycle { logger.warn(it) }
   private var autoRefreshHop: (() -> Unit) -> Unit = { }
-
-  // The running soft (current-branch-only) refresh, cancelled by the next one, a full refresh() and dispose().
-  @Volatile private var softJob: Job? = null
 
   // The live refresh generation's slots, written on the UI thread in refresh() and mutated
   // on the UI thread inside applyCompose (RefreshSlots' contract). `null` = nothing was
@@ -272,7 +270,7 @@ class GitLabSidebarView : ViewPart() {
    * the exception class only. A failure here leaves auto refresh off and the view working as before.
    */
   private fun startAutoRefresh() {
-    try {
+    autoRefresh.start {
       val display = viewer.control.display
       val scheduler = DisplayUiScheduler(display)
       val warn: (String) -> Unit = { logger.warn(it) }
@@ -289,11 +287,7 @@ class GitLabSidebarView : ViewPart() {
         debugLog = { logger.debug(it) },
       )
       autoRefreshHop = hop
-      autoRefresher = refresher
-      refresher.start()
-    } catch (e: Exception) {
-      logger.warn("Current-branch auto refresh is off: ${e.javaClass.name}")
-      autoRefresher = null
+      refresher
     }
   }
 
@@ -313,7 +307,7 @@ class GitLabSidebarView : ViewPart() {
       logger.warn("Current-branch auto refresh failed to launch: ${e.javaClass.name}")
       null
     }
-    val settle: (Long, SettleOutcome) -> Unit = { t, outcome -> autoRefresher?.onRefreshSettled(t, outcome) }
+    val settle: (Long, SettleOutcome) -> Unit = { t, outcome -> autoRefresh.refresher?.onRefreshSettled(t, outcome) }
     if (job == null) {
       autoRefreshHop { settle(ticket, SettleOutcome.Unknown) }
     } else {
@@ -329,7 +323,6 @@ class GitLabSidebarView : ViewPart() {
     val previous = (slots.currentBranch as? Slot.Settled)?.value
     val previousGitDir = slots.currentBranchGitDir
     val activeEditorFile = repositoryContextResolver.activeEditorFile()
-    softJob?.cancel()
     val job = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape (see refresh()).
       try {
@@ -351,7 +344,7 @@ class GitLabSidebarView : ViewPart() {
         logger.warn("Current-branch auto refresh failed: ${e.javaClass.name}")
       }
     }
-    softJob = job
+    autoRefresh.replaceSoftJob(job)
     return job
   }
 
@@ -386,8 +379,8 @@ class GitLabSidebarView : ViewPart() {
     fetchJob?.cancel()
     // A manual refresh supersedes a running soft one (design §2.4): cancel it, and hand the
     // refresher this refresh's ticket so the soft one's settle is ignored.
-    softJob?.cancel()
-    val ticket = autoRefresher?.let { refresher ->
+    autoRefresh.cancelSoftJob()
+    val ticket = autoRefresh.refresher?.let { refresher ->
       refresher.nextTicket().also { refresher.onManualRefreshStarted(it) }
     }
     val recorded = AtomicReference<SettleOutcome?>()
@@ -417,7 +410,7 @@ class GitLabSidebarView : ViewPart() {
     fetchJob = job
     if (ticket != null) {
       settleOnCompletion(job, ticket, autoRefreshHop, recorded::get) { settled, outcome ->
-        autoRefresher?.onRefreshSettled(settled, outcome)
+        autoRefresh.refresher?.onRefreshSettled(settled, outcome)
       }
     }
   }
@@ -497,9 +490,8 @@ class GitLabSidebarView : ViewPart() {
     try {
       display.asyncExec {
         if (control.isDisposed) return@asyncExec
-        if (!refreshState.isCurrent(slots.generation)) return@asyncExec
-        // CI-04: a current-branch apply of a superseded soft (or pre-soft) fetch is dropped.
-        if (epoch != null && slots.currentBranchEpoch != epoch) return@asyncExec
+        // A stale generation, or (CI-04) a current-branch apply of a superseded fetch, paints nothing.
+        if (!slots.acceptsApply(refreshState::isCurrent, epoch)) return@asyncExec
         update()
         val input = coordinator.compose(slots, viewState.mode)
         val oldInput = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
@@ -751,8 +743,7 @@ class GitLabSidebarView : ViewPart() {
 
   override fun dispose() {
     viewState.removeListener(modeListener)
-    autoRefresher?.stop()
-    softJob?.cancel()
+    autoRefresh.dispose()
     fetchJob?.cancel()
     super.dispose()
   }
