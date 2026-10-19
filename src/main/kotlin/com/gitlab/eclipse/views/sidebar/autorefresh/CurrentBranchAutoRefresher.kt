@@ -161,11 +161,19 @@ class CurrentBranchAutoRefresher(
     cancelPeriodic()
   }
 
+  /**
+   * The refresh [ticket] ended; [head] is what it looked at: `(gitDir, Unavailable)` for a resolved
+   * repository whose HEAD could not be read, null when no repository resolved. Null stops tracking:
+   * the sidebar shows no repository, so refs events are ignored and a regain probes nothing (only
+   * the staleness-gated FOCUS refresh and the periodic tick still run). Keeping the old gitDir
+   * instead would re-fetch on every regain whenever that repository still exists but is no longer
+   * the resolved one (several repositories, no active editor).
+   */
   fun onRefreshSettled(ticket: Long, head: TrackedHead?) {
     if (lifecycle != Lifecycle.STARTED || ticket != inFlight) return
     inFlight = null
     lastSettledAt = clock.nowMillis()
-    if (head != null) tracked = head
+    tracked = head
     if (pending) {
       pending = false
       request(RefreshReason.COALESCED)

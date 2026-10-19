@@ -322,13 +322,56 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     headChangesTo(HeadKey.Unavailable) shouldBe 0
   }
 
-  "7b. a settle without a repository (null head) keeps the previously tracked head" {
+  "7b. a settle without a repository (null head) stops tracking: refs events and regains probe nothing" {
     val rig = Rig().tracking()
     rig.time.advanceBy(PERIOD)
     rig.settleLast(null)
     rig.refs.fire(REPO)
     rig.time.advanceBy(300)
-    rig.probe.requests.map { it.first } shouldBe listOf(REPO)
+    rig.activity.set(false)
+    rig.time.advanceBy(5_000)
+    rig.activity.set(true)
+    rig.probe.requests shouldHaveSize 0
+    rig.port.tickets shouldHaveSize 2
+  }
+
+  "7c. a tracked repository deleted (resolved but unreadable) refreshes once, then stays quiet" {
+    val rig = Rig().tracking()
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Unavailable)
+    rig.port.tickets shouldHaveSize 2
+    rig.settleLast(TrackedHead(REPO, HeadKey.Unavailable))
+
+    repeat(3) {
+      rig.activity.set(false)
+      rig.time.advanceBy(5_000)
+      rig.activity.set(true)
+      rig.probe.answer(HeadKey.Unavailable)
+      rig.refs.fire(REPO)
+      rig.time.advanceBy(300)
+      rig.probe.answer(HeadKey.Unavailable)
+    }
+    rig.port.tickets shouldHaveSize 2
+  }
+
+  "7d. a tracked repository deleted (no longer resolved) refreshes once, then stays quiet" {
+    val rig = Rig().tracking()
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Unavailable)
+    rig.port.tickets shouldHaveSize 2
+    rig.settleLast(null)
+
+    repeat(3) {
+      rig.activity.set(false)
+      rig.time.advanceBy(5_000)
+      rig.activity.set(true)
+      rig.refs.fire(REPO)
+      rig.time.advanceBy(300)
+    }
+    rig.probe.requests shouldHaveSize 1
+    rig.port.tickets shouldHaveSize 2
   }
 
   "8a. stop() unregisters activity and refs once each and cancels the periodic and debounce timers" {
