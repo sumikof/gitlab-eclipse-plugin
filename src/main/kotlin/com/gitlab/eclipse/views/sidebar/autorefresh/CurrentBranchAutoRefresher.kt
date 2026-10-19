@@ -34,12 +34,20 @@ fun interface RefsEventSource {
   fun register(onRefsChanged: (gitDir: String) -> Unit): Registration
 }
 
-/** Reads a repository's HEAD off the UI thread and delivers the result on the UI thread. */
+/**
+ * Reads a repository's HEAD off the UI thread and delivers the result on the UI thread. Contract:
+ * `onResult` is called exactly once per [probe] call — with [HeadKey.Unavailable] when the read
+ * fails or is cancelled — because the refresher probes one at a time and waits for that answer.
+ */
 fun interface HeadProbe {
   fun probe(gitDir: String, onResult: (HeadKey) -> Unit)
 }
 
-/** Starts the view's current-branch-only ("soft") refresh. */
+/**
+ * Starts the view's current-branch-only ("soft") refresh. Contract: does not throw, and the view
+ * reports the ticket's end through [CurrentBranchAutoRefresher.onRefreshSettled] in every case
+ * (cancellation included); the refresher runs one refresh at a time and waits for that settle.
+ */
 fun interface SoftRefreshPort {
   fun startSoftRefresh(ticket: Long)
 }
@@ -98,20 +106,40 @@ class CurrentBranchAutoRefresher(
   /** A new ticket, greater than every earlier one; the view takes manual-refresh tickets from here too. */
   fun nextTicket(): Long = ++lastTicket
 
+  /**
+   * Registers for activity and refs changes and, if active, arms the periodic timer. A no-op while
+   * started. If a source refuses (e.g. a disposed display), whatever was registered is removed
+   * again, the failure is logged by class name, and the refresher stays stopped: the view keeps
+   * working with its manual Refresh, and a later [start] may try again.
+   */
   fun start() {
     if (lifecycle == Lifecycle.STARTED) return
-    lifecycle = Lifecycle.STARTED
     val live = ++session
-    registrations = listOf(
-      activity.register { if (live == session) onActiveChanged(it) },
-      refs.register { if (live == session) onRefsChanged(it) },
-    )
-    active = activity.isActive()
+    val registered = mutableListOf<Registration>()
+    try {
+      registered += activity.register { if (live == session) onActiveChanged(it) }
+      registered += refs.register { if (live == session) onRefsChanged(it) }
+      active = activity.isActive()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      session++
+      registered.forEach { contain { it.unregister() } }
+      runCatching { log("Current-branch auto refresh could not start listening: ${e.javaClass.name}") }
+      lifecycle = Lifecycle.STOPPED
+      return
+    }
+    lifecycle = Lifecycle.STARTED
+    registrations = registered
     if (active) armPeriodic(periodMillis)
   }
 
+  /** Ends this refresher's effects for good (until a new [start]); idempotent, from any state. */
   fun stop() {
-    if (lifecycle != Lifecycle.STARTED) return
+    if (lifecycle != Lifecycle.STARTED) {
+      lifecycle = Lifecycle.STOPPED
+      return
+    }
     lifecycle = Lifecycle.STOPPED
     session++
     contain { periodic?.cancel() }
@@ -180,13 +208,30 @@ class CurrentBranchAutoRefresher(
     }
     probeInFlight = true
     val live = session
-    probe.probe(gitDir) { if (live == session) onProbed(gitDir, it) }
+    val issuedAt = lastTicket
+    try {
+      probe.probe(gitDir) { if (live == session) onProbed(gitDir, issuedAt, it) }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      // No answer will come: release the probe so later events can probe again.
+      runCatching { log("Current-branch HEAD probe failed to start: ${e.javaClass.name}") }
+      onProbed(gitDir, issuedAt, null)
+    }
   }
 
-  private fun onProbed(gitDir: String, key: HeadKey) {
+  /**
+   * [issuedAt]: the last ticket handed out when the probe was issued. A refresh started after that
+   * reads HEAD at least as freshly as the probe did, so a change it reports is already covered (a
+   * regain probes and then refreshes; without this the changed HEAD would add a COALESCED fetch).
+   * [key] null: the probe never ran, so there is nothing to compare — only the bookkeeping.
+   */
+  private fun onProbed(gitDir: String, issuedAt: Long, key: HeadKey?) {
     probeInFlight = false
     val current = tracked
-    if (current != null && current.gitDir == gitDir && current.key != key) request(RefreshReason.BRANCH)
+    val coveredByRunningRefresh = (inFlight ?: Long.MIN_VALUE) > issuedAt
+    val moved = key != null && current != null && current.gitDir == gitDir && current.key != key
+    if (moved && !coveredByRunningRefresh) request(RefreshReason.BRANCH)
     if (probePending) {
       probePending = false
       probeHead()

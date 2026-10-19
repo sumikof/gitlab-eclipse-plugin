@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.sidebar.autorefresh
 
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldEndWith
@@ -12,9 +13,6 @@ private const val REPO = "/home/alice/work/secret-project/.git"
 private const val SHA = "0123456789abcdef0123456789abcdef01234567"
 private val MAIN = HeadKey.Branch("feature/secret-branch")
 
-/** Every line any [Rig] logged in this spec; test 10 checks them all (a StringSpec runs its tests in order, test 10 last). */
-private val allLogs = mutableListOf<String>()
-
 /** One refresher wired to fakes; every test drives it through these. */
 private class Rig(active: Boolean = true) {
   val time = VirtualTime()
@@ -23,10 +21,7 @@ private class Rig(active: Boolean = true) {
   val probe = FakeProbe()
   val port = FakePort()
   val logs = mutableListOf<String>()
-  val refresher = CurrentBranchAutoRefresher(time, time, activity, refs, probe, port, {
-    logs += it
-    allLogs += it
-  })
+  val refresher = CurrentBranchAutoRefresher(time, time, activity, refs, probe, port, { logs += it })
 
   /** Settles the latest soft refresh the port received. */
   fun settleLast(head: TrackedHead? = TrackedHead(REPO, MAIN)) = refresher.onRefreshSettled(port.tickets.last(), head)
@@ -245,6 +240,48 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.logs.last() shouldEndWith "COALESCED"
   }
 
+  "5c. regaining focus 30 s or more after settle with a changed HEAD fetches once: the FOCUS refresh already reads the new HEAD" {
+    val rig = Rig().tracking()
+    rig.activity.set(false)
+    rig.time.advanceBy(PERIOD)
+    rig.activity.set(true)
+    rig.port.tickets shouldHaveSize 2
+
+    rig.probe.answer(HeadKey.Branch("checked-out-in-a-terminal"))
+    rig.settleLast(TrackedHead(REPO, HeadKey.Branch("checked-out-in-a-terminal")))
+
+    rig.port.tickets shouldHaveSize 2
+    rig.time.pendingCount shouldBe 1
+  }
+
+  "5d. a HEAD change probed after the in-flight refresh started still coalesces into one more refresh" {
+    val rig = Rig().tracking()
+    rig.time.advanceBy(PERIOD)
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Branch("b2"))
+    rig.settleLast()
+    rig.port.tickets shouldHaveSize 3
+    rig.logs.last() shouldEndWith "COALESCED"
+  }
+
+  "5e. regaining focus less than 30 s after settle while a refresh runs arms no timer; its settle arms exactly one" {
+    val rig = Rig().tracking()
+    val manual = rig.refresher.nextTicket()
+    rig.refresher.onManualRefreshStarted(manual)
+    rig.activity.set(false)
+    rig.time.advanceBy(5_000)
+    rig.activity.set(true)
+    rig.probe.answer(MAIN)
+    rig.time.pendingCount shouldBe 0
+
+    rig.time.advanceBy(PERIOD)
+    rig.port.tickets shouldHaveSize 1
+    rig.refresher.onRefreshSettled(manual, TrackedHead(REPO, MAIN))
+    rig.port.tickets shouldHaveSize 1
+    rig.time.pendingCount shouldBe 1
+  }
+
   "6. a manual refresh supersedes the soft one: the soft settle is ignored, the manual settle re-arms the timer, pending is dropped" {
     val rig = Rig().tracking()
     rig.time.advanceBy(PERIOD)
@@ -408,9 +445,88 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.port.tickets shouldHaveSize 3
   }
 
-  "10. what the auto refresh logs or prints names only event types and exception classes, never a path, branch or SHA" {
-    allLogs.isEmpty() shouldBe false
-    allLogs.forEach { line ->
+  "8g. a probe that throws is logged by class only and does not block later probes" {
+    val rig = Rig().tracking()
+    rig.probe.failProbe = IllegalStateException("cannot read $REPO")
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.logs.last() shouldEndWith "IllegalStateException"
+    rig.logs.last() shouldNotContain REPO
+
+    rig.probe.failProbe = null
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.requests shouldHaveSize 1
+    rig.probe.answer(HeadKey.Branch("b2"))
+    rig.port.tickets shouldHaveSize 2
+  }
+
+  "9c. a start() whose second registration throws rolls back the first, logs the class only and can be retried" {
+    val rig = Rig()
+    rig.refs.failRegister = IllegalStateException("display for $REPO is disposed")
+    rig.refresher.start()
+    rig.activity.unregistered shouldBe 1
+    rig.logs.last() shouldEndWith "IllegalStateException"
+    rig.logs.last() shouldNotContain REPO
+    rig.time.pendingCount shouldBe 0
+
+    rig.refs.failRegister = null
+    rig.refresher.start()
+    rig.activity.registered shouldBe 2
+    rig.refs.registered shouldBe 1
+    rig.time.pendingCount shouldBe 1
+  }
+
+  "8h. a periodic tick that still fires after losing focus (its cancel was lost) does not refresh" {
+    val rig = Rig().tracking()
+    rig.time.loseCancels = true
+    rig.activity.set(false)
+    rig.time.advanceBy(PERIOD)
+    rig.port.tickets shouldHaveSize 1
+  }
+
+  "10. every line the refresher logs names only an event type or an exception class, never a path, branch or SHA" {
+    val rig = Rig().tracking()
+    rig.time.advanceBy(PERIOD) // TIMER
+    rig.settleLast()
+    rig.activity.set(false)
+    rig.time.advanceBy(PERIOD)
+    rig.activity.set(true) // FOCUS
+    rig.probe.answer(MAIN)
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Detached(SHA)) // pending
+    rig.settleLast(TrackedHead(REPO, MAIN)) // COALESCED
+    rig.settleLast(TrackedHead(REPO, HeadKey.Detached(SHA)))
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(MAIN) // BRANCH
+    rig.port.failStart = IllegalStateException("cannot start for $REPO on $SHA")
+    rig.settleLast(TrackedHead(REPO, MAIN))
+    rig.time.advanceBy(PERIOD) // failed start
+    rig.probe.failProbe = IllegalStateException("cannot read $REPO")
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300) // failed probe
+    rig.activity.failUnregister = IllegalStateException("feature/secret-branch")
+    rig.refresher.stop() // failed teardown
+    rig.refs.failRegister = IllegalArgumentException(REPO)
+    rig.refresher.start() // failed start of listening
+
+    rig.logs shouldContainExactly listOf(
+      "Current-branch auto refresh: TIMER",
+      "Current-branch auto refresh: TIMER",
+      "Current-branch auto refresh: FOCUS",
+      "Current-branch auto refresh: COALESCED",
+      "Current-branch auto refresh: BRANCH",
+      "Current-branch auto refresh: TIMER",
+      "Current-branch auto refresh failed to start: java.lang.IllegalStateException",
+      "Current-branch HEAD probe failed to start: java.lang.IllegalStateException",
+      "Current-branch auto refresh teardown failed: java.lang.IllegalStateException",
+      // The start() rollback unregisters the activity again, and that unregister still throws.
+      "Current-branch auto refresh teardown failed: java.lang.IllegalStateException",
+      "Current-branch auto refresh could not start listening: java.lang.IllegalArgumentException",
+    )
+    rig.logs.forEach { line ->
       line shouldMatch Regex("^[A-Za-z -]+: (TIMER|FOCUS|BRANCH|MANUAL|COALESCED|[A-Za-z0-9_.$]+)$")
       listOf(REPO, "secret", SHA, "feature/").forEach { line shouldNotContain it }
     }

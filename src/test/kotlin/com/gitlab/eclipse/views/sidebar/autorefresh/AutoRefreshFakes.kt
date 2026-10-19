@@ -74,7 +74,10 @@ internal class FakeRefs : RefsEventSource {
   var unregistered = 0
   var failUnregister: RuntimeException? = null
 
+  var failRegister: RuntimeException? = null
+
   override fun register(onRefsChanged: (gitDir: String) -> Unit): Registration {
+    failRegister?.let { throw it }
     registered++
     listeners += onRefsChanged
     return Registration {
@@ -94,7 +97,10 @@ internal class FakeProbe : HeadProbe {
   val outstanding: Int
     get() = requests.size - answered
 
+  var failProbe: RuntimeException? = null
+
   override fun probe(gitDir: String, onResult: (HeadKey) -> Unit) {
+    failProbe?.let { throw it }
     requests += gitDir to onResult
   }
 
