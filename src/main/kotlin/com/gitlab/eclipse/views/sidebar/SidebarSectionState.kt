@@ -1,10 +1,11 @@
 package com.gitlab.eclipse.views.sidebar
 
-import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
-import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
+import com.gitlab.eclipse.views.sidebar.queries.QueryConfig
+import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
 
 /**
  * A pipeline paired with its (possibly still-failed) jobs fetch, mirroring the
@@ -56,24 +57,38 @@ sealed interface Slot<out T> {
 }
 
 /**
- * All top-level fetch slots of one refresh generation (design doc §9/R7-R9). Task 9's view
- * creates a fresh instance per refresh with a strictly increasing [generation], mutates the
- * slots on the UI thread as each unit's fetch settles, and re-composes via
- * [SidebarRefreshCoordinator.compose] after each mutation. A superseded generation's instance
- * is simply abandoned — the coordinator resets its memo when [generation] changes, so a stale
- * generation's values can never leak into a newer compose. The coordinator memo keys by payload
- * identity, so an instance it has already composed is treated as unchanged and skips a rebuild:
- * a full refresh therefore settles freshly constructed payloads (CurrentBranchInfo/PipelineSnapshot/
- * Throwable), while the CI-04 soft refresh deliberately keeps the shown `Result` instance of a side
- * whose new value is structurally equal — that is how an auto refresh avoids rebuilding (and
- * collapsing) unchanged nodes ([CurrentBranchSectionFetcher]).
+ * The query roots' slot of one refresh (ISSUE-01 design §7): the [config] snapshot read on the UI thread at refresh
+ * start, its [queries] in config order (snapshotted once — [QueryConfig.Defaults] hands out fresh copies on every
+ * access, and the composer memo keys on query identity), and one outcome [Slot] per query id, all [Slot.Pending] until
+ * that query settles. Ids are unique by construction ([com.gitlab.eclipse.views.sidebar.queries.CustomQueryCodec]).
+ * UI thread only.
+ */
+class QueriesSlot(val config: QueryConfig) {
+  val queries: List<CustomQuery> = config.queries
+
+  val outcomes: MutableMap<String, Slot<QueryOutcome>> =
+    queries.associateTo(LinkedHashMap()) { it.id to Slot.Pending }
+}
+
+/**
+ * All top-level fetch slots of one refresh generation (design doc §9/R7-R9). The view creates a fresh instance per
+ * refresh with a strictly increasing [generation], mutates the slots on the UI thread as each unit's fetch settles,
+ * and re-composes via [SidebarRefreshCoordinator.compose] after each mutation. A superseded generation's instance is
+ * simply abandoned — the coordinator resets its memo when [generation] changes, so a stale generation's values can
+ * never leak into a newer compose. The coordinator memo keys by payload identity, so an instance it has already
+ * composed is treated as unchanged and skips a rebuild: a full refresh therefore settles freshly constructed payloads
+ * (QueryOutcome/CurrentBranchInfo/PipelineSnapshot/Throwable), while the CI-04 soft refresh deliberately keeps the
+ * shown `Result` instance of a side whose new value is structurally equal — that is how an auto refresh avoids
+ * rebuilding (and collapsing) unchanged nodes ([CurrentBranchSectionFetcher]).
  *
- * [currentBranchEpoch] orders the soft refreshes of the current-branch section within one
- * generation: a soft refresh bumps it instead of [generation] (so the assigned slot and the memo
- * survive), and its updates apply only while their epoch is still the latest. UI thread only.
+ * [currentBranchEpoch] orders the soft refreshes of the current-branch section within one generation: a soft refresh
+ * bumps it instead of [generation] (so the queries slot and the memo survive), and its updates apply only while their
+ * epoch is still the latest. [queriesEpoch] does the same for the query roots (a settings change re-runs the queries
+ * within the generation). The two epochs are independent: neither path reads or bumps the other's. UI thread only.
  */
 class RefreshSlots(val generation: Long) {
-  var assigned: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>> = Slot.Pending
+  var queries: QueriesSlot = QueriesSlot(QueryConfig.Defaults)
+  var queriesEpoch: Long = 0
   var currentBranch: Slot<CurrentBranchSectionInput> = Slot.Pending
   var currentBranchEpoch: Long = 0
 
@@ -85,12 +100,28 @@ class RefreshSlots(val generation: Long) {
   var currentBranchGitDir: String? = null
 }
 
+/** Which part of the slots an apply belongs to, and so which epoch it must still match (ISSUE-01 design §7, F5). */
+sealed interface ApplyScope {
+  /** Not tied to a section epoch (a mode change re-composes everything): only the generation must be current. */
+  object Generation : ApplyScope
+
+  /** A query-root apply launched under [RefreshSlots.queriesEpoch] == [epoch]. */
+  data class Queries(val epoch: Long) : ApplyScope
+
+  /** A current-branch apply launched under [RefreshSlots.currentBranchEpoch] == [epoch]. */
+  data class CurrentBranch(val epoch: Long) : ApplyScope
+}
+
 /**
- * Whether an apply scheduled for these slots may still touch them (CI-04 design §2.4/§4): only
- * while their [RefreshSlots.generation] is current, and — for a current-branch apply, which
- * carries the [epoch] it was launched under — only while that epoch is still the latest, so a
- * superseded soft refresh paints nothing. [epoch] null: an apply not tied to the section's epoch
- * (assigned roots, a mode change). UI thread only.
+ * Whether an apply scheduled for these slots may still touch them (CI-04 design §2.4/§4, ISSUE-01 design §7): only
+ * while their [RefreshSlots.generation] is current and — for a scoped apply — only while the epoch of ITS section is
+ * still the latest, so a superseded soft refresh or queries run paints nothing. A queries apply never compares against
+ * [RefreshSlots.currentBranchEpoch] and vice versa. UI thread only.
  */
-internal fun RefreshSlots.acceptsApply(isCurrentGeneration: (Long) -> Boolean, epoch: Long?): Boolean =
-  isCurrentGeneration(generation) && (epoch == null || currentBranchEpoch == epoch)
+internal fun RefreshSlots.acceptsApply(isCurrentGeneration: (Long) -> Boolean, scope: ApplyScope): Boolean =
+  isCurrentGeneration(generation) &&
+    when (scope) {
+      ApplyScope.Generation -> true
+      is ApplyScope.Queries -> queriesEpoch == scope.epoch
+      is ApplyScope.CurrentBranch -> currentBranchEpoch == scope.epoch
+    }

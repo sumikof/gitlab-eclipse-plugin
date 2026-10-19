@@ -25,8 +25,13 @@ sealed interface SidebarNode {
   val activationUrl: String? get() = null
 }
 
-/** Top-level grouping node for a saved/quick query (e.g. "Assigned to me"). */
+/**
+ * Top-level node of one sidebar query (ISSUE-01 design §7). [queryId] is the query's stable id (or a reserved
+ * `__unreadable` / `__empty` id for the config-level roots); expansion is remapped by it, so two roots with the same
+ * [label] never collide and a rename or reorder keeps the root expanded.
+ */
 class QueryRootNode(
+  val queryId: String,
   override val label: String,
   override val children: List<SidebarNode>,
 ) : SidebarNode
@@ -102,8 +107,8 @@ class MessageNode(override val label: String) : SidebarNode {
 
 /**
  * Top-level section (PR-2, design doc §8.3) for the merge request open on the currently
- * checked-out branch and the issues it would close. Rendered as a third pseudo-root
- * alongside [buildRoots]'s two [QueryRootNode]s (Task 7 wires it into the view).
+ * checked-out branch and the issues it would close. Rendered as the last pseudo-root
+ * after the [QueryRootNode]s.
  */
 class CurrentBranchSectionNode(override val children: List<SidebarNode>) : SidebarNode {
   override val label: String = "For current branch"

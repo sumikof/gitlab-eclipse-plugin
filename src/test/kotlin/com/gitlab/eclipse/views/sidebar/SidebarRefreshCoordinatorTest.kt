@@ -4,6 +4,9 @@ import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueryDefaults
+import com.gitlab.eclipse.views.sidebar.queries.QueryConfig
+import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
@@ -11,8 +14,8 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.kotest.matchers.types.shouldNotBeSameInstanceAs
 
 private const val LOADING = "Loading…"
-private const val ISSUES_ROOT = "Issues assigned to me"
-private const val MRS_ROOT = "Merge requests assigned to me"
+private const val ISSUES_ID = "default-issues-assigned"
+private const val MRS_ID = "default-mrs-assigned"
 
 class SidebarRefreshCoordinatorTest : StringSpec({
   fun issue(iid: Long) =
@@ -28,8 +31,19 @@ class SidebarRefreshCoordinatorTest : StringSpec({
       references = GitLabMergeRequest.Reference("g/p!$iid"),
     )
   fun coordinator() = SidebarRefreshCoordinator(SidebarViewModel())
+
+  // The two former "assigned to me" roots, built from the defaults by id.
+  fun assignedSlots(generation: Long) =
+    RefreshSlots(generation).apply {
+      val assigned = CustomQueryDefaults.queries.filter { it.id == ISSUES_ID || it.id == MRS_ID }
+      queries = QueriesSlot(QueryConfig.Custom(assigned))
+    }
+  fun settleAssigned(slots: RefreshSlots, issues: List<GitLabIssue>, mrs: List<GitLabMergeRequest>) {
+    slots.queries.outcomes[ISSUES_ID] = Slot.Settled(QueryOutcome.Issues(issues, truncated = false))
+    slots.queries.outcomes[MRS_ID] = Slot.Settled(QueryOutcome.MergeRequests(mrs, truncated = false))
+  }
   fun sectionOf(nodes: List<SidebarNode>): CurrentBranchSectionNode =
-    nodes[2] as CurrentBranchSectionNode
+    nodes.last() as CurrentBranchSectionNode
   fun mrNodeOf(section: SidebarNode): MergeRequestNode =
     section.children.filterIsInstance<MergeRequestNode>().single()
   fun loadingOnly(node: SidebarNode) {
@@ -44,37 +58,33 @@ class SidebarRefreshCoordinatorTest : StringSpec({
       "fp0",
     )
 
-  "all-pending slots render two Loading roots and a Loading current-branch section" {
+  "fresh slots render one Loading root per default query, then a Loading current-branch section" {
     val out = coordinator().compose(RefreshSlots(1L), SidebarViewMode.LIST)
-    out shouldHaveSize 3
-    out[0].label shouldBe ISSUES_ROOT
-    loadingOnly(out[0])
-    out[1].label shouldBe MRS_ROOT
-    loadingOnly(out[1])
+    out shouldHaveSize CustomQueryDefaults.queries.size + 1
+    out.dropLast(1).map { (it as QueryRootNode).queryId } shouldBe CustomQueryDefaults.queries.map { it.id }
+    out.dropLast(1).forEach { loadingOnly(it) }
     loadingOnly(sectionOf(out))
   }
 
-  "assigned settled with current-branch pending renders real roots and a Loading section" {
-    val slots = RefreshSlots(1L)
-    slots.assigned =
-      Slot.Settled(Result.success(listOf(issue(1))) to Result.success(listOf(mr(2))))
+  "queries settled with current-branch pending renders real roots and a Loading section" {
+    val slots = assignedSlots(1L)
+    settleAssigned(slots, listOf(issue(1)), listOf(mr(2)))
     val out = coordinator().compose(slots, SidebarViewMode.LIST)
     out shouldHaveSize 3
-    out[0].label shouldBe ISSUES_ROOT
+    out[0].label shouldBe "Issues assigned to me"
     (out[0].children.single() is IssueNode) shouldBe true
-    out[1].label shouldBe MRS_ROOT
+    out[1].label shouldBe "Merge requests assigned to me"
     (out[1].children.single() is MergeRequestNode) shouldBe true
     loadingOnly(sectionOf(out))
   }
 
-  "cross-unit identity: assigned settling later keeps the current-branch MergeRequestNode instance" {
+  "cross-unit identity: queries settling later keeps the current-branch MergeRequestNode instance" {
     val c = coordinator()
-    val slots = RefreshSlots(5L)
+    val slots = assignedSlots(5L)
     val mrResult = Result.success(CurrentBranchInfo(mr(2), emptyList()))
     slots.currentBranch = Slot.Settled(Resolved(mr = mrResult, pipeline = null))
     val first = mrNodeOf(sectionOf(c.compose(slots, SidebarViewMode.LIST)))
-    slots.assigned =
-      Slot.Settled(Result.success(emptyList<GitLabIssue>()) to Result.success(listOf(mr(3))))
+    settleAssigned(slots, emptyList(), listOf(mr(3)))
     val second = mrNodeOf(sectionOf(c.compose(slots, SidebarViewMode.LIST)))
     second shouldBeSameInstanceAs first
   }
@@ -106,9 +116,8 @@ class SidebarRefreshCoordinatorTest : StringSpec({
 
   "new generation resets to all-Loading with no prior-generation nodes leaking" {
     val c = coordinator()
-    val slots = RefreshSlots(1L)
-    slots.assigned =
-      Slot.Settled(Result.success(listOf(issue(1))) to Result.success(listOf(mr(2))))
+    val slots = assignedSlots(1L)
+    settleAssigned(slots, listOf(issue(1)), listOf(mr(2)))
     slots.currentBranch =
       Slot.Settled(
         Resolved(
@@ -119,19 +128,19 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     val settled = c.compose(slots, SidebarViewMode.LIST)
     sectionOf(settled).children.filterIsInstance<MergeRequestNode>() shouldHaveSize 1
 
-    val out = c.compose(RefreshSlots(2L), SidebarViewMode.LIST)
+    val out = c.compose(assignedSlots(2L), SidebarViewMode.LIST)
     out shouldHaveSize 3
     loadingOnly(out[0])
     loadingOnly(out[1])
     loadingOnly(sectionOf(out))
+    out[0] shouldNotBeSameInstanceAs settled[0]
     sectionOf(out) shouldNotBeSameInstanceAs sectionOf(settled)
   }
 
-  "unchanged assigned slot reuses the same root node instances" {
+  "unchanged query outcomes reuse the same root node instances" {
     val c = coordinator()
-    val slots = RefreshSlots(3L)
-    slots.assigned =
-      Slot.Settled(Result.success(listOf(issue(1))) to Result.success(listOf(mr(2))))
+    val slots = assignedSlots(3L)
+    settleAssigned(slots, listOf(issue(1)), listOf(mr(2)))
     val out1 = c.compose(slots, SidebarViewMode.LIST)
     slots.currentBranch = Slot.Settled(NoRepository)
     val out2 = c.compose(slots, SidebarViewMode.LIST)
@@ -139,9 +148,9 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     out2[1] shouldBeSameInstanceAs out1[1]
   }
 
-  "still-pending assigned roots keep identity while current-branch settles" {
+  "still-pending query roots keep identity while current-branch settles" {
     val c = coordinator()
-    val slots = RefreshSlots(4L)
+    val slots = assignedSlots(4L)
     val out1 = c.compose(slots, SidebarViewMode.LIST)
     slots.currentBranch =
       Slot.Settled(Resolved(mr = Result.success(CurrentBranchInfo(mr(2), emptyList())), pipeline = null))
