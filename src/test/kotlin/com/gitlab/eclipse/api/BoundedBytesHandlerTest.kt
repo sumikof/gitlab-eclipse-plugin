@@ -51,9 +51,11 @@ private fun info(status: Int, headers: Map<String, List<String>> = emptyMap()) =
 /** A deadline the test fires by hand: records the armed timeout and holds the expiry action. */
 private class ManualDeadline : BodyDeadline {
   val armed = CompletableFuture<Pair<Duration, () -> Unit>>()
+  var disarmed = 0
 
-  override fun arm(timeout: Duration, onExpiry: () -> Unit) {
+  override fun arm(timeout: Duration, onExpiry: () -> Unit): () -> Unit {
     armed.complete(timeout to onExpiry)
+    return { disarmed++ }
   }
 
   fun fire() = armed.get(5, TimeUnit.SECONDS).second()
@@ -189,6 +191,47 @@ class BoundedBytesHandlerTest : DescribeSpec({
         client.shutdownNow()
         server.stop(0)
       }
+    }
+  }
+
+  describe("BoundedBytesHandler deadline disarm (R2-3)") {
+    fun subscribed(deadline: ManualDeadline): HttpResponse.BodySubscriber<BoundedBytes?> =
+      BoundedBytesHandler(CAP, deadline = deadline).apply(info(200)).also { it.onSubscribe(FakeSubscription()) }
+
+    it("disarms the deadline when the body completes") {
+      val deadline = ManualDeadline()
+      val subscriber = subscribed(deadline)
+
+      subscriber.onNext(buffers("ok"))
+      subscriber.onComplete()
+
+      deadline.disarmed shouldBe 1
+    }
+
+    it("disarms the deadline when the body fails") {
+      val deadline = ManualDeadline()
+
+      subscribed(deadline).onError(java.io.IOException("reset"))
+
+      deadline.disarmed shouldBe 1
+    }
+
+    it("disarms the deadline when the body passes the cap") {
+      val deadline = ManualDeadline()
+
+      subscribed(deadline).onNext(buffers("123456789"))
+
+      deadline.disarmed shouldBe 1
+    }
+
+    it("the production deadline forgets a disarmed timer at once") {
+      val before = SharedBodyDeadline.pendingForTest()
+
+      val disarm = SharedBodyDeadline.arm(Duration.ofHours(1)) {}
+      SharedBodyDeadline.pendingForTest() shouldBe before + 1
+      disarm()
+
+      SharedBodyDeadline.pendingForTest() shouldBe before
     }
   }
 })

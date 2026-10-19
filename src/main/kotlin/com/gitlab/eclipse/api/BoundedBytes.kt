@@ -8,6 +8,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.Flow
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /** A response body read under a size cap: the whole body, or the fact that it exceeded the cap. */
@@ -19,14 +20,30 @@ sealed interface BoundedBytes {
   object TooLarge : BoundedBytes
 }
 
-/** Arms a one-shot timer; [onExpiry] runs on some other thread once [timeout] has passed. */
+/** Arms a one-shot timer; [onExpiry] runs on some other thread once the timeout has passed. */
 fun interface BodyDeadline {
-  fun arm(timeout: Duration, onExpiry: () -> Unit)
+  /** Arms the timer and returns a function that disarms it (a no-op once it has fired). */
+  fun arm(timeout: Duration, onExpiry: () -> Unit): () -> Unit
 }
 
-/** Production [BodyDeadline]: the JDK's shared delayed executor (one daemon thread, no pool of ours). */
-internal val SHARED_BODY_DEADLINE = BodyDeadline { timeout, onExpiry ->
-  CompletableFuture.delayedExecutor(timeout.toMillis(), TimeUnit.MILLISECONDS).execute(onExpiry)
+/**
+ * Production [BodyDeadline]: one shared daemon timer thread. A disarmed timer is removed from the
+ * queue at once, so a completed body is not kept reachable by its pending deadline.
+ */
+internal object SharedBodyDeadline : BodyDeadline {
+  private val timer: ScheduledThreadPoolExecutor by lazy {
+    ScheduledThreadPoolExecutor(1) { runnable ->
+      Thread(runnable, "GitLab MR diff body deadline").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
+  }
+
+  override fun arm(timeout: Duration, onExpiry: () -> Unit): () -> Unit {
+    val pending = timer.schedule(onExpiry, timeout.toMillis(), TimeUnit.MILLISECONDS)
+    return { pending.cancel(false) }
+  }
+
+  /** Test-only: timers still queued. */
+  internal fun pendingForTest(): Int = timer.queue.size
 }
 
 /** How long a body may take once its headers arrived; the request timeout covers only the headers. */
@@ -49,7 +66,7 @@ private const val SUCCESS_MAX = 299
 internal class BoundedBytesHandler(
   private val maxBytes: Int,
   internal val bodyTimeout: Duration = DEFAULT_BODY_TIMEOUT,
-  private val deadline: BodyDeadline = SHARED_BODY_DEADLINE,
+  private val deadline: BodyDeadline = SharedBodyDeadline,
 ) : HttpResponse.BodyHandler<BoundedBytes?> {
   override fun apply(responseInfo: HttpResponse.ResponseInfo): HttpResponse.BodySubscriber<BoundedBytes?> {
     if (responseInfo.statusCode() !in SUCCESS_MIN..SUCCESS_MAX) {
@@ -96,43 +113,58 @@ private class LimitingSubscriber(
   private val deadline: BodyDeadline,
 ) : HttpResponse.BodySubscriber<BoundedBytes?> {
   private val result = CompletableFuture<BoundedBytes?>()
-  private val buffer = ByteArrayOutputStream()
+  private var buffer: ByteArrayOutputStream? = ByteArrayOutputStream()
 
   @Volatile
   private var subscription: Flow.Subscription? = null
+
+  @Volatile
+  private var disarm: () -> Unit = {}
   private var total = 0L
 
   override fun getBody(): CompletionStage<BoundedBytes?> = result
 
   override fun onSubscribe(subscription: Flow.Subscription) {
     this.subscription = subscription
-    deadline.arm(bodyTimeout) {
-      if (result.completeExceptionally(HttpTimeoutException(BODY_TIMED_OUT))) subscription.cancel()
+    // The expiry action captures only the future and the subscription, never this subscriber
+    // (and so never its buffer); it is disarmed as soon as the body ends.
+    val body = result
+    disarm = deadline.arm(bodyTimeout) {
+      if (body.completeExceptionally(HttpTimeoutException(BODY_TIMED_OUT))) subscription.cancel()
     }
     subscription.request(Long.MAX_VALUE)
   }
 
   override fun onNext(item: List<ByteBuffer>) {
+    val sink = buffer ?: return
     if (result.isDone) return
     for (chunk in item) {
       total += chunk.remaining()
       if (total > maxBytes) {
         subscription?.cancel()
-        result.complete(BoundedBytes.TooLarge)
+        finish { result.complete(BoundedBytes.TooLarge) }
         return
       }
       val bytes = ByteArray(chunk.remaining())
       chunk.get(bytes)
-      buffer.write(bytes)
+      sink.write(bytes)
     }
   }
 
   override fun onError(throwable: Throwable) {
-    result.completeExceptionally(throwable)
+    finish { result.completeExceptionally(throwable) }
   }
 
   override fun onComplete() {
-    if (!result.isDone) result.complete(BoundedBytes.Ok(buffer.toByteArray()))
+    val bytes = buffer?.toByteArray() ?: return
+    finish { result.complete(BoundedBytes.Ok(bytes)) }
+  }
+
+  /** Completes [result] (first completion wins), stops the deadline and drops the buffer. */
+  private inline fun finish(complete: () -> Unit) {
+    complete()
+    disarm()
+    buffer = null
   }
 
   private companion object {
