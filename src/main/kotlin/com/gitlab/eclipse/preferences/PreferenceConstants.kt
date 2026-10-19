@@ -40,6 +40,14 @@ object PreferenceConstants {
   const val SECURITY_SCAN_ON_SAVE: String = "gitlab.securityScan.scanFileOnSave"
 
   /**
+   * The sidebar custom queries as one JSON value `{"version":1,"queries":[...]}` (ISSUE-01 design §5).
+   *
+   * Default `""` means "unset": the built-in defaults apply, so later default changes reach users who
+   * never customised. Restore Defaults removes the key.
+   */
+  const val SIDEBAR_CUSTOM_QUERIES: String = "gitlab.sidebar.customQueries"
+
+  /**
    * The random ID recorded for the GitLab Duo Tutorial project this plugin created (design §9.2).
    *
    * Hidden: no preference page, no default, never sent to the language server. Compared against
