@@ -63,6 +63,8 @@ data class MrFileDiffRequest(
   companion object {
     private const val MAX_PATH_LENGTH = 4096
     private val SHA_PATTERN = Regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    private val BIDI_EMBEDDING = '\u202A'..'\u202E'
+    private val BIDI_ISOLATE = '\u2066'..'\u2069'
 
     /**
      * Validates [source] and the node's paths (design §6). Only the paths the change type reads are
@@ -116,13 +118,21 @@ data class MrFileDiffRequest(
       }
     }
 
+    /**
+     * Control characters (C0 incl. NUL/CR/LF/TAB, DEL, C1), bidi embedding/override (U+202A–U+202E)
+     * and isolate (U+2066–U+2069) characters, and backslash: none belongs in a GitLab repository
+     * path, and they would let a crafted path spoof the Compare title, labels and tooltip.
+     */
+    private fun isForbiddenPathChar(char: Char): Boolean =
+      Character.isISOControl(char) || char in BIDI_EMBEDDING || char in BIDI_ISOLATE || char == '\\'
+
     private fun isSha(sha: String?): Boolean = sha != null && SHA_PATTERN.matches(sha)
 
     private fun isSafePath(path: String?): Boolean =
       path != null &&
         path.isNotEmpty() &&
         path.length <= MAX_PATH_LENGTH &&
-        path.none { it == '\u0000' || it == '\r' || it == '\n' } &&
+        path.none(::isForbiddenPathChar) &&
         path.split('/').none { it.isEmpty() || it == "." || it == ".." }
   }
 }

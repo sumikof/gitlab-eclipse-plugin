@@ -132,6 +132,30 @@ class MrFileDiffRequestTest : DescribeSpec({
         }
       }
 
+    mapOf(
+      "TAB" to "a\tb",
+      "ESC" to "a\u001Bb",
+      "unit separator" to "a\u001Fb",
+      "DEL" to "a\u007Fb",
+      "C1 NEL" to "a\u0085b",
+      "C1 APC" to "a\u009Fb",
+      "LRE U+202A" to "a\u202Ab",
+      "RLO U+202E" to "evil\u202Etxt.exe",
+      "LRI U+2066" to "a\u2066b",
+      "PDI U+2069" to "a\u2069b",
+      "backslash" to "dir\\file.kt",
+    ).forEach { (name, bad) ->
+      it("rejects a path containing $name (R7)") {
+        from(oldPath = bad, newPath = bad).reason() shouldBe InvalidReason.BAD_PATH
+      }
+    }
+
+    it("still accepts characters just outside the rejected ranges") {
+      listOf("a\u00A0b", "a\u2029b", "a\u206Ab", "a\u202Fb", "日本語/ファイル.kt").forEach { ok ->
+        from(oldPath = ok, newPath = ok).shouldBeInstanceOf<Validated.Ok>()
+      }
+    }
+
     it("accepts a path of exactly 4096 characters") {
       val longest = "a".repeat(4096)
       from(oldPath = longest, newPath = longest).shouldBeInstanceOf<Validated.Ok>()
