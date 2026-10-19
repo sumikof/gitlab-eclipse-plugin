@@ -94,6 +94,7 @@ internal class EclipseMrDiffPorts(
   private val openOn: (MrFileDiffContent, IWorkbenchPage) -> Unit = MrCompareOpener::open,
   private val show: (String) -> Unit = { NotificationUtils.show(it) },
   private val newJob: (String, DiffWork, () -> Unit) -> Job = MrFileDiffJobs::newJob,
+  private val uiAvailable: () -> Boolean = ::workbenchCanShow,
 ) : MrDiffPorts {
   override fun findOpen(key: MrFileDiffKey): Boolean {
     val page = activePage() ?: return false
@@ -119,8 +120,13 @@ internal class EclipseMrDiffPorts(
 
   override fun uiHop(block: () -> Unit) = hop(block)
 
-  /** UI thread. With no window left to show it in, the user is told rather than left waiting. */
+  /**
+   * UI thread. Nothing is opened while the workbench is closing or its display is gone (the result
+   * is dropped; the controller has still released it). With no window left to show it in, the user
+   * is told rather than left waiting.
+   */
   override fun open(content: MrFileDiffContent) {
+    if (!uiAvailable()) return
     val page = activePage()
     if (page == null) {
       show(MrDiffMessages.NO_WINDOW_MESSAGE)
@@ -135,7 +141,10 @@ internal class EclipseMrDiffPorts(
     }
   }
 
-  override fun notify(message: String) = show(message)
+  /** Skipped while the workbench is closing or its display is gone. */
+  override fun notify(message: String) {
+    if (uiAvailable()) show(message)
+  }
 }
 
 /**
@@ -152,15 +161,41 @@ private fun activeWorkbenchPage(): IWorkbenchPage? {
   return pageFor(workbench.activeWorkbenchWindow, workbench.workbenchWindows.toList())
 }
 
-/** Any thread. Runs [block] on the UI thread later, unless the display is gone or the workbench is closing. */
-private fun asyncOnLiveWorkbench(block: () -> Unit) {
-  if (!PlatformUI.isWorkbenchRunning()) return
+/** Whether a diff may be opened or a notification shown: a live display and a workbench that is not closing. */
+private fun workbenchCanShow(): Boolean {
+  if (!PlatformUI.isWorkbenchRunning()) return false
   val workbench = PlatformUI.getWorkbench()
-  val display = workbench.display
-  if (display.isDisposed) return
+  return !workbench.display.isDisposed && !workbench.isClosing
+}
+
+/** Any thread. Runs [block] on the UI thread later; see [hopOrRunInline] for when no display is left. */
+private fun asyncOnLiveWorkbench(block: () -> Unit) {
+  hopOrRunInline(liveAsyncExec(), block)
+}
+
+/** The live display's `asyncExec`, or `null` without a running workbench or with a disposed display. */
+private fun liveAsyncExec(): ((Runnable) -> Unit)? {
+  if (!PlatformUI.isWorkbenchRunning()) return null
+  val display = PlatformUI.getWorkbench().display
+  if (display.isDisposed) return null
+  return { runnable -> display.asyncExec(runnable) }
+}
+
+/**
+ * Posts [block] through [asyncExec]; the block itself always runs, because the controller's
+ * delivery releases its generation in it (F1) — only opening and notifying are gated, in the ports.
+ * With no display left to post to (null, or disposed while posting) it runs [block] right here: the
+ * UI thread is gone, so nothing else can touch the UI-confined state any more, and the ports skip
+ * every SWT call.
+ */
+internal fun hopOrRunInline(asyncExec: ((Runnable) -> Unit)?, block: () -> Unit) {
+  if (asyncExec == null) {
+    block()
+    return
+  }
   try {
-    display.asyncExec { if (!display.isDisposed && !workbench.isClosing) block() }
+    asyncExec(Runnable { block() })
   } catch (_: SWTException) {
-    // Disposed between the check and the scheduling: nothing left to show the result in.
+    block()
   }
 }

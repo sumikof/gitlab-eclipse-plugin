@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mergerequests.diff
 
+import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.preferences.storage.CapturedLog
 import io.kotest.assertions.throwables.shouldNotThrowAny
@@ -14,6 +15,8 @@ import io.mockk.mockk
 import io.mockk.verify
 import io.mockk.verifyOrder
 import org.eclipse.core.runtime.jobs.Job
+import org.eclipse.swt.SWT
+import org.eclipse.swt.SWTException
 import org.eclipse.ui.IWorkbenchPage
 import org.eclipse.ui.IWorkbenchWindow
 
@@ -32,6 +35,7 @@ class EclipseMrDiffPortsTest : DescribeSpec({
     var openThrows: Exception? = null
     val job = mockk<Job>(relaxed = true)
     var createdWith: (() -> Unit)? = null
+    var canShow = true
 
     val ports = EclipseMrDiffPorts(
       activePage = { page },
@@ -49,6 +53,7 @@ class EclipseMrDiffPortsTest : DescribeSpec({
         createdWith = onEndedWithoutRunning
         job
       },
+      uiAvailable = { canShow },
     )
   }
 
@@ -177,6 +182,96 @@ class EclipseMrDiffPortsTest : DescribeSpec({
 
     it("is null without any window") {
       pageFor(null, emptyList()).shouldBeNull()
+    }
+  }
+
+  describe("while the workbench cannot show anything (F1)") {
+    it("open neither opens nor notifies") {
+      val world = World().apply { canShow = false }
+
+      world.ports.open(content)
+
+      world.opened.shouldBeEmpty()
+      world.shown.shouldBeEmpty()
+    }
+
+    it("notify shows nothing") {
+      val world = World().apply { canShow = false }
+
+      world.ports.notify("m")
+
+      world.shown.shouldBeEmpty()
+    }
+  }
+
+  describe("hopOrRunInline (F1)") {
+    it("posts the block when there is a live display") {
+      val posted = mutableListOf<Runnable>()
+      var ran = 0
+
+      hopOrRunInline({ posted += it }) { ran++ }
+
+      ran shouldBe 0
+      posted.single().run()
+      ran shouldBe 1
+    }
+
+    it("runs the block right here when there is no display to post to") {
+      var ran = 0
+
+      hopOrRunInline(null) { ran++ }
+
+      ran shouldBe 1
+    }
+
+    it("runs the block right here when the display was disposed while posting") {
+      var ran = 0
+
+      hopOrRunInline({ throw SWTException(SWT.ERROR_DEVICE_DISPOSED) }) { ran++ }
+
+      ran shouldBe 1
+    }
+  }
+
+  describe("with the real controller (F1)") {
+    it("a result arriving while the workbench is closing opens nothing, yet the same file can be opened again") {
+      MrFileDiffRegistry.resetForTest()
+      var closing = false
+      val hops = ArrayDeque<() -> Unit>()
+      val works = mutableListOf<DiffWork>()
+      val opened = mutableListOf<MrFileDiffContent>()
+      val shown = mutableListOf<String>()
+      val ports = EclipseMrDiffPorts(
+        activePage = { mockk() },
+        hop = { hops.addLast(it) },
+        activateExisting = { _, _ -> false },
+        openOn = { c, _ -> opened += c },
+        show = { shown += it },
+        newJob = { _, work, _ ->
+          works += work
+          mockk(relaxed = true)
+        },
+        uiAvailable = { !closing },
+      )
+      val snapshot = ConnectionSnapshot("https://gl.example", "tok", "fp", 1L)
+      val loader = MrFileDiffLoader({ _ -> snapshot }) { _, side, _ -> SideContent.Bytes(side.sha.toByteArray()) }
+      val controller = MrFileDiffController(loader, ports)
+      val request = MrFileDiffRequest.Validated.Ok(compareRequest())
+
+      controller.open(request)
+      works.single().invoke { false }
+      closing = true
+      while (hops.isNotEmpty()) hops.removeFirst()()
+      closing = false
+      controller.open(request)
+
+      opened.shouldBeEmpty()
+      shown.shouldBeEmpty()
+      works.size shouldBe 2
+      works.last().invoke { false }
+      while (hops.isNotEmpty()) hops.removeFirst()()
+      opened.size shouldBe 1
+      MrFileDiffRegistry.resetForTest()
     }
   }
 })
