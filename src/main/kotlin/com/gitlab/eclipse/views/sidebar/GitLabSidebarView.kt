@@ -589,27 +589,34 @@ class GitLabSidebarView : ViewPart() {
 }
 
 /**
- * The [Resolved] payload currently settled in [slots]' current-branch slot, or an
- * all-pending one when the slot is still Pending (or holds [NoRepository], which cannot
- * happen once the resolved pre-step has run). Read on the UI thread only, inside
- * `applyCompose`'s update step.
- */
-/**
  * Remaps a captured expanded-elements list onto a freshly composed [newInput] (R9): the
  * top-level node INSTANCES change per compose — [QueryRootNode]s and the
  * [CurrentBranchSectionNode] are rebuilt — so they are matched by stable key instead: a
  * query root by its label, the current-branch section by its type. Everything else (the
  * coordinator's identity-preserved inner nodes) passes through unchanged. Best-effort:
  * an unmatched stale element passes through too and is simply not found by the viewer.
+ *
+ * CI-04: a soft refresh can also rebuild the nodes INSIDE the current-branch section, so an
+ * element that was inside [oldInput]'s section is remapped into [newInput]'s section by its
+ * stable key ([remapInSection]). Only those: an MR expanded under an assigned root keeps its own
+ * identity rather than being mapped onto the current-branch copy of the same MR.
  */
-internal fun remapExpandedElements(expanded: List<Any>, newInput: List<SidebarNode>): List<Any> =
-  expanded.map { element ->
-    when (element) {
-      is QueryRootNode -> newInput.firstOrNull { it is QueryRootNode && it.label == element.label } ?: element
-      is CurrentBranchSectionNode -> newInput.firstOrNull { it is CurrentBranchSectionNode } ?: element
+internal fun remapExpandedElements(
+  expanded: List<Any>,
+  newInput: List<SidebarNode>,
+  oldInput: List<SidebarNode> = emptyList(),
+): List<Any> {
+  val oldSection = oldInput.firstOrNull { it is CurrentBranchSectionNode }
+  val newSection = newInput.firstOrNull { it is CurrentBranchSectionNode }
+  return expanded.map { element ->
+    when {
+      element is QueryRootNode -> newInput.firstOrNull { it is QueryRootNode && it.label == element.label } ?: element
+      element is CurrentBranchSectionNode -> newSection ?: element
+      oldSection != null && newSection != null -> remapInSection(element, oldSection, newSection) ?: element
       else -> element
     }
   }
+}
 
 /**
  * The two non-secret connection tags to stamp on a merge request node's children, or
