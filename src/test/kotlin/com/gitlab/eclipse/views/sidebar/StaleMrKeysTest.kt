@@ -33,7 +33,7 @@ class StaleMrKeysTest : StringSpec({
 
     staleMrKeys(old, new) shouldBe StaleMrKeys(
       discussionNodeIds = setOf(section.nodeId),
-      mrCacheKeys = setOf("https://gitlab.example.com/g/p/-/merge_requests/7"),
+      mrCacheEntries = setOf("https://gitlab.example.com/g/p/-/merge_requests/7"),
     )
   }
 

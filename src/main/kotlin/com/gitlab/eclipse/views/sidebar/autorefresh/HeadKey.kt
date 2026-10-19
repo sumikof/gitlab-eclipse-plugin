@@ -19,8 +19,8 @@ sealed interface HeadKey {
 }
 
 /** The repository (git dir) and HEAD a settled refresh looked at; `toString()` omits the path. */
-data class TrackedHead(val gitDir: String, val key: HeadKey) {
-  override fun toString() = "TrackedHead($key)"
+data class TrackedHead(val gitDir: String, val head: HeadKey) {
+  override fun toString() = "TrackedHead($head)"
 }
 
 /** How a refresh ended, as far as tracking is concerned (see [CurrentBranchAutoRefresher.onRefreshSettled]). */

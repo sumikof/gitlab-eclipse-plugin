@@ -532,7 +532,7 @@ class GitLabSidebarView : ViewPart() {
     val oldSection = oldInput.filterIsInstance<CurrentBranchSectionNode>().firstOrNull() ?: return
     val newSection = newInput.filterIsInstance<CurrentBranchSectionNode>().firstOrNull() ?: return
     val stale = staleMrKeys(oldSection.children, newSection.children)
-    stale.mrCacheKeys.forEach {
+    stale.mrCacheEntries.forEach {
       mrVersionCache.remove(it)
       mrConnectionTagsCache.remove(it)
     }

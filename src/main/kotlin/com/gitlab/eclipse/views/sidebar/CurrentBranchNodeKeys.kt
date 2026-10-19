@@ -35,7 +35,7 @@ private fun List<SidebarNode>.pipelineWithId(id: Long): PipelineNode? =
   filterIsInstance<PipelineNode>().firstOrNull { it.pipelineId == id }
 
 /** What to invalidate when a soft refresh replaces current-branch MR nodes ([staleMrKeys]). */
-internal data class StaleMrKeys(val discussionNodeIds: Set<Long>, val mrCacheKeys: Set<String>)
+internal data class StaleMrKeys(val discussionNodeIds: Set<Long>, val mrCacheEntries: Set<String>)
 
 /**
  * CI-04 (design §2.4): the [MergeRequestNode]s of [oldChildren] that [newChildren] no longer
@@ -48,6 +48,6 @@ internal fun staleMrKeys(oldChildren: List<SidebarNode>, newChildren: List<Sideb
   val replaced = oldChildren.filterIsInstance<MergeRequestNode>().filter { old -> newChildren.none { it === old } }
   return StaleMrKeys(
     discussionNodeIds = collectDiscussionSectionNodeIds(replaced),
-    mrCacheKeys = replaced.mapTo(mutableSetOf()) { mrCacheKey(it.mr.webUrl, it.mr.projectId, it.mr.iid) },
+    mrCacheEntries = replaced.mapTo(mutableSetOf()) { mrCacheKey(it.mr.webUrl, it.mr.projectId, it.mr.iid) },
   )
 }

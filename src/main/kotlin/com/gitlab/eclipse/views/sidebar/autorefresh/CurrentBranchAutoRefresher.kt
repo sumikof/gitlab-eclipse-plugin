@@ -258,7 +258,7 @@ class CurrentBranchAutoRefresher(
     probeInFlight = false
     val current = tracked
     val coveredByRunningRefresh = (inFlight ?: Long.MIN_VALUE) > issuedAt
-    val moved = key != null && current != null && current.gitDir == gitDir && current.key != key
+    val moved = key != null && current != null && current.gitDir == gitDir && current.head != key
     if (moved && !coveredByRunningRefresh) request(RefreshReason.BRANCH)
     if (probePending) {
       probePending = false
