@@ -6,6 +6,7 @@ import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.mockk.every
@@ -14,6 +15,7 @@ import io.mockk.verify
 import io.mockk.verifyOrder
 import org.eclipse.core.runtime.jobs.Job
 import org.eclipse.ui.IWorkbenchPage
+import org.eclipse.ui.IWorkbenchWindow
 
 /** The production ports with every platform seam faked: no Display, no workbench, no real Job. */
 class EclipseMrDiffPortsTest : DescribeSpec({
@@ -112,13 +114,13 @@ class EclipseMrDiffPortsTest : DescribeSpec({
       world.opened.single().first shouldBe content
     }
 
-    it("drops the result when the window has gone") {
+    it("notifies instead of dropping the result silently when no window can show it (R2-5)") {
       val world = World(page = null)
 
       world.ports.open(content)
 
       world.opened.shouldBeEmpty()
-      world.shown.shouldBeEmpty()
+      world.shown shouldContainExactly listOf(MrDiffMessages.NO_WINDOW_MESSAGE)
     }
 
     it("turns a failing open into one generic notification and an exception-type log line") {
@@ -148,5 +150,33 @@ class EclipseMrDiffPortsTest : DescribeSpec({
     world.ports.uiHop { ran = true }
 
     ran shouldBe true
+  }
+
+  describe("pageFor (R2-5)") {
+    fun window(page: IWorkbenchPage?): IWorkbenchWindow = mockk<IWorkbenchWindow>().also {
+      every { it.activePage } returns page
+    }
+
+    it("uses the active window's page") {
+      val page = mockk<IWorkbenchPage>()
+
+      pageFor(window(page), listOf(window(mockk()))) shouldBe page
+    }
+
+    it("falls back to the first window that has a page when no window is active") {
+      val page = mockk<IWorkbenchPage>()
+
+      pageFor(null, listOf(window(null), window(page), window(mockk()))) shouldBe page
+    }
+
+    it("falls back as well when the active window has no page") {
+      val page = mockk<IWorkbenchPage>()
+
+      pageFor(window(null), listOf(window(page))) shouldBe page
+    }
+
+    it("is null without any window") {
+      pageFor(null, emptyList()).shouldBeNull()
+    }
   }
 })

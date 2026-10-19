@@ -2,6 +2,9 @@ package com.gitlab.eclipse.mergerequests.diff
 
 /** User-facing notification text for each [DiffFailure] (REVIEW-01 design §9). */
 object MrDiffMessages {
+  /** The diff loaded but no workbench window exists to open it in. */
+  const val NO_WINDOW_MESSAGE = "The merge request diff could not be shown because no Eclipse window is open."
+
   fun message(kind: DiffFailure): String =
     when (kind) {
       DiffFailure.CONNECTION_CHANGED -> "The GitLab connection changed. Refresh the sidebar and try again."

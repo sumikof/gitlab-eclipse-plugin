@@ -11,6 +11,7 @@ import org.eclipse.core.runtime.jobs.Job
 import org.eclipse.core.runtime.jobs.JobChangeAdapter
 import org.eclipse.swt.SWTException
 import org.eclipse.ui.IWorkbenchPage
+import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.PlatformUI
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -118,9 +119,13 @@ internal class EclipseMrDiffPorts(
 
   override fun uiHop(block: () -> Unit) = hop(block)
 
-  /** UI thread. The window may have gone while loading; then the result is dropped. */
+  /** UI thread. With no window left to show it in, the user is told rather than left waiting. */
   override fun open(content: MrFileDiffContent) {
-    val page = activePage() ?: return
+    val page = activePage()
+    if (page == null) {
+      show(MrDiffMessages.NO_WINDOW_MESSAGE)
+      return
+    }
     try {
       openOn(content, page)
     } catch (e: Exception) {
@@ -133,10 +138,18 @@ internal class EclipseMrDiffPorts(
   override fun notify(message: String) = show(message)
 }
 
-/** UI thread. The active window's active page, or `null` without a running workbench or window. */
+/**
+ * The page to show a diff on: the active window's, or — when no window is active (the user switched
+ * to another application while the diff loaded) — the first window that has a page.
+ */
+internal fun pageFor(active: IWorkbenchWindow?, windows: List<IWorkbenchWindow>): IWorkbenchPage? =
+  active?.activePage ?: windows.firstNotNullOfOrNull { it.activePage }
+
+/** UI thread. The page [pageFor] picks, or `null` without a running workbench or any window. */
 private fun activeWorkbenchPage(): IWorkbenchPage? {
   if (!PlatformUI.isWorkbenchRunning()) return null
-  return PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
+  val workbench = PlatformUI.getWorkbench()
+  return pageFor(workbench.activeWorkbenchWindow, workbench.workbenchWindows.toList())
 }
 
 /** Any thread. Runs [block] on the UI thread later, unless the display is gone or the workbench is closing. */
