@@ -107,8 +107,10 @@ internal class FakeProbe : HeadProbe {
 
 internal class FakePort : SoftRefreshPort {
   val tickets = mutableListOf<Long>()
+  var failStart: RuntimeException? = null
 
   override fun startSoftRefresh(ticket: Long) {
     tickets += ticket
+    failStart?.let { throw it }
   }
 }

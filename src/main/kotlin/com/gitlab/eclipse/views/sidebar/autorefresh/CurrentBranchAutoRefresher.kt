@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.views.sidebar.autorefresh
 
+import kotlin.coroutines.cancellation.CancellationException
+
 /** A scheduled action that can be withdrawn. */
 fun interface Cancellable {
   fun cancel()
@@ -205,7 +207,16 @@ class CurrentBranchAutoRefresher(
     val ticket = nextTicket()
     inFlight = ticket
     log("Current-branch auto refresh: $reason")
-    port.startSoftRefresh(ticket)
+    try {
+      port.startSoftRefresh(ticket)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      // Nothing will settle this ticket: release it so the next period (or HEAD change) can retry.
+      inFlight = null
+      runCatching { log("Current-branch auto refresh failed to start: ${e.javaClass.name}") }
+      if (active) armPeriodic(periodMillis)
+    }
   }
 
   private fun armPeriodic(delayMillis: Long) {

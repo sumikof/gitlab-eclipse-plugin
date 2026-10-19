@@ -379,6 +379,35 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.port.tickets shouldHaveSize 2
   }
 
+  "8e. a soft refresh that fails to start does not stall the refresher: logged by class only, retried next period" {
+    val rig = Rig().tracking()
+    rig.port.failStart = IllegalStateException("cannot start for $REPO")
+    rig.time.advanceBy(PERIOD)
+    rig.port.tickets shouldHaveSize 2
+    rig.logs.last() shouldEndWith "IllegalStateException"
+    rig.logs.last() shouldNotContain REPO
+    rig.time.pendingCount shouldBe 1
+
+    rig.port.failStart = null
+    rig.time.advanceBy(PERIOD)
+    rig.port.tickets shouldHaveSize 3
+  }
+
+  "8f. a soft refresh failing to start while inactive leaves no timer, and the next HEAD change still refreshes" {
+    val rig = Rig().tracking(stayActive = false)
+    rig.port.failStart = IllegalStateException("boom")
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Branch("b2"))
+    rig.time.pendingCount shouldBe 0
+
+    rig.port.failStart = null
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.answer(HeadKey.Branch("b2"))
+    rig.port.tickets shouldHaveSize 3
+  }
+
   "10. what the auto refresh logs or prints names only event types and exception classes, never a path, branch or SHA" {
     allLogs.isEmpty() shouldBe false
     allLogs.forEach { line ->
