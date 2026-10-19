@@ -143,15 +143,21 @@ class MrFileDiffRequestTest : DescribeSpec({
       "RLO U+202E" to "evil\u202Etxt.exe",
       "LRI U+2066" to "a\u2066b",
       "PDI U+2069" to "a\u2069b",
-      "backslash" to "dir\\file.kt",
+      "LRM U+200E" to "a\u200Eb",
+      "RLM U+200F" to "a\u200Fb",
+      "ALM U+061C" to "a\u061Cb",
     ).forEach { (name, bad) ->
       it("rejects a path containing $name (R7)") {
         from(oldPath = bad, newPath = bad).reason() shouldBe InvalidReason.BAD_PATH
       }
     }
 
+    it("accepts a backslash, which is a legal POSIX file name character (R2-4)") {
+      from(oldPath = "dir/a\\b.txt", newPath = "dir/a\\b.txt").shouldBeInstanceOf<Validated.Ok>()
+    }
+
     it("still accepts characters just outside the rejected ranges") {
-      listOf("a\u00A0b", "a\u2029b", "a\u206Ab", "a\u202Fb", "日本語/ファイル.kt").forEach { ok ->
+      listOf("a\u00A0b", "a\u2029b", "a\u206Ab", "a\u202Fb", "a\u200Db", "a\u061Bb", "日本語/ファイル.kt").forEach { ok ->
         from(oldPath = ok, newPath = ok).shouldBeInstanceOf<Validated.Ok>()
       }
     }
