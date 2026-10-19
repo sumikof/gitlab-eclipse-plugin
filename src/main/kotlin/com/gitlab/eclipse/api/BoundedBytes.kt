@@ -57,7 +57,7 @@ private const val SUCCESS_MAX = 299
 /**
  * Reads a 2xx body into memory up to [maxBytes] (REVIEW-01 design §5.1, F4).
  *
- * - non-2xx → the body is discarded (the connection is released) and the result is `null`; the
+ * - non-2xx → the body is not read at all (the subscription is cancelled) and the result is `null`; the
  *   caller reports the status only, so an error page is never held or logged;
  * - a `Content-Length` over the cap → [BoundedBytes.TooLarge] without requesting any body;
  * - otherwise the body is accumulated and, the moment it passes the cap (chunked responses carry
@@ -70,33 +70,37 @@ internal class BoundedBytesHandler(
 ) : HttpResponse.BodyHandler<BoundedBytes?> {
   override fun apply(responseInfo: HttpResponse.ResponseInfo): HttpResponse.BodySubscriber<BoundedBytes?> {
     if (responseInfo.statusCode() !in SUCCESS_MIN..SUCCESS_MAX) {
-      return HttpResponse.BodySubscribers.replacing(null)
+      return RejectingSubscriber(null)
     }
     val declared = responseInfo.headers().firstValueAsLong("Content-Length")
-    if (declared.isPresent && declared.asLong > maxBytes) return RejectingSubscriber()
+    if (declared.isPresent && declared.asLong > maxBytes) return RejectingSubscriber(BoundedBytes.TooLarge)
     return LimitingSubscriber(maxBytes, bodyTimeout, deadline)
   }
 }
 
-/** Cancels at once and answers [BoundedBytes.TooLarge]: the declared length already exceeds the cap. */
-private class RejectingSubscriber : HttpResponse.BodySubscriber<BoundedBytes?> {
+/**
+ * Cancels at once, reading nothing, and answers [answer]: `null` for an error status (only the status
+ * is reported, so a stalled error page cannot block), [BoundedBytes.TooLarge] for a declared length
+ * over the cap. Cancelling closes the connection instead of returning it to the pool.
+ */
+private class RejectingSubscriber(private val answer: BoundedBytes?) : HttpResponse.BodySubscriber<BoundedBytes?> {
   private val result = CompletableFuture<BoundedBytes?>()
 
   override fun getBody(): CompletionStage<BoundedBytes?> = result
 
   override fun onSubscribe(subscription: Flow.Subscription) {
     subscription.cancel()
-    result.complete(BoundedBytes.TooLarge)
+    result.complete(answer)
   }
 
   override fun onNext(item: List<ByteBuffer>) = Unit
 
   override fun onError(throwable: Throwable) {
-    result.complete(BoundedBytes.TooLarge)
+    result.complete(answer)
   }
 
   override fun onComplete() {
-    result.complete(BoundedBytes.TooLarge)
+    result.complete(answer)
   }
 }
 

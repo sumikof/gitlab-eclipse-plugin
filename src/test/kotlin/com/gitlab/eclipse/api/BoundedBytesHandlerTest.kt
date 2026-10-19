@@ -121,6 +121,14 @@ class BoundedBytesHandlerTest : DescribeSpec({
   }
 
   describe("BoundedBytesHandler on a non-2xx response") {
+    it("does not read the error body at all, so a stalled error page cannot block (F4)") {
+      val (body, subscription) = drive(502)
+
+      body.shouldBeNull()
+      subscription.requested shouldBe 0L
+      subscription.cancelled shouldBe true
+    }
+
     it("discards the body and yields null") {
       val (body, _) = drive(404, publishes = listOf(buffers("secret error body")))
 
