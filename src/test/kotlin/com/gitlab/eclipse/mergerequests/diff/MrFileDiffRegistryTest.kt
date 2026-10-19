@@ -103,4 +103,15 @@ class MrFileDiffRegistryTest : DescribeSpec({
       MrFileDiffRegistry.begin(key()).shouldBeNull()
     }
   }
+
+  describe("onDeactivate") {
+    it("forgets every tracked generation, not only the flag (R6)") {
+      MrFileDiffRegistry.begin(key(path = "a.kt")).shouldNotBeNull()
+      MrFileDiffRegistry.begin(key(path = "b.kt")).shouldNotBeNull()
+
+      MrFileDiffRegistry.onDeactivate()
+
+      MrFileDiffRegistry.trackedForTest() shouldBe 0
+    }
+  }
 })

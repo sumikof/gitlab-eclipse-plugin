@@ -55,15 +55,16 @@ class MrFileDiffEntryPointTest : DescribeSpec({
   }
 
   describe("lifecycle") {
-    it("stop deactivates the registry, then cancels the diff jobs, then closes the diff editors") {
+    it("stop deactivates the registry and the controller, then cancels the diff jobs, then closes the diff editors") {
       val calls = mutableListOf<String>()
 
       MrFileDiffEntryPoint.onStop(
+        deactivateController = { calls += "controller (active=${MrFileDiffRegistry.active})" },
         cancelJobs = { calls += "cancel jobs (active=${MrFileDiffRegistry.active})" },
         closeEditors = { calls += "close editors" },
       )
 
-      calls shouldContainExactly listOf("cancel jobs (active=false)", "close editors")
+      calls shouldContainExactly listOf("controller (active=false)", "cancel jobs (active=false)", "close editors")
       MrFileDiffRegistry.active shouldBe false
     }
 

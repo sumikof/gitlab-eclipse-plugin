@@ -49,9 +49,14 @@ object MrFileDiffRegistry {
     if (latest[identity] == generation) latest.remove(identity)
   }
 
-  /** Stops every in-flight load from delivering; called on the UI thread by the bundle stop step. */
+  /**
+   * Stops every in-flight load from delivering and forgets them; called on the UI thread by the
+   * bundle stop step. [counter] is kept, so no generation number is ever reused.
+   */
   fun onDeactivate() {
     active = false
+    latest.clear()
+    inFlight.clear()
   }
 
   /** Invalidates every generation numbered before now and re-enables loads; bundle start step. */
@@ -60,6 +65,9 @@ object MrFileDiffRegistry {
     inFlight.clear()
     active = true
   }
+
+  /** Test-only: how many generations are tracked. */
+  internal fun trackedForTest(): Int = latest.size + inFlight.size
 
   /** Test-only: the registry is a process-wide singleton. */
   internal fun resetForTest() {

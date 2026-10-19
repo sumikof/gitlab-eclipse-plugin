@@ -53,6 +53,7 @@ private class FakeWorld(var existingEditors: Set<MrFileDiffKey> = emptySet()) : 
   ) {
     var cancelled = false
     var ran = false
+    var onCancelled: () -> Unit = {}
   }
 
   val jobs = mutableListOf<PendingJob>()
@@ -71,7 +72,10 @@ private class FakeWorld(var existingEditors: Set<MrFileDiffKey> = emptySet()) : 
   ) {
     val job = PendingJob(name, work, onEndedWithoutRunning)
     jobs += job
-    onCancelHandle { job.cancelled = true }
+    onCancelHandle {
+      job.cancelled = true
+      job.onCancelled()
+    }
   }
 
   override fun uiHop(block: () -> Unit) {
@@ -360,6 +364,22 @@ class MrFileDiffControllerTest : DescribeSpec({
       world.notified.shouldBeEmpty()
       world.jobs shouldHaveSize 2
       world.opened shouldHaveSize 1
+    }
+  }
+
+  describe("controller onDeactivate (R6)") {
+    it("cancels every in-flight job once and forgets the handles") {
+      val controller = controller()
+      controller.open(ok(request(path = "a.kt")))
+      controller.open(ok(request(path = "b.kt")))
+      var cancels = 0
+      world.jobs.forEach { job -> job.onCancelled = { cancels++ } }
+
+      controller.onDeactivate()
+      controller.onDeactivate()
+
+      cancels shouldBe 2
+      world.jobs.map { it.cancelled } shouldBe listOf(true, true)
     }
   }
 })

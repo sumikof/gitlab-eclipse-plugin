@@ -84,6 +84,13 @@ class MrFileDiffController(private val loader: MrFileDiffLoader, private val por
     )
   }
 
+  /** UI thread, bundle stop: cancels every load this controller still holds a handle for, and forgets them. */
+  fun onDeactivate() {
+    val handles = cancelHandles.values.toList()
+    cancelHandles.clear()
+    handles.forEach { (_, cancel) -> cancel() }
+  }
+
   private fun deliver(request: MrFileDiffRequest, generation: Long, outcome: LoadOutcome) {
     val key = request.key
     try {
