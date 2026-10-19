@@ -71,12 +71,23 @@ class MrFileDiffLoaderTest : DescribeSpec({
   extension(LoggingKotestExtension)
 
   var captures = 0
-  fun capture(snapshot: ConnectionSnapshot = SNAPSHOT): () -> ConnectionSnapshot = {
+  var tokenReads = 0
+
+  /** Behaves like `GitLabApiClient.captureConnectionIf`: the credential is read only for an accepted URL. */
+  fun capture(snapshot: ConnectionSnapshot = SNAPSHOT): ((String) -> Boolean) -> ConnectionSnapshot? = { accept ->
     captures++
-    snapshot
+    if (accept(snapshot.instanceUrl)) {
+      tokenReads++
+      snapshot
+    } else {
+      null
+    }
   }
 
-  beforeEach { captures = 0 }
+  beforeEach {
+    captures = 0
+    tokenReads = 0
+  }
 
   describe("reading the sides") {
     it("CHANGE reads base then head with the captured snapshot and classifies both") {
@@ -140,6 +151,15 @@ class MrFileDiffLoaderTest : DescribeSpec({
       source.reads.shouldBeEmpty()
     }
 
+    it("never reads the credential of a different instance (R3: gate before any token refresh)") {
+      val other = SNAPSHOT.copy(instanceUrl = "https://other.example")
+
+      MrFileDiffLoader(capture(other), FakeSource()).load(request()) { false }
+
+      captures shouldBe 1
+      tokenReads shouldBe 0
+    }
+
     it("fails CONNECTION_CHANGED without reading when the account differs") {
       val source = FakeSource()
 
@@ -151,9 +171,9 @@ class MrFileDiffLoaderTest : DescribeSpec({
     it("maps an unstable capture to UNSTABLE_CONNECTION and a configuration error to CONFIG") {
       val source = FakeSource()
 
-      MrFileDiffLoader({ throw UnstableConnectionException() }, source).load(request()) { false }.failure() shouldBe
+      MrFileDiffLoader({ _ -> throw UnstableConnectionException() }, source).load(request()) { false }.failure() shouldBe
         DiffFailure.UNSTABLE_CONNECTION
-      MrFileDiffLoader({ throw GitLabConfigurationException("no url") }, source).load(request()) { false }
+      MrFileDiffLoader({ _ -> throw GitLabConfigurationException("no url") }, source).load(request()) { false }
         .failure() shouldBe DiffFailure.CONFIG
       source.reads.shouldBeEmpty()
     }

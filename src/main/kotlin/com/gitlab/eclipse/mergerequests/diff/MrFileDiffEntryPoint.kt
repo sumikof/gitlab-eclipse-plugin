@@ -75,7 +75,7 @@ object MrFileDiffEntryPoint {
     val api = service<GitLabApiClient>()
     val local = LocalBlobReader { RepositoryContextResolver().candidateContexts().map { File(it.gitDir) } }
     return MrFileDiffLoader(
-      captureConnection = { api.captureConnection() },
+      captureConnectionIf = api::captureConnectionIf,
       source = HybridMrFileContentSource(local, RawFileFetcher(api)),
     )
   }

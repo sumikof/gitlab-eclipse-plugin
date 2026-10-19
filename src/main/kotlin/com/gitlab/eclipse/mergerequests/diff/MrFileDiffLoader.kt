@@ -3,6 +3,7 @@ package com.gitlab.eclipse.mergerequests.diff
 import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.api.UnstableConnectionException
+import com.gitlab.eclipse.ci.actions.sameConfiguredInstance
 import com.gitlab.eclipse.mergerequests.review.connectionMatches
 import com.gitlab.eclipse.utils.logger
 import java.util.concurrent.CancellationException
@@ -30,13 +31,14 @@ sealed interface LoadOutcome {
  * captures the connection (which may refresh OAuth synchronously) and reads JGit / REST.
  *
  * The connection gate refuses to send the token anywhere but the instance and account the sidebar
- * list came from. Either side failing fails the whole diff — a half-filled Compare is never shown.
+ * list came from; the instance is compared before the credential is even read (`captureConnectionIf`).
+ * Either side failing fails the whole diff — a half-filled Compare is never shown.
  * [load] checks `isCancelled` before and after each side. It never throws except to propagate
  * cancellation: anything unexpected folds into [DiffFailure.GENERIC] and is logged as the outcome
  * and the exception's class name only — never its message, a path, a SHA or a URL (design §9).
  */
 class MrFileDiffLoader(
-  private val captureConnection: () -> ConnectionSnapshot,
+  private val captureConnectionIf: (acceptInstanceUrl: (String) -> Boolean) -> ConnectionSnapshot?,
   private val source: MrFileContentSource,
 ) {
   fun load(request: MrFileDiffRequest, isCancelled: () -> Boolean): LoadOutcome = try {
@@ -55,8 +57,10 @@ class MrFileDiffLoader(
   private fun loadSides(request: MrFileDiffRequest, isCancelled: () -> Boolean): LoadOutcome {
     val sides = MrDiffSides.of(request)
     if (sides.submodule) return LoadOutcome.Failed(DiffFailure.SUBMODULE)
-    val connection = captureConnection()
-    if (!connectionMatches(request.instanceUrl, request.authFingerprint, connection)) {
+    // The instance is checked before the credential is read (#49), so a changed instance never
+    // triggers a token refresh; the account is checked on the captured snapshot.
+    val connection = captureConnectionIf { sameConfiguredInstance(request.instanceUrl, it) }
+    if (connection == null || !connectionMatches(request.instanceUrl, request.authFingerprint, connection)) {
       return LoadOutcome.Failed(DiffFailure.CONNECTION_CHANGED)
     }
     if (isCancelled()) return LoadOutcome.Cancelled

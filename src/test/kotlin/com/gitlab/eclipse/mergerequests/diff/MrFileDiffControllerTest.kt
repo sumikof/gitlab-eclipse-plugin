@@ -133,7 +133,7 @@ class MrFileDiffControllerTest : DescribeSpec({
       world.loaderTags += world.tag
       sourceAnswer(side)
     }
-    val capture = {
+    val capture = { _: (String) -> Boolean ->
       world.loaderTags += world.tag
       captureAnswer()
     }
