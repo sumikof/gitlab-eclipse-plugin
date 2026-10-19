@@ -1,10 +1,13 @@
 package com.gitlab.eclipse.mergerequests
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.preferences.storage.CapturedLog
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.string.shouldStartWith
 import org.eclipse.jgit.api.Git
 import java.io.File
 import java.nio.file.Files
@@ -98,6 +101,19 @@ class CurrentBranchGitReaderTest : DescribeSpec({
       val result = CurrentBranchGitReader().read(bogus)
 
       result shouldBe CurrentBranch(null, null, false, null, null)
+    }
+
+    it("logs a read failure as one WARN line with the exception class only: no path, no message, no throwable") {
+      val log = CapturedLog().apply { install() }
+      val bogus = File(Files.createTempDirectory("secret-project").toFile(), "missing-repo")
+      createdTempPaths += bogus.parentFile
+
+      CurrentBranchGitReader().read(bogus)
+
+      log.lines.size shouldBe 1
+      log.lines.single() shouldStartWith "Could not read current branch state: "
+      log.lines.single() shouldNotContain "secret-project"
+      log.lines.single() shouldNotContain "missing-repo"
     }
   }
 })

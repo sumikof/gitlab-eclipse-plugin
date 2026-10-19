@@ -34,7 +34,7 @@ class CurrentBranchGitReader {
 
   /**
    * Opens [gitDir] read-only and reads its current branch state. Never throws: any failure
-   * (missing/bad directory, bare repo, no HEAD) is logged and mapped to an all-null
+   * (missing/bad directory, bare repo, no HEAD) is logged by exception class and mapped to an all-null
    * [CurrentBranch] instead of escaping to the caller.
    */
   fun read(gitDir: File): CurrentBranch =
@@ -55,7 +55,9 @@ class CurrentBranchGitReader {
         )
       }
     } catch (e: Exception) {
-      logger.warn("Could not read current branch state for ${gitDir.path}.", e)
+      // Class name only (CI-04 design §5): the auto refresh reads HEAD often, and neither the
+      // repository path nor the exception message (which usually repeats the path) belongs in the log.
+      logger.warn("Could not read current branch state: ${e.javaClass.name}")
       CurrentBranch(null, null, false, null, null)
     }
 }
