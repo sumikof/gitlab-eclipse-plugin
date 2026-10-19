@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.mergerequests.diff
 
 import org.eclipse.compare.CompareConfiguration
+import org.eclipse.compare.CompareEditorInput
 import org.eclipse.compare.CompareUI
 import org.eclipse.core.runtime.NullProgressMonitor
 import org.eclipse.ui.IEditorReference
@@ -20,12 +21,18 @@ object MrCompareOpener {
 
   /**
    * Opens [content] on [page]. The input is run here, which only returns its prebuilt node, so
-   * Compare starts neither a Job nor a modal context.
+   * Compare starts neither a Job nor a modal context. [configuration] and [openOnPage] are seams
+   * for headless tests; at runtime they are Compare's plugin-store configuration and `CompareUI`.
    */
-  fun open(content: MrFileDiffContent, page: IWorkbenchPage) {
-    val input = MrCompareEditorInput(content, CompareConfiguration())
+  fun open(
+    content: MrFileDiffContent,
+    page: IWorkbenchPage,
+    configuration: () -> CompareConfiguration = ::CompareConfiguration,
+    openOnPage: (CompareEditorInput, IWorkbenchPage) -> Unit = CompareUI::openCompareEditorOnPage,
+  ) {
+    val input = MrCompareEditorInput(content, configuration())
     input.run(NullProgressMonitor())
-    CompareUI.openCompareEditorOnPage(input, page)
+    openOnPage(input, page)
   }
 
   /** Activates the editor already showing [key] on [page]; `true` if there was one. */

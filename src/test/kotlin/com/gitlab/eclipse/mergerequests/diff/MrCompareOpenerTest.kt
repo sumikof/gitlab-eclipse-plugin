@@ -113,4 +113,27 @@ class MrCompareOpenerTest : DescribeSpec({
       MrCompareOpener.closeAll()
     }
   }
+
+  describe("open (F5)") {
+    it("runs the input before handing it to Compare, so Compare starts no Job and no modal context") {
+      val page = mockk<IWorkbenchPage>()
+      var handed: MrCompareEditorInput? = null
+      var resultWhenHanded: Any? = null
+
+      MrCompareOpener.open(
+        content,
+        page,
+        configuration = { CompareConfiguration(null as IPreferenceStore?) },
+        openOnPage = { input, onPage ->
+          onPage shouldBe page
+          handed = input as MrCompareEditorInput
+          resultWhenHanded = input.compareResult
+        },
+      )
+
+      handed!!.key shouldBe key
+      handed!!.canRunAsJob() shouldBe true
+      (resultWhenHanded is org.eclipse.compare.structuremergeviewer.DiffNode) shouldBe true
+    }
+  }
 })
