@@ -315,6 +315,38 @@ class GitLabApiClient(
   fun fetchText(path: String, connection: ConnectionSnapshot? = null): String =
     sendGet(path, emptyMap(), connection = connection).body()
 
+  /**
+   * Sends a body-less GET pinned to [connection] (URI base and Bearer credential from the snapshot,
+   * never the live stores) and reads the body as bytes under [maxBytes] via [BoundedBytesHandler]:
+   * the result is the bytes or [BoundedBytes.TooLarge]. It accepts any media type because raw file
+   * content is not JSON. Non-2xx → [GitLabApiException] with the status, the correlation id and an EMPTY
+   * body (the error page is discarded unread); timeouts and I/O errors propagate as-is.
+   */
+  fun fetchBytes(
+    path: String,
+    query: Map<String, String>,
+    maxBytes: Int,
+    connection: ConnectionSnapshot,
+  ): BoundedBytes {
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, query, baseOverride = connection.instanceUrl))
+      .header("Authorization", "Bearer ${connection.token}")
+      .header("Accept", "*/*")
+      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .GET()
+      .build()
+
+    val response = httpClient.send(httpRequest, BoundedBytesHandler(maxBytes))
+    val body = response.body()
+    if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX || body == null) {
+      throw GitLabApiException(
+        response.statusCode(),
+        "",
+        response.headers().firstValue("x-request-id").orElse(null),
+      )
+    }
+    return body
+  }
+
   private fun sendPost(
     path: String,
     query: Map<String, String>,

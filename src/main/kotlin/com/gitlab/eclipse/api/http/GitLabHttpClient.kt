@@ -18,6 +18,10 @@ class GitLabHttpClient(private val factory: GitLabHttpClientFactory = service())
   fun send(request: HttpRequest): HttpResponse<String> =
     rebuildIfNeeded().send(request, HttpResponse.BodyHandlers.ofString())
 
+  /** Like [send], with a caller-supplied body [handler] (e.g. a size-capped byte reader). */
+  fun <T> send(request: HttpRequest, handler: HttpResponse.BodyHandler<T>): HttpResponse<T> =
+    rebuildIfNeeded().send(request, handler)
+
   /** Visible for testing; returns the client rebuilt to match the current snapshot. */
   fun rebuildIfNeeded(): HttpClient = synchronized(lock) {
     val snapshot = factory.currentSnapshot()
