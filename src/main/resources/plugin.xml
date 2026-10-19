@@ -607,6 +607,11 @@
               name="GitLab Duo"
               class="com.gitlab.eclipse.preferences.GitLabPreferencePage">
         </page>
+        <page id="com.gitlab.eclipse.preferences.CustomQueriesPreferencePage"
+              name="Sidebar Queries"
+              category="com.gitlab.eclipse.preferences.GitLabPreferencePage"
+              class="com.gitlab.eclipse.preferences.queries.CustomQueriesPreferencePage">
+        </page>
     </extension>
 
     <extension point="org.eclipse.core.runtime.preferences">
