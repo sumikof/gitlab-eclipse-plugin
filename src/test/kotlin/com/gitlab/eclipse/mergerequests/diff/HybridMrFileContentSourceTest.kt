@@ -5,10 +5,15 @@ import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.api.UnstableConnectionException
+import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.preferences.storage.CapturedLog
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.engine.spec.tempdir
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.mockk.clearMocks
 import io.mockk.every
@@ -25,6 +30,8 @@ private val SIDE = SideRef("src/A.kt", "a".repeat(40))
 private const val MAX = 64
 
 class HybridMrFileContentSourceTest : DescribeSpec({
+  extension(LoggingKotestExtension)
+
   val local = mockk<LocalBlobReader>()
   val remote = mockk<RawFileFetcher>()
   val source = HybridMrFileContentSource(local, remote, MAX)
@@ -155,6 +162,28 @@ class HybridMrFileContentSourceTest : DescribeSpec({
       hybrid.read(42L, baseSide, CONN).shouldBeInstanceOf<SideContent.Bytes>().bytes.decodeToString() shouldBe "base"
       hybrid.read(42L, headSide, CONN).shouldBeInstanceOf<SideContent.Bytes>().bytes.decodeToString() shouldBe "head"
       verify(exactly = 0) { fetcher.fetch(any(), headSide, any(), any()) }
+    }
+  }
+
+  describe("logging an unexpected REST failure (R4)") {
+    it("logs the outcome and the exception class only") {
+      val log = CapturedLog().also { it.install() }
+      remoteThrows(javax.net.ssl.SSLHandshakeException("PKIX path to https://gl.example/src/A.kt failed"))
+
+      failure() shouldBe DiffFailure.GENERIC
+
+      val line = log.lines.single()
+      line shouldContain "outcome=GENERIC"
+      line shouldContain "exceptionType=javax.net.ssl.SSLHandshakeException"
+      listOf("PKIX", "gl.example", "src/A.kt", SIDE.sha).forEach { line shouldNotContain it }
+    }
+
+    it("does not log the failures it maps to a specific kind") {
+      val log = CapturedLog().also { it.install() }
+      remoteThrows(GitLabApiException(404, ""))
+
+      failure() shouldBe DiffFailure.NOT_FOUND_OR_DENIED
+      log.lines.shouldBeEmpty()
     }
   }
 })

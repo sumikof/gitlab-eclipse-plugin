@@ -5,6 +5,7 @@ import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.api.UnstableConnectionException
+import com.gitlab.eclipse.utils.logger
 import java.net.http.HttpTimeoutException
 import java.util.concurrent.CancellationException
 
@@ -75,8 +76,17 @@ class HybridMrFileContentSource(
   } catch (_: InterruptedException) {
     Thread.currentThread().interrupt()
     SideContent.Failed(DiffFailure.GENERIC)
-  } catch (_: Exception) {
+  } catch (e: Exception) {
+    logUnexpected(e)
     SideContent.Failed(DiffFailure.GENERIC)
+  }
+
+  /** Class name only (TLS, proxy, I/O, …) so support can tell causes apart; never the message (design §9). */
+  private fun logUnexpected(error: Exception) {
+    runCatching {
+      logger<HybridMrFileContentSource>()
+        .warn("MR file diff side read failed: outcome=GENERIC exceptionType=${error.javaClass.name}")
+    }
   }
 
   private fun failureFor(status: Int): DiffFailure =
