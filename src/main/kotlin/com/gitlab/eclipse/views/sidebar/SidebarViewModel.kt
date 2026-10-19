@@ -4,7 +4,6 @@ import com.gitlab.eclipse.api.CiHttpStatus
 import com.gitlab.eclipse.api.DiscussionService
 import com.gitlab.eclipse.api.DiscussionsReadResult
 import com.gitlab.eclipse.api.model.GitLabDiscussion
-import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
@@ -16,10 +15,14 @@ import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.configErrorMessage
+import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
+import com.gitlab.eclipse.views.sidebar.queries.LOAD_FAILED_MESSAGE
+import com.gitlab.eclipse.views.sidebar.queries.NO_ITEMS_MESSAGE
+import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
+import com.gitlab.eclipse.views.sidebar.queries.UNNAMED_QUERY_LABEL
+import com.gitlab.eclipse.views.sidebar.queries.queryOutcomeMessage
+import com.gitlab.eclipse.views.sidebar.queries.truncationNotice
 
-private const val NO_ISSUES_MESSAGE = "No issues assigned to you."
-private const val NO_MRS_MESSAGE = "No merge requests assigned to you."
-private const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
 private const val NO_CURRENT_BRANCH_MR_MESSAGE = "No merge request found"
 private const val NO_CLOSING_ISSUE_MESSAGE = "No closing issue found"
 private const val NO_CHANGED_FILES_MESSAGE = "No changed files"
@@ -66,10 +69,9 @@ private const val DISCUSSIONS_CONNECTION_CHANGED_MESSAGE = "Connection changed �
 private const val DISCUSSIONS_SECTION_OMITTED_MESSAGE = "Discussions section omitted:"
 
 /**
- * Pure composition logic for the sidebar's two query roots ("Issues assigned to me",
- * "Merge requests assigned to me"): turns the raw fetch results into [SidebarNode]s,
- * grouping by project in [SidebarViewMode.TREE] and isolating each root's failure from
- * the other's.
+ * Pure composition logic for the sidebar: turns each query's outcome into its [QueryRootNode]
+ * ([buildQueryRoot], grouping by project in [SidebarViewMode.TREE]), and builds the "For current
+ * branch" section and the merge-request subtrees.
  */
 // TooManyFunctions: the discussions builders (Task 9) push this class past detekt's 11-function
 // threshold. Suppressed rather than restructured: the file's own top-level function count is at
@@ -80,35 +82,33 @@ private const val DISCUSSIONS_SECTION_OMITTED_MESSAGE = "Discussions section omi
 @Suppress("TooManyFunctions")
 class SidebarViewModel {
 
-  fun buildRoots(
-    issuesResult: Result<List<GitLabIssue>>,
-    mrsResult: Result<List<GitLabMergeRequest>>,
-    mode: SidebarViewMode,
-  ): List<SidebarNode> =
-    listOf(
-      QueryRootNode(
-        "Issues assigned to me",
-        queryChildren(issuesResult, mode, NO_ISSUES_MESSAGE, { it.references?.full }, ::IssueNode),
-      ),
-      QueryRootNode(
-        "Merge requests assigned to me",
-        queryChildren(mrsResult, mode, NO_MRS_MESSAGE, { it.references?.full }, ::MergeRequestNode),
-      ),
-    )
+  /**
+   * One query's root (ISSUE-01 design §7/§12): label = trimmed name (blank → [UNNAMED_QUERY_LABEL]); children from
+   * [outcome] — Loading while pending, the items (flat in LIST, grouped by project in TREE) plus the cap notice when
+   * truncated, `noItemText` when empty, otherwise the outcome's single message ([queryOutcomeMessage]).
+   */
+  fun buildQueryRoot(query: CustomQuery, outcome: Slot<QueryOutcome>, mode: SidebarViewMode): QueryRootNode {
+    val label = query.name?.takeIf { it.isNotEmpty() } ?: UNNAMED_QUERY_LABEL
+    val emptyMessage = query.string("noItemText")?.takeIf { it.isNotBlank() } ?: NO_ITEMS_MESSAGE
+    val children =
+      when (outcome) {
+        is Slot.Pending -> listOf(MessageNode(LOADING_MESSAGE))
+        is Slot.Settled ->
+          when (val value = outcome.value) {
+            is QueryOutcome.Issues ->
+              queryChildren(value.items, mode, emptyMessage, { it.references?.full }, ::IssueNode) +
+                truncationNotice(value.truncated)
+            is QueryOutcome.MergeRequests ->
+              queryChildren(value.items, mode, emptyMessage, { it.references?.full }, ::MergeRequestNode) +
+                truncationNotice(value.truncated)
+            QueryOutcome.NeedsProject, QueryOutcome.Unsupported, is QueryOutcome.Invalid, is QueryOutcome.Failed ->
+              listOf(MessageNode(queryOutcomeMessage(value)))
+          }
+      }
+    return QueryRootNode(query.id, label, children)
+  }
 
   private fun <T> queryChildren(
-    result: Result<List<T>>,
-    mode: SidebarViewMode,
-    emptyMessage: String,
-    fullReference: (T) -> String?,
-    toNode: (T) -> SidebarNode,
-  ): List<SidebarNode> =
-    result.fold(
-      onSuccess = { items -> successChildren(items, mode, emptyMessage, fullReference, toNode) },
-      onFailure = { error -> failureChildren(error) },
-    )
-
-  private fun <T> successChildren(
     items: List<T>,
     mode: SidebarViewMode,
     emptyMessage: String,

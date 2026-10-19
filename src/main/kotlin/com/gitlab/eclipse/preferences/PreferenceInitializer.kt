@@ -23,6 +23,8 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.DUO_CHAT_SELECTED_WEBVIEW, "")
     store.setDefault(PreferenceConstants.SECURITY_SCAN_ENABLED, false)
     store.setDefault(PreferenceConstants.SECURITY_SCAN_ON_SAVE, true)
+    // "" = unset: the built-in sidebar queries apply (ISSUE-01 design §4).
+    store.setDefault(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES, "")
     // Off by default, matching the reference extension's `gitlab.debug` (design §5.1.1, A8).
     store.setDefault(PreferenceConstants.DEBUG_LOGGING, false)
   }

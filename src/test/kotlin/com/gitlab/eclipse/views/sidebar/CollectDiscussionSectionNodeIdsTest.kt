@@ -28,6 +28,7 @@ class CollectDiscussionSectionNodeIdsTest : DescribeSpec({
       val currentBranch = section()
       val tree = listOf(
         QueryRootNode(
+          "mrs",
           "Merge requests assigned to me",
           listOf(ProjectGroupNode("group/proj", listOf(mrNode(listOf(OverviewNode("https://x"), assigned))))),
         ),
@@ -39,7 +40,7 @@ class CollectDiscussionSectionNodeIdsTest : DescribeSpec({
 
     it("returns an empty set for a tree with no sections") {
       val tree = listOf(
-        QueryRootNode("Issues assigned to me", listOf(MessageNode("No issues"))),
+        QueryRootNode("issues", "Issues assigned to me", listOf(MessageNode("No issues"))),
         CurrentBranchSectionNode(listOf(mrNode(listOf(OverviewNode("https://x"))))),
       )
 
@@ -56,7 +57,7 @@ class CollectDiscussionSectionNodeIdsTest : DescribeSpec({
     it("handles nodes whose children are the unloaded placeholder without triggering anything") {
       val unloadedMr = mrNode(null) // children yields the stable "Loading…" placeholder
       val unloadedSection = section() // loadedChildren null: its own children are the placeholder
-      val tree = listOf(unloadedMr, QueryRootNode("root", listOf(unloadedSection)))
+      val tree = listOf(unloadedMr, QueryRootNode("root", "root", listOf(unloadedSection)))
 
       collectDiscussionSectionNodeIds(tree) shouldBe setOf(unloadedSection.nodeId)
     }

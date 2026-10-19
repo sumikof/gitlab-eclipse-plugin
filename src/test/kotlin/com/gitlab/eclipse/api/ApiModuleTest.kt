@@ -22,7 +22,7 @@ class ApiModuleTest : DescribeSpec({
       }
       val app = koinApplication { modules(externals, apiModule) }
       // Smoke-resolve the top of the graph.
-      app.koin.get<IssueService>()
+      app.koin.get<CurrentUserService>()
       app.koin.get<GitLabApiClient>()
       app.koin.get<GitLabHttpClient>()
       app.koin.get<GitLabHttpClientFactory>()

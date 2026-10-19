@@ -44,6 +44,12 @@ private fun sha256(value: String): ByteArray =
 
 private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 
+/**
+ * Items of a list fetch plus whether paging stopped early (page cap or a bad `x-next-page`), so more
+ * results may exist than [items] holds.
+ */
+data class PagedResult<T>(val items: List<T>, val truncated: Boolean)
+
 @Suppress("UNCHECKED_CAST")
 private fun <T> emptyArrayOf(): Array<T> = arrayOfNulls<Any?>(0) as Array<T>
 
@@ -73,9 +79,7 @@ class GitLabApiClient(
     var page = 1
     while (true) {
       val response = sendPage(request, page, connection = connection)
-      val arrayType = TypeToken.getArray(request.elementType).type
-      val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
-      all.addAll(pageItems)
+      all.addAll(parseItems(request, response))
 
       val next = response.headers().firstValue("x-next-page").orElse("").trim()
       if (next.isEmpty()) return all
@@ -134,9 +138,7 @@ class GitLabApiClient(
       val remainingNanos = deadline.toNanos() - elapsed
       val timeout = minOf(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS), Duration.ofNanos(remainingNanos))
       val response = sendPage(request, page, timeout, connection)
-      val arrayType = TypeToken.getArray(request.elementType).type
-      val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
-      all.addAll(pageItems)
+      all.addAll(parseItems(request, response))
 
       val next = response.headers().firstValue("x-next-page").orElse("").trim()
       if (next.isEmpty()) return all
@@ -149,14 +151,62 @@ class GitLabApiClient(
     }
   }
 
+  /**
+   * Fetches a list either up to a result limit or in full, with a truncation flag.
+   *
+   * [maxItems] non-null (must be 1..100) → exactly one request with `per_page=maxItems&page=1`;
+   * the result is never flagged truncated (the limit is the caller's request, not a loss).
+   * [maxItems] null → follows `x-next-page` with `per_page=100` like [fetchListFromApi], checking
+   * [isActive] before every page (throws [CancellationException] once false, before sending), and
+   * flags [PagedResult.truncated] when paging stopped at the 20-page cap or on a non-numeric /
+   * non-increasing `x-next-page`.
+   *
+   * Every page uses one connection: [connection] when given, otherwise a single
+   * [captureConnection] taken before the first page — never a per-page re-read of the settings.
+   */
+  fun <T> fetchListPages(
+    request: ApiRequest<T>,
+    maxItems: Int?,
+    isActive: () -> Boolean,
+    connection: ConnectionSnapshot?,
+  ): PagedResult<T> {
+    if (maxItems != null) require(maxItems in 1..PER_PAGE) { "maxItems must be in 1..$PER_PAGE" }
+    if (!isActive()) throw CancellationException("Cancelled before paginated fetch")
+    val conn = connection ?: captureConnection()
+    if (maxItems != null) {
+      val response = sendPage(request, 1, connection = conn, perPage = maxItems)
+      return PagedResult(parseItems(request, response), truncated = false)
+    }
+    val all = mutableListOf<T>()
+    var page = 1
+    while (true) {
+      if (page > 1 && !isActive()) throw CancellationException("Cancelled during paginated fetch")
+      val response = sendPage(request, page, connection = conn)
+      all.addAll(parseItems(request, response))
+
+      val next = response.headers().firstValue("x-next-page").orElse("").trim()
+      if (next.isEmpty()) return PagedResult(all, truncated = false)
+      val nextPage = next.toIntOrNull()
+      if (nextPage == null || nextPage <= page || nextPage > MAX_PAGES) return PagedResult(all, truncated = true)
+      page = nextPage
+    }
+  }
+
+  private fun <T> parseItems(request: ApiRequest<T>, response: java.net.http.HttpResponse<String>): List<T> {
+    val arrayType = TypeToken.getArray(request.elementType).type
+    val pageItems: Array<T> = gson.fromJson(response.body(), arrayType) ?: emptyArrayOf()
+    return pageItems.asList()
+  }
+
   private fun <T> sendPage(
     request: ApiRequest<T>,
     page: Int,
     timeout: Duration = Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS),
     connection: ConnectionSnapshot? = null,
+    perPage: Int = PER_PAGE,
   ): java.net.http.HttpResponse<String> {
     val query = LinkedHashMap(request.query).apply {
-      put("per_page", PER_PAGE.toString())
+      put("per_page", perPage.toString())
       put("page", page.toString())
     }
     return sendGet(request.path, query, timeout, connection)

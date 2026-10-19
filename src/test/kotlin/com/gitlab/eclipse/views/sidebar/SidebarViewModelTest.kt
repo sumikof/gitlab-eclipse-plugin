@@ -8,6 +8,10 @@ import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
+import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
+import com.gitlab.eclipse.views.sidebar.queries.QueryFailureKind
+import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
+import com.google.gson.JsonObject
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -31,36 +35,54 @@ class SidebarViewModelTest : StringSpec({
       references = full?.let { GitLabMergeRequest.Reference(it) },
     )
 
-  "list mode: flat item nodes per root" {
-    val roots = vm.buildRoots(
-      Result.success(listOf(issue(1, "g/p#1"))),
-      Result.success(listOf(mr(2, "g/p!2"))),
+  fun query(id: String, name: String, type: String) =
+    CustomQuery(
+      id,
+      JsonObject().apply {
+        addProperty("name", name)
+        addProperty("type", type)
+      },
+    )
+  val issuesQuery = query("i", "Issues", "issues")
+  val mrsQuery = query("m", "MRs", "merge_requests")
+
+  "buildQueryRoot: list mode gives flat item nodes and carries the query id" {
+    val root = vm.buildQueryRoot(
+      issuesQuery,
+      Slot.Settled(QueryOutcome.Issues(listOf(issue(1, "g/p#1")), truncated = false)),
       SidebarViewMode.LIST,
     )
-    roots shouldHaveSize 2
-    roots[0].children shouldHaveSize 1
-    roots[1].children shouldHaveSize 1
+    root.queryId shouldBe "i"
+    root.label shouldBe "Issues"
+    root.children shouldHaveSize 1
   }
-  "tree mode: group by project" {
-    val roots = vm.buildRoots(
-      Result.success(listOf(issue(1, "a/x#1"), issue(2, "b/y#2"))),
-      Result.success(emptyList()),
+  "buildQueryRoot: tree mode groups by project" {
+    val root = vm.buildQueryRoot(
+      issuesQuery,
+      Slot.Settled(QueryOutcome.Issues(listOf(issue(1, "a/x#1"), issue(2, "b/y#2")), truncated = false)),
       SidebarViewMode.TREE,
     )
-    roots[0].children shouldHaveSize 2 // two ProjectGroupNode
+    root.children shouldHaveSize 2 // two ProjectGroupNode
   }
-  "empty success shows message node" {
-    val roots = vm.buildRoots(Result.success(emptyList()), Result.success(emptyList()), SidebarViewMode.LIST)
-    (roots[0].children[0] is MessageNode) shouldBe true
-  }
-  "one root failure does not affect the other" {
-    val roots = vm.buildRoots(
-      Result.failure(RuntimeException("x")),
-      Result.success(listOf(mr(2, "g/p!2"))),
+  "buildQueryRoot: empty success shows a message node" {
+    val root = vm.buildQueryRoot(
+      mrsQuery,
+      Slot.Settled(QueryOutcome.MergeRequests(emptyList(), truncated = false)),
       SidebarViewMode.LIST,
     )
-    (roots[0].children[0] is MessageNode) shouldBe true
-    roots[1].children shouldHaveSize 1
+    (root.children.single() as MessageNode).label shouldBe "No items found."
+  }
+  "buildQueryRoot: a failed outcome shows only its message" {
+    val root = vm.buildQueryRoot(
+      mrsQuery,
+      Slot.Settled(QueryOutcome.Failed(QueryFailureKind.GENERIC)),
+      SidebarViewMode.LIST,
+    )
+    (root.children.single() as MessageNode).label shouldBe "Failed to load — see the Error Log."
+  }
+  "buildQueryRoot: pending shows Loading" {
+    (vm.buildQueryRoot(mrsQuery, Slot.Pending, SidebarViewMode.LIST).children.single() as MessageNode).label shouldBe
+      "Loading…"
   }
 
   fun pipeline(

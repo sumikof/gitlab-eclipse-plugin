@@ -19,5 +19,13 @@ class CurrentUserServiceTest : DescribeSpec({
 
       result shouldBe user
     }
+
+    it("fetches /user through the given pinned connection") {
+      val user = GitLabUser(2, "pinned")
+      val snapshot = ConnectionSnapshot("https://pinned.example.com", "t", "fp", 2L)
+      every { apiClient.fetchObject("/user", type = GitLabUser::class.java, connection = snapshot) } returns user
+
+      service.getCurrentUser(snapshot) shouldBe user
+    }
   }
 })

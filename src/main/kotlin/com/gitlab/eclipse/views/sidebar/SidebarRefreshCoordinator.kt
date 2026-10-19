@@ -1,11 +1,7 @@
 package com.gitlab.eclipse.views.sidebar
 
-import com.gitlab.eclipse.api.model.GitLabIssue
-import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
-
-private const val ISSUES_ROOT_TITLE = "Issues assigned to me"
-private const val MRS_ROOT_TITLE = "Merge requests assigned to me"
+import com.gitlab.eclipse.views.sidebar.queries.QueryRootsComposer
 
 /** Memo-key sentinel meaning "nothing composed yet" (distinct from a legitimate `null` key). */
 private object None
@@ -14,7 +10,7 @@ private object None
 private object NullSuccess
 
 /**
- * Composes the sidebar's full `viewer.input` list — the two assigned query roots plus the
+ * Composes the sidebar's full `viewer.input` list — the query roots (one per configured query) plus the
  * "For current branch" section — from one refresh generation's [RefreshSlots] (design doc
  * §6.6/§9/§10, R7-R9). Pure and SWT-free: no widgets, no threads, no generation/dispose
  * checks (Task 9's view owns those and calls [compose] on the UI thread only).
@@ -25,8 +21,8 @@ private object NullSuccess
  * subtree's expansion state and an expanded [MergeRequestNode]'s in-flight lazy-children
  * fetch. Three memo layers:
  *
- * - assigned: the two query roots are reused while the `assigned` slot value and mode are
- *   unchanged (including the Pending placeholder roots — [Slot.Pending] is a singleton);
+ * - query roots: delegated to [QueryRootsComposer], which reuses each root while its own outcome,
+ *   its query and the mode are unchanged (including Pending placeholders — [Slot.Pending] is a singleton);
  * - current-branch section: the whole section node is reused while the `currentBranch` slot
  *   value is unchanged;
  * - within the section: the MR-side and pipeline-side child lists are memoized separately,
@@ -41,9 +37,7 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
 
   private var lastGeneration: Long? = null
 
-  private var assignedKey: Any? = None
-  private var assignedMode: SidebarViewMode? = null
-  private var assignedNodes: List<SidebarNode> = emptyList()
+  private val queryRoots = QueryRootsComposer(viewModel)
 
   private var sectionKey: Any? = None
   private var sectionNode: SidebarNode = CurrentBranchSectionNode(emptyList())
@@ -59,24 +53,7 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
       resetMemo()
       lastGeneration = slots.generation
     }
-    return composeAssigned(slots.assigned, mode) + composeCurrentBranch(slots.currentBranch)
-  }
-
-  private fun composeAssigned(
-    slot: Slot<Pair<Result<List<GitLabIssue>>, Result<List<GitLabMergeRequest>>>>,
-    mode: SidebarViewMode,
-  ): List<SidebarNode> {
-    val key = keyOf(slot)
-    if (assignedKey === key && assignedMode == mode) return assignedNodes
-    val nodes =
-      when (slot) {
-        is Slot.Pending -> loadingRoots()
-        is Slot.Settled -> viewModel.buildRoots(slot.value.first, slot.value.second, mode)
-      }
-    assignedKey = key
-    assignedMode = mode
-    assignedNodes = nodes
-    return nodes
+    return queryRoots.compose(slots.queries, mode) + composeCurrentBranch(slots.currentBranch)
   }
 
   private fun composeCurrentBranch(slot: Slot<CurrentBranchSectionInput>): SidebarNode {
@@ -131,16 +108,8 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
     return nodes
   }
 
-  private fun loadingRoots(): List<SidebarNode> =
-    listOf(
-      QueryRootNode(ISSUES_ROOT_TITLE, listOf(MessageNode(LOADING_MESSAGE))),
-      QueryRootNode(MRS_ROOT_TITLE, listOf(MessageNode(LOADING_MESSAGE))),
-    )
-
   private fun resetMemo() {
-    assignedKey = None
-    assignedMode = null
-    assignedNodes = emptyList()
+    queryRoots.reset()
     sectionKey = None
     sectionNode = CurrentBranchSectionNode(emptyList())
     mrSideKey = None

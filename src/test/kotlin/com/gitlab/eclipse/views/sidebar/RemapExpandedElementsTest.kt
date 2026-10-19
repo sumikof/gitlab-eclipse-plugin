@@ -14,13 +14,13 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 class RemapExpandedElementsTest : StringSpec({
   fun mrNode() =
     MergeRequestNode(GitLabMergeRequest(1, 1, "m1", 1, "mu1", "opened"))
-  fun root(label: String) = QueryRootNode(label, emptyList())
+  fun root(id: String, label: String = id) = QueryRootNode(id, label, emptyList())
   fun section() = CurrentBranchSectionNode(emptyList())
 
-  "query root is remapped to the new instance with the same label" {
-    val oldRoot = root("Issues assigned to me")
-    val newRoot = root("Issues assigned to me")
-    val newInput = listOf<SidebarNode>(newRoot, root("Merge requests assigned to me"))
+  "query root is remapped to the new instance with the same query id" {
+    val oldRoot = root("issues")
+    val newRoot = root("issues")
+    val newInput = listOf<SidebarNode>(newRoot, root("mrs"))
 
     val remapped = remapExpandedElements(listOf(oldRoot), newInput)
 
@@ -30,7 +30,7 @@ class RemapExpandedElementsTest : StringSpec({
   "current-branch section is remapped by type" {
     val oldSection = section()
     val newSection = section()
-    val newInput = listOf<SidebarNode>(root("Issues assigned to me"), newSection)
+    val newInput = listOf<SidebarNode>(root("issues"), newSection)
 
     val remapped = remapExpandedElements(listOf(oldSection), newInput)
 
@@ -39,7 +39,7 @@ class RemapExpandedElementsTest : StringSpec({
 
   "inner nodes pass through unchanged (coordinator preserves their identity)" {
     val mr = mrNode()
-    val newInput = listOf<SidebarNode>(root("Merge requests assigned to me"), section())
+    val newInput = listOf<SidebarNode>(root("mrs"), section())
 
     val remapped = remapExpandedElements(listOf(section(), mr), newInput)
 
@@ -47,8 +47,8 @@ class RemapExpandedElementsTest : StringSpec({
   }
 
   "unmatched top-level elements pass through best-effort" {
-    val stale = root("Gone root")
-    val newInput = listOf<SidebarNode>(root("Issues assigned to me"))
+    val stale = root("gone")
+    val newInput = listOf<SidebarNode>(root("issues"))
 
     val remapped = remapExpandedElements(listOf(stale), newInput)
 
@@ -56,16 +56,40 @@ class RemapExpandedElementsTest : StringSpec({
   }
 
   "order is preserved" {
-    val issuesOld = root("Issues assigned to me")
+    val issuesOld = root("issues")
     val mr = mrNode()
     val sectionOld = section()
-    val issuesNew = root("Issues assigned to me")
+    val issuesNew = root("issues")
     val sectionNew = section()
     val newInput = listOf<SidebarNode>(issuesNew, sectionNew)
 
     val remapped = remapExpandedElements(listOf(issuesOld, mr, sectionOld), newInput)
 
     remapped shouldBe listOf(issuesNew, mr, sectionNew)
+  }
+
+  "two roots with the same label but different ids each map to their own id" {
+    val oldA = root("a", "Same")
+    val oldB = root("b", "Same")
+    val newA = root("a", "Same")
+    val newB = root("b", "Same")
+
+    remapExpandedElements(listOf(oldB, oldA), listOf<SidebarNode>(newA, newB)) shouldBe listOf(newB, newA)
+  }
+
+  "a renamed root keeps its expansion" {
+    val old = root("a", "Old name")
+    val renamed = root("a", "New name")
+
+    remapExpandedElements(listOf(old), listOf<SidebarNode>(root("b", "Old name"), renamed))
+      .single() shouldBeSameInstanceAs renamed
+  }
+
+  "a root whose id was removed passes through and is not found" {
+    val removed = root("a", "Same")
+
+    remapExpandedElements(listOf(removed), listOf<SidebarNode>(root("b", "Same")))
+      .single() shouldBeSameInstanceAs removed
   }
 
   // CI-04: a soft refresh rebuilds only the current-branch section's nodes, so its MR, pipeline and
@@ -86,8 +110,8 @@ class RemapExpandedElementsTest : StringSpec({
 
   "an expanded assigned MR is not remapped onto the current-branch copy of the same MR" {
     val assignedMr = cbMr()
-    val oldInput = listOf<SidebarNode>(QueryRootNode("Merge requests assigned to me", listOf(assignedMr)), section())
-    val newInput = listOf<SidebarNode>(root("Merge requests assigned to me"), CurrentBranchSectionNode(listOf(cbMr())))
+    val oldInput = listOf<SidebarNode>(QueryRootNode("mrs", "MRs", listOf(assignedMr)), section())
+    val newInput = listOf<SidebarNode>(root("mrs"), CurrentBranchSectionNode(listOf(cbMr())))
 
     remapExpandedElements(listOf(assignedMr), newInput, oldInput).single() shouldBeSameInstanceAs assignedMr
   }

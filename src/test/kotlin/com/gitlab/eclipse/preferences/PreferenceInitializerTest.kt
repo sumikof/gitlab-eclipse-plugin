@@ -21,6 +21,7 @@ class PreferenceInitializerTest : DescribeSpec({
       verify { store.setDefault(PreferenceConstants.DUO_ENABLED_WITHOUT_GITLAB_PROJECT, true) }
       verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ENABLED, false) }
       verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ON_SAVE, true) }
+      verify { store.setDefault(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES, "") }
     }
   }
 })

@@ -1,8 +1,8 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.ConnectionSnapshot
+import com.gitlab.eclipse.api.CurrentUserService
 import com.gitlab.eclipse.api.GitLabApiClient
-import com.gitlab.eclipse.api.IssueService
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.PipelineService
@@ -31,12 +31,15 @@ import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
 import com.gitlab.eclipse.views.sidebar.autorefresh.autoRefreshHop
 import com.gitlab.eclipse.views.sidebar.autorefresh.settleOnCompletion
 import com.gitlab.eclipse.views.sidebar.autorefresh.settleOutcomeOf
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesRefresh
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueryRunner
+import com.gitlab.eclipse.views.sidebar.queries.QueryProject
+import com.gitlab.eclipse.views.sidebar.queries.SidebarQueriesController
+import com.gitlab.eclipse.views.sidebar.queries.staleQueryRootSectionIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import org.eclipse.jface.action.MenuManager
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.jface.viewers.ITreeViewerListener
@@ -47,23 +50,26 @@ import org.eclipse.swt.SWTException
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.io.File
 import java.net.URI
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * GitLab sidebar: a [TreeViewer] over the two query roots produced by [SidebarViewModel]
- * ("Issues assigned to me" / "Merge requests assigned to me") plus the "For current
+ * GitLab sidebar: a [TreeViewer] over one root per configured sidebar query (ISSUE-01; built by
+ * [SidebarViewModel.buildQueryRoot] in config order) plus the "For current
  * branch" section (open MR for the checked-out branch, the issues it would close, and the
  * branch's latest pipeline as a Pipeline→Stage→Job subtree).
  *
- * Threading: each refresh runs two independent fetch units on the shared IO
- * [CoroutineScope] (design doc §6.6) — the assigned roots and the current-branch section —
- * and each unit settles its slot in the generation's [RefreshSlots] then re-composes the
- * whole tree incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread
- * with `asyncExec`. Stale generations ([ViewRefreshState]) and disposed widgets are
- * dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
- * re-composes without re-fetching (R8), even while some slots are still Pending.
+ * Threading: each refresh runs two independent jobs on the shared IO [CoroutineScope] (design
+ * doc §6.6, ISSUE-01 §8 F1) — `fetchJob` (the current-branch section only, so the CI-04 ticket
+ * depends on it alone) and the sibling queries job owned by [SidebarQueriesController] — and each
+ * settles its slot in the generation's [RefreshSlots] then re-composes the whole tree
+ * incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread with `asyncExec`.
+ * Stale generations ([ViewRefreshState]), stale section epochs ([ApplyScope]) and disposed widgets
+ * are dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
+ * re-composes without re-fetching (R8), even while some slots are still Pending. A change of the
+ * custom queries setting re-runs the queries job only ([SidebarQueriesController.refreshQueries]).
  *
  * MR nodes expand lazily ([loadMrChildren]): first expansion fetches the MR's latest diff
  * version and renders an "Overview" node plus its changed files (flat in LIST mode,
@@ -85,8 +91,9 @@ class GitLabSidebarView : ViewPart() {
 
   private val logger = logger<GitLabSidebarView>()
   private val apiClient by lazyService<GitLabApiClient>()
-  private val issueService by lazyService<IssueService>()
   private val mergeRequestService by lazyService<MergeRequestService>()
+  private val currentUserService by lazyService<CurrentUserService>()
+  private val preferenceStore by lazyService<ScopedPreferenceStore>()
   private val coroutineScope by lazyService<CoroutineScope>()
   private val viewState by lazyService<SidebarViewState>()
 
@@ -102,6 +109,10 @@ class GitLabSidebarView : ViewPart() {
   private val repositoryContextResolver by lazy { RepositoryContextResolver() }
   private val currentBranchGitReader by lazy { CurrentBranchGitReader() }
   private val currentBranchMrLookup by lazy { CurrentBranchMrLookup() }
+  private val queryRunner by lazy { CustomQueryRunner(apiClient, currentUserService, log = { logger.warn(it) }) }
+  private val queriesRefresh by lazy {
+    CustomQueriesRefresh(queryRunner, captureConnection = { apiClient.captureConnection() }, log = { logger.warn(it) })
+  }
   private val pipelineService by lazy { PipelineService() }
   private val jobService by lazy { JobService() }
   private val currentBranchFetcher by lazy {
@@ -120,6 +131,30 @@ class GitLabSidebarView : ViewPart() {
   private lateinit var viewer: TreeViewer
 
   @Volatile private var fetchJob: Job? = null
+
+  // ISSUE-01 §8: the query side (setting listener, queries job — a sibling of fetchJob on the shared scope, never
+  // its child — and the result cache), SWT-free and tested headless. This view only supplies the SWT ports: the
+  // UI hop and applyCompose. Started in createPartControl; disposed in dispose() only if it was ever created.
+  private val queriesLazy = lazy {
+    SidebarQueriesController(
+      scope = coroutineScope,
+      store = preferenceStore,
+      work = { list, reuse, project, isActive, onSettled ->
+        queriesRefresh.run(list, reuse, project, isActive, onSettled)
+      },
+      // Called inside the queries job (IO): blocking JGit, with the editor file captured on the UI thread.
+      resolveProject = { file ->
+        repositoryContextResolver.resolveNonInteractive(file)?.let { QueryProject(it.projectId) }
+      },
+      uiHop = { block -> runOnUiIfAlive(block) },
+      apply = { slots, scope, update -> applyCompose(slots, scope, update = update) },
+      currentSlots = { currentSlots },
+      activeEditorFile = { repositoryContextResolver.activeEditorFile() },
+      fullRefresh = { refresh() },
+      log = { logger.warn(it) },
+    )
+  }
+  private val queries by queriesLazy
 
   // CI-04 auto refresh (UI thread only): the refresher is created and started in createPartControl
   // BEFORE the first refresh() (so that refresh's ticket is adopted); dispose() stops it and cancels
@@ -259,8 +294,24 @@ class GitLabSidebarView : ViewPart() {
     )
 
     viewState.addListener(modeListener)
+    queries.start()
     startAutoRefresh()
     refresh()
+  }
+
+  /**
+   * ANY thread (the queries setting listener): runs [block] on the UI thread unless the control is disposed — checked
+   * before scheduling and again in the runnable. A Display disposed while scheduling (SWTException), as in
+   * [applyCompose], means there is nothing left to refresh.
+   */
+  private fun runOnUiIfAlive(block: () -> Unit) {
+    val control = viewer.control
+    if (control.isDisposed) return
+    try {
+      control.display.asyncExec { if (!control.isDisposed) block() }
+    } catch (@Suppress("SwallowedException") e: SWTException) {
+      // Disposed between the check and the scheduling: nothing to refresh.
+    }
   }
 
   /**
@@ -293,7 +344,7 @@ class GitLabSidebarView : ViewPart() {
 
   /**
    * The auto refresher's port (CI-04 design §2.4): re-fetches the "For current branch" section only,
-   * within the live generation — the generation, the assigned slot and the caches stay; the
+   * within the live generation — the generation, the queries slot and the caches stay; the
    * section's epoch is bumped so an older soft refresh's late applies are dropped. The slots
    * instance and the epoch are captured HERE and checked at every apply. The ticket settles from
    * the job's completion whatever happens to it ([settleOnCompletion]); if nothing could be launched
@@ -332,7 +383,7 @@ class GitLabSidebarView : ViewPart() {
           previousGitDir,
           soft = true,
         ) { gitDir, update ->
-          applyCompose(slots, epoch, softRebuild = true) {
+          applyCompose(slots, ApplyScope.CurrentBranch(epoch), softRebuild = true) {
             slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
             slots.currentBranchGitDir = gitDir
           }
@@ -387,20 +438,12 @@ class GitLabSidebarView : ViewPart() {
     val epoch = slots.currentBranchEpoch // read here, on the UI thread that owns the slots
     val job = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
-      // consumer of the scope loses its coroutines.
+      // consumer of the scope loses its coroutines. The current-branch unit only: the
+      // queries run in their own sibling job (ISSUE-01 §8 F1), so the ticket below settles
+      // from this unit alone. Fetch failures are runCatching'd inside the unit; only
+      // unexpected errors (bugs) surface to the catch below.
       try {
-        supervisorScope {
-          // Two independent units (design doc §6.6): each settles its own slot and
-          // re-composes, so a slow or failed assigned fetch never blanks the
-          // current-branch section and vice versa. Fetch failures are runCatching'd
-          // inside the units; only unexpected errors (bugs) surface to the catch below.
-          val assigned = async { fetchAssigned(slots) }
-          val currentBranch = async {
-            recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
-          }
-          assigned.await()
-          currentBranch.await()
-        }
+        recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -413,34 +456,13 @@ class GitLabSidebarView : ViewPart() {
         autoRefresh.refresher?.onRefreshSettled(settled, outcome)
       }
     }
+    // The query side of this refresh (UI thread): decodes the setting into slots.queries — before any apply, which
+    // all run later via asyncExec — clears the result cache and replaces the queries job, a sibling of fetchJob.
+    queries.onFullRefresh(slots, activeEditorFile)
   }
 
   /**
-   * Unit A: the two assigned query roots, fetched concurrently and settled as ONE slot
-   * (they always applied as one unit; per-root failures stay isolated by their [Result]s
-   * flowing into `buildRoots`, not by separate slots).
-   */
-  private suspend fun fetchAssigned(slots: RefreshSlots) {
-    supervisorScope {
-      val issues = async { runCatching { issueService.getIssuesAssignedToMe() } }
-      val mrs = async { runCatching { mergeRequestService.getMergeRequestsAssignedToMe() } }
-      val issuesResult = issues.await()
-      val mrsResult = mrs.await()
-      // Log per-root failures here so the "see the Error Log" message the tree renders
-      // actually has a matching Error Log entry; the failed Results still flow to
-      // buildRoots so the other root stays populated.
-      issuesResult.exceptionOrNull()?.let {
-        logger.error("Failed to load issues assigned to you.", it)
-      }
-      mrsResult.exceptionOrNull()?.let {
-        logger.error("Failed to load merge requests assigned to you.", it)
-      }
-      applyCompose(slots) { slots.assigned = Slot.Settled(issuesResult to mrsResult) }
-    }
-  }
-
-  /**
-   * Unit B: the "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
+   * The "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
    * §2.3). Each of its updates is applied to the generation's live slot inside [applyCompose]'s
    * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
    */
@@ -451,7 +473,7 @@ class GitLabSidebarView : ViewPart() {
       previousGitDir = null,
       soft = false,
     ) { gitDir, update ->
-      applyCompose(slots, epoch) {
+      applyCompose(slots, ApplyScope.CurrentBranch(epoch)) {
         slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
         slots.currentBranchGitDir = gitDir
       }
@@ -473,7 +495,7 @@ class GitLabSidebarView : ViewPart() {
    */
   private fun applyCompose(
     slots: RefreshSlots,
-    epoch: Long? = null,
+    scope: ApplyScope,
     softRebuild: Boolean = false,
     update: () -> Unit = {},
   ) {
@@ -490,12 +512,16 @@ class GitLabSidebarView : ViewPart() {
     try {
       display.asyncExec {
         if (control.isDisposed) return@asyncExec
-        // A stale generation, or (CI-04) a current-branch apply of a superseded fetch, paints nothing.
-        if (!slots.acceptsApply(refreshState::isCurrent, epoch)) return@asyncExec
+        // A stale generation, or an apply of a superseded current-branch (CI-04) or queries run, paints nothing.
+        if (!slots.acceptsApply(refreshState::isCurrent, scope)) return@asyncExec
         update()
         val input = coordinator.compose(slots, viewState.mode)
         val oldInput = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
         if (softRebuild) invalidateReplacedMrs(oldInput, input)
+        // ISSUE-01 F10: discussion keys under query roots this compose replaced or removed are orphaned; roots the
+        // memo kept are the same instances and keep theirs. Checked on every compose, not only a settings change:
+        // whichever apply runs first after a settings change swapped the slot performs the swap in the tree.
+        DiscussionGenerationRegistry.clearLatestFor(staleQueryRootSectionIds(oldInput, input))
         // Pre-order capture: restoring in the same order expands parents first, so nested
         // entries' widgets exist (materialized by the parent's expansion) when their turn
         // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
@@ -534,7 +560,7 @@ class GitLabSidebarView : ViewPart() {
   /**
    * Mode changed: re-compose the current generation's slots with the new mode — never a
    * re-fetch (R8: a Pending slot keeps its Loading placeholder; only a never-fetched view,
-   * `currentSlots == null`, starts its first refresh). The assigned roots rebuild by
+   * `currentSlots == null`, starts its first refresh). The query roots rebuild by
    * themselves (the coordinator keys them on the mode); the current-branch section node is
    * mode-independent and reused as-is, so its MR node may hold children composed for the
    * old mode — clear them and re-trigger the still-expanded ones, which re-compose from
@@ -556,7 +582,7 @@ class GitLabSidebarView : ViewPart() {
         ?.flatMap { it.children }
         ?.filterIsInstance<MergeRequestNode>()
         ?.forEach { it.loadedChildren = null }
-      applyCompose(slots)
+      applyCompose(slots, ApplyScope.Generation)
       // Expanded MR nodes whose children were just cleared would otherwise show "Loading…"
       // forever (programmatic expansion restore fires no treeExpanded event). Query-root MR
       // nodes still in flight are deduped by loadMrChildren's in-flight guard.
@@ -742,6 +768,7 @@ class GitLabSidebarView : ViewPart() {
   }
 
   override fun dispose() {
+    if (queriesLazy.isInitialized()) queries.dispose()
     viewState.removeListener(modeListener)
     autoRefresh.dispose()
     fetchJob?.cancel()
@@ -753,13 +780,14 @@ class GitLabSidebarView : ViewPart() {
  * Remaps a captured expanded-elements list onto a freshly composed [newInput] (R9): the
  * top-level node INSTANCES change per compose — [QueryRootNode]s and the
  * [CurrentBranchSectionNode] are rebuilt — so they are matched by stable key instead: a
- * query root by its label, the current-branch section by its type. Everything else (the
+ * query root by its [QueryRootNode.queryId] (two roots may share a label; a rename keeps the id), the
+ * current-branch section by its type. Everything else (the
  * coordinator's identity-preserved inner nodes) passes through unchanged. Best-effort:
  * an unmatched stale element passes through too and is simply not found by the viewer.
  *
  * CI-04: a soft refresh can also rebuild the nodes INSIDE the current-branch section, so an
  * element that was inside [oldInput]'s section is remapped into [newInput]'s section by its
- * stable key ([remapInSection]). Only those: an MR expanded under an assigned root keeps its own
+ * stable key ([remapInSection]). Only those: an MR expanded under a query root keeps its own
  * identity rather than being mapped onto the current-branch copy of the same MR.
  */
 internal fun remapExpandedElements(
@@ -771,7 +799,8 @@ internal fun remapExpandedElements(
   val newSection = newInput.firstOrNull { it is CurrentBranchSectionNode }
   return expanded.map { element ->
     when {
-      element is QueryRootNode -> newInput.firstOrNull { it is QueryRootNode && it.label == element.label } ?: element
+      element is QueryRootNode ->
+        newInput.firstOrNull { it is QueryRootNode && it.queryId == element.queryId } ?: element
       element is CurrentBranchSectionNode -> newSection ?: element
       oldSection != null && newSection != null -> remapInSection(element, oldSection, newSection) ?: element
       else -> element
