@@ -39,18 +39,24 @@ class CustomQueryRunner(
   /**
    * Runs [queries]; calls [onSettled] (any thread) once per query as it settles; returns when all settled. Throws
    * [CancellationException] once [isActive] turns false or the caller is cancelled; nothing settles after that.
+   *
+   * [reuse] (design §7, F3): a query it reports as already settled (stage (a)) is skipped — not run, not settled; a
+   * query whose final request (current user resolved) it maps to an earlier list outcome (stage (b)) settles with
+   * that outcome and the request, without fetching. Positions in the WARN lines stay the config positions.
    */
   suspend fun run(
     queries: List<CustomQuery>,
     project: QueryProject?,
     connection: ConnectionSnapshot,
     isActive: () -> Boolean,
+    reuse: QueryReuse = QueryReuse.None,
     onSettled: (queryId: String, outcome: QueryOutcome, executed: QueryPlan.Run?) -> Unit,
   ) {
     val semaphore = Semaphore(parallelism)
-    val state = RunState(project, connection, isActive)
+    val state = RunState(project, connection, isActive, reuse)
     coroutineScope {
-      queries.mapIndexed { index, query ->
+      queries.mapIndexedNotNull { index, query ->
+        if (reuse.isSettled(query.id)) return@mapIndexedNotNull null
         async(dispatcher) {
           val (outcome, executed) = semaphore.withPermit { state.settle(index, query) }
           currentCoroutineContext().ensureActive()
@@ -69,6 +75,7 @@ class CustomQueryRunner(
     private val project: QueryProject?,
     private val connection: ConnectionSnapshot,
     private val isActive: () -> Boolean,
+    private val reuse: QueryReuse,
   ) {
     private val userMutex = Mutex()
     private var currentUser: Result<String>? = null
@@ -83,7 +90,7 @@ class CustomQueryRunner(
       ensureActive()
       val draft = runCatching { CustomQueryRequestBuilder.plan(query, project, CURRENT_USER_PLACEHOLDER) }
         .getOrElse { return failed(index, query, it, executed = null) }
-      if (draft !is QueryPlan.Run) return notRunnable(draft) to null
+      if (draft !is QueryPlan.Run) return notRunnableOutcome(draft) to null
       val plan = if (CustomQueryRequestBuilder.usesCurrentUser(query)) {
         val username = currentUsername()
           .getOrElse { return failed(index, query, it, executed = null, forCurrentUser = true) }
@@ -92,15 +99,10 @@ class CustomQueryRunner(
       } else {
         draft
       }
+      // Outside runCatching on purpose: a failing reuse check is a bug, not this query's failure.
+      reuse.outcomeFor(query.id, plan)?.let { return it to plan }
       return runCatching { fetch(query, plan) }.getOrElse { return failed(index, query, it, plan) } to plan
     }
-
-    private fun notRunnable(plan: QueryPlan): QueryOutcome =
-      when (plan) {
-        is QueryPlan.Invalid -> QueryOutcome.Invalid(plan.problem.message)
-        QueryPlan.NeedsProject -> QueryOutcome.NeedsProject
-        else -> QueryOutcome.Unsupported
-      }
 
     private fun fetch(query: CustomQuery, plan: QueryPlan.Run): QueryOutcome =
       if (CustomQueryValidator.effectiveType(query) == CustomQueryType.ISSUES) {
@@ -147,3 +149,11 @@ class CustomQueryRunner(
     )
   }
 }
+
+/** The outcome of a query whose plan sends nothing (design §12); a [QueryPlan.Run] has no such outcome. */
+internal fun notRunnableOutcome(plan: QueryPlan): QueryOutcome =
+  when (plan) {
+    is QueryPlan.Invalid -> QueryOutcome.Invalid(plan.problem.message)
+    QueryPlan.NeedsProject -> QueryOutcome.NeedsProject
+    else -> QueryOutcome.Unsupported
+  }

@@ -79,6 +79,13 @@ class CustomQueryResultCache {
       (entry.outcome is QueryOutcome.Issues || entry.outcome is QueryOutcome.MergeRequests)
   }
 
+  /** The stored request print and list outcome of [queryId], or null when it has none (stage (b) snapshot). */
+  internal fun listRequest(queryId: String): Pair<String, QueryOutcome>? {
+    val entry = entries[queryId] ?: return null
+    val print = entry.requestPrint ?: return null
+    return if (isRequestUnchanged(queryId, print)) print to entry.outcome else null
+  }
+
   fun retainOnly(ids: Set<String>) {
     entries.keys.retainAll(ids)
   }

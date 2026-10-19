@@ -93,9 +93,14 @@ private class Harness(parallelism: Int = 4) {
   val dispatcher = StandardTestDispatcher()
   val runner = CustomQueryRunner(api.client, users, { warnings += it }, parallelism, dispatcher)
 
-  fun run(queries: List<CustomQuery>, project: QueryProject? = null, isActive: () -> Boolean = { true }) =
+  fun run(
+    queries: List<CustomQuery>,
+    project: QueryProject? = null,
+    isActive: () -> Boolean = { true },
+    reuse: QueryReuse = QueryReuse.None,
+  ) =
     TestScope(dispatcher).runTest {
-      runner.run(queries, project, connection, isActive) { id, outcome, executed ->
+      runner.run(queries, project, connection, isActive, reuse) { id, outcome, executed ->
         settled += Settled(id, outcome, executed)
       }
     }
@@ -422,5 +427,58 @@ class CustomQueryRunnerTest : StringSpec({
     } finally {
       pool.shutdownNow()
     }
+  }
+
+  "reuse: a query already settled by stage (a) is neither fetched nor settled again" {
+    val h = Harness()
+    h.api.ok("b", PagedResult(listOf(issue(2)), truncated = false))
+    val reuse = object : QueryReuse {
+      override fun isSettled(queryId: String) = queryId == "a"
+      override fun outcomeFor(queryId: String, plan: QueryPlan.Run): QueryOutcome? = null
+    }
+    h.run(listOf(q("a", "issues", "a"), q("b", "issues", "b")), reuse = reuse)
+    h.settled.map { it.id } shouldContainExactly listOf("b")
+    h.api.requests.map { it.query["search"] } shouldContainExactly listOf("b")
+  }
+
+  "reuse: an unchanged request settles with the cached outcome and the executed plan, without fetching" {
+    val h = Harness()
+    val cached = QueryOutcome.Issues(listOf(issue(9)), truncated = false)
+    val seen = Collections.synchronizedList(mutableListOf<QueryPlan.Run>())
+    val reuse = object : QueryReuse {
+      override fun isSettled(queryId: String) = false
+      override fun outcomeFor(queryId: String, plan: QueryPlan.Run): QueryOutcome? = cached.also { seen += plan }
+    }
+    h.run(listOf(q("a", "issues", "a")), reuse = reuse)
+    h.api.requests.shouldBeEmpty()
+    h.outcome("a") shouldBeSameInstanceAs cached
+    h.executed("a") shouldBe seen.single()
+    h.executed("a")?.params?.get("search") shouldBe "a"
+  }
+
+  "reuse: the stage (b) check sees the plan with the current user resolved" {
+    val h = Harness()
+    every { h.users.getCurrentUser(connection) } returns GitLabUser(1, "alice")
+    val seen = Collections.synchronizedList(mutableListOf<QueryPlan.Run>())
+    val reuse = object : QueryReuse {
+      override fun isSettled(queryId: String) = false
+      override fun outcomeFor(queryId: String, plan: QueryPlan.Run): QueryOutcome? {
+        seen += plan
+        return QueryOutcome.Issues(emptyList(), truncated = false)
+      }
+    }
+    h.run(listOf(q("a", "issues", "a", ""","author":"$ME"""")), reuse = reuse)
+    seen.single().params["author_username"] shouldBe "alice"
+  }
+
+  "a failure WARN names the config position even when earlier queries were skipped" {
+    val h = Harness()
+    h.api.fail("b", GitLabApiException(500, "{}", null))
+    val reuse = object : QueryReuse {
+      override fun isSettled(queryId: String) = queryId == "a"
+      override fun outcomeFor(queryId: String, plan: QueryPlan.Run): QueryOutcome? = null
+    }
+    h.run(listOf(q("a", "issues", "a"), q("b", "issues", "b")), reuse = reuse)
+    h.warnings.single() shouldContain "position=2 "
   }
 })

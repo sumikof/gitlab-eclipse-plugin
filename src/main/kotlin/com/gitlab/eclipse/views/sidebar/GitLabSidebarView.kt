@@ -32,21 +32,23 @@ import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
 import com.gitlab.eclipse.views.sidebar.autorefresh.autoRefreshHop
 import com.gitlab.eclipse.views.sidebar.autorefresh.settleOnCompletion
 import com.gitlab.eclipse.views.sidebar.autorefresh.settleOutcomeOf
-import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesPreferenceListener
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesRefresh
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryCodec
+import com.gitlab.eclipse.views.sidebar.queries.CustomQueryResultCache
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryRunner
-import com.gitlab.eclipse.views.sidebar.queries.CustomQueryValidator
-import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
+import com.gitlab.eclipse.views.sidebar.queries.QueriesJobLifecycle
+import com.gitlab.eclipse.views.sidebar.queries.QueryConfig
+import com.gitlab.eclipse.views.sidebar.queries.QueryFingerprints
 import com.gitlab.eclipse.views.sidebar.queries.QueryProject
-import com.gitlab.eclipse.views.sidebar.queries.QueryTarget
-import com.gitlab.eclipse.views.sidebar.queries.classifyFailure
+import com.gitlab.eclipse.views.sidebar.queries.QueryReuse
+import com.gitlab.eclipse.views.sidebar.queries.carryOverUnchanged
+import com.gitlab.eclipse.views.sidebar.queries.reuseFor
+import com.gitlab.eclipse.views.sidebar.queries.staleQueryRootSectionIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import org.eclipse.jface.action.MenuManager
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.jface.viewers.ITreeViewerListener
@@ -68,13 +70,15 @@ import java.util.concurrent.atomic.AtomicReference
  * branch" section (open MR for the checked-out branch, the issues it would close, and the
  * branch's latest pipeline as a Pipeline→Stage→Job subtree).
  *
- * Threading: each refresh runs two independent fetch units on the shared IO
- * [CoroutineScope] (design doc §6.6) — the query roots and the current-branch section —
- * and each unit settles its slot in the generation's [RefreshSlots] then re-composes the
- * whole tree incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread
- * with `asyncExec`. Stale generations ([ViewRefreshState]) and disposed widgets are
- * dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
- * re-composes without re-fetching (R8), even while some slots are still Pending.
+ * Threading: each refresh runs two independent jobs on the shared IO [CoroutineScope] (design
+ * doc §6.6, ISSUE-01 §8 F1) — `fetchJob` (the current-branch section only, so the CI-04 ticket
+ * depends on it alone) and the sibling queries job owned by [QueriesJobLifecycle] — and each
+ * settles its slot in the generation's [RefreshSlots] then re-composes the whole tree
+ * incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread with `asyncExec`.
+ * Stale generations ([ViewRefreshState]), stale section epochs ([ApplyScope]) and disposed widgets
+ * are dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
+ * re-composes without re-fetching (R8), even while some slots are still Pending. A change of the
+ * custom queries setting re-runs the queries job only ([refreshQueries]).
  *
  * MR nodes expand lazily ([loadMrChildren]): first expansion fetches the MR's latest diff
  * version and renders an "Overview" node plus its changed files (flat in LIST mode,
@@ -115,6 +119,9 @@ class GitLabSidebarView : ViewPart() {
   private val currentBranchGitReader by lazy { CurrentBranchGitReader() }
   private val currentBranchMrLookup by lazy { CurrentBranchMrLookup() }
   private val queryRunner by lazy { CustomQueryRunner(apiClient, currentUserService, log = { logger.warn(it) }) }
+  private val queriesRefresh by lazy {
+    CustomQueriesRefresh(queryRunner, captureConnection = { apiClient.captureConnection() }, log = { logger.warn(it) })
+  }
   private val pipelineService by lazy { PipelineService() }
   private val jobService by lazy { JobService() }
   private val currentBranchFetcher by lazy {
@@ -133,6 +140,18 @@ class GitLabSidebarView : ViewPart() {
   private lateinit var viewer: TreeViewer
 
   @Volatile private var fetchJob: Job? = null
+
+  // ISSUE-01 §8 F1: the queries job, a sibling of fetchJob on the shared scope (never its child). refresh(),
+  // refreshQueries() and dispose() replace/cancel it; fetchJob is never touched by the queries path.
+  private val queriesLifecycle by lazy { QueriesJobLifecycle(coroutineScope) { logger.warn(it) } }
+
+  // Last outcome per query id for the two-stage reuse of a settings change (ISSUE-01 §7, F3). UI thread only:
+  // written inside applyCompose's UI step, read by refreshQueries; cleared by every full refresh.
+  private val resultCache = CustomQueryResultCache()
+
+  // Forwards changes of the custom queries setting (any thread) to refreshQueries via asyncExec. Created and
+  // registered once in createPartControl, disposed in dispose(); one registration per view instance.
+  private var queriesPreferenceListener: CustomQueriesPreferenceListener? = null
 
   // CI-04 auto refresh (UI thread only): the refresher is created and started in createPartControl
   // BEFORE the first refresh() (so that refresh's ticket is adopted); dispose() stops it and cancels
@@ -272,8 +291,25 @@ class GitLabSidebarView : ViewPart() {
     )
 
     viewState.addListener(modeListener)
+    queriesPreferenceListener =
+      CustomQueriesPreferenceListener(preferenceStore) { onQueriesSettingChanged() }.also { it.register() }
     startAutoRefresh()
     refresh()
+  }
+
+  /**
+   * The custom queries setting changed (store listener; ANY thread). Hops to the UI thread and re-runs the queries
+   * there ([refreshQueries]); a disposed control — or a Display disposed while scheduling (SWTException), as in
+   * [applyCompose] — means there is nothing left to refresh.
+   */
+  private fun onQueriesSettingChanged() {
+    val control = viewer.control
+    if (control.isDisposed) return
+    try {
+      control.display.asyncExec { if (!control.isDisposed) refreshQueries() }
+    } catch (@Suppress("SwallowedException") e: SWTException) {
+      // Disposed between the check and the scheduling: nothing to refresh.
+    }
   }
 
   /**
@@ -371,12 +407,11 @@ class GitLabSidebarView : ViewPart() {
     // auto-refresh; an ambiguous workspace resolves to null → "Select a repository".
     val activeEditorFile = repositoryContextResolver.activeEditorFile()
     val slots = RefreshSlots(generation)
-    // Decoded here, on the UI thread (cheap): the queries unit runs on this snapshot (ISSUE-01 design §8).
-    val stored = preferenceStore.getString(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES)
-    slots.queries = QueriesSlot(CustomQueryCodec.decode(stored))
-    val queries = slots.queries
-    val queriesEpoch = slots.queriesEpoch
+    // Decoded here, on the UI thread (cheap): the queries job runs on this snapshot (ISSUE-01 design §8).
+    slots.queries = QueriesSlot(readQueriesConfig())
     currentSlots = slots
+    // A new generation re-fetches every query: nothing from the previous one may be reused.
+    resultCache.clear()
     // A full refresh eventually rebuilds every MR node (the new generation resets the
     // coordinator's memo); drop the cached diff versions once at refresh START — not per
     // compose — so the next expansion re-fetches new diffs while this one refresh's
@@ -405,20 +440,12 @@ class GitLabSidebarView : ViewPart() {
     val epoch = slots.currentBranchEpoch // read here, on the UI thread that owns the slots
     val job = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
-      // consumer of the scope loses its coroutines.
+      // consumer of the scope loses its coroutines. The current-branch unit only: the
+      // queries run in their own sibling job (ISSUE-01 §8 F1), so the ticket below settles
+      // from this unit alone. Fetch failures are runCatching'd inside the unit; only
+      // unexpected errors (bugs) surface to the catch below.
       try {
-        supervisorScope {
-          // Two independent units (design doc §6.6): each settles its own slot and
-          // re-composes, so slow or failed queries never blank the
-          // current-branch section and vice versa. Fetch failures are runCatching'd
-          // inside the units; only unexpected errors (bugs) surface to the catch below.
-          val queryRoots = async { fetchQueries(slots, queries, queriesEpoch, activeEditorFile) }
-          val currentBranch = async {
-            recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
-          }
-          queryRoots.await()
-          currentBranch.await()
-        }
+        recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -431,52 +458,73 @@ class GitLabSidebarView : ViewPart() {
         autoRefresh.refresher?.onRefreshSettled(settled, outcome)
       }
     }
+    launchQueries(slots, QueryReuse.None, activeEditorFile)
   }
 
   /**
-   * Unit A (INTERIM, ISSUE-01 Task 7 — Task 8 moves it into its own `queriesJob`): runs the configured queries of
-   * [queries] (the slot snapshot taken on the UI thread) and applies each outcome to its own per-id slot as it settles,
-   * under [ApplyScope.Queries] with the queries [epoch] captured at launch. IO only: the repository is resolved (blocking
-   * JGit) only when some query targets the project; the connection is captured once (failure → every query settles
-   * with that failure, one WARN `exceptionType=` only). Never throws except [CancellationException], so it cannot
-   * cancel its sibling current-branch unit. Logs safe tokens only (design §11), never the Throwable.
+   * UI thread. The custom queries setting changed (ISSUE-01 design §8): re-runs the queries within the live
+   * generation — never `fetchJob`, the CI-04 soft refresh, `currentBranchEpoch` or the MR caches. A never-refreshed
+   * view runs its first full [refresh] instead. Bumps [RefreshSlots.queriesEpoch] (so the previous queries run's late
+   * applies are dropped), swaps in a new [QueriesSlot] whose unchanged queries keep their previous instances
+   * ([carryOverUnchanged]) and whose stage (a) reuses are settled at once, launches the queries job for the rest
+   * (stage (b) decided in the job) and composes immediately, so removed roots disappear and changed ones show Loading.
    */
-  private suspend fun fetchQueries(slots: RefreshSlots, queries: QueriesSlot, epoch: Long, activeEditorFile: File?) {
-    val list = queries.queries
-    if (list.isEmpty()) return
-    val settle: (List<CustomQuery>, QueryOutcome) -> Unit = { settled, outcome ->
-      applyCompose(slots, ApplyScope.Queries(epoch)) {
-        settled.forEach { slots.queries.outcomes[it.id] = Slot.Settled(outcome) }
-      }
+  private fun refreshQueries() {
+    if (viewer.control.isDisposed) return
+    val slots = currentSlots
+    if (slots == null) {
+      refresh()
+      return
     }
-    try {
-      val project = if (list.any { CustomQueryValidator.effectiveTarget(it) == QueryTarget.PROJECT }) {
-        repositoryContextResolver.resolveNonInteractive(activeEditorFile)?.let { QueryProject(it.projectId) }
-      } else {
-        null
+    val previous = slots.queries
+    val config = readQueriesConfig()
+    val queries = QueriesSlot(config, carryOverUnchanged(previous.queries, config.queries))
+    val reuse = resultCache.reuseFor(queries.queries, previous.outcomes)
+    reuse.settled.forEach { (id, outcome) -> queries.outcomes[id] = Slot.Settled(outcome) }
+    resultCache.retainOnly(queries.queries.mapTo(HashSet()) { it.id })
+    slots.queriesEpoch++
+    slots.queries = queries
+    launchQueries(slots, reuse, repositoryContextResolver.activeEditorFile())
+    applyCompose(slots, ApplyScope.Queries(slots.queriesEpoch))
+  }
+
+  /**
+   * UI thread. Replaces the queries job (the lifecycle cancels the previous one) with a run of [slots]' current
+   * [QueriesSlot] under the current [RefreshSlots.queriesEpoch], both captured HERE. In the job (IO), the repository is
+   * resolved only when a runnable query targets the project ([CustomQueriesRefresh]); each settled outcome is applied
+   * under [ApplyScope.Queries] to the CAPTURED slot instance, and recorded in [resultCache] in the same UI-thread step
+   * — so a dropped (stale) apply records nothing either.
+   */
+  private fun launchQueries(slots: RefreshSlots, reuse: QueryReuse, activeEditorFile: File?) {
+    val queries = slots.queries
+    val epoch = slots.queriesEpoch
+    val configPrints = queries.queries.associate { it.id to QueryFingerprints.config(it) }
+    // Blocking JGit: called inside the job (IO) only, with the editor file captured here on the UI thread.
+    val resolveProject = {
+      repositoryContextResolver.resolveNonInteractive(activeEditorFile)?.let { QueryProject(it.projectId) }
+    }
+    queriesLifecycle.launch { isActive ->
+      queriesRefresh.run(queries.queries, reuse, resolveProject, isActive) { id, outcome, executed ->
+        applyCompose(slots, ApplyScope.Queries(epoch)) {
+          queries.outcomes[id] = Slot.Settled(outcome)
+          configPrints[id]?.let { resultCache.put(id, it, executed?.let(QueryFingerprints::request), outcome) }
+        }
       }
-      val connection = try {
-        apiClient.captureConnection()
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        logger.warn("Sidebar queries could not capture the connection: exceptionType=${e.javaClass.name}")
-        settle(list, classifyFailure(e))
-        return
-      }
-      val job = currentCoroutineContext()[Job]
-      queryRunner.run(list, project, connection, isActive = { job?.isActive != false }) { id, outcome, _ ->
-        applyCompose(slots, ApplyScope.Queries(epoch)) { slots.queries.outcomes[id] = Slot.Settled(outcome) }
-      }
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      logger.warn("Sidebar queries failed: exceptionType=${e.javaClass.name}")
     }
   }
 
   /**
-   * Unit B: the "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
+   * UI thread. Reads and decodes the custom queries setting (cheap). An unreadable value is logged once per call —
+   * i.e. once per refresh — with its reason token only, never the stored text (design §11).
+   */
+  private fun readQueriesConfig(): QueryConfig {
+    val config = CustomQueryCodec.decode(preferenceStore.getString(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES))
+    if (config is QueryConfig.Unreadable) logger.warn("Sidebar queries setting unreadable: reason=${config.reason}")
+    return config
+  }
+
+  /**
+   * The "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
    * §2.3). Each of its updates is applied to the generation's live slot inside [applyCompose]'s
    * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
    */
@@ -532,6 +580,10 @@ class GitLabSidebarView : ViewPart() {
         val input = coordinator.compose(slots, viewState.mode)
         val oldInput = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
         if (softRebuild) invalidateReplacedMrs(oldInput, input)
+        // ISSUE-01 F10: discussion keys under query roots this compose replaced or removed are orphaned; roots the
+        // memo kept are the same instances and keep theirs. Checked on every compose, not only a settings change:
+        // whichever apply runs first after refreshQueries swapped the slot performs the swap in the tree.
+        DiscussionGenerationRegistry.clearLatestFor(staleQueryRootSectionIds(oldInput, input))
         // Pre-order capture: restoring in the same order expands parents first, so nested
         // entries' widgets exist (materialized by the parent's expansion) when their turn
         // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
@@ -778,9 +830,11 @@ class GitLabSidebarView : ViewPart() {
   }
 
   override fun dispose() {
+    queriesPreferenceListener?.dispose()
     viewState.removeListener(modeListener)
     autoRefresh.dispose()
     fetchJob?.cancel()
+    queriesLifecycle.dispose()
     super.dispose()
   }
 }
@@ -796,7 +850,7 @@ class GitLabSidebarView : ViewPart() {
  *
  * CI-04: a soft refresh can also rebuild the nodes INSIDE the current-branch section, so an
  * element that was inside [oldInput]'s section is remapped into [newInput]'s section by its
- * stable key ([remapInSection]). Only those: an MR expanded under an assigned root keeps its own
+ * stable key ([remapInSection]). Only those: an MR expanded under a query root keeps its own
  * identity rather than being mapped onto the current-branch copy of the same MR.
  */
 internal fun remapExpandedElements(

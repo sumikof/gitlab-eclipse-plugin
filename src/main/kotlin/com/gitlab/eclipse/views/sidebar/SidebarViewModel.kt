@@ -16,13 +16,13 @@ import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.configErrorMessage
 import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
+import com.gitlab.eclipse.views.sidebar.queries.LOAD_FAILED_MESSAGE
 import com.gitlab.eclipse.views.sidebar.queries.NO_ITEMS_MESSAGE
 import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
 import com.gitlab.eclipse.views.sidebar.queries.UNNAMED_QUERY_LABEL
 import com.gitlab.eclipse.views.sidebar.queries.queryOutcomeMessage
 import com.gitlab.eclipse.views.sidebar.queries.truncationNotice
 
-private const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
 private const val NO_CURRENT_BRANCH_MR_MESSAGE = "No merge request found"
 private const val NO_CLOSING_ISSUE_MESSAGE = "No closing issue found"
 private const val NO_CHANGED_FILES_MESSAGE = "No changed files"
@@ -101,7 +101,8 @@ class SidebarViewModel {
             is QueryOutcome.MergeRequests ->
               queryChildren(value.items, mode, emptyMessage, { it.references?.full }, ::MergeRequestNode) +
                 truncationNotice(value.truncated)
-            else -> listOf(MessageNode(queryOutcomeMessage(value)))
+            QueryOutcome.NeedsProject, QueryOutcome.Unsupported, is QueryOutcome.Invalid, is QueryOutcome.Failed ->
+              listOf(MessageNode(queryOutcomeMessage(value)))
           }
       }
     return QueryRootNode(query.id, label, children)

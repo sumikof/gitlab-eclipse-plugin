@@ -4,6 +4,8 @@ import com.gitlab.eclipse.api.GitLabConfigurationException
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.views.issues.configErrorMessage
+import com.gitlab.eclipse.views.sidebar.CurrentBranchSectionNode
+import com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode
 import com.gitlab.eclipse.views.sidebar.IssueNode
 import com.gitlab.eclipse.views.sidebar.MergeRequestNode
 import com.gitlab.eclipse.views.sidebar.MessageNode
@@ -180,4 +182,44 @@ class QueryRootsComposerTest : StringSpec({
     c.reset()
     c.compose(slot, SidebarViewMode.LIST).single() shouldNotBeSameInstanceAs first
   }
+  "queryOutcomeMessage never throws for an item outcome (generic text fallback)" {
+    queryOutcomeMessage(QueryOutcome.Issues(emptyList(), false)) shouldBe LOAD_FAILED_MESSAGE
+    queryOutcomeMessage(QueryOutcome.MergeRequests(emptyList(), true)) shouldBe LOAD_FAILED_MESSAGE
+    LOAD_FAILED_MESSAGE shouldBe "Failed to load — see the Error Log."
+  }
+
+  "staleQueryRootSectionIds: sections under a kept root instance are not returned" {
+    val kept = QueryRootNode("a", "A", listOf(mrWith(section())))
+    staleQueryRootSectionIds(listOf(kept), listOf(kept)) shouldBe emptySet()
+  }
+
+  "staleQueryRootSectionIds: sections under a replaced or removed root are returned" {
+    val replacedSection = section()
+    val removedSection = section()
+    val nestedSection = section()
+    val replaced = QueryRootNode("a", "A", listOf(mrWith(replacedSection)))
+    val removed = QueryRootNode(
+      "b",
+      "B",
+      listOf(ProjectGroupNode("g/p", listOf(mrWith(removedSection), mrWith(nestedSection)))),
+    )
+    val keptSection = section()
+    val kept = QueryRootNode("c", "C", listOf(mrWith(keptSection)))
+    val rebuilt = QueryRootNode("a", "A", listOf(mrWith(section())))
+    val stale = staleQueryRootSectionIds(listOf(replaced, removed, kept), listOf(rebuilt, kept))
+    stale shouldBe setOf(replacedSection.nodeId, removedSection.nodeId, nestedSection.nodeId)
+  }
+
+  "staleQueryRootSectionIds: the current-branch section is never considered" {
+    val branchSection = section()
+    val old = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(mrWith(branchSection))))
+    staleQueryRootSectionIds(old, listOf(CurrentBranchSectionNode(emptyList()))) shouldBe emptySet()
+  }
 })
+
+private fun section() =
+  DiscussionsSectionNode("https://gitlab.example.com", "fp", 1L, 7L, "gid://gitlab/MergeRequest/9", null, "g/p")
+
+private fun mrWith(child: SidebarNode) =
+  MergeRequestNode(GitLabMergeRequest(1, 1, "m", 1, "https://gitlab.example.com/g/p/-/merge_requests/1", "opened"))
+    .apply { loadedChildren = listOf(child) }

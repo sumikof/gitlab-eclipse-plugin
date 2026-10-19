@@ -5,17 +5,8 @@ import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.inject.service
 
-/** Fetches merge requests: assigned to the user, for a source branch, and a merge request's closing issues. */
+/** Fetches merge requests: for a source branch, a merge request's closing issues and its latest diff version. */
 class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
-  fun getMergeRequestsAssignedToMe(): List<GitLabMergeRequest> {
-    val request = ApiRequest(
-      path = "/merge_requests",
-      query = mapOf("scope" to "assigned_to_me", "state" to "opened"),
-      elementType = GitLabMergeRequest::class.java,
-    )
-    return apiClient.fetchListFromApi(request).distinctBy { it.id }
-  }
-
   /**
    * Finds open merge requests whose source branch is [sourceBranch], via the GLOBAL
    * `/merge_requests` endpoint (scope=all). This is used instead of a project-scoped

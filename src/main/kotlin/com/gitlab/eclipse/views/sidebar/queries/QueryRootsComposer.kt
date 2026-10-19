@@ -7,6 +7,7 @@ import com.gitlab.eclipse.views.sidebar.SidebarNode
 import com.gitlab.eclipse.views.sidebar.SidebarViewMode
 import com.gitlab.eclipse.views.sidebar.SidebarViewModel
 import com.gitlab.eclipse.views.sidebar.Slot
+import com.gitlab.eclipse.views.sidebar.collectDiscussionSectionNodeIds
 
 /** Root label of a query whose name is missing or blank. */
 const val UNNAMED_QUERY_LABEL = "(unnamed query)"
@@ -20,22 +21,28 @@ const val UNREADABLE_ROOT_ID = "__unreadable"
 /** Reserved root id of the "no queries configured" root. */
 const val EMPTY_ROOT_ID = "__empty"
 
+/** The generic failure text, shared by the query roots and the rest of the sidebar (design §12). */
+internal const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
+
 private const val CONFIG_ROOT_LABEL = "Sidebar queries"
 private const val UNREADABLE_MESSAGE =
   "Sidebar queries could not be read. Fix or restore them in Preferences > GitLab Duo > Sidebar Queries."
 private const val EMPTY_MESSAGE = "No sidebar queries. Add them in Preferences > GitLab Duo > Sidebar Queries."
 private const val TRUNCATED_MESSAGE = "Showing the first 2000 results."
 private const val INVALID_PREFIX = "Invalid query: "
-private const val LOAD_FAILED_MESSAGE = "Failed to load — see the Error Log."
 
 /** The cap notice appended after the items of a truncated result (design §12), or nothing. */
 internal fun truncationNotice(truncated: Boolean): List<SidebarNode> =
   if (truncated) listOf(MessageNode(TRUNCATED_MESSAGE)) else emptyList()
 
-/** The single message shown for a non-item outcome (design §12, texts verbatim). */
+/**
+ * The single message shown for a non-item outcome (design §12, texts verbatim). Total: an item outcome renders its
+ * items and never asks (the caller's `when` is exhaustive), but should one ever ask it gets the generic failure text
+ * rather than an exception thrown into the UI-thread compose.
+ */
 internal fun queryOutcomeMessage(outcome: QueryOutcome): String =
   when (outcome) {
-    is QueryOutcome.Issues, is QueryOutcome.MergeRequests -> error("item outcomes render their items")
+    is QueryOutcome.Issues, is QueryOutcome.MergeRequests -> LOAD_FAILED_MESSAGE
     QueryOutcome.NeedsProject -> "Open a file from a GitLab project to run this query."
     QueryOutcome.Unsupported -> "This query type is not supported in Eclipse yet."
     is QueryOutcome.Invalid -> INVALID_PREFIX + outcome.message
@@ -110,4 +117,16 @@ class QueryRootsComposer(private val viewModel: SidebarViewModel) {
       is Slot.Pending -> outcome
       is Slot.Settled -> outcome.value
     }
+}
+
+/**
+ * The [com.gitlab.eclipse.views.sidebar.DiscussionsSectionNode.nodeId]s under every [QueryRootNode] instance of
+ * [oldInput] that is absent (by identity) from [newInput] — the discussion-registry keys a re-compose orphaned (design
+ * §8, F10). A root the memo kept is the same instance, so its keys survive; any other top-level node is ignored.
+ * Pure; UI thread like its caller.
+ */
+internal fun staleQueryRootSectionIds(oldInput: List<SidebarNode>, newInput: List<SidebarNode>): Set<Long> {
+  val kept = newInput.filterIsInstance<QueryRootNode>()
+  val gone = oldInput.filterIsInstance<QueryRootNode>().filter { old -> kept.none { it === old } }
+  return collectDiscussionSectionNodeIds(gone)
 }

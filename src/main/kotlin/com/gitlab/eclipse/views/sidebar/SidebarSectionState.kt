@@ -61,10 +61,10 @@ sealed interface Slot<out T> {
  * start, its [queries] in config order (snapshotted once — [QueryConfig.Defaults] hands out fresh copies on every
  * access, and the composer memo keys on query identity), and one outcome [Slot] per query id, all [Slot.Pending] until
  * that query settles. Ids are unique by construction ([com.gitlab.eclipse.views.sidebar.queries.CustomQueryCodec]).
- * UI thread only.
+ * A settings change passes [queries] explicitly — [config]'s list with unchanged queries carried over from the previous
+ * slot ([com.gitlab.eclipse.views.sidebar.queries.carryOverUnchanged]) so their memoized roots survive. UI thread only.
  */
-class QueriesSlot(val config: QueryConfig) {
-  val queries: List<CustomQuery> = config.queries
+class QueriesSlot(val config: QueryConfig, val queries: List<CustomQuery> = config.queries) {
 
   val outcomes: MutableMap<String, Slot<QueryOutcome>> =
     queries.associateTo(LinkedHashMap()) { it.id to Slot.Pending }
