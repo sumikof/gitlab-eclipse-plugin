@@ -13,6 +13,10 @@ private const val REPO = "/home/alice/work/secret-project/.git"
 private const val SHA = "0123456789abcdef0123456789abcdef01234567"
 private val MAIN = HeadKey.Branch("feature/secret-branch")
 
+/** A settle that looked at [head]; null means no repository resolved. */
+private fun CurrentBranchAutoRefresher.settle(ticket: Long, head: TrackedHead?) =
+  onRefreshSettled(ticket, if (head == null) SettleOutcome.NoRepository else SettleOutcome.Looked(head))
+
 /** One refresher wired to fakes; every test drives it through these. */
 private class Rig(active: Boolean = true) {
   val time = VirtualTime()
@@ -21,10 +25,27 @@ private class Rig(active: Boolean = true) {
   val probe = FakeProbe()
   val port = FakePort()
   val logs = mutableListOf<String>()
-  val refresher = CurrentBranchAutoRefresher(time, time, activity, refs, probe, port, { logs += it })
+  val warnings = mutableListOf<String>()
+  val debugLines = mutableListOf<String>()
+  val refresher = CurrentBranchAutoRefresher(
+    time,
+    time,
+    activity,
+    refs,
+    probe,
+    port,
+    log = {
+      logs += it
+      warnings += it
+    },
+    debugLog = {
+      logs += it
+      debugLines += it
+    },
+  )
 
   /** Settles the latest soft refresh the port received. */
-  fun settleLast(head: TrackedHead? = TrackedHead(REPO, MAIN)) = refresher.onRefreshSettled(port.tickets.last(), head)
+  fun settleLast(head: TrackedHead? = TrackedHead(REPO, MAIN)) = refresher.settle(port.tickets.last(), head)
 
   /** Started, one TIMER refresh settled on [REPO] at [MAIN], then left with the given activity. */
   fun tracking(stayActive: Boolean = true): Rig = apply {
@@ -235,7 +256,7 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.probe.answer(HeadKey.Branch("b2"))
     rig.port.tickets shouldHaveSize 1
 
-    rig.refresher.onRefreshSettled(manual, TrackedHead(REPO, MAIN))
+    rig.refresher.settle(manual, TrackedHead(REPO, MAIN))
     rig.port.tickets shouldHaveSize 2
     rig.logs.last() shouldEndWith "COALESCED"
   }
@@ -277,8 +298,19 @@ class CurrentBranchAutoRefresherTest : StringSpec({
 
     rig.time.advanceBy(PERIOD)
     rig.port.tickets shouldHaveSize 1
-    rig.refresher.onRefreshSettled(manual, TrackedHead(REPO, MAIN))
+    rig.refresher.settle(manual, TrackedHead(REPO, MAIN))
     rig.port.tickets shouldHaveSize 1
+    rig.time.pendingCount shouldBe 1
+  }
+
+  "5f. becoming active while a refresh runs (the view turning visible during the first refresh) adds no FOCUS fetch" {
+    val rig = Rig(active = false)
+    rig.refresher.start()
+    val manual = rig.refresher.nextTicket()
+    rig.refresher.onManualRefreshStarted(manual)
+    rig.activity.set(true)
+    rig.refresher.settle(manual, TrackedHead(REPO, MAIN))
+    rig.port.tickets shouldHaveSize 0
     rig.time.pendingCount shouldBe 1
   }
 
@@ -293,11 +325,11 @@ class CurrentBranchAutoRefresherTest : StringSpec({
 
     val manual = rig.refresher.nextTicket()
     rig.refresher.onManualRefreshStarted(manual)
-    rig.refresher.onRefreshSettled(soft, TrackedHead(REPO, MAIN))
+    rig.refresher.settle(soft, TrackedHead(REPO, MAIN))
     rig.port.tickets shouldHaveSize 2
     rig.time.pendingCount shouldBe 0
 
-    rig.refresher.onRefreshSettled(manual, TrackedHead(REPO, MAIN))
+    rig.refresher.settle(manual, TrackedHead(REPO, MAIN))
     rig.port.tickets shouldHaveSize 2
     rig.time.pendingCount shouldBe 1
     rig.time.advanceBy(PERIOD)
@@ -333,6 +365,16 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.activity.set(true)
     rig.probe.requests shouldHaveSize 0
     rig.port.tickets shouldHaveSize 2
+  }
+
+  "7e. a settle that learned nothing (cancelled or failed fetch) keeps tracking the repository" {
+    val rig = Rig().tracking()
+    rig.time.advanceBy(PERIOD)
+    rig.refresher.onRefreshSettled(rig.port.tickets.last(), SettleOutcome.Unknown)
+    rig.refs.fire(REPO)
+    rig.time.advanceBy(300)
+    rig.probe.requests.map { it.first } shouldBe listOf(REPO)
+    rig.time.pendingCount shouldBe 1
   }
 
   "7c. a tracked repository deleted (resolved but unreadable) refreshes once, then stays quiet" {
@@ -402,7 +444,7 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.refs.fire(REPO)
     rig.time.advanceBy(PERIOD)
     rig.probe.answer(HeadKey.Branch("late"))
-    rig.refresher.onRefreshSettled(inFlight, TrackedHead(REPO, MAIN))
+    rig.refresher.settle(inFlight, TrackedHead(REPO, MAIN))
     rig.time.advanceBy(10 * PERIOD)
 
     rig.port.tickets shouldHaveSize 2
@@ -526,6 +568,24 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.activity.set(false)
     rig.time.advanceBy(PERIOD)
     rig.port.tickets shouldHaveSize 1
+  }
+
+  "10b. the per-refresh reason goes to the debug log; failures go to the warning log" {
+    val rig = Rig().tracking()
+    rig.port.failStart = IllegalStateException("x")
+    rig.time.advanceBy(PERIOD)
+    rig.debugLines shouldContainExactly listOf("Current-branch auto refresh: TIMER", "Current-branch auto refresh: TIMER")
+    rig.warnings shouldContainExactly listOf("Current-branch auto refresh failed to start: java.lang.IllegalStateException")
+  }
+
+  "10c. trackedGitDir() exposes the tracked repository for the refs adapter's off-thread match" {
+    val rig = Rig()
+    rig.refresher.trackedGitDir() shouldBe null
+    rig.tracking()
+    rig.refresher.trackedGitDir() shouldBe REPO
+    rig.time.advanceBy(PERIOD)
+    rig.settleLast(null)
+    rig.refresher.trackedGitDir() shouldBe null
   }
 
   "10. every line the refresher logs names only an event type or an exception class, never a path, branch or SHA" {

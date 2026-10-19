@@ -1,5 +1,10 @@
 package com.gitlab.eclipse.views.sidebar.autorefresh
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+
 /** A virtual clock and `timerExec`: nothing runs until [advanceBy] passes an action's due time. */
 internal class VirtualTime : AutoRefreshClock, AutoRefreshTimer {
   private class Task(val dueAt: Long, val seq: Long, val action: () -> Unit) {
@@ -120,3 +125,12 @@ internal class FakePort : SoftRefreshPort {
     failStart?.let { throw it }
   }
 }
+
+/**
+ * A scope that runs a launched block (and its completion) inside the launching call, so adapter
+ * tests need no waiting; [job] lets a test hand in an already-cancelled or failure-tolerant parent.
+ */
+internal fun immediateScope(
+  job: Job = Job(),
+  dispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
+): CoroutineScope = CoroutineScope(job + dispatcher)

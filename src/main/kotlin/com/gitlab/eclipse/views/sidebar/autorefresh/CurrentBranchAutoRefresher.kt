@@ -68,7 +68,8 @@ enum class RefreshReason { TIMER, FOCUS, BRANCH, MANUAL, COALESCED }
  *
  * UI-thread confined and SWT-free: every method and every port callback runs on the UI thread, so
  * there are no locks. After [stop] nothing it registered or scheduled has any effect, even if a
- * cancel was lost. Logs carry the [RefreshReason] or an exception class name only (design §5).
+ * cancel was lost. Logs carry the [RefreshReason] (to [debugLog], once per refresh) or an exception
+ * class name (to [log], failures only) and nothing else (design §5).
  *
  * TooManyFunctions is suppressed: each event row of the §3 table has its own handler, which keeps the
  * code checkable against the table row by row.
@@ -82,6 +83,7 @@ class CurrentBranchAutoRefresher(
   private val probe: HeadProbe,
   private val port: SoftRefreshPort,
   private val log: (String) -> Unit,
+  private val debugLog: (String) -> Unit = {},
   private val periodMillis: Long = DEFAULT_PERIOD_MILLIS,
   private val debounceMillis: Long = DEFAULT_DEBOUNCE_MILLIS,
 ) {
@@ -98,13 +100,22 @@ class CurrentBranchAutoRefresher(
   private var pending = false
   private var periodic: Cancellable? = null
   private var lastSettledAt: Long? = null
-  private var tracked: TrackedHead? = null
+
+  // Volatile for trackedGitDir() only; written on the UI thread like everything else.
+  @Volatile private var tracked: TrackedHead? = null
+
   private var debounce: Cancellable? = null
   private var probeInFlight = false
   private var probePending = false
 
   /** A new ticket, greater than every earlier one; the view takes manual-refresh tickets from here too. */
   fun nextTicket(): Long = ++lastTicket
+
+  /**
+   * The tracked repository's git dir, or null. The one member safe to call from any thread: the
+   * refs adapter matches events against it on JGit's listener thread before hopping to the UI.
+   */
+  fun trackedGitDir(): String? = tracked?.gitDir
 
   /**
    * Registers for activity and refs changes and, if active, arms the periodic timer. A no-op while
@@ -162,18 +173,24 @@ class CurrentBranchAutoRefresher(
   }
 
   /**
-   * The refresh [ticket] ended; [head] is what it looked at: `(gitDir, Unavailable)` for a resolved
-   * repository whose HEAD could not be read, null when no repository resolved. Null stops tracking:
+   * The refresh [ticket] ended with [outcome]: [SettleOutcome.Looked] carries what it looked at
+   * (`(gitDir, Unavailable)` for a resolved repository whose HEAD could not be read);
+   * [SettleOutcome.Unknown] (cancelled, failed, never ran) keeps the tracked head as it was; and
+   * [SettleOutcome.NoRepository] stops tracking:
    * the sidebar shows no repository, so refs events are ignored and a regain probes nothing (only
    * the staleness-gated FOCUS refresh and the periodic tick still run). Keeping the old gitDir
    * instead would re-fetch on every regain whenever that repository still exists but is no longer
    * the resolved one (several repositories, no active editor).
    */
-  fun onRefreshSettled(ticket: Long, head: TrackedHead?) {
+  fun onRefreshSettled(ticket: Long, outcome: SettleOutcome) {
     if (lifecycle != Lifecycle.STARTED || ticket != inFlight) return
     inFlight = null
     lastSettledAt = clock.nowMillis()
-    tracked = head
+    when (outcome) {
+      is SettleOutcome.Looked -> tracked = outcome.head
+      SettleOutcome.NoRepository -> tracked = null
+      SettleOutcome.Unknown -> Unit // learned nothing: keep tracking what the last real fetch saw
+    }
     if (pending) {
       pending = false
       request(RefreshReason.COALESCED)
@@ -192,10 +209,13 @@ class CurrentBranchAutoRefresher(
     probeHead()
     val settledAt = lastSettledAt
     val sinceSettle = if (settledAt == null) Long.MAX_VALUE else clock.nowMillis() - settledAt
-    if (sinceSettle >= periodMillis) {
-      request(RefreshReason.FOCUS)
-    } else if (inFlight == null) {
-      armPeriodic(periodMillis - sinceSettle)
+    when {
+      // A refresh already running brings fresh data, and its settle arms the periodic timer; a
+      // FOCUS request would only queue a duplicate fetch (e.g. the view turning visible during the
+      // first refresh). A HEAD change probed meanwhile still coalesces (onProbed).
+      inFlight != null -> Unit
+      sinceSettle >= periodMillis -> request(RefreshReason.FOCUS)
+      else -> armPeriodic(periodMillis - sinceSettle)
     }
   }
 
@@ -259,7 +279,7 @@ class CurrentBranchAutoRefresher(
     cancelPeriodic()
     val ticket = nextTicket()
     inFlight = ticket
-    log("Current-branch auto refresh: $reason")
+    debugLog("Current-branch auto refresh: $reason")
     try {
       port.startSoftRefresh(ticket)
     } catch (e: CancellationException) {

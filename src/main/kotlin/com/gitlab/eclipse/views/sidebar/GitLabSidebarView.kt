@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.chat.quickchat.ui.DisplayUiScheduler
 import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
@@ -16,8 +17,19 @@ import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
+import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
+import com.gitlab.eclipse.views.sidebar.autorefresh.CurrentBranchAutoRefresher
+import com.gitlab.eclipse.views.sidebar.autorefresh.DisplayAutoRefreshTimer
+import com.gitlab.eclipse.views.sidebar.autorefresh.GitHeadProbe
+import com.gitlab.eclipse.views.sidebar.autorefresh.JGitRefsEventSource
+import com.gitlab.eclipse.views.sidebar.autorefresh.SettleOutcome
+import com.gitlab.eclipse.views.sidebar.autorefresh.SwtActivitySource
+import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
+import com.gitlab.eclipse.views.sidebar.autorefresh.autoRefreshHop
+import com.gitlab.eclipse.views.sidebar.autorefresh.settleOnCompletion
+import com.gitlab.eclipse.views.sidebar.autorefresh.settleOutcomeOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -36,6 +48,7 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
 import java.io.File
 import java.net.URI
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * GitLab sidebar: a [TreeViewer] over the two query roots produced by [SidebarViewModel]
@@ -65,6 +78,8 @@ class GitLabSidebarView : ViewPart() {
   companion object {
     /** Must match the view id declared in plugin.xml. */
     const val VIEW_ID = "com.gitlab.eclipse.views.GitLabSidebarView"
+
+    private const val NANOS_PER_MILLI = 1_000_000L
   }
 
   private val logger = logger<GitLabSidebarView>()
@@ -104,6 +119,15 @@ class GitLabSidebarView : ViewPart() {
   private lateinit var viewer: TreeViewer
 
   @Volatile private var fetchJob: Job? = null
+
+  // CI-04 auto refresh (UI thread only): created and started in createPartControl BEFORE the first
+  // refresh() (so that refresh's ticket is adopted), stopped in dispose(). Null if it could not be
+  // created; the view then works exactly as before, with its manual Refresh.
+  private var autoRefresher: CurrentBranchAutoRefresher? = null
+  private var autoRefreshHop: (() -> Unit) -> Unit = { }
+
+  // The running soft (current-branch-only) refresh, cancelled by the next one, a full refresh() and dispose().
+  @Volatile private var softJob: Job? = null
 
   // The live refresh generation's slots, written on the UI thread in refresh() and mutated
   // on the UI thread inside applyCompose (RefreshSlots' contract). `null` = nothing was
@@ -237,7 +261,98 @@ class GitLabSidebarView : ViewPart() {
     )
 
     viewState.addListener(modeListener)
+    startAutoRefresh()
     refresh()
+  }
+
+  /**
+   * Wires and starts the CI-04 auto refresher (design §2): Display timer and activity, JGit refs
+   * events and HEAD probe, all hopping back through [autoRefreshHop]; the port is
+   * [softRefreshCurrentBranch]. Per-refresh reason lines go to the debug log, failures to WARN with
+   * the exception class only. A failure here leaves auto refresh off and the view working as before.
+   */
+  private fun startAutoRefresh() {
+    try {
+      val display = viewer.control.display
+      val scheduler = DisplayUiScheduler(display)
+      val warn: (String) -> Unit = { logger.warn(it) }
+      val hop = autoRefreshHop(scheduler, warn)
+      lateinit var refresher: CurrentBranchAutoRefresher
+      refresher = CurrentBranchAutoRefresher(
+        clock = { System.nanoTime() / NANOS_PER_MILLI },
+        timer = DisplayAutoRefreshTimer(scheduler, warn),
+        activity = SwtActivitySource(display, site.page, this, warn),
+        refs = JGitRefsEventSource({ refresher.trackedGitDir() }, hop, warn),
+        probe = GitHeadProbe(coroutineScope, currentBranchGitReader, hop),
+        port = { ticket -> softRefreshCurrentBranch(ticket) },
+        log = warn,
+        debugLog = { logger.debug(it) },
+      )
+      autoRefreshHop = hop
+      autoRefresher = refresher
+      refresher.start()
+    } catch (e: Exception) {
+      logger.warn("Current-branch auto refresh is off: ${e.javaClass.name}")
+      autoRefresher = null
+    }
+  }
+
+  /**
+   * The auto refresher's port (CI-04 design §2.4): re-fetches the "For current branch" section only,
+   * within the live generation — the generation, the assigned slot and the caches stay; the
+   * section's epoch is bumped so an older soft refresh's late applies are dropped. The slots
+   * instance and the epoch are captured HERE and checked at every apply. The ticket settles from
+   * the job's completion whatever happens to it ([settleOnCompletion]); if nothing could be launched
+   * it settles as Unknown at once. Never throws (SoftRefreshPort contract).
+   */
+  private fun softRefreshCurrentBranch(ticket: Long) {
+    val recorded = AtomicReference<SettleOutcome?>()
+    val job = try {
+      launchSoftRefresh(recorded)
+    } catch (e: Exception) {
+      logger.warn("Current-branch auto refresh failed to launch: ${e.javaClass.name}")
+      null
+    }
+    val settle: (Long, SettleOutcome) -> Unit = { t, outcome -> autoRefresher?.onRefreshSettled(t, outcome) }
+    if (job == null) {
+      autoRefreshHop { settle(ticket, SettleOutcome.Unknown) }
+    } else {
+      settleOnCompletion(job, ticket, autoRefreshHop, recorded::get, settle)
+    }
+  }
+
+  private fun launchSoftRefresh(recorded: AtomicReference<SettleOutcome?>): Job? {
+    val slots = currentSlots ?: return null
+    if (viewer.control.isDisposed) return null
+    slots.currentBranchEpoch++
+    val epoch = slots.currentBranchEpoch
+    val previous = (slots.currentBranch as? Slot.Settled)?.value
+    val previousGitDir = slots.currentBranchGitDir
+    val activeEditorFile = repositoryContextResolver.activeEditorFile()
+    softJob?.cancel()
+    val job = coroutineScope.launch {
+      // Shared scope with a plain Job: nothing may escape (see refresh()).
+      try {
+        val head = currentBranchFetcher.fetch(
+          activeEditorFile,
+          previous,
+          previousGitDir,
+          soft = true,
+        ) { gitDir, update ->
+          applyCompose(slots, epoch, softRebuild = true) {
+            slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
+            slots.currentBranchGitDir = gitDir
+          }
+        }
+        recorded.set(settleOutcomeOf(head))
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.warn("Current-branch auto refresh failed: ${e.javaClass.name}")
+      }
+    }
+    softJob = job
+    return job
   }
 
   fun refresh() {
@@ -269,7 +384,15 @@ class GitLabSidebarView : ViewPart() {
       collectDiscussionSectionNodeIds((viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()),
     )
     fetchJob?.cancel()
-    fetchJob = coroutineScope.launch {
+    // A manual refresh supersedes a running soft one (design §2.4): cancel it, and hand the
+    // refresher this refresh's ticket so the soft one's settle is ignored.
+    softJob?.cancel()
+    val ticket = autoRefresher?.let { refresher ->
+      refresher.nextTicket().also { refresher.onManualRefreshStarted(it) }
+    }
+    val recorded = AtomicReference<SettleOutcome?>()
+    val epoch = slots.currentBranchEpoch // read here, on the UI thread that owns the slots
+    val job = coroutineScope.launch {
       // Shared scope with a plain Job: nothing may escape this launch or every other
       // consumer of the scope loses its coroutines.
       try {
@@ -279,7 +402,9 @@ class GitLabSidebarView : ViewPart() {
           // current-branch section and vice versa. Fetch failures are runCatching'd
           // inside the units; only unexpected errors (bugs) surface to the catch below.
           val assigned = async { fetchAssigned(slots) }
-          val currentBranch = async { fetchCurrentBranch(slots, activeEditorFile) }
+          val currentBranch = async {
+            recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
+          }
           assigned.await()
           currentBranch.await()
         }
@@ -287,6 +412,12 @@ class GitLabSidebarView : ViewPart() {
         throw e
       } catch (e: Exception) {
         logger.error("Failed to refresh the GitLab sidebar.", e)
+      }
+    }
+    fetchJob = job
+    if (ticket != null) {
+      settleOnCompletion(job, ticket, autoRefreshHop, recorded::get) { settled, outcome ->
+        autoRefresher?.onRefreshSettled(settled, outcome)
       }
     }
   }
@@ -320,19 +451,18 @@ class GitLabSidebarView : ViewPart() {
    * §2.3). Each of its updates is applied to the generation's live slot inside [applyCompose]'s
    * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
    */
-  private suspend fun fetchCurrentBranch(slots: RefreshSlots, activeEditorFile: File?) {
+  private suspend fun fetchCurrentBranch(slots: RefreshSlots, epoch: Long, activeEditorFile: File?): TrackedHead? =
     currentBranchFetcher.fetch(
       activeEditorFile,
       previous = null,
       previousGitDir = null,
       soft = false,
     ) { gitDir, update ->
-      applyCompose(slots) {
+      applyCompose(slots, epoch) {
         slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
         slots.currentBranchGitDir = gitDir
       }
     }
-  }
 
   /**
    * Schedules one incremental apply on the UI thread: run [update] (the settling unit's
@@ -348,7 +478,12 @@ class GitLabSidebarView : ViewPart() {
    * so only the rebuilt top-level nodes need remapping by stable key
    * ([remapExpandedElements]); re-applying the remapped list is best-effort.
    */
-  private fun applyCompose(slots: RefreshSlots, update: () -> Unit = {}) {
+  private fun applyCompose(
+    slots: RefreshSlots,
+    epoch: Long? = null,
+    softRebuild: Boolean = false,
+    update: () -> Unit = {},
+  ) {
     val control = viewer.control
     if (control.isDisposed) return
     // Dispose race: the check above runs off-thread, so the widget (or the whole Display at
@@ -363,18 +498,45 @@ class GitLabSidebarView : ViewPart() {
       display.asyncExec {
         if (control.isDisposed) return@asyncExec
         if (!refreshState.isCurrent(slots.generation)) return@asyncExec
+        // CI-04: a current-branch apply of a superseded soft (or pre-soft) fetch is dropped.
+        if (epoch != null && slots.currentBranchEpoch != epoch) return@asyncExec
         update()
         val input = coordinator.compose(slots, viewState.mode)
+        val oldInput = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
+        if (softRebuild) invalidateReplacedMrs(oldInput, input)
         // Pre-order capture: restoring in the same order expands parents first, so nested
         // entries' widgets exist (materialized by the parent's expansion) when their turn
         // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
         val expanded = viewer.expandedElements.toList()
         viewer.input = input
-        remapExpandedElements(expanded, input).forEach { viewer.setExpandedState(it, true) }
+        remapExpandedElements(expanded, input, oldInput).forEach { viewer.setExpandedState(it, true) }
+        // A rebuilt MR node restored as expanded has no children yet, and programmatic expansion
+        // fires no treeExpanded: load them here (as onModeChanged does), or it shows "Loading…" forever.
+        viewer.expandedElements
+          .filterIsInstance<MergeRequestNode>()
+          .filter { it.loadedChildren == null }
+          .forEach { loadMrChildren(it) }
       }
     } catch (@Suppress("SwallowedException") e: SWTException) {
       // Display disposed between acquisition and scheduling — nothing to paint.
     }
+  }
+
+  /**
+   * CI-04 (design §2.4, F4): a soft refresh that rebuilt current-branch MR nodes leaves their
+   * cached diff versions and connection tags, and the registry keys of their discussion sections,
+   * describing nodes that are gone: drop them, so the new node re-fetches and an in-flight
+   * discussion load of the old subtree reports Superseded. UI thread only.
+   */
+  private fun invalidateReplacedMrs(oldInput: List<SidebarNode>, newInput: List<SidebarNode>) {
+    val oldSection = oldInput.filterIsInstance<CurrentBranchSectionNode>().firstOrNull() ?: return
+    val newSection = newInput.filterIsInstance<CurrentBranchSectionNode>().firstOrNull() ?: return
+    val stale = staleMrKeys(oldSection.children, newSection.children)
+    stale.mrCacheKeys.forEach {
+      mrVersionCache.remove(it)
+      mrConnectionTagsCache.remove(it)
+    }
+    DiscussionGenerationRegistry.clearLatestFor(stale.discussionNodeIds)
   }
 
   /**
@@ -589,6 +751,8 @@ class GitLabSidebarView : ViewPart() {
 
   override fun dispose() {
     viewState.removeListener(modeListener)
+    autoRefresher?.stop()
+    softJob?.cancel()
     fetchJob?.cancel()
     super.dispose()
   }
