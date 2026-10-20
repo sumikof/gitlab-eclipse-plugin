@@ -8,7 +8,7 @@ import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 
-private const val WARNING = "Agent Platform: no appReady within 10 s"
+private const val WARNING = "Agent Platform webview 'root/duoAgentPlatform': no appReady within 10 s"
 
 /**
  * The readiness diagnostic of design §5.4: a page applied for a session that sends no `appReady`

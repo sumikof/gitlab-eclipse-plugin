@@ -50,7 +50,7 @@ class AgentPlatformMenuWiringTest : DescribeSpec({
     it("declares the three new commands with their labels") {
       declared[USE_CLASSIC]?.getAttribute("name") shouldBe "Use Classic Layout"
       declared[USE_NEW]?.getAttribute("name") shouldBe "Use New Layout"
-      declared[RELOAD]?.getAttribute("name") shouldBe "Reload"
+      declared[RELOAD]?.getAttribute("name") shouldBe "Reload Agent Platform View"
     }
 
     it("binds each new command to exactly its handler class") {

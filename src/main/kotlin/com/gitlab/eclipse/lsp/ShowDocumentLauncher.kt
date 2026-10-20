@@ -90,7 +90,7 @@ class ShowDocumentLauncher(
   }
 
   private fun refused(uri: String?): CompletableFuture<Boolean> {
-    log.warn("showDocument: refused a URI the language server sent; scheme=${schemeOf(uri)}")
+    log.warn("showDocument: refused a URI outside the external URL policy; scheme=${schemeOf(uri)}")
     return CompletableFuture.completedFuture(false)
   }
 }

@@ -380,7 +380,7 @@
 
         <command
                 id="com.gitlab.eclipse.commands.ReloadAgentPlatformView"
-                name="Reload"
+                name="Reload Agent Platform View"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 

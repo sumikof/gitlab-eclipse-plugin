@@ -12,6 +12,7 @@ import com.gitlab.eclipse.preferences.storage.CapturedLog
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
@@ -104,7 +105,7 @@ class PluginMessageServiceTest : DescribeSpec({
 
       service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
-      log.contains("notification") shouldBe true
+      log.lines shouldContain "Could not handle message for $route with an unexpected payload. Skipping."
       log.contains("SECRET-PAYLOAD-TEXT") shouldBe false
     }
   }

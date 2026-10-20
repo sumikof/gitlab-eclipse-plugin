@@ -52,6 +52,6 @@ class AgentPlatformReadiness(
   private companion object {
     /** The default of the reference extension's `gitlab.webviewTimeoutSeconds`. */
     const val TIMEOUT_MS = 10_000L
-    const val WARNING = "Agent Platform: no appReady within 10 s"
+    const val WARNING = "Agent Platform webview '${AgentPlatformLayout.NEW_WEBVIEW_ID}': no appReady within 10 s"
   }
 }
