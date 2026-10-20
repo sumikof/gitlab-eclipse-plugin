@@ -50,6 +50,18 @@ class AgentPlatformSurface(
     loadId(layoutStore.current().webviewId)
   }
 
+  /**
+   * The host's pipeline put a page for [session] on screen (same UI turn as `setUrl`). Arms the
+   * `appReady` diagnostic through [expectAppReady] only for the new layout: the classic
+   * `agentic-tabs` page sends no `appReady` to the IDE, so arming for it would always warn
+   * (design §5.4). [loadedWebviewId] is the applied page's id, because the pipeline settles only
+   * the latest load. No-op after [dispose].
+   */
+  fun pageApplied(session: LanguageServerSession, expectAppReady: (LanguageServerSession) -> Unit) {
+    if (disposed || loadedWebviewId != AgentPlatformLayout.NEW_WEBVIEW_ID) return
+    expectAppReady(session)
+  }
+
   /** Unsubscribes; afterwards [start], [reload] and layout events are no-ops. Idempotent. */
   fun dispose() {
     if (disposed) return

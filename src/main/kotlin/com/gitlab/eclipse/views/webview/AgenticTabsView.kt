@@ -6,6 +6,7 @@ import com.gitlab.eclipse.lsp.webview.WebviewLoadCoordinator
 import com.gitlab.eclipse.lsp.webview.WebviewUriResolver
 import com.gitlab.eclipse.lsp.webview.forProduction
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutStore
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformReadiness
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformSurface
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformViews
 import org.eclipse.swt.widgets.Composite
@@ -27,6 +28,7 @@ import org.eclipse.ui.part.ViewPart
 class AgenticTabsView : ViewPart() {
   private val languageServerWrapper by lazyService<GitLabLanguageServerWrapper>()
   private val layoutStore by lazyService<AgentPlatformLayoutStore>()
+  private val readinessService by lazyService<AgentPlatformReadiness>()
 
   private var host: WebviewBrowserHost? = null
   private var surface: AgentPlatformSurface? = null
@@ -36,6 +38,8 @@ class AgenticTabsView : ViewPart() {
     // WebviewLoadCoordinator contract allows this to fail only once that display is gone, which is
     // the one way `Display.asyncExec` fails.
     val display = parent.display
+    // Resolved here, never in dispose (fable F8), like the store below.
+    val readiness = readinessService
     val coordinator = WebviewLoadCoordinator(
       resolver = WebviewUriResolver.forProduction(languageServerWrapper),
       wrapper = languageServerWrapper,
@@ -48,6 +52,8 @@ class AgenticTabsView : ViewPart() {
       navigationPolicy = LanguageServerOriginNavigationGuard(),
       // Posted by the host in a later UI turn; the surface is set by then, and is a no-op once disposed.
       onReloadRequested = { surface?.reload() },
+      // Same UI turn as setUrl, so `expect` cannot clear an appReady that already arrived for this page (§5.4).
+      onApplied = { session -> surface?.pageApplied(session, readiness::expect) },
     ) { partName = it }
     host = created
     // The store is resolved here, never in dispose (design AGENT-02 §5.2, fable F8): a view closed

@@ -34,6 +34,12 @@ class WebviewLoadPipeline(
    * test and cannot throw, which is the other reason to answer from it.
    */
   private val isAlive: () -> Boolean,
+  /**
+   * Told the session of every page this pipeline put on screen, right after [displayedSession]
+   * records it, in the same turn as `showUrl` (AGENT-02 §5.4: the `appReady` wait starts here).
+   * A throw is logged by class name and does not change what [settle] does.
+   */
+  private val onApplied: (LanguageServerSession) -> Unit = {},
 ) {
   /** Design §7.2b. */
   sealed interface ApplyResult {
@@ -132,7 +138,17 @@ class WebviewLoadPipeline(
     try {
       val result = apply(id, myGeneration, outcome, hadStableContent)
       // §7.2b
-      if (result is ApplyResult.Applied) displayedSession = result.session
+      if (result is ApplyResult.Applied) {
+        displayedSession = result.session
+        // A side channel: the page is already applied, and nothing it does may change that or keep
+        // the loading page up. The log write sits inside this `try` block, where [logger]'s rule
+        // allows it to throw: the `finally` and `handle` contain it.
+        try {
+          onApplied(result.session)
+        } catch (t: Throwable) {
+          logger.warn("Webview '$id': the applied-page callback failed: type=${t.javaClass.name}")
+        }
+      }
     } finally {
       // §7.2b
       setLoading(id, myGeneration, false)

@@ -35,6 +35,7 @@ import org.eclipse.swt.widgets.Control
  * [installNavigationGuard] for how. With `null` nothing is installed and the host behaves as it
  * always has. [onReloadRequested] is what a [NavigationDecision.Reload] runs, in a later UI turn;
  * the default does nothing.
+ * [onApplied] is the pipeline's: told the session of each url put on screen, in the same UI turn.
  */
 class WebviewBrowserHost(
   parent: Composite,
@@ -42,6 +43,8 @@ class WebviewBrowserHost(
   // Ahead of setTitle so that callers passing setTitle as a trailing lambda stay unchanged.
   private val navigationPolicy: WebviewNavigationPolicy? = null,
   private val onReloadRequested: () -> Unit = {},
+  // Also ahead of setTitle, for the same reason: a trailing lambda would otherwise bind here.
+  onApplied: (LanguageServerSession) -> Unit = {},
   setTitle: (String) -> Unit,
 ) {
   private val logger = logger<WebviewBrowserHost>()
@@ -101,6 +104,7 @@ class WebviewBrowserHost(
     // Design §7.2c mechanism 2, and its requirement that this cannot throw: `Widget.isDisposed` is
     // a field test.
     isAlive = { !container.isDisposed },
+    onApplied = onApplied,
   )
 
   /** Design §7.2b / §8.1, for [WebviewEditorOpener]. */
