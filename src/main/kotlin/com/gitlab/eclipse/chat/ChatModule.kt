@@ -26,6 +26,7 @@ import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.views.webview.actions.McpDashboardOpener
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutSourceProvider
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformReadiness
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.services.ISourceProviderService
@@ -56,6 +57,15 @@ val chatModule = module {
       .getWorkbench()
       .getService(ISourceProviderService::class.java)
       .getSourceProvider(TerminalContextSourceProvider.ENABLED_KEY) as TerminalContextSourceProvider
+  }
+
+  // Same again (design AGENT-02 §6): a second instance would never be registered with the workbench,
+  // so whoever resolves the layout provider must get the one the workbench created and reads.
+  single<AgentPlatformLayoutSourceProvider> {
+    PlatformUI
+      .getWorkbench()
+      .getService(ISourceProviderService::class.java)
+      .getSourceProvider(AgentPlatformLayoutSourceProvider.LAYOUT_KEY) as AgentPlatformLayoutSourceProvider
   }
 
   single<CurrentFileContextProvider> { CurrentFileContextProvider() }
