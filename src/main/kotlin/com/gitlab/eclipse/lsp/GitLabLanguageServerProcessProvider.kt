@@ -15,6 +15,7 @@ import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
 import com.gitlab.eclipse.security.SecurityScanLifecycle
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformViews
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.*
@@ -217,11 +218,8 @@ class GitLabLanguageServerProcessProvider(
           languageServerOpenFilesService.sendOpenTabs(readinessServer)
           languageServerWebviewService.sendThemeChange(readinessServer)
           languageServerWebviewService.subscribeToThemeChanges()
-          // The Duo Chat view shows a "not ready" page when opened before the LS is up;
-          // re-evaluate it now that the LS is ready. asyncExec (not syncExec) so this LS
-          // callback thread never blocks on the UI thread. refreshDuoChatWindow() is
-          // null-guarded, so it is safe when the view is not open.
-          currentDisplay.asyncExec { refreshDuoChatWindow() }
+          // asyncExec (not syncExec) so this LS callback thread never blocks on the UI thread.
+          currentDisplay.asyncExec { refreshWebviewsAfterReady(languageServerWrapper) }
         }
       }.completeOnTimeout(Unit, LANGUAGE_SERVER_STARTED_TIMEOUT_SECONDS, TimeUnit.SECONDS)
     return initializeResult
@@ -410,3 +408,21 @@ private fun resetTerminalContextState(logger: ILog) {
 
 /** [LanguageServerInstaller.install] returned null; the installer has logged why. */
 private class LanguageServerNotInstalledException : IllegalStateException("Language server installation failed")
+
+/**
+ * The readiness UI turn of [GitLabLanguageServerProcessProvider] (top-level to keep the class's
+ * function count). The Duo Chat view shows a "not ready" page when opened before the LS is up;
+ * re-evaluate it now. refreshDuoChatWindow() is null-guarded, so it is safe when the view is
+ * not open. The Agent Platform views re-resolve their pages in the same turn (design AGENT-02
+ * §5.2). The snapshot is read here, inside the runnable, not in the callback: if yet another
+ * server took over before this runs, the views are compared with that one and never sent back to
+ * a superseded one. `finally`, so a Duo Chat refresh that throws (a workbench that is closing)
+ * neither keeps the views stale nor changes what the event loop sees from it.
+ */
+private fun refreshWebviewsAfterReady(languageServerWrapper: GitLabLanguageServerWrapper) {
+  try {
+    refreshDuoChatWindow()
+  } finally {
+    AgentPlatformViews.reloadStale(languageServerWrapper.currentSnapshot?.session)
+  }
+}

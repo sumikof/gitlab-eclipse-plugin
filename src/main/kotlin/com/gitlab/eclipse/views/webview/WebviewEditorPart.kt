@@ -45,12 +45,12 @@ class WebviewEditorPart : EditorPart(), WebviewEditorSurface {
     )
 
     // The sink design §7.3's rename happens through; the guard only for a page that renders
-    // untrusted links (TopLevelNavigationGuard).
+    // untrusted links (TopLevelNavigationGuard), behind the policy adapter the host consumes.
     val created = WebviewBrowserHost(
       parent,
       coordinator,
       setTitle = { partName = it },
-      navigationGuard = navigationGuardFor(webviewInput.key.webviewId),
+      navigationPolicy = navigationGuardFor(webviewInput.key.webviewId)?.let(::TopLevelNavigationPolicy),
     )
     host = created
     reload()
