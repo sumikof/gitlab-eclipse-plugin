@@ -8,6 +8,7 @@ import com.gitlab.eclipse.lsp.plugins.annotations.PluginNotification
 import com.gitlab.eclipse.lsp.plugins.annotations.PluginRequest
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
+import com.gitlab.eclipse.preferences.storage.CapturedLog
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import io.kotest.core.spec.style.DescribeSpec
@@ -81,6 +82,31 @@ class PluginMessageServiceTest : DescribeSpec({
     val result = service<PluginMessageService>().dispatch(route, payload, session = null).get()
 
     result shouldBe "Hello World!"
+  }
+
+  // Design §9: a payload may hold snippet or message text, so neither skip arm may print it.
+  describe("log hygiene") {
+    it("names the route but not the payload when the payload cannot be parsed") {
+      val log = CapturedLog().apply { install() }
+      val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notif-payload")
+      val payload = JsonPrimitive("SECRET-PAYLOAD-TEXT")
+
+      service<PluginMessageService>().dispatch(route, payload, session = null).get()
+
+      log.contains("notif-payload") shouldBe true
+      log.contains("SECRET-PAYLOAD-TEXT") shouldBe false
+    }
+
+    it("names the route but not the payload when a payload-less handler is given one") {
+      val log = CapturedLog().apply { install() }
+      val route = PluginMessageRoute(pluginId = "test", type = PluginMessageType.NOTIFICATION, method = "notification")
+      val payload = JsonObject().apply { add("message", JsonPrimitive("SECRET-PAYLOAD-TEXT")) }
+
+      service<PluginMessageService>().dispatch(route, payload, session = null).get()
+
+      log.contains("notification") shouldBe true
+      log.contains("SECRET-PAYLOAD-TEXT") shouldBe false
+    }
   }
 })
 
