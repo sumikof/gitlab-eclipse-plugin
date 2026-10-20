@@ -8,6 +8,7 @@ import com.gitlab.eclipse.lsp.LanguageServerSession
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
@@ -46,6 +47,8 @@ private class Sinks {
   var showMessageFailure: Throwable? = null
   var setTitleFailure: Throwable? = null
   var setLoadingFailure: Throwable? = null
+  var onAppliedFailure: Throwable? = null
+  val appliedSessions = mutableListOf<LanguageServerSession>()
 
   fun showUrl(url: String) {
     calls += "$SHOW_URL($url)"
@@ -75,6 +78,11 @@ private class Sinks {
 
   fun isAlive(): Boolean = alive
 
+  fun onApplied(session: LanguageServerSession) {
+    appliedSessions += session
+    onAppliedFailure?.let { throw it }
+  }
+
   /** The arguments every call of one sink received, in order. */
   fun argsOf(sink: String): List<String> =
     calls.filter { it.startsWith("$sink(") }.map { it.substringAfter('(').dropLast(1) }
@@ -94,6 +102,7 @@ private class Fixture(coordinatorOverride: WebviewLoadCoordinator? = null) {
     hasStableContent = sinks::hasStableContent,
     setLoadingVisible = sinks::setLoadingVisible,
     isAlive = sinks::isAlive,
+    onApplied = sinks::onApplied,
   )
 
   init {
@@ -476,6 +485,79 @@ class WebviewLoadPipelineTest : DescribeSpec({
       fixture.pipeline.load(WEBVIEW_ID, emptyMap())
 
       fixture.pipeline.displayedSession.shouldBeNull()
+    }
+  }
+
+  describe("onApplied") {
+    // AGENT-02 §5.4: the appReady diagnostic starts when the page is on screen, not when the load starts.
+    it("is called once with the session of a url that was shown") {
+      val fixture = Fixture()
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.appliedSessions shouldHaveSize 1
+      fixture.sinks.appliedSessions.single() shouldBeSameInstanceAs fixture.session
+    }
+
+    it("is not called when a message page was shown instead of a webview") {
+      val fixture = Fixture()
+      fixture.resolvesWith(CompletableFuture.completedFuture(WebviewResolution.NotAdvertised(WEBVIEW_ID)))
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.argsOf(SHOW_MESSAGE).shouldNotBeEmpty() // precondition: the message really was applied
+      fixture.sinks.appliedSessions.shouldBeEmpty()
+    }
+
+    it("is not called for a load a newer load superseded") {
+      val fixture = Fixture()
+      val first = CompletableFuture<WebviewResolution>()
+      val second = CompletableFuture<WebviewResolution>()
+      fixture.resolvesWith(first, second)
+      val resolved = WebviewResolution.Resolved(WEBVIEW_ID, TITLE, BASE_URI, fixture.session)
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+      second.complete(resolved)
+      first.complete(resolved)
+
+      fixture.sinks.appliedSessions shouldHaveSize 1
+    }
+
+    it("is not called when showUrl throws") {
+      val fixture = Fixture()
+      fixture.sinks.showUrlFailure = IllegalStateException("the browser is gone")
+      fixture.resolvesWith(fixture.resolvedTo())
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.appliedSessions.shouldBeEmpty()
+    }
+
+    it("is not called when the session changed under a stable display") {
+      val fixture = Fixture()
+      fixture.sinks.stableContent = true
+      fixture.resolvesWith(fixture.resolvedTo(session = LanguageServerSession()))
+
+      fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      fixture.sinks.appliedSessions.shouldBeEmpty()
+    }
+
+    it("does not break settle when it throws, and logs only the exception's class") {
+      val recorded = captureLog()
+      val fixture = Fixture()
+      fixture.sinks.onAppliedFailure = IllegalStateException("duo-secret-token")
+      fixture.resolvesWith(fixture.resolvedTo("$BASE_URI/duo-secret-token"))
+
+      val result = fixture.pipeline.load(WEBVIEW_ID, emptyMap())
+
+      result.isCompletedExceptionally shouldBe false
+      fixture.pipeline.displayedSession shouldBeSameInstanceAs fixture.session
+      fixture.sinks.argsOf(LOADING) shouldContainExactly listOf("true", "false")
+      recorded.any { it.contains(IllegalStateException::class.java.name) } shouldBe true
+      recorded.forEach { it shouldNotContain "duo-secret-token" }
     }
   }
 

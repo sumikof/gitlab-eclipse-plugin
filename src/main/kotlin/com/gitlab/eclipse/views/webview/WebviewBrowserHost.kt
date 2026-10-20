@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.webview
 
 import com.gitlab.eclipse.lsp.LanguageServerSession
+import com.gitlab.eclipse.lsp.ShowDocumentLauncher
 import com.gitlab.eclipse.lsp.webview.ThemeProvider
 import com.gitlab.eclipse.lsp.webview.WebviewLoadCoordinator
 import com.gitlab.eclipse.lsp.webview.WebviewLoadPipeline
@@ -28,15 +29,22 @@ import org.eclipse.swt.widgets.Control
  * the widgets its sinks capture: a deviation from design §7.2's listing. One coordinator still
  * belongs to exactly one pipeline (design §7.2a).
  *
- * A non-null [navigationGuard] confines the content page to the loads [load] asks for: see
- * [TopLevelNavigationGuard] for why, and [installNavigationGuard] for how. With `null` nothing is
- * installed and the host behaves as it always has.
+ * A non-null [navigationPolicy] judges every navigation of the content page: see
+ * [TopLevelNavigationPolicy] (only the loads [load] asks for) and
+ * [LanguageServerOriginNavigationGuard] (the language server's own origin) for why, and
+ * [installNavigationGuard] for how. With `null` nothing is installed and the host behaves as it
+ * always has. [onReloadRequested] is what a [NavigationDecision.Reload] runs, in a later UI turn;
+ * the default does nothing.
+ * [onApplied] is the pipeline's: told the session of each url put on screen, in the same UI turn.
  */
 class WebviewBrowserHost(
   parent: Composite,
   coordinator: WebviewLoadCoordinator,
   // Ahead of setTitle so that callers passing setTitle as a trailing lambda stay unchanged.
-  private val navigationGuard: TopLevelNavigationGuard? = null,
+  private val navigationPolicy: WebviewNavigationPolicy? = null,
+  private val onReloadRequested: () -> Unit = {},
+  // Also ahead of setTitle, for the same reason: a trailing lambda would otherwise bind here.
+  onApplied: (LanguageServerSession) -> Unit = {},
   setTitle: (String) -> Unit,
 ) {
   private val logger = logger<WebviewBrowserHost>()
@@ -61,7 +69,10 @@ class WebviewBrowserHost(
     }
   }
   private val messagePage = newBrowser()
-  private val contentPage = newBrowser().apply { navigationGuard?.let { installNavigationGuard(this, it) } }
+  private val contentPage = newBrowser().apply { navigationPolicy?.let { installNavigationGuard(this, it) } }
+
+  /** Built on the first [NavigationDecision.External] only: most pages never navigate out. */
+  private val externalLauncher by lazy { ShowDocumentLauncher() }
 
   /**
    * The control that [setLoadingVisible] returns to, and the answer to `hasStableContent`. Design
@@ -76,7 +87,7 @@ class WebviewBrowserHost(
     // url out of the message.
     showUrl = { url ->
       // Before `setUrl`: the location events of the load it starts must find the window open.
-      navigationGuard?.expectLoad(url)
+      navigationPolicy?.expectLoad(url)
       if (!contentPage.setUrl(url)) error("The browser refused the resolved url.")
       show(contentPage)
     },
@@ -93,6 +104,7 @@ class WebviewBrowserHost(
     // Design §7.2c mechanism 2, and its requirement that this cannot throw: `Widget.isDisposed` is
     // a field test.
     isAlive = { !container.isDisposed },
+    onApplied = onApplied,
   )
 
   /** Design §7.2b / §8.1, for [WebviewEditorOpener]. */
@@ -128,62 +140,95 @@ class WebviewBrowserHost(
   }
 
   /**
-   * Wires [guard] into [browser]. Each body runs inside the SWT event loop, so none may throw
-   * there: a failure is recorded by class name only. A guard that fails refuses the navigation, and
-   * `changing` catches every `Throwable` — from the guard and from the log of a refusal alike — to
-   * make that hold: both engines hand the event over with `doit = true` and read it only after the
-   * listeners return normally, so anything escaping, an `Error` included, skips the refusal and the
+   * Wires [policy] into [browser]. Each body runs inside the SWT event loop, so none may throw
+   * there: a failure is recorded by class name only. A policy that fails refuses the navigation, and
+   * `changing` catches every `Throwable` — from the policy, from the side effect of its decision and
+   * from the log of a refusal alike — to make that hold: both engines hand the event over with
+   * `doit = true` and read it only after the listeners return normally, so anything escaping, an `Error` included, skips the refusal and the
    * engine's default lets the navigation through (WebKitGTK `webkit_decide_policy`, Edge
    * `handleNavigationStarting`). The record of a refusal names no location, not even its scheme
    * (design §17). `event.top` is not consulted: WebKitGTK never sets it on `changing` (see
    * [TopLevelNavigationGuard]).
    *
-   * The engine's own context menu is suppressed as well: its "Download Linked File" / "Save link as"
-   * and "Open Link in New Window" entries reach a finding's link without passing
-   * `VulnerabilityLinkPolicy` or this guard. Both WebKitGTK (`WebKit.webkit_context_menu`) and Edge
-   * (`handleContextMenuRequested`) skip their menu when an `SWT.MenuDetect` listener clears `doit`.
+   * Every side effect of a decision runs after `doit = false`, inside that same catch: a
+   * [NavigationDecision.Reload] posts [onReloadRequested] with `asyncExec` (a load started inside
+   * `changing` would re-enter the engine that is still deciding), and a
+   * [NavigationDecision.External] goes to [ShowDocumentLauncher], which checks the url and hops on
+   * its own.
+   *
+   * When [WebviewNavigationPolicy.suppressContextMenu] holds, the engine's own context menu is
+   * suppressed: its "Download Linked File" / "Save link as" and "Open Link in New Window" entries
+   * reach a finding's link without passing `VulnerabilityLinkPolicy` or the guard. Both WebKitGTK
+   * (`WebKit.webkit_context_menu`) and Edge (`handleContextMenuRequested`) skip their menu when an
+   * `SWT.MenuDetect` listener clears `doit`.
    */
-  private fun installNavigationGuard(browser: Browser, guard: TopLevelNavigationGuard) {
+  private fun installNavigationGuard(browser: Browser, policy: WebviewNavigationPolicy) {
     browser.addLocationListener(
       LocationListener.changingAdapter { event ->
         event.doit = false
-        val allowed = try {
-          guard.allows(event.location)
+        val decision = try {
+          policy.decide(event.location)
         } catch (e: Throwable) {
           recordListenerFailure(e)
-          false
+          NavigationDecision.Refuse
         }
-        event.doit = allowed
-        if (!allowed) recordRefusal(guard.expectedLoadUnparseable)
+        if (decision == NavigationDecision.Allow) {
+          event.doit = true
+          return@changingAdapter
+        }
+        try {
+          when (decision) {
+            NavigationDecision.Reload -> browser.display.asyncExec { runReloadRequest() }
+            is NavigationDecision.External -> externalLauncher.show(decision.url)
+            else -> recordRefusal(policy)
+          }
+        } catch (e: Throwable) {
+          recordListenerFailure(e)
+        }
       },
     )
     browser.addProgressListener(
       ProgressListener.completedAdapter {
         try {
-          guard.loadCompleted()
+          policy.loadCompleted()
         } catch (e: Throwable) {
           recordListenerFailure(e)
         }
       },
     )
-    // `required` with no `browser` refuses the new window: `window.open`, `target=_blank` and a
-    // ctrl- or middle-click, on Edge and WebKit alike.
-    browser.addOpenWindowListener(OpenWindowListener { event -> event.required = true })
-    browser.addListener(SWT.MenuDetect) { event -> event.doit = false }
+    if (policy.refuseNewWindows) {
+      // `required` with no `browser` refuses the new window: `window.open`, `target=_blank` and a
+      // ctrl- or middle-click, on Edge and WebKit alike.
+      browser.addOpenWindowListener(OpenWindowListener { event -> event.required = true })
+    }
+    if (policy.suppressContextMenu) {
+      browser.addListener(SWT.MenuDetect) { event -> event.doit = false }
+    }
   }
 
   /**
-   * Records a refusal after `doit` is already `false`. Catches every `Throwable`, like [recordListenerFailure]: a
-   * log that fails with an `Error` would otherwise end `changing` abnormally, and the engine would skip the refusal
+   * The UI turn a [NavigationDecision.Reload] posted. Nothing after [dispose]; nothing escapes into
+   * the event loop.
+   */
+  private fun runReloadRequest() {
+    if (container.isDisposed) return
+    try {
+      onReloadRequested()
+    } catch (e: Throwable) {
+      recordListenerFailure(e)
+    }
+  }
+
+  /**
+   * Records a refusal after `doit` is already `false`, with the policy's own line, which names no
+   * location. Catches every `Throwable`, like [recordListenerFailure]: a log that fails with an
+   * `Error` would otherwise end `changing` abnormally, and the engine would skip the refusal
    * (PR #90 review).
    */
-  private fun recordRefusal(expectedLoadUnparseable: Boolean) {
+  private fun recordRefusal(policy: WebviewNavigationPolicy) {
     try {
-      if (expectedLoadUnparseable) {
-        logger.info("Blocked a webview navigation: the expected webview url could not be parsed.")
-      } else {
-        logger.info("Blocked a top-level navigation away from the webview.")
-      }
+      val note = policy.refusalNote()
+      if (note.isWarning) logger.warn(note.message) else logger.info(note.message)
     } catch (_: Throwable) {
       // There is nowhere left to record this: the log is the thing that failed.
     }

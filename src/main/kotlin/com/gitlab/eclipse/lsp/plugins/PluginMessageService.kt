@@ -30,7 +30,9 @@ class PluginMessageService(private val registry: PluginRegistry) {
         val argument = try {
           Gson().fromJson(Gson().toJsonTree(payload), handler.type)
         } catch (e: Throwable) {
-          return@supplyAsync logger.warn("Could not parse payload ($payload) for $route. Skipping.", e)
+          // Neither the payload nor the parser's exception is logged: both can quote the payload,
+          // which may hold snippet or message text (AGENT-02 design §9). Route and type only.
+          return@supplyAsync logger.warn("Could not parse payload for $route: ${e.javaClass.name}. Skipping.")
         }
 
         return@supplyAsync try {
@@ -39,7 +41,9 @@ class PluginMessageService(private val registry: PluginRegistry) {
           return@supplyAsync logger.error(e.cause?.message, e.cause)
         }
       } else {
-        return@supplyAsync logger.warn("Could handle message for $route with payload ($payload). Skipping.")
+        // Says which side is missing the payload, never what the payload holds (AGENT-02 design §9).
+        val shape = if (payload == null) "no payload" else "an unexpected payload"
+        return@supplyAsync logger.warn("Could not handle message for $route with $shape. Skipping.")
       }
     }
   }

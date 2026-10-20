@@ -365,6 +365,25 @@
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
+        <!-- Design AGENT-02 §6: the Agent Platform view's layout toggles and Reload. -->
+        <command
+                id="com.gitlab.eclipse.commands.UseClassicAgentPlatformLayout"
+                name="Use Classic Layout"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.UseNewAgentPlatformLayout"
+                name="Use New Layout"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ReloadAgentPlatformView"
+                name="Reload Agent Platform View"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
         <command
                 id="gitlab-eclipse-plugin.commands.ShowAgenticChatHistory"
                 name="Show Agentic Chat History"
@@ -605,6 +624,10 @@
 
         <sourceProvider provider="com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider">
             <variable name="duo_chat_terminal_context_enabled" priorityLevel="workbench"/>
+        </sourceProvider>
+
+        <sourceProvider provider="com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutSourceProvider">
+            <variable name="gitlab_agent_platform_layout" priorityLevel="workbench"/>
         </sourceProvider>
     </extension>
 
@@ -1029,6 +1052,21 @@
         <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
                 class="com.gitlab.eclipse.views.webview.actions.OpenFlowBuilderHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.UseClassicAgentPlatformLayout"
+                class="com.gitlab.eclipse.views.webview.agentplatform.UseClassicAgentPlatformLayoutHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.UseNewAgentPlatformLayout"
+                class="com.gitlab.eclipse.views.webview.agentplatform.UseNewAgentPlatformLayoutHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ReloadAgentPlatformView"
+                class="com.gitlab.eclipse.views.webview.agentplatform.ReloadAgentPlatformViewHandler"
         />
 
         <handler
@@ -1516,6 +1554,86 @@
                         name="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
                         value="agentic-duo-chat"/>
             </command>
+        </menuContribution>
+
+        <!-- Design AGENT-02 §6: the Agent Platform view toolbar shows only the toggle away from the
+             current layout (the reference extension's view title does the same), driven by the
+             gitlab_agent_platform_layout source variable (AgentPlatformLayoutSourceProvider). -->
+        <menuContribution locationURI="toolbar:com.gitlab.eclipse.views.webview.AgenticTabsView">
+            <command
+                    commandId="com.gitlab.eclipse.commands.UseClassicAgentPlatformLayout"
+                    label="Use Classic Layout"
+                    tooltip="Show the classic GitLab Duo Agent Platform layout">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab_agent_platform_layout">
+                        <equals value="new"/>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.UseNewAgentPlatformLayout"
+                    label="Use New Layout"
+                    tooltip="Show the new GitLab Duo Agent Platform layout">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab_agent_platform_layout">
+                        <equals value="classic"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+
+        <!-- Design AGENT-02 §6 (U-C): the view pulldown navigates to the neighbouring surfaces through
+             their existing commands, then repeats the toggle and offers Reload (§5.1). Open Flow Builder
+             stays ungated: its handler already explains a non-YAML editor. -->
+        <menuContribution locationURI="menu:com.gitlab.eclipse.views.webview.AgenticTabsView">
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.ShowMcpDashboard"
+                    label="Open MCP Dashboard"
+                    tooltip="Open the GitLab Duo MCP Dashboard"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.OpenFlowBuilder"
+                    label="Open Flow Builder"
+                    tooltip="Open the Flow Builder for the active YAML editor"/>
+
+            <command
+                    commandId="gitlab-eclipse-plugin.commands.SelectChatWebview"
+                    label="Open Agentic Chat"
+                    tooltip="Show the Agentic Duo Chat webview">
+                <parameter
+                        name="gitlab-eclipse-plugin.commands.SelectChatWebview.webviewId"
+                        value="agentic-duo-chat"/>
+            </command>
+
+            <separator name="agentPlatformLayout" visible="true"/>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.UseClassicAgentPlatformLayout"
+                    label="Use Classic Layout"
+                    tooltip="Show the classic GitLab Duo Agent Platform layout">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab_agent_platform_layout">
+                        <equals value="new"/>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.UseNewAgentPlatformLayout"
+                    label="Use New Layout"
+                    tooltip="Show the new GitLab Duo Agent Platform layout">
+                <visibleWhen checkEnabled="false">
+                    <with variable="gitlab_agent_platform_layout">
+                        <equals value="classic"/>
+                    </with>
+                </visibleWhen>
+            </command>
+
+            <command
+                    commandId="com.gitlab.eclipse.commands.ReloadAgentPlatformView"
+                    label="Reload"
+                    tooltip="Reload the GitLab Duo Agent Platform view"/>
         </menuContribution>
 
         <!-- GitLab sidebar view toolbar: refresh (always visible) plus a list⇄tree toggle

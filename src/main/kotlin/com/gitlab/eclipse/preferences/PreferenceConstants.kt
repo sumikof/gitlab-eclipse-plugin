@@ -64,4 +64,7 @@ object PreferenceConstants {
    * project description repointed at a different location is not mistaken for the one created.
    */
   const val DUO_TUTORIAL_PROJECT_LOCATION: String = "gitlab.duoTutorial.projectLocation"
+
+  /** Which Agent Platform layout is shown: `"new"` (root/duoAgentPlatform) or `"classic"` (agentic-tabs). */
+  const val AGENT_PLATFORM_LAYOUT: String = "gitlab.agentPlatform.layout"
 }

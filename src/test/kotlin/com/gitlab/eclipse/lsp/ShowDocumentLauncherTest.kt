@@ -191,6 +191,8 @@ class ShowDocumentLauncherTest : DescribeSpec({
       launcher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
 
       logged.any { it.contains("javascript") } shouldBe true
+      // Review H8: page clicks reach this too, so the line must not name the language server as the source.
+      logged.any { it.contains("language server") } shouldBe false
       logged.forEach {
         it.contains(SECRET) shouldBe false
         it.contains(HOST) shouldBe false

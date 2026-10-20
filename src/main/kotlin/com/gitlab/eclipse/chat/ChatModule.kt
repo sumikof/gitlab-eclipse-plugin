@@ -16,11 +16,17 @@ import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewClient
 import com.gitlab.eclipse.chat.webview.AgenticChatWebViewController
+import com.gitlab.eclipse.chat.webview.DuoAgentPlatformWebViewController
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewClient
 import com.gitlab.eclipse.chat.webview.GitLabDuoChatWebViewController
+import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
+import com.gitlab.eclipse.lsp.ShowDocumentLauncher
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.navigation.GitLabProjectUrlResolver
 import com.gitlab.eclipse.utils.NotificationUtils
+import com.gitlab.eclipse.utils.currentDisplay
+import com.gitlab.eclipse.views.webview.actions.McpDashboardOpener
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformReadiness
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.services.ISourceProviderService
 import org.koin.dsl.bind
@@ -66,6 +72,30 @@ val chatModule = module {
 
   single<AgenticChatWebViewController> {
     AgenticChatWebViewController(get(), get(), get(), get())
+  } bind PluginController::class
+
+  // AGENT-02 design §5.3 / §5.4. Readiness is UI-confined: timerExec runs its check on the UI thread.
+  single<AgentPlatformReadiness> {
+    val wrapper = get<GitLabLanguageServerWrapper>()
+    AgentPlatformReadiness(
+      schedule = { ms, task -> currentDisplay.timerExec(ms.toInt(), task) },
+      currentSession = { wrapper.currentSnapshot?.session },
+    )
+  }
+
+  single<DuoAgentPlatformWebViewController> {
+    val wrapper = get<GitLabLanguageServerWrapper>()
+    DuoAgentPlatformWebViewController(
+      get(),
+      get(),
+      get(),
+      wrapper,
+      get(),
+      get(),
+      openMcpDashboard = { McpDashboardOpener(wrapper).open() },
+      showDocument = { uri -> ShowDocumentLauncher().show(uri) },
+      onUiThread = { task -> currentDisplay.asyncExec(task) },
+    )
   } bind PluginController::class
 
   // Quick Chat (design §8.1, §17): one runtime per activation, shared by every window's popup.

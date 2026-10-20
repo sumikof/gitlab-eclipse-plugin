@@ -269,6 +269,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "Job log editors",
         "Merged YAML editors",
         "MR diff editors",
+        "Agent Platform views",
       )
     }
 
@@ -436,6 +437,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "Job log registry",
         "MR diff registry",
         "MR thread popups",
+        "Agent Platform views",
       )
     }
   }

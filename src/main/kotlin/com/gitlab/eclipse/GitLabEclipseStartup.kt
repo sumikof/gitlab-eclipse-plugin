@@ -33,6 +33,7 @@ import com.gitlab.eclipse.telemetry.telemetryModule
 import com.gitlab.eclipse.utils.DebugLogging
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.workspaceModule
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformViews
 import org.eclipse.core.commands.ParameterizedCommand
 import org.eclipse.core.runtime.Platform
 import org.eclipse.jface.bindings.Binding
@@ -372,6 +373,8 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // MR file diffs (REVIEW-01): flag down first, then cancel the diff Job family, then close the
       // diff editors unless the workbench is closing. Contained inside; never throws.
       LifecycleStep("MR diff editors") { MrFileDiffEntryPoint.onStop() },
+      // Forget the open Agent Platform views: a readiness callback after stop reloads nothing.
+      LifecycleStep("Agent Platform views") { AgentPlatformViews.onDeactivate() },
     )
 
     /**
@@ -389,6 +392,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // Wires the review-session hooks (ruler click → popup, close on release, refresh on reload)
       // in the same UI turn the discussion lifecycle comes up.
       LifecycleStep("MR thread popups") { MrThreadPopups.install() },
+      LifecycleStep("Agent Platform views") { AgentPlatformViews.onActivate() },
     )
   }
 }
