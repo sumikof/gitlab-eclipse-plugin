@@ -27,5 +27,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES, "")
     // Off by default, matching the reference extension's `gitlab.debug` (design §5.1.1, A8).
     store.setDefault(PreferenceConstants.DEBUG_LOGGING, false)
+    // Matches the VS Code default: the new layout, until the user switches to classic.
+    store.setDefault(PreferenceConstants.AGENT_PLATFORM_LAYOUT, "new")
   }
 }

@@ -1,9 +1,12 @@
 package com.gitlab.eclipse.utils
 
 import com.gitlab.eclipse.mergerequests.GitOperationGuard
+import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.preferences.PreferenceInitializer
 import com.gitlab.eclipse.snippets.SnippetPatchApplyService
 import com.gitlab.eclipse.views.sidebar.SidebarViewState
+import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutStore
+import com.gitlab.eclipse.views.webview.agentplatform.LayoutPreferenceAccess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -29,6 +32,15 @@ fun workspaceModule(bundleContext: BundleContext) = module {
       InstanceScope.INSTANCE,
       bundleContext.bundle.bundleId.toString()
     ).also { store -> PreferenceInitializer(store).initializeDefaultPreferences() }
+  }
+
+  // One store so the layout toggle and the Agent Platform view observe the same value.
+  single<AgentPlatformLayoutStore> {
+    val store = get<ScopedPreferenceStore>()
+    AgentPlatformLayoutStore(object : LayoutPreferenceAccess {
+      override fun read(): String? = store.getString(PreferenceConstants.AGENT_PLATFORM_LAYOUT)
+      override fun write(value: String) = store.setValue(PreferenceConstants.AGENT_PLATFORM_LAYOUT, value)
+    })
   }
 
   single<CoroutineScope> { CoroutineScope(Dispatchers.IO) }
