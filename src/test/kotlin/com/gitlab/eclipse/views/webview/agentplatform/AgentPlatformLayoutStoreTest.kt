@@ -2,6 +2,7 @@ package com.gitlab.eclipse.views.webview.agentplatform
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.preferences.storage.CapturedLog
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
@@ -87,6 +88,27 @@ class AgentPlatformLayoutStoreTest : DescribeSpec({
       seen shouldBe listOf(AgentPlatformLayout.CLASSIC)
       captured.lines.any { it.contains("IllegalStateException") } shouldBe true
       captured.lines.joinToString("\n") shouldNotContain "SECRET-MESSAGE-TEXT"
+    }
+
+    // Review H10: an Error escapes set() by design, but must not leave a queued value behind to be
+    // delivered, stale, by the next set().
+    it("drops a queued value when a listener throws an Error, so the next set() delivers only its own") {
+      val store = AgentPlatformLayoutStore(FakeAccess())
+      var thrown = false
+      val seen = mutableListOf<AgentPlatformLayout>()
+      store.addListener {
+        if (it == AgentPlatformLayout.CLASSIC && !thrown) {
+          thrown = true
+          store.set(AgentPlatformLayout.NEW)
+          throw NoClassDefFoundError("boom")
+        }
+      }
+      store.addListener { seen += it }
+
+      shouldThrow<NoClassDefFoundError> { store.set(AgentPlatformLayout.CLASSIC) }
+      store.set(AgentPlatformLayout.CLASSIC)
+
+      seen shouldBe listOf(AgentPlatformLayout.CLASSIC)
     }
 
     it("delivers the value fixed at notify time when a listener re-enters set()") {

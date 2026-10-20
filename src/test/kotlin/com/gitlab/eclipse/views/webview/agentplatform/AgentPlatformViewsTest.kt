@@ -5,12 +5,13 @@ import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.preferences.storage.CapturedLog
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
+import org.eclipse.swt.SWTError
 
 /** A view whose reload lands at once on [sessionAfterReload], like a resolution that already finished. */
 private class FakeSurface(
   override var displayedSession: LanguageServerSession? = null,
   private val sessionAfterReload: LanguageServerSession? = null,
-  private val failure: RuntimeException? = null,
+  private val failure: Throwable? = null,
 ) : ReloadableWebviewSurface {
   var reloads = 0
 
@@ -94,6 +95,22 @@ class AgentPlatformViewsTest : DescribeSpec({
 
       healthy.reloads shouldBe 1
       log.contains("IllegalStateException") shouldBe true
+      log.contains("_csrf") shouldBe false
+    }
+
+    // Review H2: SWTError extends Error; reloadStale runs in the finally of an asyncExec runnable,
+    // so an escaping one would reach the event loop with its message and skip the other views.
+    it("keeps going past a surface whose reload throws an SWTError, logging the class only") {
+      val log = CapturedLog().apply { install() }
+      val failing = FakeSurface(null, failure = SWTError("http://127.0.0.1:1/?_csrf=secret"))
+      val healthy = FakeSurface(null)
+      AgentPlatformViews.register(failing)
+      AgentPlatformViews.register(healthy)
+
+      AgentPlatformViews.reloadStale(LanguageServerSession())
+
+      healthy.reloads shouldBe 1
+      log.contains("SWTError") shouldBe true
       log.contains("_csrf") shouldBe false
     }
   }

@@ -2,6 +2,7 @@ package com.gitlab.eclipse.views.webview.agentplatform
 
 import com.gitlab.eclipse.lsp.LanguageServerSession
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.swt.SWTError
 
 /**
  * Every open Agent Platform view, across workbench windows, so a language server that becomes
@@ -32,18 +33,26 @@ object AgentPlatformViews {
    * [current] (the server is gone) nothing is reloaded: the page shows its own "Connection lost"
    * and the next ready reloads it. A surface already on [current] — loaded during the start-up
    * window, or by an earlier call — is left alone, which makes a repeat call a no-op. One surface's
-   * failure is logged by class name and does not stop the others. No-op while inactive.
+   * failure (an `SWTError` included) is logged by class name and does not stop the others. No-op while inactive.
    */
   fun reloadStale(current: LanguageServerSession?) {
     if (!active || current == null) return
     for (surface in surfaces.toList()) {
       try {
         if (surface.displayedSession !== current) surface.reload()
+      } catch (e: SWTError) {
+        // SWTError extends Error: from this asyncExec runnable it would reach the event loop, which
+        // logs its message, and it would skip the remaining surfaces.
+        reloadFailed(e)
       } catch (e: Exception) {
-        // Class name only: a message could carry the page url and its CSRF token.
-        logger<AgentPlatformViews>().warn("Agent Platform view reload failed: ${e::class.java.name}")
+        reloadFailed(e)
       }
     }
+  }
+
+  private fun reloadFailed(e: Throwable) {
+    // Class name only: a message could carry the page url and its CSRF token.
+    logger<AgentPlatformViews>().warn("Agent Platform view reload failed: ${e::class.java.name}")
   }
 
   /** The bundle start's UI turn: accept registrations again. */

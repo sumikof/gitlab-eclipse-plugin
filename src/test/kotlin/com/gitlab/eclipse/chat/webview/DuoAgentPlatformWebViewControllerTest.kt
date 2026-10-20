@@ -11,7 +11,10 @@ import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.plugins.PluginRegistry
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageRoute
 import com.gitlab.eclipse.lsp.plugins.utils.PluginMessageType
+import com.gitlab.eclipse.navigation.ClipboardTarget
+import com.gitlab.eclipse.navigation.ClipboardWriter
 import com.gitlab.eclipse.preferences.storage.CapturedLog
+import com.gitlab.eclipse.utils.CodeFormatter
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayout
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutStore
@@ -26,6 +29,7 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import org.eclipse.swt.SWTError
 
 private const val SNIPPET = "SECRET-SNIPPET-TEXT"
 private const val MESSAGE = "SECRET-MESSAGE-TEXT"
@@ -55,7 +59,7 @@ class DuoAgentPlatformWebViewControllerTest : DescribeSpec({
       }
     })
     var openerCalls = 0
-    var openerFailure: Exception? = null
+    var openerFailure: Throwable? = null
     val shown = mutableListOf<String>()
     val hops = mutableListOf<Runnable>()
 
@@ -163,6 +167,19 @@ class DuoAgentPlatformWebViewControllerTest : DescribeSpec({
       f.log.contains("IllegalStateException") shouldBe true
       f.log.contains("SECRET-DETAIL") shouldBe false
     }
+
+    // SWTError extends Error: escaping the asyncExec runnable, the event loop would log its message
+    // and stack trace and may raise the internal-error dialog (review H2, ShowDocumentLauncher.openNow).
+    it("contains an SWTError from the opener, logging the class only") {
+      val f = Fixture()
+      f.openerFailure = SWTError("SECRET-DETAIL")
+
+      f.controller.openMcpDashboard(f.sessionA)
+      f.runHops()
+
+      f.log.contains("SWTError") shouldBe true
+      f.log.contains("SECRET-DETAIL") shouldBe false
+    }
   }
 
   describe("switchToClassicLayout") {
@@ -250,13 +267,53 @@ class DuoAgentPlatformWebViewControllerTest : DescribeSpec({
       verify(exactly = 1) { f.handlers.getCurrentFileContext() }
     }
 
-    it("logs neither snippet nor message text") {
+    // Runs the real shared handlers (not the relaxed mock): only the display-bound ends are
+    // replaced, so a log line added anywhere on the delegated path is caught (review H5). Both the
+    // landed and the failed clipboard write are taken, and the insert reaches the service.
+    it("logs neither snippet nor message text on the real delegated path") {
       val f = Fixture()
+      val platformUtils = mockk<PlatformUtils>()
+      every { platformUtils.getActiveDocument() } returns null
+      var clipboardFails = false
+      val clipboard = object : ClipboardTarget {
+        override fun setText(text: String) {
+          if (clipboardFails) throw SWTError("$SNIPPET $MESSAGE")
+        }
 
-      f.controller.insertCodeSnippet(InsertCodeSnippetNotification(SNIPPET))
-      f.controller.copyCodeSnippet(CopyCodeSnippetNotification(SNIPPET))
-      f.controller.copyMessage(CopyMessageNotification(MESSAGE))
+        override fun dispose() = Unit
+      }
+      val notices = mutableListOf<String>()
+      val realHandlers = ChatWebViewMessageHandlers(
+        platformUtils,
+        mockk<CurrentFileContextProvider>(),
+        InsertCodeSnippetService(platformUtils, mockk<CodeFormatter>()),
+        clipboardWriter = ClipboardWriter(onUiThread = { it.run() }, openClipboard = { clipboard }),
+        notify = { notices += it },
+      )
+      val controller = DuoAgentPlatformWebViewController(
+        platformUtils,
+        mockk<CurrentFileContextProvider>(),
+        mockk<InsertCodeSnippetService>(),
+        f.wrapper,
+        f.layoutStore,
+        f.readiness,
+        openMcpDashboard = {},
+        showDocument = {},
+        onUiThread = { it.run() },
+        handlers = realHandlers,
+      )
 
+      controller.insertCodeSnippet(InsertCodeSnippetNotification(SNIPPET))
+      controller.copyCodeSnippet(CopyCodeSnippetNotification(SNIPPET))
+      controller.copyMessage(CopyMessageNotification(MESSAGE))
+      clipboardFails = true
+      controller.copyCodeSnippet(CopyCodeSnippetNotification(SNIPPET))
+      controller.copyMessage(CopyMessageNotification(MESSAGE))
+
+      // The path really ran: two landed copies notified, two failures and the insert logged.
+      notices shouldContainExactly listOf(ClipboardWriter.COPIED_TO_CLIPBOARD, ClipboardWriter.COPIED_TO_CLIPBOARD)
+      f.log.contains("No document found") shouldBe true
+      f.log.lines.count { it.contains("SWTError") } shouldBe 2
       f.log.contains(SNIPPET) shouldBe false
       f.log.contains(MESSAGE) shouldBe false
     }
@@ -306,6 +363,28 @@ class DuoAgentPlatformWebViewControllerTest : DescribeSpec({
   }
 
   describe("showMessage") {
+    // Review H7: the type is webview-supplied; only the three known categories are logged verbatim.
+    it("logs an unknown type as other, never verbatim") {
+      val f = Fixture()
+
+      f.controller.showMessage(ShowMessageNotification(type = "SECRET-TYPE", message = MESSAGE))
+
+      f.log.contains("type=other") shouldBe true
+      f.log.contains("SECRET-TYPE") shouldBe false
+    }
+
+    it("logs each known type as itself") {
+      val f = Fixture()
+
+      val known = listOf("info", "warning", "error")
+      known.forEach { type ->
+        f.controller.showMessage(ShowMessageNotification(type = type, message = MESSAGE))
+      }
+
+      val logged = f.log.lines.filter { it.contains("showMessage") }
+      logged shouldContainExactly known.map { "Agent Platform showMessage received: type=$it" }
+    }
+
     it("logs the type but never the message text") {
       val f = Fixture()
 

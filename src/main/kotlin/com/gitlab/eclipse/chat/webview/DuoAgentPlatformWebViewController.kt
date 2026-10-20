@@ -14,6 +14,7 @@ import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayout
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformLayoutStore
 import com.gitlab.eclipse.views.webview.agentplatform.AgentPlatformReadiness
+import org.eclipse.swt.SWTError
 
 /**
  * Handles webview-to-host messages from the Agent Platform webview (`root/duoAgentPlatform`).
@@ -95,11 +96,14 @@ class DuoAgentPlatformWebViewController(
 
   /**
    * Parity registration only. Unlike the shared handler, the text is never logged: it is webview
-   * content (design §9). No display UI is built because the pinned server never sends it.
+   * content (design §9). The type is webview-supplied too, so only a known category is logged as
+   * itself; anything else is logged as `other`. No display UI is built because the pinned server
+   * never sends it.
    */
   @PluginNotification("showMessage")
   fun showMessage(notification: ShowMessageNotification) {
-    logger.info("Agent Platform showMessage received: type=${notification.type}")
+    val category = notification.type.takeIf { it in SHOW_MESSAGE_TYPES } ?: "other"
+    logger.info("Agent Platform showMessage received: type=$category")
   }
 
   /** Parity registration only; drives no state, like the agentic controller. */
@@ -142,8 +146,24 @@ class DuoAgentPlatformWebViewController(
     }
     try {
       action()
+    } catch (e: SWTError) {
+      actionFailed(type, e)
     } catch (e: Exception) {
-      logger.error("Agent Platform $type failed: ${e.javaClass.name}")
+      actionFailed(type, e)
     }
+  }
+
+  /**
+   * **`SWTError` extends `Error`, not `Exception`** (same reason as `ShowDocumentLauncher.openNow`):
+   * this runs inside an `asyncExec` runnable, where an escaping error would reach the event loop,
+   * which logs it with its message and stack trace and may raise the internal-error dialog.
+   */
+  private fun actionFailed(type: String, e: Throwable) {
+    logger.error("Agent Platform $type failed: ${e.javaClass.name}")
+  }
+
+  private companion object {
+    /** The categories the reference `showMessage` handler distinguishes. */
+    val SHOW_MESSAGE_TYPES = setOf("info", "warning", "error")
   }
 }

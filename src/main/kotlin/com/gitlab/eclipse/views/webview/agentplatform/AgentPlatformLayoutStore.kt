@@ -34,6 +34,9 @@ class AgentPlatformLayoutStore(private val access: LayoutPreferenceAccess) {
     try {
       while (pending.isNotEmpty()) notify(pending.removeFirst())
     } finally {
+      // Only an Error from a listener ends the loop early; what it left queued must not be
+      // delivered, stale, by the next set().
+      pending.clear()
       delivering = false
     }
   }
