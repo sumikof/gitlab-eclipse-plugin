@@ -5,6 +5,11 @@ import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureKind
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleState
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerPhase
+import com.gitlab.eclipse.lsp.lifecycle.StartOrigin
 import com.gitlab.eclipse.lsp.plugins.PluginMessageService
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.utils.workspaceFolders
@@ -15,9 +20,11 @@ import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.MockKAnswerScope
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
@@ -42,9 +49,11 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import java.time.Duration as JavaDuration
 
 private enum class InitializeReply { SUCCESS, FAILURE, SUCCESS_THEN_EXIT }
 
@@ -285,7 +294,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   }
 
   afterEach {
-    spawnedProcesses.forEach { it.completeExit() }
+    spawnedProcesses.forEach { fake -> fake.completeExit() }
     spawnedProcesses.clear()
     clearAllMocks()
   }
@@ -513,7 +522,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       val wrapper = GitLabLanguageServerWrapper()
       val fake = FakeLanguageServerProcess(InitializeReply.FAILURE, CountDownLatch(1))
       val provider = newProvider(
-        factory = { fake.also { spawnedProcesses += it } },
+        factory = { fake.also { spawned -> spawnedProcesses += spawned } },
         wrapper = wrapper,
       )
 
@@ -524,27 +533,30 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       fake.releaseInitializeReply()
 
       eventually(2.seconds) { wrapper.currentSnapshot shouldBe null }
-      // The process itself never died, so this cannot be the exit notification's doing.
-      provider.isRunning shouldBe true
-      provider.stop()
+      // The process itself never exited, so this cannot be the exit notification's doing. Since LS-02
+      // a rejected initialize also stops the (still tracked) process (design §5.3): it settles stopped.
+      eventually(2.seconds) { provider.isRunning shouldBe false }
+      fake.destroyed shouldBe true
     }
 
     // Design §21 A26 (3): a superseded server's late failure must not disturb its successor.
     it("keeps the newer snapshot when a superseded server's initialization fails late") {
-      // The rejection is logged first thing in the branch under test, so waiting for that line
-      // proves the branch ran without waiting on the revocation this test is about — a wait on
-      // the revocation would also fail when the revocation is simply deleted.
+      // The rejection is logged by the branch under test, so waiting for that line proves the branch
+      // ran without waiting on the revocation this test is about — a wait on the revocation would
+      // also fail when the revocation is simply deleted.
       val log = mockk<ILog>(relaxUnitFun = true)
       val rejectionLogged = CountDownLatch(1)
       every { Platform.getLog(any<Bundle>()) } returns log
-      every { log.error("Failed to initialize Language Server", any<Throwable>()) } answers {
-        rejectionLogged.countDown()
-      }
+      // LS-02: the superseded server's rejection is logged by exception class only, after the branch
+      // has run (design §5.3, §10).
+      every {
+        log.info(match<String> { it.startsWith("Ignoring initialization failure from a superseded Language Server") })
+      } answers { rejectionLogged.countDown() }
       val wrapper = GitLabLanguageServerWrapper()
       val superseded = FakeLanguageServerProcess(InitializeReply.FAILURE, CountDownLatch(1))
       val pending = mutableListOf(superseded, FakeLanguageServerProcess(InitializeReply.SUCCESS))
       val provider = newProvider(
-        factory = { pending.removeFirst().also { spawnedProcesses += it } },
+        factory = { pending.removeFirst().also { spawned -> spawnedProcesses += spawned } },
         wrapper = wrapper,
       )
 
@@ -557,8 +569,8 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       superseded.releaseInitializeReply()
       rejectionLogged.await(5, TimeUnit.SECONDS) shouldBe true
 
-      // The revocation runs right after the line above, so the window has to stay open long
-      // enough for an unconditional one to be seen clearing the successor.
+      // The revocation runs just before the line above; the window stays open long enough for an
+      // unconditional one to be seen clearing the successor.
       continually(500.milliseconds) { wrapper.currentSnapshot shouldBe newest }
       provider.stop()
     }
@@ -632,7 +644,9 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
 
       provider.isRunning shouldBe false
       // Unlike a missing installation, nothing else has reported this failure: it must stay an error.
-      verify(exactly = 1) { log.error("Failed to start the Language Server.", any<Throwable>()) }
+      // LS-02 (design §5.3, §10): the exception class only, never its message or stack (paths).
+      verify(exactly = 1) { log.error("Failed to start the Language Server (IOException).") }
+      verify(exactly = 0) { log.error(any(), any<Throwable>()) }
     }
 
     it("logs and stays stopped without throwing when the language server cannot be installed") {
@@ -670,6 +684,477 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       provider.isRunning shouldBe true
 
       provider.stop()
+    }
+  }
+})
+
+/**
+ * LS-02 (design §5.3): how the provider drives the lifecycle store on every start, stop, restart,
+ * initialize and exit path. A class of its own (same setup as the suite above) so that neither
+ * spec outgrows detekt's LargeClass limit; in this file because the fake process is private to it.
+ */
+class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
+  extensions(LoggingKotestExtension)
+
+  val languageServerWrapper = mockk<GitLabLanguageServerWrapper>(relaxUnitFun = true)
+  val configurationService = mockk<GitLabLanguageServerConfigurationService>(relaxUnitFun = true)
+  val openFilesService = mockk<GitLabLanguageServerOpenFilesService>(relaxUnitFun = true)
+  val proxyManager = mockk<LanguageServerProxyManager>()
+  val webviewService = mockk<LanguageServerWebviewService>(relaxUnitFun = true)
+  val installer = mockk<LanguageServerInstaller>()
+  val bundle = mockk<Bundle>()
+  val stateDir = createTempDirectory("ls-state").toFile()
+
+  val spawnedProcesses = CopyOnWriteArrayList<FakeLanguageServerProcess>()
+  var nextInitializeReply = InitializeReply.SUCCESS
+
+  fun newProvider(
+    factory: (ProcessBuilder) -> Process = {
+      FakeLanguageServerProcess(nextInitializeReply).also { fake -> spawnedProcesses += fake }
+    },
+    store: LanguageServerLifecycleStore = LanguageServerLifecycleStore(),
+    initializeTimeout: JavaDuration = JavaDuration.ofSeconds(30),
+  ) = GitLabLanguageServerProcessProvider(
+    languageServerWrapper,
+    configurationService,
+    openFilesService,
+    proxyManager,
+    webviewService,
+    installer,
+    factory,
+    store,
+    initializeTimeout,
+  )
+
+  beforeSpec {
+    mockkStatic("com.gitlab.eclipse.lsp.utils.ProjectsWorkspaceFolderKt")
+    startKoin {
+      modules(
+        module {
+          single<DidChangeWatchedFileCapability> { mockk(relaxUnitFun = true) }
+          single<PluginMessageService> { mockk(relaxUnitFun = true) }
+        }
+      )
+    }
+  }
+
+  beforeEach {
+    DiagnosticGenerationRegistry.resetForTest()
+    nextInitializeReply = InitializeReply.SUCCESS
+    every { installer.install() } returns "/fake/language-server"
+    every { workspaceFolders } returns listOf(WorkspaceFolder("file:///w/alpha", "alpha"))
+    every { languageServerWrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
+    every { proxyManager.getHttpProxyUrl() } returns null
+    every { proxyManager.getHttpsProxyUrl() } returns null
+    every { proxyManager.getBypassHosts() } returns null
+    every { bundle.version } returns Version("0.0.1")
+    val platformBundle = mockk<Bundle> { every { version } returns Version("4.30.0") }
+    val pluginBundle = mockk<Bundle>()
+    val statePath = mockk<IPath> { every { toFile() } returns stateDir }
+    every { Platform.getBundle("org.eclipse.platform") } returns platformBundle
+    every { Platform.getBundle("com.gitlab.eclipse.gitlab-eclipse-plugin") } returns pluginBundle
+    every { Platform.getStateLocation(pluginBundle) } returns statePath
+  }
+
+  afterEach {
+    spawnedProcesses.forEach { fake ->
+      fake.completeExit()
+      fake.releaseInitializeReply()
+    }
+    spawnedProcesses.clear()
+    clearAllMocks()
+  }
+
+  afterSpec {
+    DiagnosticGenerationRegistry.resetForTest()
+    stopKoin()
+  }
+
+  // ---- LS-02: lifecycle state store wiring (design §5.3) ----
+
+  /**
+   * Routes the provider's ILog into a list. The Throwable overloads are recorded with the
+   * throwable's text, so a stack trace or exception message reaching the log shows up as a
+   * "THROWABLE:" entry (and its sentinel text) in the list.
+   */
+  fun captureLog(): MutableList<String> {
+    val messages = CopyOnWriteArrayList<String>()
+    val log = mockk<ILog>(relaxUnitFun = true)
+    every { Platform.getLog(any<Bundle>()) } returns log
+    every { log.info(any<String>()) } answers { messages += firstArg<String>() }
+    every { log.warn(any<String>()) } answers { messages += firstArg<String>() }
+    every { log.error(any<String>()) } answers { messages += firstArg<String>() }
+    fun MockKAnswerScope<Unit, Unit>.recordThrowable() {
+      messages += "THROWABLE:${firstArg<String>()} ${secondArg<Throwable>()}"
+    }
+    every { log.info(any(), any<Throwable>()) } answers { recordThrowable() }
+    every { log.warn(any(), any<Throwable>()) } answers { recordThrowable() }
+    every { log.error(any(), any<Throwable>()) } answers { recordThrowable() }
+    return messages
+  }
+
+  fun List<String>.shouldBePrivate() {
+    filter { "SECRET-PATH" in it } shouldBe emptyList()
+    filter { it.startsWith("THROWABLE:") } shouldBe emptyList()
+  }
+
+  fun recordTransitions(store: LanguageServerLifecycleStore): List<LanguageServerLifecycleState> =
+    CopyOnWriteArrayList<LanguageServerLifecycleState>().also { recorded ->
+      store.addListener { _, new -> recorded += new }
+    }
+
+  fun LanguageServerLifecycleState.phaseAndGeneration() = phase to generation
+
+  fun List<LanguageServerLifecycleState>.phases() = map { it.phaseAndGeneration() }
+
+  /** A fake whose initialize request is never answered until the test releases it. */
+  fun unansweredFake() = FakeLanguageServerProcess(InitializeReply.SUCCESS, CountDownLatch(1))
+
+  describe("lifecycle state on start (LS-02)") {
+    it("records INSTALL_FAILED when there is no installation") {
+      every { installer.install() } returns null
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+
+      provider.start(bundle)
+
+      store.snapshot() shouldBe LanguageServerLifecycleState(
+        LanguageServerPhase.FAILED,
+        1,
+        StartOrigin.STARTUP,
+        LanguageServerFailureKind.INSTALL_FAILED,
+      )
+      spawnedProcesses.size shouldBe 0
+    }
+
+    it("records START_FAILED when the process cannot be spawned and logs no exception text") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(factory = { throw IOException("SECRET-PATH /home/u/ls") }, store = store)
+
+      provider.start(bundle)
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.START_FAILED
+      provider.isRunning shouldBe false
+      log shouldNotContain "Failed to start the Language Server."
+      log.contains("Failed to start the Language Server (IOException).") shouldBe true
+      log.shouldBePrivate()
+    }
+
+    it("records INITIALIZE_FAILED and stops the process when initialize is rejected") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      nextInitializeReply = InitializeReply.FAILURE
+      val provider = newProvider(store = store)
+
+      provider.start(bundle)
+
+      eventually(5.seconds) {
+        store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+        store.snapshot().failure shouldBe LanguageServerFailureKind.INITIALIZE_FAILED
+        spawnedProcesses[0].destroyed shouldBe true
+      }
+      provider.isRunning shouldBe false
+      // The LS's own error text ("initialize rejected") is LS message text: never logged.
+      log.filter { "initialize rejected" in it } shouldBe emptyList()
+      log.shouldBePrivate()
+    }
+
+    it("records INITIALIZE_TIMEOUT and stops the process when initialize is never answered") {
+      val store = LanguageServerLifecycleStore()
+      val fake = unansweredFake()
+      val provider = newProvider(
+        factory = { fake.also { spawned -> spawnedProcesses += spawned } },
+        store = store,
+        initializeTimeout = JavaDuration.ofMillis(200),
+      )
+
+      provider.start(bundle)
+      store.snapshot().phase shouldBe LanguageServerPhase.STARTING
+
+      eventually(5.seconds) {
+        store.snapshot().failure shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+        fake.destroyed shouldBe true
+      }
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      provider.isRunning shouldBe false
+      fake.releaseInitializeReply()
+    }
+
+    it("records EXITED_DURING_STARTUP when the process exits before initialize completes") {
+      val store = LanguageServerLifecycleStore()
+      val fake = unansweredFake()
+      val provider = newProvider(factory = { fake.also { spawned -> spawnedProcesses += spawned } }, store = store)
+
+      provider.start(bundle)
+      fake.completeExit()
+
+      eventually(5.seconds) {
+        store.snapshot().failure shouldBe LanguageServerFailureKind.EXITED_DURING_STARTUP
+      }
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      provider.isRunning shouldBe false
+      fake.releaseInitializeReply()
+    }
+
+    it("records CRASHED when the running process exits and logs only the exit code") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+
+      provider.start(bundle)
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+      log.contains("Initialized Language Server.") shouldBe true
+
+      spawnedProcesses[0].completeExit()
+
+      eventually(5.seconds) { store.snapshot().failure shouldBe LanguageServerFailureKind.CRASHED }
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().generation shouldBe 1L
+      log.contains("Language Server exited unexpectedly (exit code 0).") shouldBe true
+      log.shouldBePrivate()
+    }
+
+    it("records STOPPED on an explicit stop and never FAILED, even after the exit arrives") {
+      val store = LanguageServerLifecycleStore()
+      val recorded = recordTransitions(store)
+      val provider = newProvider(store = store)
+
+      provider.start(bundle)
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+      provider.stop()
+      spawnedProcesses[0].completeExit()
+
+      store.snapshot().phase shouldBe LanguageServerPhase.STOPPED
+      recorded.map { it.phase } shouldNotContain LanguageServerPhase.FAILED
+    }
+
+    it("spawns nothing once the store is closed (bundle stopping)") {
+      val store = LanguageServerLifecycleStore()
+      store.close()
+      val provider = newProvider(store = store)
+
+      shouldNotThrowAny { provider.start(bundle) }
+      provider.restart(bundle) shouldBe false
+
+      spawnedProcesses.size shouldBe 0
+      provider.isRunning shouldBe false
+    }
+  }
+
+  describe("lifecycle state on restart (LS-02)") {
+    it("publishes STOPPED(g1), then STARTING(g2), then RUNNING(g2)") {
+      val store = LanguageServerLifecycleStore()
+      val recorded = recordTransitions(store)
+      val provider = newProvider(store = store)
+      provider.start(bundle)
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+
+      provider.restart(bundle) shouldBe true
+
+      eventually(5.seconds) { store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.RUNNING to 2L) }
+      recorded.phases() shouldBe listOf(
+        LanguageServerPhase.STARTING to 1L,
+        LanguageServerPhase.RUNNING to 1L,
+        LanguageServerPhase.STOPPED to 1L,
+        LanguageServerPhase.STARTING to 2L,
+        LanguageServerPhase.RUNNING to 2L,
+      )
+      store.snapshot().origin shouldBe StartOrigin.RESTART
+      provider.stop()
+    }
+
+    it("returns false with EXITED_DURING_STARTUP when the new server exits before initialize") {
+      val store = LanguageServerLifecycleStore()
+      val fake = unansweredFake()
+      val provider = newProvider(
+        factory = {
+          fake.also { spawned ->
+            spawnedProcesses += spawned
+            Thread {
+              Thread.sleep(100)
+              spawned.completeExit()
+            }.apply { isDaemon = true }.start()
+          }
+        },
+        store = store,
+        initializeTimeout = JavaDuration.ofSeconds(10),
+      )
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.EXITED_DURING_STARTUP
+      fake.destroyed shouldBe true
+      fake.releaseInitializeReply()
+    }
+
+    it("returns false with EXITED_DURING_STARTUP when the new server exits right after answering") {
+      val store = LanguageServerLifecycleStore()
+      nextInitializeReply = InitializeReply.SUCCESS_THEN_EXIT
+      val provider = newProvider(store = store)
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.EXITED_DURING_STARTUP
+    }
+
+    it("returns false with INITIALIZE_TIMEOUT when the new server never answers") {
+      val store = LanguageServerLifecycleStore()
+      val fake = unansweredFake()
+      val provider = newProvider(
+        factory = { fake.also { spawned -> spawnedProcesses += spawned } },
+        store = store,
+        initializeTimeout = JavaDuration.ofMillis(200),
+      )
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+      fake.destroyed shouldBe true
+      provider.isRunning shouldBe false
+      fake.releaseInitializeReply()
+    }
+
+    it("returns false with INITIALIZE_FAILED when the new server rejects initialize") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      nextInitializeReply = InitializeReply.FAILURE
+      val provider = newProvider(store = store)
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.INITIALIZE_FAILED
+      log.filter { "initialize rejected" in it } shouldBe emptyList()
+      log.shouldBePrivate()
+    }
+
+    it("returns false with START_FAILED when the spawn fails, logging no exception text") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(factory = { throw IOException("SECRET-PATH /home/u/ls") }, store = store)
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.START_FAILED
+      log.shouldBePrivate()
+    }
+
+    it("returns false with INSTALL_FAILED when there is no installation") {
+      every { installer.install() } returns null
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+
+      provider.restart(bundle) shouldBe false
+
+      store.snapshot().failure shouldBe LanguageServerFailureKind.INSTALL_FAILED
+    }
+
+    it("returns false with START_FAILED when the waiting thread is interrupted") {
+      val store = LanguageServerLifecycleStore()
+      val fake = unansweredFake()
+      val spawned = CountDownLatch(1)
+      val provider = newProvider(
+        factory = {
+          spawnedProcesses += fake
+          spawned.countDown()
+          fake
+        },
+        store = store,
+        initializeTimeout = JavaDuration.ofSeconds(10),
+      )
+      val result = AtomicReference<Boolean?>(null)
+      val restarting = Thread { result.set(provider.restart(bundle)) }.apply {
+        isDaemon = true
+        start()
+      }
+
+      spawned.await(5, TimeUnit.SECONDS) shouldBe true
+      restarting.interrupt()
+      restarting.join(5_000)
+
+      result.get() shouldBe false
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.START_FAILED
+      fake.destroyed shouldBe true
+      fake.releaseInitializeReply()
+    }
+
+    it("does not stop the new server when the superseded server's initialize fails late (F1)") {
+      val log = captureLog()
+      val store = LanguageServerLifecycleStore()
+      val superseded = unansweredFake()
+      val pending = mutableListOf(superseded, FakeLanguageServerProcess(InitializeReply.SUCCESS))
+      val provider = newProvider(
+        factory = { pending.removeFirst().also { spawned -> spawnedProcesses += spawned } },
+        store = store,
+        initializeTimeout = JavaDuration.ofMillis(800),
+      )
+
+      provider.start(bundle)
+      provider.restart(bundle) shouldBe true
+      val successor = spawnedProcesses[1]
+
+      // The first server's initialize future times out only now, after the restart took over.
+      eventually(5.seconds) {
+        log.any { it.startsWith("Ignoring initialization failure from a superseded Language Server") } shouldBe true
+      }
+
+      continually(300.milliseconds) {
+        successor.destroyed shouldBe false
+        provider.isRunning shouldBe true
+        store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.RUNNING to 2L)
+      }
+      provider.stop()
+      superseded.releaseInitializeReply()
+    }
+
+    it("ignores a late exit of the superseded server") {
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+      provider.start(bundle)
+      provider.restart(bundle) shouldBe true
+      eventually(5.seconds) { store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.RUNNING to 2L) }
+      val recorded = recordTransitions(store)
+
+      spawnedProcesses[0].completeExit()
+
+      recorded shouldBe emptyList()
+      store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.RUNNING to 2L)
+      provider.isRunning shouldBe true
+      provider.stop()
+    }
+
+    it("keeps exactly one live process after two sequential restarts") {
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+      provider.start(bundle)
+
+      provider.restart(bundle) shouldBe true
+      provider.restart(bundle) shouldBe true
+
+      spawnedProcesses.size shouldBe 3
+      spawnedProcesses.map { it.destroyed } shouldBe listOf(true, true, false)
+      eventually(5.seconds) { store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.RUNNING to 3L) }
+      provider.stop()
+    }
+
+    it("clears FAILED with STOPPED when stopped after a failure") {
+      val store = LanguageServerLifecycleStore()
+      every { installer.install() } returns null
+      val provider = newProvider(store = store)
+      provider.start(bundle)
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+
+      provider.stop()
+
+      store.snapshot().phase shouldBe LanguageServerPhase.STOPPED
+      store.snapshot().failure shouldBe null
     }
   }
 })
