@@ -177,6 +177,30 @@ class LanguageServerFailureNotifierTest : DescribeSpec({
       f.closed shouldBe listOf(LanguageServerFailureKind.START_FAILED)
     }
 
+    it("closes the popup it just opened when the state moved on while it was opening") {
+      val store = LanguageServerLifecycleStore()
+      val queued = mutableListOf<Runnable>()
+      var closes = 0
+      var generation = 0L
+      val notifier = LanguageServerFailureNotifier(
+        store = store,
+        uiDispatch = { queued += it },
+        workbenchAvailable = { true },
+        present = {
+          // A transition lands while the popup is being opened (e.g. a restart from another thread).
+          store.markStopped(generation)
+          AutoCloseable { closes++ }
+        },
+      )
+      store.addListener(notifier)
+      generation = store.beginAttempt(StartOrigin.STARTUP)
+      store.markFailed(generation, LanguageServerFailureKind.START_FAILED)
+
+      queued.removeAt(0).run()
+
+      closes shouldBe 1
+    }
+
     it("never throws when the UI dispatch fails (display disposed or workbench gone)") {
       val store = LanguageServerLifecycleStore()
       listOf<() -> Nothing>(

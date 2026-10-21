@@ -73,6 +73,9 @@ class LanguageServerFailureNotifier(
     closeShown()
     lastShown = present(kind)
     shownGeneration = if (lastShown != null) generation else NONE
+    // A transition that landed while the popup was opening saw no shown generation yet and so
+    // dispatched no close: re-check now and close it (best-effort).
+    closeIfLeft()
   }
 
   private fun closeIfLeft() {

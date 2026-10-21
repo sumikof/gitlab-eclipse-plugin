@@ -46,9 +46,12 @@ import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
@@ -1155,6 +1158,34 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
 
       store.snapshot().phase shouldBe LanguageServerPhase.STOPPED
       store.snapshot().failure shouldBe null
+    }
+  }
+
+  describe("failureKindOf (R2-I1, R2-I2, R2-I4)") {
+    it("maps a timeout to INITIALIZE_TIMEOUT whether bare or wrapped by the future") {
+      failureKindOf(TimeoutException()) shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+      failureKindOf(ExecutionException(TimeoutException())) shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+      failureKindOf(CompletionException(TimeoutException())) shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+      failureKindOf(ExecutionException(CompletionException(TimeoutException()))) shouldBe
+        LanguageServerFailureKind.INITIALIZE_TIMEOUT
+    }
+
+    it("maps any other wrapped initialize failure to INITIALIZE_FAILED") {
+      failureKindOf(ExecutionException(RuntimeException())) shouldBe LanguageServerFailureKind.INITIALIZE_FAILED
+      failureKindOf(CompletionException(RuntimeException())) shouldBe LanguageServerFailureKind.INITIALIZE_FAILED
+    }
+
+    it("maps the provider's own exception types structurally, never by message") {
+      failureKindOf(LanguageServerNotInstalledException()) shouldBe LanguageServerFailureKind.INSTALL_FAILED
+      failureKindOf(LanguageServerExitedDuringStartupException()) shouldBe
+        LanguageServerFailureKind.EXITED_DURING_STARTUP
+      failureKindOf(LanguageServerSpawnException(IOException())) shouldBe LanguageServerFailureKind.START_FAILED
+      failureKindOf(IllegalStateException("Language server exited during startup")) shouldBe
+        LanguageServerFailureKind.START_FAILED
+    }
+
+    it("maps an interrupted wait to START_FAILED") {
+      failureKindOf(InterruptedException()) shouldBe LanguageServerFailureKind.START_FAILED
     }
   }
 })

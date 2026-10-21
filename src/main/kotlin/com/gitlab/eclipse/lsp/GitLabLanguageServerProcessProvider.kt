@@ -452,14 +452,14 @@ private fun resetTerminalContextState(logger: ILog) {
 }
 
 /** [LanguageServerInstaller.install] returned null; the installer has logged why. */
-private class LanguageServerNotInstalledException : IllegalStateException("Language server installation failed")
+internal class LanguageServerNotInstalledException : IllegalStateException("Language server installation failed")
 
 /** The process factory threw (spawn failure); [cause] is the original exception. */
-private class LanguageServerSpawnException(cause: Throwable) :
+internal class LanguageServerSpawnException(cause: Throwable) :
   IllegalStateException("Language server process could not be created", cause)
 
 /** The new process exited before (or right after) completing the initialize handshake. */
-private class LanguageServerExitedDuringStartupException :
+internal class LanguageServerExitedDuringStartupException :
   IllegalStateException("Language server exited during startup")
 
 /** The lifecycle store is closed (the bundle is stopping): no attempt was begun. */
@@ -476,7 +476,7 @@ private fun requireAttemptBegun(generation: Long): Long {
  * message (design §15 R2-I1). A timeout can arrive bare (restart's own wait) or wrapped in an
  * [ExecutionException] (the `orTimeout` of the initialize future won the race, R2-I4).
  */
-private fun failureKindOf(e: Throwable): LanguageServerFailureKind = when (e) {
+internal fun failureKindOf(e: Throwable): LanguageServerFailureKind = when (e) {
   is LanguageServerNotInstalledException -> LanguageServerFailureKind.INSTALL_FAILED
   is LanguageServerExitedDuringStartupException -> LanguageServerFailureKind.EXITED_DURING_STARTUP
   is TimeoutException -> LanguageServerFailureKind.INITIALIZE_TIMEOUT
