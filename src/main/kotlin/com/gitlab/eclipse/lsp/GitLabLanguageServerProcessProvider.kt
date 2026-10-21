@@ -4,6 +4,7 @@ import com.gitlab.eclipse.BuildConfig
 import com.gitlab.eclipse.authentication.AuthenticationStateService
 import com.gitlab.eclipse.chat.terminal.TerminalContextSourceProvider
 import com.gitlab.eclipse.chat.utils.refreshDuoChatWindow
+import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.diagnostics.LanguageServerVersionState
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
@@ -345,6 +346,7 @@ class GitLabLanguageServerProcessProvider(
           handleRef.get()?.let { languageServerWrapper.unregisterLanguageServer(it) }
           SecurityScanLifecycle.onServerStopped()
           resetAuthenticationState(logger)
+          resetCodeSuggestionsState(logger)
           resetTerminalContextState(logger)
         }
       }
@@ -381,6 +383,7 @@ class GitLabLanguageServerProcessProvider(
       // lock, so the exit notification that follows fails its identity guard and never runs.
       SecurityScanLifecycle.onServerStopped()
       resetAuthenticationState(logger)
+      resetCodeSuggestionsState(logger)
       resetTerminalContextState(logger)
     }
   }
@@ -440,6 +443,16 @@ class GitLabLanguageServerProcessProvider(
 private fun resetAuthenticationState(logger: ILog) {
   runCatching { service<AuthenticationStateService>().resetForConnectionChange() }
     .onFailure { logger.warn("Skipped the authentication state reset: ${it.javaClass.simpleName}") }
+}
+
+/**
+ * The connection is gone, so its Code Suggestions feature state is unknown again: the status shows
+ * "Checking..." until the next connection reports (design §8.3). Contained for the same reasons as
+ * [resetAuthenticationState].
+ */
+private fun resetCodeSuggestionsState(logger: ILog) {
+  runCatching { service<CodeSuggestionsStateService>().reset() }
+    .onFailure { logger.warn("Skipped the code suggestions state reset: ${it.javaClass.simpleName}") }
 }
 
 /**

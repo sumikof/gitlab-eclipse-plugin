@@ -92,6 +92,14 @@ class CodeSuggestionsWarningPolicyTest : DescribeSpec({
       policy.suppressVersionWarning("https://a.example.com")
       prefs.values[SUPPRESSED] shouldBe "https://a.example.com\nhttps://b.example.com"
     }
+    it("a single suppression stores exactly the normalised URL") {
+      policy.suppressVersionWarning("https://a.example.com/")
+      prefs.values[SUPPRESSED] shouldBe "https://a.example.com"
+    }
+    it("trims surrounding whitespace when suppressing") {
+      policy.suppressVersionWarning("  https://gl.example.com/ ")
+      policy.onFeatureState(s1, listOf(versionCheck("https://gl.example.com"))) shouldBe null
+    }
     it("tolerates a malformed persisted list") {
       prefs.values[SUPPRESSED] = "\n  \n\n"
       policy.onFeatureState(s1, listOf(versionCheck())) shouldBe

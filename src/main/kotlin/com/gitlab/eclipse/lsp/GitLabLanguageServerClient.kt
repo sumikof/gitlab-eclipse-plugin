@@ -130,7 +130,7 @@ class GitLabLanguageServerClient(
           "agentic_chat" -> service<ChatAvailabilityService>().updateAgentic(change)
           TerminalContextSourceProvider.FEATURE_ID ->
             service<TerminalContextSourceProvider>().update(change, session, sequence)
-          "code_suggestions" -> service<CodeSuggestionsStateService>().update(change)
+          "code_suggestions" -> service<CodeSuggestionsStateService>().update(change, session)
           else -> return@forEach
         }
       }

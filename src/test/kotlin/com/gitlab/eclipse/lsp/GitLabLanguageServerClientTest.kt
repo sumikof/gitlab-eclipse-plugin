@@ -141,7 +141,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
       verify { duoChatStateService wasNot Called }
     }
 
-    it("should update code suggestions state based on the feature state") {
+    it("should update code suggestions state with this connection's session") {
       val featureState = FeatureStateChange(
         featureId = "code_suggestions",
         allChecks = emptyList()
@@ -149,7 +149,7 @@ class GitLabLanguageServerClientTest : DescribeSpec({
 
       client.gitlabFeatureStateChange(arrayOf(featureState)).join()
 
-      verify { codeSuggestionsStateService.update(featureState) }
+      verify { codeSuggestionsStateService.update(featureState, client.session) }
     }
 
     it("should update the terminal context state with this connection's session") {

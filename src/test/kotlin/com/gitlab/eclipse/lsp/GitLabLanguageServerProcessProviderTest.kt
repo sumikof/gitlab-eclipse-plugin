@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.capabilities.DidChangeWatchedFileCapability
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
@@ -229,6 +230,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   val installer = mockk<LanguageServerInstaller>()
   val bundle = mockk<Bundle>()
   val stateDir = createTempDirectory("ls-state").toFile()
+  val codeSuggestionsState = mockk<CodeSuggestionsStateService>(relaxUnitFun = true)
 
   val spawnedProcesses = mutableListOf<FakeLanguageServerProcess>()
   var nextInitializeReply = InitializeReply.SUCCESS
@@ -264,6 +266,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
         module {
           single<DidChangeWatchedFileCapability> { mockk(relaxUnitFun = true) }
           single<PluginMessageService> { mockk(relaxUnitFun = true) }
+          single<CodeSuggestionsStateService> { codeSuggestionsState }
         }
       )
     }
@@ -408,6 +411,35 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   }
 
   describe("connection teardown") {
+    it("resets the code suggestions state when the server is stopped explicitly") {
+      val provider = newProvider()
+      provider.start(bundle)
+
+      provider.stop()
+
+      verify(atLeast = 1) { codeSuggestionsState.reset() }
+    }
+
+    it("resets the code suggestions state when the server exits on its own") {
+      val provider = newProvider()
+      provider.start(bundle)
+      val live = DiagnosticGenerationRegistry.currentEpoch
+
+      spawnedProcesses[0].completeExit()
+
+      eventually(2.seconds) { DiagnosticGenerationRegistry.currentEpoch shouldBe live + 1 }
+      verify(atLeast = 1) { codeSuggestionsState.reset() }
+    }
+
+    it("stops without throwing when the code suggestions state reset fails") {
+      val provider = newProvider()
+      provider.start(bundle)
+      every { codeSuggestionsState.reset() } throws IllegalStateException("workbench closing")
+
+      shouldNotThrowAny { provider.stop() }
+      provider.isRunning shouldBe false
+    }
+
     it("advances the connection epoch when the server is stopped explicitly") {
       val provider = newProvider()
       provider.start(bundle)
