@@ -1,6 +1,5 @@
 package com.gitlab.eclipse.codesuggestions
 
-import com.gitlab.eclipse.authentication.AuthState
 import com.gitlab.eclipse.authentication.AuthenticationSourceProvider
 import com.gitlab.eclipse.codesuggestions.annotation.CodeSuggestionsSessionAnnotationManager
 import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
@@ -11,6 +10,7 @@ import com.gitlab.eclipse.codesuggestions.status.DuoStatusInputsProvider
 import com.gitlab.eclipse.codesuggestions.status.DuoStatusRefresher
 import com.gitlab.eclipse.codesuggestions.status.ScopedPreferenceWarningAccess
 import com.gitlab.eclipse.codesuggestions.status.UPGRADE_DOCS_URL
+import com.gitlab.eclipse.codesuggestions.status.authStateOrUnknown
 import com.gitlab.eclipse.lsp.GitLabLanguageServerWrapper
 import com.gitlab.eclipse.lsp.ShowDocumentLauncher
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
@@ -103,13 +103,7 @@ val codeSuggestionsModule = module {
     DuoStatusInputsProvider(
       lifecycle = store::snapshot,
       // In-memory state only (F5); the workbench-created provider is resolved on first render.
-      authState = {
-        try {
-          authSource.authState
-        } catch (ignored: RuntimeException) {
-          AuthState.UNKNOWN
-        }
-      },
+      authState = { authStateOrUnknown { authSource.authState } },
       codeSuggestionsEnabled = { preferences.getBoolean(PreferenceConstants.CODE_SUGGESTIONS_ENABLED) },
       featureStateKnown = { stateService.featureStateKnown },
       primaryCheckId = { stateService.primaryCheckId },

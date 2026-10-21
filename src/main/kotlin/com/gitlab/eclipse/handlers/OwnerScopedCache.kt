@@ -28,7 +28,7 @@ internal class OwnerScopedCache<K : Any, V : Any>(
     val value = entries.remove(owner) ?: return
     try {
       release(value)
-    } catch (ignored: RuntimeException) {
+    } catch (ignored: Exception) {
       /* already torn down with its owner: nothing left to release */
     }
   }

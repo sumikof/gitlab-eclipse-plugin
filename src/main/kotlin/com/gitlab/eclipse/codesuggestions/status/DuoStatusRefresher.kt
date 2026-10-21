@@ -5,6 +5,8 @@ import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleState
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.e4.core.services.events.IEventBroker
+import org.eclipse.e4.ui.css.swt.theme.IThemeEngine
 import org.eclipse.jface.preference.IPreferenceStore
 import org.eclipse.jface.util.IPropertyChangeListener
 import org.eclipse.swt.SWTException
@@ -19,6 +21,7 @@ import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.commands.ICommandService
 import org.koin.core.context.GlobalContext
+import org.osgi.service.event.EventHandler
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -36,7 +39,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Triggers: lifecycle transitions ([onTransition]), Code Suggestions state changes and toggles
  * (callers of [request]), and — after [installWindowListeners] — editor activation in any window,
- * window open, theme change, the auth source provider and Code Suggestions preference changes.
+ * window open, theme change (the Appearance > Theme CSS switch via the event broker's
+ * `IThemeEngine.Events.THEME_CHANGED`, and color/font theme changes via the theme manager), the auth
+ * source provider and Code Suggestions preference changes.
+ *
+ * Every boundary catches [Exception], not only RuntimeException: Koin 4 resolution failures extend
+ * java.lang.Exception.
  *
  * @param uiDispatch hands a runnable to the UI thread (`asyncExec`; never `syncExec`).
  * @param refreshElements refreshes the elements of one command id on the UI thread.
@@ -98,6 +106,9 @@ class DuoStatusRefresher(
 
   private val themeListener = IPropertyChangeListener { request() }
 
+  /** Appearance > Theme switches the CSS theme, which fires no theme manager property event. */
+  private val themeEventHandler = EventHandler { request() }
+
   private val preferenceListener = IPropertyChangeListener { event ->
     if (event.property in WATCHED_PREFERENCES) request()
   }
@@ -115,7 +126,7 @@ class DuoStatusRefresher(
     if (!pending.compareAndSet(false, true)) return
     try {
       uiDispatch(Runnable(::refresh))
-    } catch (e: RuntimeException) {
+    } catch (e: Exception) {
       pending.set(false)
       logUnexpected(e)
     }
@@ -138,6 +149,13 @@ class DuoStatusRefresher(
       val themeManager = workbench().themeManager
       themeManager.addPropertyChangeListener(themeListener)
       registrations += { themeManager.removePropertyChangeListener(themeListener) }
+    }
+    step {
+      // As LanguageServerWebviewService.subscribeToThemeChanges(): the workbench's event broker.
+      val events = workbench().getService(IEventBroker::class.java)
+      if (events != null && events.subscribe(IThemeEngine.Events.THEME_CHANGED, themeEventHandler)) {
+        registrations += { events.unsubscribe(themeEventHandler) }
+      }
     }
     step {
       authSource()?.let { source ->
@@ -167,7 +185,7 @@ class DuoStatusRefresher(
     for (id in COMMAND_IDS) {
       try {
         refreshElements(id)
-      } catch (e: RuntimeException) {
+      } catch (e: Exception) {
         logUnexpected(e)
       }
     }
@@ -176,7 +194,7 @@ class DuoStatusRefresher(
   private fun canRefresh(): Boolean =
     try {
       !disposed && !isStoreClosed() && isWorkbenchAvailable()
-    } catch (e: RuntimeException) {
+    } catch (e: Exception) {
       logUnexpected(e)
       false
     }
@@ -198,14 +216,14 @@ class DuoStatusRefresher(
   private inline fun step(action: () -> Unit) {
     try {
       action()
-    } catch (e: RuntimeException) {
+    } catch (e: Exception) {
       logUnexpected(e)
     }
   }
 }
 
 /** Display disposal and workbench teardown are expected races and stay silent; anything else is logged by class. */
-private fun logUnexpected(e: RuntimeException) {
+private fun logUnexpected(e: Exception) {
   if (e is SWTException || e is IllegalStateException) return
   runCatching { logger<DuoStatusRefresher>().warn("Duo status refresh failed (${e.javaClass.simpleName}).") }
 }

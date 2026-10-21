@@ -50,3 +50,14 @@ class DuoStatusInputsProvider(
 /** The language id of [window]'s active editor, exactly as didOpen sends it; null without one. */
 internal fun activeEditorLanguageId(window: IWorkbenchWindow): String? =
   fileLanguageIdOf(window.activePage?.activeEditor?.editorInput)
+
+/**
+ * The auth state for the Duo status, or [AuthState.UNKNOWN] when the workbench-created provider
+ * cannot be resolved (a Koin resolution failure extends java.lang.Exception, not RuntimeException).
+ */
+internal fun authStateOrUnknown(read: () -> AuthState): AuthState =
+  try {
+    read()
+  } catch (ignored: Exception) {
+    AuthState.UNKNOWN
+  }

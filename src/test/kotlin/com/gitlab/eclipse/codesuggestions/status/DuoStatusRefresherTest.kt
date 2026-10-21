@@ -15,6 +15,8 @@ import io.mockk.mockk
 import io.mockk.runs
 import io.mockk.slot
 import io.mockk.verify
+import org.eclipse.e4.core.services.events.IEventBroker
+import org.eclipse.e4.ui.css.swt.theme.IThemeEngine
 import org.eclipse.jface.preference.IPreferenceStore
 import org.eclipse.jface.util.IPropertyChangeListener
 import org.eclipse.jface.util.PropertyChangeEvent
@@ -28,6 +30,9 @@ import org.eclipse.ui.IWindowListener
 import org.eclipse.ui.IWorkbench
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.themes.IThemeManager
+import org.koin.core.error.NoDefinitionFoundException
+import org.osgi.service.event.Event
+import org.osgi.service.event.EventHandler
 
 private const val SHOW_STATUS = "gitlab-eclipse-plugin.commands.showPluginStatus"
 private const val CS_STATUS = "gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
@@ -40,9 +45,9 @@ class DuoStatusRefresherTest : DescribeSpec({
     var closed = false
     var workbenchAvailable = true
     val queued = mutableListOf<Runnable>()
-    var dispatchFailure: RuntimeException? = null
+    var dispatchFailure: Exception? = null
     val refreshed = mutableListOf<String>()
-    var refreshFailure: (String) -> RuntimeException? = { null }
+    var refreshFailure: (String) -> Exception? = { null }
 
     val refresher = DuoStatusRefresher(
       isStoreClosed = { closed },
@@ -158,6 +163,24 @@ class DuoStatusRefresherTest : DescribeSpec({
       f.queued shouldHaveSize 1
     }
 
+    it("contains a checked exception (a Koin failure) from the dispatch, the guard and a refresh") {
+      val f = Fixture()
+      f.dispatchFailure = NoDefinitionFoundException("koin")
+      shouldNotThrowAny { f.refresher.request() }
+      f.dispatchFailure = null
+      f.refreshFailure = { id -> if (id == SHOW_STATUS) NoDefinitionFoundException("koin") else null }
+      f.refresher.request()
+      shouldNotThrowAny { f.drain() }
+      f.refreshed shouldContainExactly listOf(CS_STATUS)
+
+      val guarded = DuoStatusRefresher(
+        isStoreClosed = { throw NoDefinitionFoundException("koin") },
+        uiDispatch = { error("must not dispatch") },
+        refreshElements = { error("must not refresh") },
+      )
+      shouldNotThrowAny { guarded.request() }
+    }
+
     it("is a lifecycle listener that requests a refresh on every transition") {
       val f = Fixture()
       f.refresher.onTransition(LanguageServerLifecycleState.INITIAL, LanguageServerLifecycleState.INITIAL)
@@ -182,6 +205,8 @@ class DuoStatusRefresherTest : DescribeSpec({
       val themeListener = slot<IPropertyChangeListener>()
       val prefListener = slot<IPropertyChangeListener>()
       val sourceListener = slot<ISourceProviderListener>()
+      val themeTopic = slot<String>()
+      val themeHandler = slot<EventHandler>()
       val partListeners = mutableMapOf<IWorkbenchWindow, IPartListener2>()
       val removedPartListeners = mutableListOf<IWorkbenchWindow>()
 
@@ -201,11 +226,16 @@ class DuoStatusRefresherTest : DescribeSpec({
         every { addPropertyChangeListener(capture(themeListener)) } just runs
         every { removePropertyChangeListener(any()) } just runs
       }
+      val broker = mockk<IEventBroker> {
+        every { subscribe(capture(themeTopic), capture(themeHandler)) } returns true
+        every { unsubscribe(any()) } returns true
+      }
       val workbench = mockk<IWorkbench> {
         every { addWindowListener(capture(windowListener)) } just runs
         every { removeWindowListener(any()) } just runs
         every { workbenchWindows } returns arrayOf(first)
         every { themeManager } returns this@Ui.themeManager
+        every { getService(IEventBroker::class.java) } returns broker
       }
       val authSource = mockk<ISourceProvider> {
         every { addSourceProviderListener(capture(sourceListener)) } just runs
@@ -293,6 +323,34 @@ class DuoStatusRefresherTest : DescribeSpec({
       ui.takeRequests() shouldBe 0
     }
 
+    it("requests a refresh when Appearance > Theme switches the CSS theme (IThemeEngine THEME_CHANGED)") {
+      val ui = Ui()
+      ui.refresher.installWindowListeners()
+
+      ui.themeTopic.captured shouldBe IThemeEngine.Events.THEME_CHANGED
+      ui.themeHandler.captured.handleEvent(Event(IThemeEngine.Events.THEME_CHANGED, emptyMap<String, Any>()))
+      ui.takeRequests() shouldBe 1
+    }
+
+    it("a checked exception (a Koin failure) in the auth source step does not stop the others (F7 still refreshes)") {
+      val ui = Ui()
+      val refresher = DuoStatusRefresher(
+        isStoreClosed = { false },
+        isWorkbenchAvailable = { true },
+        uiDispatch = { ui.queued += it },
+        refreshElements = {},
+        workbench = { ui.workbench },
+        authSource = { throw NoDefinitionFoundException("koin") },
+        preferenceStore = { ui.prefs },
+      )
+
+      shouldNotThrowAny { refresher.installWindowListeners() }
+
+      verify { ui.prefs.addPropertyChangeListener(any()) }
+      ui.windowListener.captured.windowOpened(ui.window())
+      ui.takeRequests() shouldBe 1
+    }
+
     it("installs only once") {
       val ui = Ui()
       ui.refresher.installWindowListeners()
@@ -312,6 +370,7 @@ class DuoStatusRefresherTest : DescribeSpec({
       verify { ui.themeManager.removePropertyChangeListener(ui.themeListener.captured) }
       verify { ui.authSource.removeSourceProviderListener(ui.sourceListener.captured) }
       verify { ui.prefs.removePropertyChangeListener(ui.prefListener.captured) }
+      verify { ui.broker.unsubscribe(ui.themeHandler.captured) }
       ui.removedPartListeners.toSet() shouldBe setOf(ui.first, second)
     }
 

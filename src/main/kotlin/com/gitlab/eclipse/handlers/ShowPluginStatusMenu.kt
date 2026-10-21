@@ -54,7 +54,7 @@ class ShowPluginStatusMenu : AbstractHandler(), IElementUpdater {
       /* display disposed mid-render: nothing to update */
     } catch (ignored: IllegalStateException) {
       /* workbench closing: nothing to update */
-    } catch (e: RuntimeException) {
+    } catch (e: Exception) {
       // Keep the current icon and tooltip; never break the trim render.
       logger<ShowPluginStatusMenu>().warn("Duo status trim update failed (${e.javaClass.simpleName}).")
     }

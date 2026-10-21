@@ -63,9 +63,10 @@ class CodeSuggestionsWarningNotifier(
           }
         },
       )
-    } catch (e: RuntimeException) {
-      // A disposed display (SWTException), a torn-down workbench (IllegalStateException) or a
-      // failing preference read: the worker thread must not see it.
+    } catch (e: Exception) {
+      // A disposed display (SWTException), a torn-down workbench (IllegalStateException), a Koin
+      // resolution failure (a checked Exception) or a failing preference read: the worker thread
+      // must not see it.
       warnSkipped(e)
     }
   }
@@ -102,7 +103,7 @@ class CodeSuggestionsWarningNotifier(
   private fun contained(action: () -> Unit): () -> Unit = {
     try {
       action()
-    } catch (e: RuntimeException) {
+    } catch (e: Exception) {
       runCatching { log.warn("A Code Suggestions warning action failed (${e.javaClass.simpleName}).") }
     }
   }

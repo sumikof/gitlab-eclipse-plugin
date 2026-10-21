@@ -14,6 +14,7 @@ import org.eclipse.ui.IEditorPart
 import org.eclipse.ui.IFileEditorInput
 import org.eclipse.ui.IWorkbenchPage
 import org.eclipse.ui.IWorkbenchWindow
+import org.koin.core.error.NoDefinitionFoundException
 
 /** Headless: windows, pages, editors and files are interface mocks; no SWT Display is touched. */
 class DuoStatusInputsProviderTest : DescribeSpec({
@@ -131,6 +132,17 @@ class DuoStatusInputsProviderTest : DescribeSpec({
       val s = provider(lifecycle = starting).status(null)
       s.icon.iconName shouldBe "duo_load_edit"
       s.menuLabel shouldBe "Code Suggestions: Starting..."
+    }
+  }
+
+  describe("authStateOrUnknown (the module's authState source)") {
+    it("passes the provider's state through") {
+      authStateOrUnknown { AuthState.AUTHENTICATED } shouldBe AuthState.AUTHENTICATED
+    }
+
+    it("yields UNKNOWN when the lookup fails, including with a checked exception (a Koin failure)") {
+      authStateOrUnknown { throw IllegalStateException() } shouldBe AuthState.UNKNOWN
+      authStateOrUnknown { throw NoDefinitionFoundException("koin") } shouldBe AuthState.UNKNOWN
     }
   }
 })

@@ -16,6 +16,7 @@ import io.mockk.mockk
 import io.mockk.verifyOrder
 import org.eclipse.jface.preference.IPersistentPreferenceStore
 import org.eclipse.swt.SWT
+import org.koin.core.error.NoDefinitionFoundException
 import java.io.IOException
 import java.time.LocalDate
 
@@ -239,6 +240,33 @@ class CodeSuggestionsWarningNotifierTest : DescribeSpec({
       )
 
       shouldNotThrowAny { notifier.onFeatureState(session, listOf(credits)) }
+    }
+
+    it("never throws a checked exception (a Koin failure) to the dispatching thread or the event loop") {
+      val f = Fixture()
+      val notifier = CodeSuggestionsWarningNotifier(
+        policy = f.policy,
+        currentSession = { throw NoDefinitionFoundException("koin") },
+        isClosed = { false },
+        openUpgradeDocs = {},
+        uiDispatch = { it.run() },
+        present = {},
+      )
+      shouldNotThrowAny { notifier.onFeatureState(f.current!!, listOf(credits)) }
+
+      val presented = mutableListOf<WarningPresentation>()
+      val session = LanguageServerSession()
+      val withFailingLink = CodeSuggestionsWarningNotifier(
+        policy = f.policy,
+        currentSession = { session },
+        isClosed = { false },
+        openUpgradeDocs = { throw NoDefinitionFoundException("koin") },
+        uiDispatch = { it.run() },
+        present = { presented += it },
+      )
+      withFailingLink.onFeatureState(session, listOf(versionCheck()))
+      val learn = presented.single().links.first { it.first == "Learn about upgrading" }.second
+      shouldNotThrowAny { learn() }
     }
   }
 

@@ -8,6 +8,7 @@ import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.kotest.matchers.types.shouldNotBeSameInstanceAs
+import org.koin.core.error.NoDefinitionFoundException
 
 /** The per-shell pulldown menu bookkeeping of [ShowPluginStatusMenu] (design §8.3, I5), without SWT. */
 class OwnerScopedCacheTest : DescribeSpec({
@@ -74,5 +75,16 @@ class OwnerScopedCacheTest : DescribeSpec({
 
     shouldNotThrowAny { f.cache.remove("shellA") }
     f.cache.size shouldBe 0
+  }
+
+  it("contains a checked exception (a Koin failure) from the release") {
+    val cache = OwnerScopedCache<String, Value>(
+      isAlive = { true },
+      release = { throw NoDefinitionFoundException("koin") },
+    )
+    cache.getOrCreate("shellA") { Value("a") }
+
+    shouldNotThrowAny { cache.remove("shellA") }
+    cache.size shouldBe 0
   }
 })
