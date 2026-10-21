@@ -19,6 +19,7 @@ import com.gitlab.eclipse.lsp.messages.CopyTextParams
 import com.gitlab.eclipse.lsp.messages.EditorSelectionContext
 import com.gitlab.eclipse.lsp.messages.ExperimentFeaturesStateParams
 import com.gitlab.eclipse.lsp.messages.GitDiffParams
+import com.gitlab.eclipse.lsp.messages.LanguageServerMessagePresenter
 import com.gitlab.eclipse.lsp.messages.OpenFileParams
 import com.gitlab.eclipse.lsp.messages.OpenUrlParams
 import com.gitlab.eclipse.lsp.messages.StreamingCompletionResponse
@@ -371,7 +372,7 @@ class GitLabLanguageServerClient(
 
   private fun applyDiagnostics(params: PublishDiagnosticsParams) {
     val key = DiagnosticUri.normalize(params.uri) ?: return
-    val incoming = params.diagnostics ?: emptyList()
+    val incoming = params.diagnostics.orEmpty()
 
     // Only suspended sources are dropped; diagnostics from every other source still pass through.
     val tokens = incoming.associateWith {
@@ -392,17 +393,18 @@ class GitLabLanguageServerClient(
     service<DiagnosticMarkerService>().apply(key, finalDiagnostics, generation, connectionEpoch)
   }
 
+  /** LS-08: shown in Eclipse by the presenter, which returns at once (all UI work is asyncExec). */
   override fun showMessage(message: MessageParams) {
-    logger.info("showMessage: $message")
+    service<LanguageServerMessagePresenter>().show(session, message)
   }
 
-  override fun showMessageRequest(message: ShowMessageRequestParams): CompletableFuture<MessageActionItem> {
-    logger.info("showMessageRequest: $message")
-    return CompletableFuture.completedFuture(MessageActionItem())
-  }
+  /** LS-08: answered with the chosen action, or null; the future is completed off the UI thread. */
+  override fun showMessageRequest(message: ShowMessageRequestParams): CompletableFuture<MessageActionItem?> =
+    service<LanguageServerMessagePresenter>().request(session, message)
 
+  /** Logged by type only: the payload may carry anything the server knows (AC-G1). */
   override fun logMessage(message: MessageParams) {
-    logger.info("logMessage: $message")
+    logger.debug { "logMessage received (type=${message.type?.name?.uppercase() ?: "NONE"})" }
   }
 
   @Suppress("ForbiddenVoid")

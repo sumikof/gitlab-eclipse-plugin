@@ -14,6 +14,7 @@ import com.gitlab.eclipse.lsp.git.GitDiffService
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureNotifier
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
 import com.gitlab.eclipse.lsp.listeners.ProjectOpenLanguageServerListener
+import com.gitlab.eclipse.lsp.messages.LanguageServerMessagePresenter
 import com.gitlab.eclipse.lsp.plugins.PluginController
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
@@ -55,6 +56,17 @@ val languageServerModule = module {
   // listeners (failure notifier, status refresh, message presenter) are attached at activation.
   single<LanguageServerLifecycleStore> { LanguageServerLifecycleStore() }
   single<LanguageServerFailureNotifier> { LanguageServerFailureNotifier(get()) }
+
+  // LS-08: window/showMessage(Request) in Eclipse. Its other seams default to asyncExec, runAsync,
+  // the popup and the dialog; the session-end hook is attached at activation with the listeners.
+  single<LanguageServerMessagePresenter> {
+    val wrapper = get<GitLabLanguageServerWrapper>()
+    val store = get<LanguageServerLifecycleStore>()
+    LanguageServerMessagePresenter(
+      currentSession = { wrapper.currentSnapshot?.session },
+      isClosed = { store.isClosed },
+    )
+  }
 
   single<GitLabLanguageServerProcessProvider> {
     GitLabLanguageServerProcessProvider(get(), get(), get(), get(), get(), get(), lifecycleStore = get())
