@@ -1179,6 +1179,20 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
       provider.stop()
     }
 
+    it("publishes STOPPED for the previous generation even when the restart's stop step throws") {
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(store = store)
+      provider.start(bundle)
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+      every { languageServerWrapper.unregisterLanguageServer() } throws
+        IllegalStateException("Koin scope is already closed")
+
+      // Still reported, as stop() reports it; the store must not stay RUNNING for a stopped server.
+      shouldThrow<IllegalStateException> { provider.restart(bundle) }
+
+      store.snapshot().phaseAndGeneration() shouldBe (LanguageServerPhase.STOPPED to 1L)
+    }
+
     it("clears FAILED with STOPPED when stopped after a failure") {
       val store = LanguageServerLifecycleStore()
       every { installer.install() } returns null

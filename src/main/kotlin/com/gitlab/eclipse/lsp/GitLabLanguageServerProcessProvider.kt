@@ -141,9 +141,14 @@ class GitLabLanguageServerProcessProvider(
     synchronized(lifecycleLock) {
       logger.info("Restarting the Language Server.")
       val previousGeneration = lifecycleStore.snapshot().generation
-      stopLocked()
-      // Not a failure edge, so no popup; it does close a failure popup of the previous generation.
-      lifecycleStore.markStopped(previousGeneration)
+      try {
+        stopLocked()
+      } finally {
+        // As stop(): published even when a stop step throws, so the store never stays RUNNING for a
+        // stopped server. Not a failure edge, so no popup; it does close a failure popup of the
+        // previous generation.
+        lifecycleStore.markStopped(previousGeneration)
+      }
       val failure = try {
         // Await the RAW initialize future (completed by the lsp4j listener thread), not the
         // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
