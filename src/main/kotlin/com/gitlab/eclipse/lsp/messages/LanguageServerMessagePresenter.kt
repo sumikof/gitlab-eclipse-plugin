@@ -71,8 +71,14 @@ class LanguageServerMessagePresenter(
     }
     val text = displayText(params.message)
     dispatch {
-      if (isCurrent(session) && dedupe.shouldShow(session, type, text)) {
-        notify(type, text)
+      try {
+        if (isCurrent(session) && dedupe.shouldShow(session, type, text)) {
+          notify(type, text)
+        }
+      } catch (ignored: SWTException) {
+        /* display disposed mid-turn: no-op */
+      } catch (e: RuntimeException) {
+        logger.warn("showMessage popup failed (${e.javaClass.simpleName}).")
       }
     }
   }

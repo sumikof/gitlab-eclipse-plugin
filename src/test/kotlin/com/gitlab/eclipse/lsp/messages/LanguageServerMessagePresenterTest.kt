@@ -46,6 +46,9 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
   class FakeDialog {
     var dismissed = 0
     var futureDoneAtDismiss: Boolean? = null
+
+    /** Whether every dismiss ran as its own UI turn: on the UI thread, dispatched after the dialog opened. */
+    var dismissedInOwnUiTurn: Boolean? = null
   }
 
   class Fixture(offUiPool: ExecutorService) {
@@ -58,6 +61,7 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
     /** The UI thread's queue; the test thread plays the UI thread when it drains it. */
     val queued = mutableListOf<Runnable>()
     var dispatchFails = false
+    var notifyFailure: RuntimeException? = null
     val notified = mutableListOf<Pair<MessageType, String>>()
     val asked = mutableListOf<Triple<MessageType, String, List<String>>>()
     val dialogs = mutableListOf<FakeDialog>()
@@ -75,7 +79,10 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
       },
       offUi = { offUiPool.execute(it) },
       dedupe = ShowMessageDeduplicator(nowMillis = { now }),
-      notify = { type, text -> notified += type to text },
+      notify = { type, text ->
+        notifyFailure?.let { throw it }
+        notified += type to text
+      },
       ask = { type, text, buttons, onDialog ->
         asked += Triple(type, text, buttons)
         val dialog = FakeDialog()
@@ -84,6 +91,10 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
           DialogHandle {
             dialog.dismissed++
             dialog.futureDoneAtDismiss = future?.isDone
+            // The dialog's own UI turn is depth 1; a dismiss dispatched to the UI runs nested in its
+            // modal loop (depth 2). Inline on another thread, or inline in the dialog's turn, is wrong.
+            val ownTurn = Thread.currentThread() === uiThread && uiDepth >= 2
+            dialog.dismissedInOwnUiTurn = (dialog.dismissedInOwnUiTurn ?: true) && ownTurn
           },
         )
         dialogBehaviour(dialog)
@@ -91,10 +102,23 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
       workbenchAvailable = { workbench },
     )
 
+    /** The thread draining the UI queue, and how deeply UI turns are nested on it (a modal loop nests). */
+    @Volatile
+    var uiThread: Thread? = null
+
+    @Volatile
+    var uiDepth = 0
+
     fun runUi() {
+      uiThread = Thread.currentThread()
       while (true) {
         val next = synchronized(queued) { if (queued.isEmpty()) null else queued.removeAt(0) } ?: return
-        next.run()
+        uiDepth++
+        try {
+          next.run()
+        } finally {
+          uiDepth--
+        }
       }
     }
 
@@ -244,6 +268,25 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
       f.runUi()
 
       f.notified shouldContainExactly listOf(MessageType.Info to "")
+    }
+
+    it("contains a failing popup in the UI turn and logs only the exception class") {
+      val log = mockk<ILog>(relaxed = true)
+      val statuses = mutableListOf<IStatus>()
+      every { log.log(capture(statuses)) } returns Unit
+      every { log.bundle.symbolicName } returns "test.bundle"
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { Platform.getLog(any<Class<*>>()) } returns log
+      val f = Fixture(offUiPool)
+      f.notifyFailure = IllegalStateException("SENTINEL-EXCEPTION")
+      f.presenter.show(f.session, message(MessageType.Error, "SENTINEL-TEXT"))
+
+      shouldNotThrowAny { f.runUi() }
+
+      verify(exactly = 1) { log.warn("showMessage popup failed (IllegalStateException).") }
+      verify(exactly = 0) { log.warn(match<String> { it.contains("SENTINEL") }) }
+      verify(exactly = 0) { log.warn(any(), any()) }
+      statuses.forEach { it.message shouldNotContain "SENTINEL" }
     }
 
     it("is a silent no-op when the UI hop fails") {
@@ -426,6 +469,7 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
       future.await().shouldBeNull()
       val dialog = f.dialogs.single()
       dialog.dismissed shouldBe 1
+      dialog.dismissedInOwnUiTurn shouldBe true
       dialog.futureDoneAtDismiss shouldBe true
     }
 
@@ -463,6 +507,7 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
 
       future.isCancelled shouldBe true
       f.dialogs.single().dismissed shouldBe 1
+      f.dialogs.single().dismissedInOwnUiTurn shouldBe true
     }
 
     it("ignores a click that comes after the request was answered with null") {
