@@ -2,6 +2,7 @@ package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.codesuggestions.dismissActiveCodeSuggestion
 import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
+import com.gitlab.eclipse.codesuggestions.status.requestDuoStatusRefresh
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.preferences.PreferenceConstants
@@ -24,6 +25,7 @@ class ToggleCodeSuggestionsHandler : AbstractHandler(), IElementUpdater {
     }
 
     refreshCodeSuggestionsToggle()
+    requestDuoStatusRefresh()
   }
 
   override fun updateElement(element: UIElement, filters: Map<*, *>) {

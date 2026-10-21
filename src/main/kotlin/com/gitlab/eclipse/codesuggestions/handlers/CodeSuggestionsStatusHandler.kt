@@ -1,16 +1,18 @@
 package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.codesuggestions.status.CodeSuggestionsStateService
+import com.gitlab.eclipse.codesuggestions.status.DuoStatusInputsProvider
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
-import com.gitlab.eclipse.utils.system.SystemUtils
-import com.gitlab.eclipse.utils.theming.IconTone
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
+import org.eclipse.swt.SWTException
+import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.commands.IElementUpdater
 import org.eclipse.ui.menus.UIElement
 
@@ -30,25 +32,20 @@ class CodeSuggestionsStatusHandler : AbstractHandler(), IElementUpdater {
 
   override fun isEnabled() = stateService.isEnabled
 
+  /** The label and icon of the Duo status of the menu's own window (design §8.3), as the trim shows it. */
   override fun updateElement(element: UIElement, parameters: MutableMap<Any?, Any?>) {
-    val engagedCheck = stateService.getFirstEngagedCheck()
-
-    val iconTone = when {
-      SystemUtils.isWindows() -> IconTone.DARK
-      else -> null
-    }
-
-    if (engagedCheck == null) {
-      element.setText("Code Suggestions: Enabled")
-      element.setIcon(ThemeUtils.getThemedIcon("duo_on_edit", iconTone))
-    } else {
-      if (engagedCheck.checkId == API_ERROR_CHECK_ID) {
-        "Code Suggestions: Unavailable (${engagedCheck.checkId})"
-      } else {
-        "Code Suggestions: Disabled (${engagedCheck.checkId})"
-      }.let(element::setText)
-
-      element.setIcon(ThemeUtils.getThemedIcon("duo_off_edit", iconTone))
+    try {
+      val window = element.serviceLocator?.getService(IWorkbenchWindow::class.java)
+      val status = service<DuoStatusInputsProvider>().status(window)
+      element.setText(status.menuLabel)
+      element.setIcon(ThemeUtils.getThemedIcon(status.icon.iconName))
+    } catch (ignored: SWTException) {
+      /* display disposed mid-render: nothing to update */
+    } catch (ignored: IllegalStateException) {
+      /* workbench closing: nothing to update */
+    } catch (e: RuntimeException) {
+      // Keep the current label; never break the menu render.
+      logger<CodeSuggestionsStatusHandler>().warn("Duo status menu update failed (${e.javaClass.simpleName}).")
     }
   }
 

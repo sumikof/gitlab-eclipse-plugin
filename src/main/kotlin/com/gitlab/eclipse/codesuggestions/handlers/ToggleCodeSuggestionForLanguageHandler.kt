@@ -2,6 +2,7 @@ package com.gitlab.eclipse.codesuggestions.handlers
 
 import com.gitlab.eclipse.codesuggestions.languages.CodeSuggestionsLanguageService
 import com.gitlab.eclipse.codesuggestions.languages.refreshCodeSuggestionsLanguageToggle
+import com.gitlab.eclipse.codesuggestions.status.requestDuoStatusRefresh
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage.language
@@ -25,6 +26,7 @@ class ToggleCodeSuggestionForLanguageHandler : AbstractHandler(), IElementUpdate
     service<CodeSuggestionsLanguageService>().toggleLanguage(fileLanguageIdentifier)
     service<GitLabLanguageServerConfigurationService>().sendConfiguration()
     refreshCodeSuggestionsLanguageToggle()
+    requestDuoStatusRefresh()
   }
 
   override fun isEnabled(): Boolean {
