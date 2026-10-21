@@ -80,5 +80,48 @@ class JobServiceTest : DescribeSpec({
         apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), any(), null)
       }
     }
+
+    it("adds no query parameter by default") {
+      val request = slot<ApiRequest<GitLabJob>>()
+      every {
+        apiClient.fetchListWithinDeadline(capture(request), any(), any(), any())
+      } returns emptyList()
+
+      service.getJobsForPipeline("42", 99L)
+
+      request.captured.query shouldBe emptyMap()
+    }
+
+    it("adds include_retried=true when includeRetried is set, keeping path and connection pinning") {
+      val connection = ConnectionSnapshot(
+        instanceUrl = "https://pinned.example.com/",
+        token = "pinned-token",
+        authFingerprint = "0123456789abcdef",
+        configGeneration = 42L,
+      )
+      val request = slot<ApiRequest<GitLabJob>>()
+      val conn = slot<ConnectionSnapshot>()
+      every {
+        apiClient.fetchListWithinDeadline(capture(request), any(), any(), any(), capture(conn))
+      } returns emptyList()
+
+      service.getJobsForPipeline("42", 99L, connection = connection, includeRetried = true)
+
+      request.captured.path shouldBe "/projects/42/pipelines/99/jobs"
+      request.captured.query shouldBe mapOf("include_retried" to "true")
+      conn.captured shouldBe connection
+    }
+
+    it("propagates GitLabApiException 403 and 404 unchanged") {
+      for (status in listOf(403, 404)) {
+        val ex = GitLabApiException(status, "")
+        every {
+          apiClient.fetchListWithinDeadline(any<ApiRequest<GitLabJob>>(), any(), any(), any(), any())
+        } throws ex
+        io.kotest.assertions.throwables.shouldThrow<GitLabApiException> {
+          service.getJobsForPipeline("42", 99L)
+        } shouldBe ex
+      }
+    }
   }
 })
