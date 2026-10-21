@@ -237,6 +237,39 @@ class DuoStatusResolverTest : DescribeSpec({
       label(inputs(auth = signIn, primary = "code-suggestions-api-error")) shouldBe
         "Code Suggestions: Disabled (Authentication Required)"
     }
+    describe("lifecycle beats settings and feature-state checks") {
+      val settingVariants = mapOf(
+        "setting disabled" to { l: LanguageServerLifecycleState -> inputs(lifecycle = l, enabled = false) },
+        "language disabled" to { l: LanguageServerLifecycleState -> inputs(lifecycle = l, language = false) },
+        "feature state unknown" to { l: LanguageServerLifecycleState -> inputs(lifecycle = l, known = false) },
+      )
+      val expectations = mapOf(
+        "STARTING" to Triple(
+          starting,
+          "GitLab Duo: Starting Language Server...",
+          "Code Suggestions: Starting...",
+        ),
+        "STOPPED" to Triple(
+          life(LanguageServerPhase.STOPPED),
+          "GitLab Duo: Language Server is not running.",
+          "Code Suggestions: Unavailable (Language Server not running)",
+        ),
+        "FAILED" to Triple(
+          failed,
+          "GitLab Duo is disabled: Language Server failed to start.",
+          "Code Suggestions: Unavailable (Language Server failed to start)",
+        ),
+      )
+      for ((phase, exp) in expectations) {
+        for ((variant, build) in settingVariants) {
+          it("$phase beats $variant") {
+            val s = DuoStatusResolver.resolve(build(exp.first))
+            s.tooltip shouldBe exp.second
+            s.menuLabel shouldBe exp.third
+          }
+        }
+      }
+    }
     it("api-error beats unsupported version") {
       label(inputs(primary = "code-suggestions-api-error")) shouldBe "Code Suggestions: Unavailable (API Error)"
     }
