@@ -67,4 +67,11 @@ object PreferenceConstants {
 
   /** Which Agent Platform layout is shown: `"new"` (root/duoAgentPlatform) or `"classic"` (agentic-tabs). */
   const val AGENT_PLATFORM_LAYOUT: String = "gitlab.agentPlatform.layout"
+
+  /** Newline-separated normalised GitLab instance URLs whose unsupported-version warning was suppressed (CS-08). */
+  const val CODE_SUGGESTIONS_VERSION_WARNING_SUPPRESSED: String =
+    "gitlab.codeSuggestions.versionWarning.suppressedInstances"
+
+  /** ISO local date (`yyyy-MM-dd`) on which the no-credits notice was last dismissed (CS-08). */
+  const val CODE_SUGGESTIONS_NO_CREDITS_DISMISSED_DATE: String = "gitlab.codeSuggestions.noCredits.dismissedDate"
 }

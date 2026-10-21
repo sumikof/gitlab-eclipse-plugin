@@ -7,15 +7,23 @@ import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.ci.joblog.JobLogKey
 import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
+import com.gitlab.eclipse.codesuggestions.status.DuoStatusRefresher
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureKind
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleListener
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerPhase
+import com.gitlab.eclipse.lsp.lifecycle.StartOrigin
+import com.gitlab.eclipse.lsp.messages.LanguageServerMessagePresenter
 import com.gitlab.eclipse.mergerequests.diff.MrFileDiffRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.security.SecurityScanSaveListener
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
@@ -26,6 +34,7 @@ import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.mockk.verifyOrder
 import kotlinx.coroutines.isActive
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
@@ -58,6 +67,14 @@ class GitLabEclipseStartupTest : DescribeSpec({
   val codeSuggestionsManager = mockk<CodeSuggestionsManager>(relaxed = true)
   val oAuthTokenProvider = mockk<OAuthTokenProvider>(relaxed = true)
   val httpClient = mockk<GitLabHttpClient>(relaxed = true)
+  val messagePresenter = mockk<LanguageServerMessagePresenter>(relaxed = true)
+  val statusRefresher = mockk<DuoStatusRefresher>(relaxed = true)
+
+  /** A fresh, open store per test; resolved through a factory so every lookup sees the current one. */
+  var lifecycleStore = LanguageServerLifecycleStore()
+
+  /** When set, resolving the store fails, as a Koin definition that cannot be built does. */
+  var lifecycleStoreFails = false
 
   /** The container stop() resolves from, optionally without [omit] (a definition stop cannot resolve). */
   fun startTestKoin(omit: KClass<*>? = null) {
@@ -72,6 +89,12 @@ class GitLabEclipseStartupTest : DescribeSpec({
           if (omit != CodeSuggestionsManager::class) single<CodeSuggestionsManager> { codeSuggestionsManager }
           if (omit != OAuthTokenProvider::class) single<OAuthTokenProvider> { oAuthTokenProvider }
           if (omit != GitLabHttpClient::class) single<GitLabHttpClient> { httpClient }
+          factory<LanguageServerLifecycleStore> {
+            check(!lifecycleStoreFails) { "store definition failed" }
+            lifecycleStore
+          }
+          single<LanguageServerMessagePresenter> { messagePresenter }
+          single<DuoStatusRefresher> { statusRefresher }
         }
       )
     }
@@ -115,7 +138,19 @@ class GitLabEclipseStartupTest : DescribeSpec({
   beforeSpec { startTestKoin() }
 
   beforeEach {
-    clearMocks(processProvider, markerService, saveListener, codeSuggestionsManager, oAuthTokenProvider, httpClient)
+    clearMocks(
+      processProvider,
+      markerService,
+      saveListener,
+      codeSuggestionsManager,
+      oAuthTokenProvider,
+      httpClient,
+      messagePresenter,
+      statusRefresher,
+    )
+    lifecycleStore = LanguageServerLifecycleStore()
+    lifecycleStoreFails = false
+    LifecycleListenerRegistrations.closeAll()
     every { processProvider.stop() } returns Unit
   }
 
@@ -270,6 +305,8 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "Merged YAML editors",
         "MR diff editors",
         "Agent Platform views",
+        "Lifecycle listeners",
+        "Duo status refresher",
       )
     }
 
@@ -439,6 +476,154 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "MR thread popups",
         "Agent Platform views",
       )
+    }
+  }
+  describe("the language server lifecycle wiring (LS-02, LS-08, QCHAT-07)") {
+    /** A listener that records every transition it sees as "<name>:<phase>". */
+    fun recording(name: String, seen: MutableList<String>) =
+      name to { LanguageServerLifecycleListener { _, new -> seen += "$name:${new.phase}" } }
+
+    fun wired(seen: MutableList<String>, dispatched: MutableList<Runnable> = mutableListOf()) =
+      startup(inlineTurn).apply {
+        lifecycleListeners = listOf(recording("notifier", seen), recording("refresher", seen))
+        uiDispatch = { dispatched += it }
+      }
+
+    it("attaches the listeners before the language server starts, so a startup failure reaches them") {
+      val seen = mutableListOf<String>()
+      every { processProvider.start(any()) } answers {
+        seen += "provider.start"
+        val generation = lifecycleStore.beginAttempt(StartOrigin.STARTUP)
+        lifecycleStore.markFailed(generation, LanguageServerFailureKind.INSTALL_FAILED)
+      }
+
+      wired(seen).startLanguageServer(mockk<Bundle>())
+
+      seen shouldContainExactly listOf(
+        "provider.start",
+        "notifier:STARTING",
+        "refresher:STARTING",
+        "notifier:FAILED",
+        "refresher:FAILED",
+      )
+    }
+
+    it("a listener that cannot be built skips neither the later listeners nor the start") {
+      val seen = mutableListOf<String>()
+      every { processProvider.start(any()) } answers {
+        seen += "provider.start"
+        lifecycleStore.beginAttempt(StartOrigin.STARTUP)
+      }
+      val startup = wired(seen).apply {
+        lifecycleListeners = listOf(
+          recording("notifier", seen),
+          "broken" to { throw IllegalStateException("definition failed") },
+          recording("refresher", seen),
+        )
+      }
+
+      shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
+
+      seen shouldContainExactly listOf("provider.start", "notifier:STARTING", "refresher:STARTING")
+    }
+
+    it("a lifecycle store that cannot be resolved does not keep the language server from starting") {
+      lifecycleStoreFails = true
+      every { processProvider.start(any()) } returns Unit
+
+      shouldNotThrowAny { wired(mutableListOf()).startLanguageServer(mockk<Bundle>()) }
+
+      verify { processProvider.start(any()) }
+    }
+
+    it("an unexpected failure of the UI hop is contained") {
+      every { processProvider.start(any()) } returns Unit
+      val startup = wired(mutableListOf()).apply { uiDispatch = { throw UnsupportedOperationException("hop") } }
+
+      shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
+    }
+
+    it("hands the Duo status steps to the UI thread asynchronously, after the language server started") {
+      val seen = mutableListOf<String>()
+      val dispatched = mutableListOf<Runnable>()
+      every { processProvider.start(any()) } answers { seen += "provider.start" }
+      val startup = wired(seen, dispatched).apply {
+        duoStatusActivationSteps = listOf(LifecycleStep("Duo status refresher") { seen += "ui step" })
+      }
+
+      startup.startLanguageServer(mockk<Bundle>())
+      seen shouldContainExactly listOf("provider.start")
+
+      dispatched.single().run()
+      seen shouldContainExactly listOf("provider.start", "ui step")
+    }
+
+    it("does not throw when the UI thread cannot be reached, and still starts the language server") {
+      every { processProvider.start(any()) } returns Unit
+      val startup = wired(mutableListOf()).apply {
+        uiDispatch = { throw IllegalStateException("Workbench has not been created yet.") }
+      }
+
+      shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
+
+      verify { processProvider.start(any()) }
+    }
+
+    it("the production Duo status step installs the window listeners, then requests one refresh (F7)") {
+      GitLabEclipseStartup.productionDuoStatusActivationSteps().forEach { it.run() }
+
+      verifyOrder {
+        statusRefresher.installWindowListeners()
+        statusRefresher.request()
+      }
+    }
+
+    it("the production listeners are the failure notifier, the status refresher and the message presenter") {
+      GitLabEclipseStartup.productionLifecycleListeners().map { it.first } shouldContainExactly listOf(
+        "Language server failure notifier",
+        "Duo status refresher",
+        "Language server messages",
+      )
+    }
+
+    it("stop closes the lifecycle store before it stops the language server (design §5.5)") {
+      val seen = mutableListOf<String>()
+      every { processProvider.stop() } answers { seen += "provider.stop closed=${lifecycleStore.isClosed}" }
+      every { messagePresenter.sessionsEndedExcept(null) } answers {
+        seen += "sessions ended closed=${lifecycleStore.isClosed}"
+      }
+
+      startup(inlineTurn).stop(mockk<BundleContext>())
+
+      seen shouldContainExactly listOf("sessions ended closed=true", "provider.stop closed=true")
+    }
+
+    it("after stop, a provider transition reaches no listener") {
+      val seen = mutableListOf<String>()
+      every { processProvider.start(any()) } returns Unit
+      val startup = wired(seen)
+      startup.startLanguageServer(mockk<Bundle>())
+
+      startup.stop(mockk<BundleContext>())
+      lifecycleStore.beginAttempt(StartOrigin.RESTART)
+
+      seen.shouldBeEmpty()
+    }
+
+    it("the shutdown UI turn removes the listeners and disposes the status refresher (I6)") {
+      val seen = mutableListOf<String>()
+      every { processProvider.start(any()) } returns Unit
+      wired(seen).startLanguageServer(mockk<Bundle>())
+
+      GitLabEclipseStartup.productionUiShutdownSteps()
+        .filter { it.name == "Lifecycle listeners" || it.name == "Duo status refresher" }
+        .forEach { it.run() }
+      // The store itself is still open here: only the listener removal can keep this silent.
+      lifecycleStore.beginAttempt(StartOrigin.RESTART)
+
+      seen.shouldBeEmpty()
+      verify { statusRefresher.dispose() }
+      lifecycleStore.snapshot().phase shouldBe LanguageServerPhase.STARTING
     }
   }
 })

@@ -14,12 +14,17 @@ import com.gitlab.eclipse.ci.lint.CiLintGenerationRegistry
 import com.gitlab.eclipse.ci.lint.MergedYamlEditorOpener
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
+import com.gitlab.eclipse.codesuggestions.status.DuoStatusRefresher
 import com.gitlab.eclipse.diagnostics.DiagnosticsLog
 import com.gitlab.eclipse.diagnostics.configuredSecrets
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.languageServerModule
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureNotifier
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleListener
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
+import com.gitlab.eclipse.lsp.messages.LanguageServerMessagePresenter
 import com.gitlab.eclipse.lsp.plugins.pluginModule
 import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
@@ -47,7 +52,9 @@ import org.eclipse.ui.keys.IBindingService
 import org.eclipse.ui.plugin.AbstractUIPlugin
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.startKoin
+import org.osgi.framework.Bundle
 import org.osgi.framework.BundleContext
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * One turn on the UI thread, as the stop and start hooks take it: runs [syncExec]'s block there and
@@ -87,6 +94,31 @@ internal inline fun bestEffort(step: String, phase: String = "shutdown", block: 
   }
 }
 
+/**
+ * What [GitLabEclipseStartup] attached to the [LanguageServerLifecycleStore], so the stop hook's UI
+ * turn can take it back (design §15 I6). Process-wide, like the generation registries.
+ */
+internal object LifecycleListenerRegistrations {
+  private val registrations = CopyOnWriteArrayList<AutoCloseable>()
+
+  /** Attaches each listener behind its own boundary: one that cannot be resolved never skips the next. */
+  fun attach(
+    store: LanguageServerLifecycleStore,
+    listeners: List<Pair<String, () -> LanguageServerLifecycleListener>>,
+  ) {
+    listeners.forEach { (name, listener) ->
+      bestEffort(name, "activation") { registrations += store.addListener(listener()) }
+    }
+  }
+
+  /** Removes everything [attach] added. Idempotent; each removal contained. */
+  fun closeAll() {
+    val attached = registrations.toList()
+    registrations.clear()
+    attached.forEach { registration -> bestEffort("Lifecycle listener") { registration.close() } }
+  }
+}
+
 /** Why a hook's UI turn was skipped: INFO on the normal exit path, WARN otherwise. Class name only; contained. */
 private fun logUiTurnSkipped(phase: String, e: Exception, normalExit: Boolean) {
   runCatching {
@@ -105,6 +137,16 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
 
   /** What the start hook's UI turn runs, in order. Defaults to [productionActivationSteps]. */
   internal var activationSteps: List<LifecycleStep> = productionActivationSteps()
+
+  /** The lifecycle listeners attached before the language server starts. Defaults to [productionLifecycleListeners]. */
+  internal var lifecycleListeners: List<Pair<String, () -> LanguageServerLifecycleListener>> =
+    productionLifecycleListeners()
+
+  /** What runs on the UI thread once the language server started. Defaults to [productionDuoStatusActivationSteps]. */
+  internal var duoStatusActivationSteps: List<LifecycleStep> = productionDuoStatusActivationSteps()
+
+  /** Hands a runnable to the UI thread without waiting (`asyncExec`). A seam: tests replace it. */
+  internal var uiDispatch: (Runnable) -> Unit = { PlatformUI.getWorkbench().display.asyncExec(it) }
 
   override fun start(context: BundleContext) {
     // Set system property for log4j2 configuration to use Eclipse's state location
@@ -153,7 +195,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       )
     }
 
-    service<GitLabLanguageServerProcessProvider>().start(context.bundle)
+    startLanguageServer(context.bundle)
     service<OAuthTokenProvider>().startTokenRefreshTimer()
     installSecurityScanSaveListener()
 
@@ -191,6 +233,13 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // boundary: Koin can be closed, or the singleton fail to build, by the time a late stop runs.
     bestEffort("OAuth refresh timer") { service<OAuthTokenProvider>().stopTokenRefreshTimer() }
     uninstallDiagnosticsLogTap(context)
+    // Design §5.5: the first language server step. A closed store drops its listeners and ignores
+    // every later mutation, so the explicit stop below publishes no transition: no failure popup, no
+    // status refresh. The listeners' UI runnables already queued re-check isClosed and do nothing.
+    bestEffort("Language server lifecycle") { service<LanguageServerLifecycleStore>().close() }
+    // The stop no longer reaches the presenter as a transition, so its open showMessageRequests are
+    // answered (null, off this thread) here; their dialogs close in a later UI turn.
+    bestEffort("Language server messages") { service<LanguageServerMessagePresenter>().sessionsEndedExcept(null) }
     runUiTurn("shutdown", uiShutdownSteps)
     // Design §17 step 2: the UI turn above already discarded every Quick Chat popup on the UI
     // thread (each session.end() closed its send gate and cancelled its job); only now is the Quick
@@ -286,7 +335,10 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // install() does NOT wait for a page: on a workbench with zero windows it marks itself done
       // having attached nothing — deliberately — and the window listener it registered does the
       // attaching as windows open.
-      logger<GitLabEclipseStartup>().warn("Security scan save trigger not installed: workbench unavailable.", e)
+      // Class name only (AC-G1): the exception's message and stack are not for the Error Log.
+      logger<GitLabEclipseStartup>().warn(
+        "Security scan save trigger not installed: workbench unavailable (${e.javaClass.simpleName}).",
+      )
     }
   }
 
@@ -375,6 +427,36 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       LifecycleStep("MR diff editors") { MrFileDiffEntryPoint.onStop() },
       // Forget the open Agent Platform views: a readiness callback after stop reloads nothing.
       LifecycleStep("Agent Platform views") { AgentPlatformViews.onDeactivate() },
+      // I6: take back the lifecycle listeners (the store, closed before this turn, already dropped
+      // them) and the refresher's window, part, theme, auth and preference listeners — the window and
+      // part ones belong to the UI thread.
+      LifecycleStep("Lifecycle listeners") { LifecycleListenerRegistrations.closeAll() },
+      LifecycleStep("Duo status refresher") { service<DuoStatusRefresher>().dispose() },
+    )
+
+    /**
+     * The listeners the start hook attaches to the lifecycle store, before the language server
+     * starts: the failure popup (LS-02), the Duo status refresh (QCHAT-07) and the end of the
+     * sessions a transition leaves behind (LS-08). Each resolved lazily, behind its own boundary.
+     */
+    internal fun productionLifecycleListeners(): List<Pair<String, () -> LanguageServerLifecycleListener>> = listOf(
+      "Language server failure notifier" to { service<LanguageServerFailureNotifier>() },
+      "Duo status refresher" to { service<DuoStatusRefresher>() },
+      "Language server messages" to { service<LanguageServerMessagePresenter>() },
+    )
+
+    /**
+     * Posted to the UI thread once the language server was started: the refresher's window and part
+     * listeners must be added there, and one explicit refresh replaces the static trim icon, which
+     * `HandlerProxy.updateElement` does not update before the handler loads (design §14.1 F7). Windows
+     * opened later are refreshed by the window listener's windowOpened.
+     */
+    internal fun productionDuoStatusActivationSteps(): List<LifecycleStep> = listOf(
+      LifecycleStep("Duo status refresher") {
+        val refresher = service<DuoStatusRefresher>()
+        refresher.installWindowListeners()
+        refresher.request()
+      },
     )
 
     /**
@@ -394,5 +476,35 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       LifecycleStep("MR thread popups") { MrThreadPopups.install() },
       LifecycleStep("Agent Platform views") { AgentPlatformViews.onActivate() },
     )
+  }
+}
+
+/**
+ * Attaches the lifecycle listeners, starts the language server, then hands the Duo status steps to
+ * the UI thread.
+ *
+ * The listeners go first so that a startup failure — published synchronously inside `start()` —
+ * already reaches the failure notifier and the status refresher. The Duo status steps are posted
+ * with [uiDispatch] (`asyncExec`), not a waited UI turn: activation never blocks on the UI thread
+ * for them, and a stop that runs first disposes the refresher, whose install is then a no-op. A
+ * workbench or display that cannot be reached is the normal early-start case and is logged at INFO
+ * by class name. Never throws beyond what `start()` itself documents (it never throws).
+ *
+ * An extension, not a member, only to keep the plugin class within detekt's function budget.
+ */
+internal fun GitLabEclipseStartup.startLanguageServer(bundle: Bundle) {
+  bestEffort("Lifecycle listeners", "activation") {
+    LifecycleListenerRegistrations.attach(service<LanguageServerLifecycleStore>(), lifecycleListeners)
+  }
+  service<GitLabLanguageServerProcessProvider>().start(bundle)
+  val steps = duoStatusActivationSteps
+  try {
+    uiDispatch(Runnable { steps.forEach { step -> bestEffort(step.name, "activation", step.run) } })
+  } catch (e: IllegalStateException) {
+    logUiTurnSkipped("activation", e, normalExit = true)
+  } catch (e: SWTException) {
+    logUiTurnSkipped("activation", e, normalExit = e.code == SWT.ERROR_DEVICE_DISPOSED)
+  } catch (e: Exception) {
+    logUiTurnSkipped("activation", e, normalExit = false)
   }
 }

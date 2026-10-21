@@ -37,7 +37,8 @@ class LanguageServerInstaller internal constructor(
 
       installFrom(bundle)?.toAbsolutePath()?.toString()
     } catch (e: Exception) {
-      logger.error("Failed to install the language server: ${e.message}", e)
+      // Class name only (AC-G1): the message of an extraction failure carries the installation path.
+      logger.error("Failed to install the language server (${e.javaClass.simpleName}).")
       null
     }
   }

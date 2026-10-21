@@ -9,4 +9,5 @@ data class FeatureStateChangeCheck(
   val checkId: String,
   val engaged: Boolean,
   val details: String? = null,
+  val context: com.google.gson.JsonObject? = null,
 )

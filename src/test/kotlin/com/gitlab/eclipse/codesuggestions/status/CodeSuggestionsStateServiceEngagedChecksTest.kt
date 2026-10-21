@@ -8,18 +8,18 @@ import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 
 /**
- * `engagedCheckIds` (the Tutorial's R7 seam, ruling R5). Every update here keeps at least one check
- * engaged, so `isEnabled` never flips and the service never touches the display — which is what
- * lets this run headless without the workbench mocks of `CodeSuggestionsStateServiceTest`.
+ * `engagedCheckIds` (the Tutorial's R7 seam, ruling R5). The status refresh is replaced by a no-op
+ * seam, so the service never touches the display — which is what lets this run headless without the
+ * workbench mocks of `CodeSuggestionsStateServiceTest`.
  */
 class CodeSuggestionsStateServiceEngagedChecksTest : DescribeSpec({
   describe("engagedCheckIds") {
     it("is empty before any feature state has arrived") {
-      CodeSuggestionsStateService().engagedCheckIds().shouldBeEmpty()
+      CodeSuggestionsStateService(onStatusChanged = {}).engagedCheckIds().shouldBeEmpty()
     }
 
     it("lists every engaged check id in the server's order, skipping the disengaged ones") {
-      val service = CodeSuggestionsStateService()
+      val service = CodeSuggestionsStateService(onStatusChanged = {})
       service.update(
         FeatureStateChange(
           "code_suggestions",

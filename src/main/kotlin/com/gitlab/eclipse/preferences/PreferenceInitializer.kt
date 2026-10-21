@@ -29,5 +29,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.DEBUG_LOGGING, false)
     // Matches the VS Code default: the new layout, until the user switches to classic.
     store.setDefault(PreferenceConstants.AGENT_PLATFORM_LAYOUT, "new")
+    store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_VERSION_WARNING_SUPPRESSED, "")
+    store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_NO_CREDITS_DISMISSED_DATE, "")
   }
 }

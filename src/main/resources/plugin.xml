@@ -1915,7 +1915,7 @@
                         icon="icons/notification.png"
                         id="gitlab-eclipse-plugin.menus.statusWidgetMenu"
                         style="pulldown"
-                        tooltip="Show GitLab Status">
+                        tooltip="GitLab Duo">
                 </command>
             </toolbar>
         </menuContribution>
