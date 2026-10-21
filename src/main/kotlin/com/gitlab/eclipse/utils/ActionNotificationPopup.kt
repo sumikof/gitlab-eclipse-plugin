@@ -7,6 +7,7 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.SWTException
 import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.Image
+import org.eclipse.swt.layout.GridData
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Display
 import org.eclipse.swt.widgets.Label
@@ -31,14 +32,25 @@ class ActionNotificationPopup(
     delayClose = autoCloseMillis
   }
 
+  private companion object {
+    /** Below AbstractNotificationPopup's 400 px maximum shell width, leaving room for its margins. */
+    const val MESSAGE_WIDTH_HINT = 350
+  }
+
   override fun getPopupShellTitle(): String = title
 
   override fun getPopupShellImage(maximumHeight: Int): Image? = JFaceResources.getImage(imageKey(severityImage))
 
   override fun createContentArea(parent: Composite) {
-    Label(parent, SWT.WRAP).text = message
+    // Without a width hint, a wrapping label reports its one-line width; the popup then clamps the
+    // shell to its maximum width and the text is clipped instead of wrapped.
+    Label(parent, SWT.WRAP).apply {
+      text = message
+      layoutData = GridData(SWT.FILL, SWT.TOP, true, false).apply { widthHint = MESSAGE_WIDTH_HINT }
+    }
     for ((label, action) in links) {
       Link(parent, SWT.WRAP).apply {
+        layoutData = GridData(SWT.FILL, SWT.TOP, true, false)
         // '&' would otherwise be read as a mnemonic marker.
         text = "<a>${label.replace("&", "&&")}</a>"
         // Transparent background, as the authentication popup's link.
