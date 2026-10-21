@@ -360,7 +360,8 @@ class GitLabLanguageServerClient(
     .orTimeout(TIMEOUT_IN_SECONDS, TimeUnit.SECONDS)
 
   override fun telemetryEvent(event: Any) {
-    logger.info("telemetryEvent: $event")
+    // No payload (AC-G1): the event is the server's own data.
+    logger.debug { "telemetryEvent received" }
   }
 
   override fun publishDiagnostics(diagnostic: PublishDiagnosticsParams) {

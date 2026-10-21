@@ -73,6 +73,9 @@ class GitLabEclipseStartupTest : DescribeSpec({
   /** A fresh, open store per test; resolved through a factory so every lookup sees the current one. */
   var lifecycleStore = LanguageServerLifecycleStore()
 
+  /** When set, resolving the store fails, as a Koin definition that cannot be built does. */
+  var lifecycleStoreFails = false
+
   /** The container stop() resolves from, optionally without [omit] (a definition stop cannot resolve). */
   fun startTestKoin(omit: KClass<*>? = null) {
     startKoin {
@@ -86,7 +89,10 @@ class GitLabEclipseStartupTest : DescribeSpec({
           if (omit != CodeSuggestionsManager::class) single<CodeSuggestionsManager> { codeSuggestionsManager }
           if (omit != OAuthTokenProvider::class) single<OAuthTokenProvider> { oAuthTokenProvider }
           if (omit != GitLabHttpClient::class) single<GitLabHttpClient> { httpClient }
-          factory<LanguageServerLifecycleStore> { lifecycleStore }
+          factory<LanguageServerLifecycleStore> {
+            check(!lifecycleStoreFails) { "store definition failed" }
+            lifecycleStore
+          }
           single<LanguageServerMessagePresenter> { messagePresenter }
           single<DuoStatusRefresher> { statusRefresher }
         }
@@ -143,6 +149,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
       statusRefresher,
     )
     lifecycleStore = LanguageServerLifecycleStore()
+    lifecycleStoreFails = false
     LifecycleListenerRegistrations.closeAll()
     every { processProvider.stop() } returns Unit
   }
@@ -499,6 +506,41 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "notifier:FAILED",
         "refresher:FAILED",
       )
+    }
+
+    it("a listener that cannot be built skips neither the later listeners nor the start") {
+      val seen = mutableListOf<String>()
+      every { processProvider.start(any()) } answers {
+        seen += "provider.start"
+        lifecycleStore.beginAttempt(StartOrigin.STARTUP)
+      }
+      val startup = wired(seen).apply {
+        lifecycleListeners = listOf(
+          recording("notifier", seen),
+          "broken" to { throw IllegalStateException("definition failed") },
+          recording("refresher", seen),
+        )
+      }
+
+      shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
+
+      seen shouldContainExactly listOf("provider.start", "notifier:STARTING", "refresher:STARTING")
+    }
+
+    it("a lifecycle store that cannot be resolved does not keep the language server from starting") {
+      lifecycleStoreFails = true
+      every { processProvider.start(any()) } returns Unit
+
+      shouldNotThrowAny { wired(mutableListOf()).startLanguageServer(mockk<Bundle>()) }
+
+      verify { processProvider.start(any()) }
+    }
+
+    it("an unexpected failure of the UI hop is contained") {
+      every { processProvider.start(any()) } returns Unit
+      val startup = wired(mutableListOf()).apply { uiDispatch = { throw UnsupportedOperationException("hop") } }
+
+      shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
     }
 
     it("hands the Duo status steps to the UI thread asynchronously, after the language server started") {

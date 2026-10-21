@@ -43,6 +43,16 @@ class LogHygieneAuditTest : DescribeSpec({
         "logger.debug { \"params=\$params\" }",
         "logger.warn(\n  \"multi line \${cause.message}\",\n)",
         "logger.info(\"type ok \${message.type} but text \${message.message}\")",
+        "logger.error(\n  \"Failed\",\n  e,\n)",
+        "logger.warn(\"Failed: \$e\")",
+        "logger.warn(\"Failed: \${e}\")",
+        "logger.warn(\"Failed: \$e (retrying)\")",
+        "logger.warn(\"Failed\", exception)",
+        "logger.warn(\"Failed: \${e.localizedMessage}\")",
+        "logger.info(\"telemetryEvent: \$event\")",
+        "logger.info(\"telemetryEvent: \${event.payload}\")",
+        "logger.warn(\"Failed: \" + e.message)",
+        "logger.warn(\"Failed: \${e.message ?: \"?\"}\")",
       ).forEach { call ->
         it("flags: $call") {
           logCalls(call).filter(::isForbidden).size shouldBe 1
@@ -56,6 +66,9 @@ class LogHygieneAuditTest : DescribeSpec({
         "languageServerLogger.info(stderrLine)",
         "logger.debug { \"logMessage received (type=\${message.type?.name})\" }",
         "logger.debug { \"experiment features: enabled=\${params?.enabled}\" }",
+        "logger.warn(\"Skipped (\${e::class.simpleName}).\")",
+        "logger.warn(\"Exited (exit code \$exitCode).\")",
+        "logger.debug { \"telemetryEvent received\" }",
       ).forEach { call ->
         it("allows: $call") {
           logCalls(call).filter(::isForbidden).shouldBeEmpty()
@@ -107,11 +120,31 @@ private val FORBIDDEN_TEXT = listOf(
   "\$result",
   ".message}",
   "e.message",
+  "localizedMessage",
   "absolutePath",
 )
 
-/** A throwable handed to the log as the last argument: its stack trace prints the message. */
-private val THROWABLE_ARGUMENT = Regex(""",\s*(?:e|err|ex|t|it|cause|throwable|failure)\s*\)\s*$""")
+/** Names a caught throwable usually has. */
+private const val THROWABLE_NAMES = "e|err|ex|exception|t|it|cause|throwable|failure"
+
+/**
+ * A throwable handed to the log as the last argument (its stack trace prints the message), also as
+ * the house-style multi-line call with a trailing comma.
+ */
+private val THROWABLE_ARGUMENT = Regex(""",\s*(?:$THROWABLE_NAMES)\s*,?\s*\)\s*$""")
+
+/**
+ * A throwable or an LS event interpolated whole — `$e`, `${e}`, `$event`, `${event.payload}` — whose
+ * text is its message or payload. `${e.javaClass…}` / `${e::class…}` stay allowed; `$exitCode` is
+ * another identifier. `failure` is excluded here: in these files it names a class-name string.
+ */
+private val INTERPOLATED = Regex(
+  listOf(
+    """\$(?:e|err|ex|exception|throwable|cause|event)\b""",
+    """\$\{\s*(?:e|err|ex|exception|throwable|cause)\s*}""",
+    """\$\{\s*event\b""",
+  ).joinToString("|"),
+)
 
 /**
  * Fields of a message or params object that are not its text: a message type, an on/off flag. Removed
@@ -121,7 +154,9 @@ private val ALLOWED_FIELDS = Regex("""\$\{(?:message|params|result)\??\.(?:type|
 
 private fun isForbidden(call: String): Boolean {
   val scanned = ALLOWED_FIELDS.replace(call, "")
-  return FORBIDDEN_TEXT.any { it in scanned } || THROWABLE_ARGUMENT.containsMatchIn(scanned)
+  return FORBIDDEN_TEXT.any { it in scanned } ||
+    THROWABLE_ARGUMENT.containsMatchIn(scanned) ||
+    INTERPOLATED.containsMatchIn(scanned)
 }
 
 /** Every log call in [source], from the receiver to its balanced closing bracket. */

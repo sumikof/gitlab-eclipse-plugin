@@ -504,5 +504,7 @@ internal fun GitLabEclipseStartup.startLanguageServer(bundle: Bundle) {
     logUiTurnSkipped("activation", e, normalExit = true)
   } catch (e: SWTException) {
     logUiTurnSkipped("activation", e, normalExit = e.code == SWT.ERROR_DEVICE_DISPOSED)
+  } catch (e: Exception) {
+    logUiTurnSkipped("activation", e, normalExit = false)
   }
 }
