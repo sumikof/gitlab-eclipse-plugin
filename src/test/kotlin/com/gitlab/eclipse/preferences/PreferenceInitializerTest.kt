@@ -22,6 +22,8 @@ class PreferenceInitializerTest : DescribeSpec({
       verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ENABLED, false) }
       verify { store.setDefault(PreferenceConstants.SECURITY_SCAN_ON_SAVE, true) }
       verify { store.setDefault(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES, "") }
+      verify { store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_VERSION_WARNING_SUPPRESSED, "") }
+      verify { store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_NO_CREDITS_DISMISSED_DATE, "") }
     }
   }
 })
