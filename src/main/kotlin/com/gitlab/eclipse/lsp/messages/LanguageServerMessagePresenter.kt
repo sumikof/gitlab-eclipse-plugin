@@ -1,6 +1,9 @@
 package com.gitlab.eclipse.lsp.messages
 
 import com.gitlab.eclipse.lsp.LanguageServerSession
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleListener
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleState
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerPhase
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
@@ -45,6 +48,9 @@ fun interface DialogHandle {
  * modal dialog with the given button labels, hands its [DialogHandle] to `onDialog` before it opens,
  * and returns the index of the pressed button, or a negative code when closed without a choice.
  *
+ * As a lifecycle listener it ends the sessions a transition leaves behind ([onTransition]); the bundle
+ * stop, which closes the store first and so produces no transition, calls [sessionsEndedExcept] itself.
+ *
  * Logs carry the message type only — never the text or an action title (AC-G1).
  */
 class LanguageServerMessagePresenter(
@@ -56,7 +62,7 @@ class LanguageServerMessagePresenter(
   private val notify: (MessageType, String) -> Unit = ::presentMessage,
   private val ask: (MessageType, String, List<String>, onDialog: (DialogHandle) -> Unit) -> Int = ::askOnUiThread,
   private val workbenchAvailable: () -> Boolean = ::isWorkbenchAvailable,
-) {
+) : LanguageServerLifecycleListener {
   private val logger by lazy { logger<LanguageServerMessagePresenter>() }
 
   /** Requests not answered yet, with the session each one belongs to. */
@@ -111,6 +117,21 @@ class LanguageServerMessagePresenter(
   /** Answers every pending request of [session] with null (via [offUi]); their dialogs close after. */
   fun sessionEnded(session: LanguageServerSession) {
     pending.forEach { (future, owner) -> if (owner === session) answer(future, null) }
+  }
+
+  /** Answers every pending request whose session is not [keep] with null (via [offUi]); null ends them all. */
+  fun sessionsEndedExcept(keep: LanguageServerSession?) {
+    pending.forEach { (future, owner) -> if (owner !== keep) answer(future, null) }
+  }
+
+  /**
+   * Runs on the mutating thread under the provider's lifecycle lock: never blocks, never completes
+   * a future inline ([answer] goes through [offUi]). Only RUNNING has a live session, the wrapper's
+   * current one; every other phase has none — STARTING begins before the new connection exists, and
+   * FAILED is published before the teardown unregisters the failing session — so all are ended.
+   */
+  override fun onTransition(old: LanguageServerLifecycleState, new: LanguageServerLifecycleState) {
+    sessionsEndedExcept(if (new.phase == LanguageServerPhase.RUNNING) currentSession() else null)
   }
 
   /** Runs on the UI thread. */

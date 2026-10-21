@@ -400,8 +400,8 @@ class GitLabLanguageServerProcessProvider(
   }
 
   private fun Process.pullStdErrLogs() {
-    val logFile = getPluginStateDirectory().resolve("language_server.log")
-    logger.info("Language server logs saved to: ${logFile.absolutePath}.")
+    // No path in the Error Log (AC-G1); the stderr lines go to the LS's own log file via languageServerLogger.
+    logger.info("Language server logs saved to language_server.log in the plugin state directory.")
 
     pullStdErrLogsExecutor = Executors.newSingleThreadExecutor().apply {
       execute {

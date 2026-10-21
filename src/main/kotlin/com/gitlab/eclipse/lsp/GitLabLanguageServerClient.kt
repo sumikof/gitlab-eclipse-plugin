@@ -94,7 +94,7 @@ class GitLabLanguageServerClient(
         else -> diffProvider.getDiff(request.repositoryUri)
       }
     } catch (e: Throwable) {
-      logger.warn("Exception when retrieving git diff.", e)
+      logger.warn("Exception when retrieving git diff (${e.javaClass.simpleName}).")
       null
     }
   }

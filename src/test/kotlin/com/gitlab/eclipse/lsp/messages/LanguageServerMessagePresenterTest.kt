@@ -2,6 +2,9 @@ package com.gitlab.eclipse.lsp.messages
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.LanguageServerSession
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleState
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerPhase
+import com.gitlab.eclipse.lsp.lifecycle.StartOrigin
 import com.gitlab.eclipse.utils.DebugLogging
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
@@ -535,6 +538,56 @@ class LanguageServerMessagePresenterTest : DescribeSpec({
       f.runUi()
 
       f.dialogs.single().dismissed shouldBe 0
+    }
+  }
+
+  describe("lifecycle transitions end sessions (T6)") {
+    val first = MessageActionItem("First")
+
+    fun state(phase: LanguageServerPhase, generation: Long) =
+      LanguageServerLifecycleState(phase, generation, StartOrigin.STARTUP, null)
+
+    fun drainOffUi() = offUiPool.submit {}.get(WAIT_SECONDS, TimeUnit.SECONDS)
+
+    listOf(
+      "STOPPED" to state(LanguageServerPhase.STOPPED, 1),
+      "FAILED" to state(LanguageServerPhase.FAILED, 1),
+      "a new attempt (STARTING)" to state(LanguageServerPhase.STARTING, 2),
+    ).forEach { (name, new) ->
+      it("answers every pending request with null, off the calling thread, on $name") {
+        val f = Fixture(offUiPool)
+        val future = f.request(listOf(first))
+        val completedOn = CompletableFuture<String>()
+        future.whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
+
+        // Even while the wrapper still publishes the failing session (FAILED precedes the teardown).
+        f.presenter.onTransition(state(LanguageServerPhase.RUNNING, 1), new)
+
+        completedOn.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe OFF_UI_THREAD
+        future.await().shouldBeNull()
+      }
+    }
+
+    it("on RUNNING keeps the current session's request and ends the others") {
+      val f = Fixture(offUiPool)
+      val current = f.request(listOf(first))
+      val stale = LanguageServerSession()
+      val staleFuture = f.presenter.request(stale, ShowMessageRequestParams().apply { message = "x" })
+
+      f.presenter.onTransition(state(LanguageServerPhase.STARTING, 2), state(LanguageServerPhase.RUNNING, 2))
+      staleFuture.await().shouldBeNull()
+      drainOffUi()
+
+      current.isDone shouldBe false
+    }
+
+    it("sessionsEndedExcept(null) ends every session (bundle stop)") {
+      val f = Fixture(offUiPool)
+      val future = f.request(listOf(first))
+
+      f.presenter.sessionsEndedExcept(null)
+
+      future.await().shouldBeNull()
     }
   }
 
