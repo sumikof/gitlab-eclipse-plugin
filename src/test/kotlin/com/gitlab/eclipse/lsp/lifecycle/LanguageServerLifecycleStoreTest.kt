@@ -41,6 +41,27 @@ class LanguageServerLifecycleStoreTest : DescribeSpec({
       store.markRunning(g2) shouldBe false
     }
 
+    it("markRunning is rejected from FAILED and from STOPPED") {
+      val store = LanguageServerLifecycleStore()
+      val g = store.beginAttempt(StartOrigin.STARTUP)
+      store.markFailed(g, LanguageServerFailureKind.INITIALIZE_TIMEOUT) shouldBe true
+      store.markRunning(g) shouldBe false
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.INITIALIZE_TIMEOUT
+      store.markStopped(g) shouldBe true
+      store.markRunning(g) shouldBe false
+      store.snapshot().phase shouldBe LanguageServerPhase.STOPPED
+    }
+
+    it("does not call a listener added after close") {
+      val store = LanguageServerLifecycleStore()
+      store.close()
+      var calls = 0
+      store.addListener { _, _ -> calls++ }
+      store.beginAttempt(StartOrigin.STARTUP) shouldBe -1L
+      calls shouldBe 0
+    }
+
     it("markFailed first failure wins") {
       val store = LanguageServerLifecycleStore()
       val g = store.beginAttempt(StartOrigin.STARTUP)
