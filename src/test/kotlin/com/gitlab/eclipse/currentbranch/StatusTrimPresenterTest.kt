@@ -258,4 +258,17 @@ class StatusTrimPresenterTest : StringSpec({
     text.contains("/secret") shouldBe false
     text.contains("secret") shouldBe false
   }
+
+  "a failed MR side hides MR and issue even after they were rendered" {
+    val prev = StatusTrimPresenter.present(snap(Resolved(info(mr(), issue(5)), ok(shown()))), null)
+    val m = StatusTrimPresenter.present(snap(Resolved(boom, ok(shown()))), prev)
+    m.pipeline?.text shouldBe "Pipeline Passed"
+    m.mr shouldBe null
+    m.issue shouldBe null
+  }
+
+  "a failed pipeline side hides the pipeline even after it was rendered" {
+    val prev = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(shown()))), null)
+    StatusTrimPresenter.present(snap(Resolved(info(mr()), boom)), prev).pipeline shouldBe null
+  }
 })

@@ -135,4 +135,13 @@ class PipelineMenuModelTest : StringSpec({
     kinds(shown(jobs = jobs)).takeLast(3) shouldBe
       listOf(MenuEntryKind.CREATE, MenuEntryKind.ARTIFACTS, MenuEntryKind.REFRESH)
   }
+
+  "a TAG or DETACHED head never offers create" {
+    fun kindsFor(input: CurrentBranchSectionInput, head: HeadKind) =
+      PipelineMenuModel.build(CurrentBranchSnapshot(1, "/g", "/w", input, false, head)).map { it.kind }
+    kindsFor(resolved(NoPipeline), HeadKind.TAG) shouldBe listOf(MenuEntryKind.REFRESH)
+    kindsFor(resolved(NoPipeline), HeadKind.DETACHED) shouldBe listOf(MenuEntryKind.REFRESH)
+    kindsFor(shown(kind = PipelineKind.BRANCH), HeadKind.TAG).contains(MenuEntryKind.CREATE) shouldBe false
+    kindsFor(resolved(NoPipeline), HeadKind.UNKNOWN) shouldBe listOf(MenuEntryKind.CREATE, MenuEntryKind.REFRESH)
+  }
 })

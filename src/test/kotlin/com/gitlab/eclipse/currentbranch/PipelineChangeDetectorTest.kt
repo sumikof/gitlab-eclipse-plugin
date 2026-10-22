@@ -58,4 +58,14 @@ class PipelineChangeDetectorTest : StringSpec({
     d.observe("/a", 1, "success") shouldBe false // forgotten -> first observation
     d.observe("/c", 1, "success") shouldBe true
   }
+
+  "eviction is least-recently-observed, not first-inserted" {
+    val d = PipelineChangeDetector(maxRepositories = 2)
+    d.observe("/a", 1, "running")
+    d.observe("/b", 1, "running")
+    d.observe("/a", 1, "running") // touch /a
+    d.observe("/c", 1, "running") // evicts /b, not /a
+    d.observe("/a", 1, "success") shouldBe true
+    d.observe("/b", 1, "success") shouldBe false
+  }
 })

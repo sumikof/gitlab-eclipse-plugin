@@ -36,7 +36,7 @@ object PipelineMenuModel {
     val side = (snapshot.input as? Resolved)?.pipeline?.getOrNull()
     val entries = mutableListOf<MenuEntry>()
     if (side is PipelineShown) entries += shownPipelineEntries(side.snapshot)
-    if (canCreate(side)) entries += MenuEntry(MenuEntryKind.CREATE, "Create new pipeline…", true)
+    if (canCreate(side, snapshot.headKind)) entries += MenuEntry(MenuEntryKind.CREATE, "Create new pipeline…", true)
     if (side is PipelineShown) artifactsEntry(side.snapshot)?.let { entries += it }
     entries += MenuEntry(MenuEntryKind.REFRESH, "Refresh", true)
     return entries
@@ -53,9 +53,10 @@ object PipelineMenuModel {
     )
   }
 
-  // Create is offered on a branch (shown or without a pipeline), never for a tag.
-  private fun canCreate(side: PipelineSide?): Boolean =
-    side == NoPipeline || (side is PipelineShown && side.snapshot.kind != PipelineKind.TAG)
+  // Create is offered on a branch (shown or without a pipeline), never for a tag or a detached HEAD.
+  private fun canCreate(side: PipelineSide?, headKind: HeadKind): Boolean =
+    headKind != HeadKind.TAG && headKind != HeadKind.DETACHED &&
+      (side == NoPipeline || (side is PipelineShown && side.snapshot.kind != PipelineKind.TAG))
 
   private fun artifactsEntry(shown: PipelineSnapshot): MenuEntry? {
     val jobs = shown.jobsResult.getOrNull().orEmpty().filter { it.status in FINISHED_JOB_STATUSES }

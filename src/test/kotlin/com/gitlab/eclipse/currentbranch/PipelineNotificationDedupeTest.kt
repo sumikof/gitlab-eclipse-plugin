@@ -36,12 +36,22 @@ class PipelineNotificationDedupeTest : StringSpec({
     d.shouldShow(url, 1, 10, null) shouldBe true
   }
 
-  "the set is bounded: the least recently used entry is evicted" {
+  "the set is bounded: beyond capacity the oldest entry is forgotten" {
     val d = PipelineNotificationDedupe(capacity = 2)
     d.shouldShow(url, 1, 1, "s") shouldBe true
     d.shouldShow(url, 1, 2, "s") shouldBe true
     d.shouldShow(url, 1, 3, "s") shouldBe true // evicts pipeline 1
     d.shouldShow(url, 1, 1, "s") shouldBe true // forgotten
     d.shouldShow(url, 1, 3, "s") shouldBe false // still remembered
+  }
+
+  "eviction is least-recently-used, not first-inserted" {
+    val d = PipelineNotificationDedupe(capacity = 2)
+    d.shouldShow(url, 1, 1, "s") shouldBe true
+    d.shouldShow(url, 1, 2, "s") shouldBe true
+    d.shouldShow(url, 1, 1, "s") shouldBe false
+    d.shouldShow(url, 1, 3, "s") shouldBe true
+    d.shouldShow(url, 1, 1, "s") shouldBe false
+    d.shouldShow(url, 1, 2, "s") shouldBe true
   }
 })
