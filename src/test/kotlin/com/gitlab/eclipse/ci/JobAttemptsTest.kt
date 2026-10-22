@@ -86,6 +86,12 @@ class JobAttemptsTest : DescribeSpec({
       order.map { it.first } shouldBe listOf("build", "test", "deploy")
     }
 
+    it("a bridge sorts against the retried job's first attempt, not its latest id") {
+      val jobs = keepLatestAttempts(listOf(job(2, "x", "test"), job(10, "x", "test")))
+      val order = orderStageEntries(jobs, listOf(bridge(5, "test")))
+      names(order) shouldBe listOf("test" to listOf(10L, 5L))
+    }
+
     it("interleaves bridges by their own id and falls back to NO_STAGE") {
       val order = orderStageEntries(
         keepLatestAttempts(listOf(job(1, "a", "build"), job(5, "z", null))),
