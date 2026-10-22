@@ -12,7 +12,7 @@ import org.eclipse.ui.IWorkbenchWindow
 /**
  * One window's [ActivitySource] (status-bar design §4.2, decision D1 "focused only"): active = the display's
  * active shell is this window's shell, or a shell whose parent chain reaches it (a dialog opened from it). The
- * sidebar-visibility term of CI-04's `SwtActivitySource` is gone: the state refreshes whether or not the sidebar
+ * sidebar-visibility term of CI-04's (removed) `SwtActivitySource` is gone: the state refreshes whether or not the sidebar
  * is shown. Signals come from the [SharedActivationFilter] (one display filter for all windows, R7) into the
  * same [ActivityDebouncer] as CI-04, which evaluates once per burst after the platform settled the state and
  * reports changes only.
@@ -38,7 +38,7 @@ class WindowActivitySource(
     try {
       startDebouncer(debouncer, onChange)
     } catch (e: Exception) {
-      signal.unregister() // T3b: as SwtActivitySource, nothing stays subscribed when register fails
+      signal.unregister() // T3b: nothing stays subscribed when register fails
       throw e
     }
     return Registration {
@@ -85,7 +85,7 @@ fun <T : Any> shellChainReaches(start: T?, target: T, parentOf: (T) -> T?): Bool
 
 /**
  * The production install for [SharedActivationFilter]: one `Listener` added as an `SWT.Activate` and an
- * `SWT.Deactivate` display filter (as CI-04's `SwtActivitySource`); removal skips a disposed display.
+ * `SWT.Deactivate` display filter (as CI-04's sidebar activity source did); removal skips a disposed display.
  */
 fun displayActivationFilter(display: () -> Display): (() -> Unit) -> Registration = { fanOut ->
   val target = display()
