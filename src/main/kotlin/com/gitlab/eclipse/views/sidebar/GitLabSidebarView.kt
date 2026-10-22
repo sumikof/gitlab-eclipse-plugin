@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.BridgeService
 import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.CurrentUserService
 import com.gitlab.eclipse.api.GitLabApiClient
@@ -12,6 +13,7 @@ import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
+import com.gitlab.eclipse.mergerequests.HeadTagReader
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
@@ -123,6 +125,9 @@ class GitLabSidebarView : ViewPart() {
       currentBranchMrLookup,
       pipelineService,
       jobService,
+      BridgeService(),
+      MergeRequestService(),
+      HeadTagReader(),
       apiClient,
       errorLog = { message, e -> logger.error(message, e) },
       warnLog = { logger.warn(it) },

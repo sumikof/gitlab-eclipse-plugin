@@ -6,6 +6,7 @@ import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.PipelineKind
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
@@ -19,6 +20,10 @@ import io.kotest.matchers.shouldBe
 
 private const val SRC_URL = "https://gitlab.example.com"
 private const val SRC_FP = "fp0"
+
+/** A branch-kind snapshot without bridges (rendering ignores both until the CI-06 tree lands). */
+private fun snapshot(pipeline: GitLabPipeline, jobs: Result<List<GitLabJob>>, url: String, fp: String) =
+  PipelineSnapshot(pipeline, PipelineKind.BRANCH, jobs, Result.success(emptyList()), url, fp)
 
 class SidebarViewModelTest : StringSpec({
   val vm = SidebarViewModel()
@@ -273,7 +278,7 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = Result.success(CurrentBranchInfo(null, emptyList())),
-        pipeline = Result.success(null),
+        pipeline = Result.success(NoPipeline),
       ),
     )
     node.children shouldHaveSize 1
@@ -310,7 +315,7 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = null,
-        pipeline = Result.success(PipelineSnapshot(pipeline(9), Result.success(emptyList()), SRC_URL, SRC_FP)),
+        pipeline = Result.success(PipelineShown(snapshot(pipeline(9), Result.success(emptyList()), SRC_URL, SRC_FP))),
       ),
     )
     node.children shouldHaveSize 2
@@ -323,12 +328,36 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = null,
-        pipeline = Result.success(PipelineSnapshot(pipeline(1), Result.success(jobs), "https://x", "fpX")),
+        pipeline = Result.success(PipelineShown(snapshot(pipeline(1), Result.success(jobs), "https://x", "fpX"))),
       ),
     )
     val pipelineNode = node.children[0] as PipelineNode
     pipelineNode.sourceInstanceUrl shouldBe "https://x"
     pipelineNode.sourceAuthFingerprint shouldBe "fpX"
+  }
+
+  "buildCurrentBranchSection(input): AmbiguousTags renders the multiple-tags message, MR side unaffected" {
+    val node = vm.buildCurrentBranchSection(
+      Resolved(mr = Result.success(CurrentBranchInfo(null, emptyList())), pipeline = Result.success(AmbiguousTags)),
+    )
+    node.children shouldHaveSize 2
+    (node.children[0] as MessageNode).label shouldBe "Multiple tags point at HEAD; selecting a tag pipeline is not supported."
+    (node.children[1] as MessageNode).label shouldBe "No merge request found"
+  }
+
+  "buildCurrentBranchSection(input): retried attempts (include_retried) render only the latest attempt of each job" {
+    val jobs = listOf(
+      job(1, name = "build", status = "failed"),
+      job(4, name = "build", status = "success"),
+      job(2, name = "test"),
+    )
+    val shown = PipelineShown(snapshot(pipeline(1), Result.success(jobs), SRC_URL, SRC_FP))
+    val node = vm.buildCurrentBranchSection(Resolved(mr = null, pipeline = Result.success(shown)))
+    val pipelineNode = node.children[0] as PipelineNode
+    val shownJobIds = pipelineNode.children.flatMap { stage ->
+      (stage as StageNode).children.map { (it as JobNode).job.id }
+    }
+    shownJobIds.sorted() shouldBe listOf(2L, 4L)
   }
 
   // --- ChangedFileNode.mrRef (editor-thread-ui design §8.3): set exactly when a Discussions section is built ---

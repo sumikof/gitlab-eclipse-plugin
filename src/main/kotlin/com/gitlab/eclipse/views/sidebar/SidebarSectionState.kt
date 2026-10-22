@@ -1,26 +1,47 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.model.GitLabBridge
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.PipelineKind
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
 import com.gitlab.eclipse.views.sidebar.queries.QueryConfig
 import com.gitlab.eclipse.views.sidebar.queries.QueryOutcome
 
 /**
- * A pipeline paired with its (possibly still-failed) jobs fetch, mirroring the
- * `(pipeline, jobsResult)` pair [SidebarViewModel.buildPipelineNode] already consumes,
- * plus the non-secret tags of the connection both GETs were pinned to (design doc
- * §8.4/§8.5): [sourceInstanceUrl] and [sourceAuthFingerprint] are captured atomically at
- * refresh start and flow onto the nodes so write handlers can verify the connection has
- * not changed since the data was fetched. Never the token itself.
+ * The selected pipeline (CI-05 §4.1/§4.2) — of [kind] BRANCH, MERGE_REQUEST or TAG — paired with its
+ * (possibly still-failed) jobs fetch ([jobsResult], requested with `include_retried=true` so a retried
+ * job's earlier attempts are available for ordering) and bridges fetch ([bridgesResult], CI-06), each
+ * settled independently so one failing endpoint never hides the pipeline row. Also carries the
+ * non-secret tags of the connection every GET was pinned to (design doc §8.4/§8.5):
+ * [sourceInstanceUrl] and [sourceAuthFingerprint] are captured atomically at refresh start and flow
+ * onto the nodes so write handlers can verify the connection has not changed since the data was
+ * fetched. Never the token itself.
  */
 data class PipelineSnapshot(
   val pipeline: GitLabPipeline,
+  val kind: PipelineKind,
   val jobsResult: Result<List<GitLabJob>>,
+  val bridgesResult: Result<List<GitLabBridge>>,
   val sourceInstanceUrl: String,
   val sourceAuthFingerprint: String,
 )
+
+/**
+ * What the settled pipeline side of [Resolved] shows (CI-05 §4.2). A separate type because
+ * "no pipeline row" and "several tags point at HEAD" are both successes that must render differently.
+ */
+sealed interface PipelineSide
+
+/** A selected pipeline: rendered as the pipeline row and its subtree. */
+data class PipelineShown(val snapshot: PipelineSnapshot) : PipelineSide
+
+/** No current pipeline (none for the ref, or a detached HEAD without a tag): no row at all — not an error. */
+data object NoPipeline : PipelineSide
+
+/** Detached HEAD with two or more tags: no pipeline is fetched; a message explains why (tag names never shown). */
+data object AmbiguousTags : PipelineSide
 
 /**
  * Input to [SidebarViewModel.buildCurrentBranchSection]'s new overload (design doc §6.6):
@@ -35,13 +56,13 @@ object NoRepository : CurrentBranchSectionInput
 
 /**
  * A repository is resolved; [mr] and [pipeline] are each `null` while their corresponding fetch
- * is still in flight, or the settled [Result] once it completes. `pipeline` further distinguishes
- * "still loading" (`null`) from "loaded, and there is no current pipeline" (`Result.success(null)`)
- * from "loaded, here it is" (`Result.success(PipelineSnapshot)`).
+ * is still in flight, or the settled [Result] once it completes. A settled `pipeline` success says
+ * which [PipelineSide] to render: [NoPipeline] (no row), [AmbiguousTags] (a message) or
+ * [PipelineShown] (the pipeline row).
  */
 data class Resolved(
   val mr: Result<CurrentBranchInfo>?,
-  val pipeline: Result<PipelineSnapshot?>?,
+  val pipeline: Result<PipelineSide>?,
 ) : CurrentBranchSectionInput
 
 /**

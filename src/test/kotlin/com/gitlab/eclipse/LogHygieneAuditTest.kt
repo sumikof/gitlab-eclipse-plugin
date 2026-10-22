@@ -103,6 +103,7 @@ private val AUDITED_FILES = listOf(
   "lsp/messages/LanguageServerMessageDialog.kt",
   "lsp/messages/LanguageServerMessagePresenter.kt",
   "lsp/messages/ShowMessageDeduplicator.kt",
+  "mergerequests/HeadTagReader.kt",
   "preferences/PreferenceConstants.kt",
   "preferences/PreferenceInitializer.kt",
   "utils/ActionNotificationPopup.kt",

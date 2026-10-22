@@ -11,6 +11,8 @@ import com.gitlab.eclipse.api.model.GitLabNote
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiAction
 import com.gitlab.eclipse.ci.CiStatus
+import com.gitlab.eclipse.ci.JobEntry
+import com.gitlab.eclipse.ci.keepLatestAttempts
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
@@ -33,6 +35,7 @@ private const val JOBS_LOAD_FAILED_MESSAGE = "Failed to load jobs"
 /** Shown in the "For current branch" section when no single repository can be resolved. */
 private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
 private const val PIPELINE_UNAVAILABLE_MESSAGE = "Unable to load pipeline"
+private const val MULTIPLE_TAGS_MESSAGE = "Multiple tags point at HEAD; selecting a tag pipeline is not supported."
 
 /** Shown under a [DiscussionsSectionNode] whose merge request has no (non-system) discussions. */
 private const val NO_DISCUSSIONS_MESSAGE = "No discussions"
@@ -467,8 +470,9 @@ private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
  * doc §6.6/§U-3, the `Resolved` variant; pipeline listed first). The two sides are independent:
  *
  * - Pipeline: `null` means the fetch hasn't settled yet ("Loading…" placeholder); a settled
- *   `null` snapshot means there is no current pipeline (no row at all — 0 pipelines isn't an
- *   error); a settled non-null snapshot renders via [buildPipelineNode]
+ *   [NoPipeline] means there is no current pipeline (no row at all — 0 pipelines isn't an
+ *   error); [AmbiguousTags] renders [MULTIPLE_TAGS_MESSAGE]; a [PipelineShown] snapshot renders
+ *   (latest job attempts only) via [buildPipelineNode]
  *   ([SidebarViewModel.buildPipelineNode], passed in because that method lives on the class and
  *   this helper does not — see the [TooManyFunctions] note on [failureChildren]); a failure
  *   renders [PIPELINE_UNAVAILABLE_MESSAGE] for an access-denied response (403/404) or the
@@ -482,7 +486,7 @@ private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
  * [currentBranchChildren] (also moved top-level for the class-level threshold).
  */
 private fun currentBranchResolvedChildren(
-  pipeline: Result<PipelineSnapshot?>?,
+  pipeline: Result<PipelineSide>?,
   mr: Result<CurrentBranchInfo>?,
   buildPipelineNode: (GitLabPipeline, Result<List<GitLabJob>>, String, String) -> PipelineNode,
 ): List<SidebarNode> {
@@ -491,12 +495,24 @@ private fun currentBranchResolvedChildren(
       pipeline == null -> listOf(MessageNode(LOADING_MESSAGE))
       else ->
         pipeline.fold(
-          onSuccess = { snapshot ->
-            snapshot
-              ?.let {
-                listOf(buildPipelineNode(it.pipeline, it.jobsResult, it.sourceInstanceUrl, it.sourceAuthFingerprint))
+          onSuccess = { side ->
+            when (side) {
+              is PipelineShown -> {
+                val snapshot = side.snapshot
+                // jobs come with include_retried=true: show only each job's latest attempt (CI-05 §4.5).
+                val latestJobs = snapshot.jobsResult.map { jobs -> keepLatestAttempts(jobs).map(JobEntry::job) }
+                listOf(
+                  buildPipelineNode(
+                    snapshot.pipeline,
+                    latestJobs,
+                    snapshot.sourceInstanceUrl,
+                    snapshot.sourceAuthFingerprint,
+                  ),
+                )
               }
-              ?: emptyList()
+              NoPipeline -> emptyList()
+              AmbiguousTags -> listOf(MessageNode(MULTIPLE_TAGS_MESSAGE))
+            }
           },
           onFailure = { error ->
             val message = if (CiHttpStatus.isAccessDenied(error)) PIPELINE_UNAVAILABLE_MESSAGE else LOAD_FAILED_MESSAGE
