@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.currentbranch
 
 import com.gitlab.eclipse.views.sidebar.autorefresh.Registration
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
@@ -100,6 +101,22 @@ class WindowActivitySourceTest : StringSpec({
     rig.runDeferred()
 
     changes.shouldBeEmpty()
+    rig.uninstalls shouldBe 1
+  }
+
+  "T3b: a register that fails after subscribing to the shared filter takes the subscription back" {
+    val rig = ActivityRig()
+    val failing = WindowActivitySource(
+      isOwnShellActive = { throw IllegalStateException("never thrown: read is contained") },
+      defer = {},
+      filter = rig.filter,
+      log = {},
+      startDebouncer = { _, _ -> throw IllegalStateException("start failed") },
+    )
+
+    shouldThrow<IllegalStateException> { failing.register {} }
+
+    rig.installs shouldBe 1
     rig.uninstalls shouldBe 1
   }
 

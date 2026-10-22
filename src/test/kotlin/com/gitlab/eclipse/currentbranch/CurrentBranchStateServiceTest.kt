@@ -25,6 +25,7 @@ private class ServiceRig(vararg open: IWorkbenchWindow) {
   val created = mutableListOf<IWorkbenchWindow>()
   val logs = mutableListOf<String>()
   var failCreate: Exception? = null
+  val closed = mutableSetOf<IWorkbenchWindow>()
   var filterDisposed = 0
 
   init {
@@ -39,6 +40,7 @@ private class ServiceRig(vararg open: IWorkbenchWindow) {
       StateRig(editor = File("/w${created.size}/A.kt")).also { rigs[window] = it }.state
     },
     workbench = { workbench },
+    isWindowOpen = { it !in closed },
     onDispose = { filterDisposed++ },
     log = { logs += it },
   )
@@ -87,6 +89,32 @@ class CurrentBranchStateServiceTest : StringSpec({
     state.isDisposed shouldBe true
     rig.service.stateFor(a).shouldBeNull()
     rig.rigs.getValue(a).activity.unregistered shouldBe 1
+  }
+
+  "T3b: a window that is closed (or closing) gets no entry, e.g. a trim control created during the close" {
+    val a = window()
+    val rig = ServiceRig(a)
+    rig.service.activate()
+    rig.windowListener.captured.windowClosed(a)
+    rig.closed += a
+
+    rig.service.ensureWindow(a).shouldBeNull()
+    rig.service.stateFor(a).shouldBeNull()
+    rig.created shouldContainExactly listOf(a)
+  }
+
+  "T3b: a window-liveness check that throws counts as closed" {
+    val a = window()
+    val rig = ServiceRig()
+    val service = CurrentBranchStateService(
+      createState = { error("must not be created") },
+      workbench = { rig.workbench },
+      isWindowOpen = { throw IllegalStateException("workbench gone") },
+      onDispose = {},
+      log = { rig.logs += it },
+    )
+
+    service.ensureWindow(a).shouldBeNull()
   }
 
   "two windows get separate entries with their own editor file" {

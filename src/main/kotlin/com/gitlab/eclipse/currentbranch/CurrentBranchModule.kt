@@ -45,6 +45,7 @@ val currentBranchModule = module {
     CurrentBranchStateService(
       createState = { window -> productionWindowState(window, scope, apiClient, mergeRequestService, filter) },
       workbench = PlatformUI::getWorkbench,
+      isWindowOpen = ::isWindowOpen,
       onDispose = filter::dispose,
       log = warn,
     )
@@ -86,8 +87,8 @@ private fun productionWindowState(
     warnLog = warn,
   )
   return WindowCurrentBranchState(
-    fetch = CurrentBranchFetch { file, previous, previousGitDir, soft, apply ->
-      fetcher.fetch(file, previous, previousGitDir, soft, apply)
+    fetch = CurrentBranchFetch { file, previous, previousGitDir, soft, onHead, apply ->
+      fetcher.fetch(file, previous, previousGitDir, soft, onHead, apply)
     },
     editorFile = { WindowEditorFileReader.activeEditorFile(window) },
     scope = scope,
@@ -110,6 +111,15 @@ private fun productionWindowState(
     canonical = { File(it).canonicalPath },
     log = warn,
   )
+}
+
+/**
+ * T3b: a window whose shell is gone (or not created) or a closing workbench gets no entry: a trim control rebuilt
+ * while its window closes would otherwise create one after `windowClosed`, and nothing would ever dispose it.
+ */
+private fun isWindowOpen(window: IWorkbenchWindow): Boolean {
+  val shell = window.shell ?: return false
+  return !shell.isDisposed && !window.workbench.isClosing
 }
 
 /** §4.3/R20: an editor of [window] activated (or its input replaced) reports that editor's file. */

@@ -27,6 +27,7 @@ fun interface CurrentBranchFetch {
     previous: CurrentBranchSectionInput?,
     previousGitDir: String?,
     soft: Boolean,
+    onHead: (TrackedHead) -> Unit,
     apply: SectionApply,
   ): TrackedHead?
 }
@@ -86,6 +87,9 @@ class WindowCurrentBranchState(
   /** What one fetch learned once it returned: the head it looked at and the canonical work tree. */
   private class Finished(val head: TrackedHead?, val workTree: String?)
 
+  /** The running refresh's head report (T3b): applied from the first apply of its repository on. */
+  private class ReportedHead(val head: TrackedHead, val workTree: String?)
+
   /** The live state; changes with every start, apply and finish. */
   var snapshot = CurrentBranchSnapshot(version = 0, gitDir = null, workTree = null, input = null, refreshing = false)
     private set
@@ -108,6 +112,7 @@ class WindowCurrentBranchState(
   private var editorRegistration: Registration? = null
   private var job: Job? = null
   private var lastId = 0L
+  private var reportedHead: ReportedHead? = null
 
   /** No refresher: a request that arrived while a refresh ran, run once after it. */
   private var pendingWithoutRefresher = false
@@ -190,6 +195,7 @@ class WindowCurrentBranchState(
     job?.cancel()
     val id = ++lastId
     runningRefresh = RunningRefresh(id, soft)
+    reportedHead = null
     val file = contain("editor read") { editorFile() }
     val previous = if (soft) snapshot.input else null
     val previousGitDir = snapshot.gitDir
@@ -200,7 +206,11 @@ class WindowCurrentBranchState(
       scope.launch {
         // Shared scope with a plain Job: nothing but cancellation may escape.
         try {
-          val head = fetch.fetch(file, previous, previousGitDir, soft) { gitDir, change ->
+          val reportHead: (TrackedHead) -> Unit = { reported ->
+            val workTree = reported.workTree?.let(::canonicalOrSelf) // IO: canonicalised before the hop
+            hop { onHeadReported(id, ReportedHead(reported, workTree)) }
+          }
+          val head = fetch.fetch(file, previous, previousGitDir, soft, reportHead) { gitDir, change ->
             hop { onApply(id, gitDir, change) }
           }
           recorded.set(Finished(head, head?.workTree?.let(::canonicalOrSelf)))
@@ -222,18 +232,35 @@ class WindowCurrentBranchState(
     }
   }
 
+  /**
+   * T3b: the fetch knows the head before either side settles. Recorded for the refresh, and applied at once when
+   * the snapshot already describes that repository; otherwise by the apply that switches to it. Not notified on
+   * its own: the next apply or the finish carries it to the subscribers.
+   */
+  private fun onHeadReported(id: Long, reported: ReportedHead) {
+    if (isDisposed || runningRefresh?.id != id) return
+    reportedHead = reported
+    if (reported.head.gitDir == snapshot.gitDir) {
+      update(snapshot.copy(workTree = reported.workTree, headKind = headKindOf(reported.head)))
+    }
+  }
+
   private fun onApply(id: Long, gitDir: String?, change: SectionUpdate) {
     if (isDisposed || runningRefresh?.id != id) return
     val input = change(snapshot.input)
-    val sameRepository = gitDir == snapshot.gitDir
-    update(
+    val next = if (gitDir == snapshot.gitDir) {
+      snapshot.copy(input = input)
+    } else {
+      // Another repository: its own head report if it came already, else unknown until it does.
+      val reported = reportedHead?.takeIf { it.head.gitDir == gitDir }
       snapshot.copy(
         gitDir = gitDir,
         input = input,
-        workTree = if (sameRepository) snapshot.workTree else null,
-        headKind = if (sameRepository) snapshot.headKind else HeadKind.UNKNOWN,
-      ),
-    )
+        workTree = reported?.workTree,
+        headKind = reported?.let { headKindOf(it.head) } ?: HeadKind.UNKNOWN,
+      )
+    }
+    update(next)
     val applied = snapshot
     notifyListeners { it.onApplied(id, applied) }
   }
@@ -243,6 +270,7 @@ class WindowCurrentBranchState(
     val outcome = finished?.let { settleOutcomeOf(it.head) }
     if (runningRefresh?.id == id) {
       runningRefresh = null
+      reportedHead = null
       job = null
       update(settled(snapshot.copy(refreshing = false), finished))
       notifyListeners { it.onRefreshFinished(id, outcome) }

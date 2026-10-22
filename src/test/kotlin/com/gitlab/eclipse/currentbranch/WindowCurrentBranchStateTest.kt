@@ -45,6 +45,7 @@ internal class FakeFetch : CurrentBranchFetch {
     val previous: CurrentBranchSectionInput?,
     val previousGitDir: String?,
     val soft: Boolean,
+    val onHead: (TrackedHead) -> Unit,
     val apply: SectionApply,
   ) {
     val result = CompletableDeferred<TrackedHead?>()
@@ -66,9 +67,10 @@ internal class FakeFetch : CurrentBranchFetch {
     previous: CurrentBranchSectionInput?,
     previousGitDir: String?,
     soft: Boolean,
+    onHead: (TrackedHead) -> Unit,
     apply: SectionApply,
   ): TrackedHead? {
-    val call = Call(editorFile, previous, previousGitDir, soft, apply)
+    val call = Call(editorFile, previous, previousGitDir, soft, onHead, apply)
     calls += call
     try {
       return call.result.await()
@@ -332,6 +334,66 @@ class WindowCurrentBranchStateTest : StringSpec({
 
     state.snapshot.workTree shouldBe WORK_TREE
     rig.logs.forEach { it shouldNotContain "secret" }
+  }
+
+  "2i. T3b: the head kind reported before the sides holds from the first side's apply: a tag never shows an MR item" {
+    val rig = StateRig().started()
+    val tag = TrackedHead(GIT_DIR, HeadKey.Detached("abc"), WORK_TREE, onSingleTag = true)
+    val call = rig.fetch.calls.single()
+
+    rig.applyLast(Resolved(null, null))
+    call.onHead(tag)
+    rig.applyLast(Resolved(Result.success(NO_MR), null)) // the MR side settles first
+    rig.ui.drain()
+
+    // The placeholder painted before the report shows the loading items (design §4.5 row 1), never "Create MR".
+    StatusTrimPresenter.present(rig.recorder.snapshots.first(), null).mr?.text shouldBe "Finding MR…"
+    rig.recorder.snapshots.drop(1).forEach { StatusTrimPresenter.present(it, null).mr.shouldBeNull() }
+    rig.recorder.snapshots.last().headKind shouldBe HeadKind.TAG
+    rig.recorder.snapshots.last().workTree shouldBe CANONICAL_WORK_TREE
+  }
+
+  "2j. T3b: a detached HEAD without a single tag hides everything from the first side's apply on" {
+    val rig = StateRig().started()
+    val detached = TrackedHead(GIT_DIR, HeadKey.Detached("abc"), WORK_TREE, onSingleTag = false)
+    val call = rig.fetch.calls.single()
+
+    rig.applyLast(Resolved(null, null))
+    call.onHead(detached)
+    rig.applyLast(Resolved(Result.success(NO_MR), null))
+    rig.applyLast(Resolved(Result.success(NO_MR), Result.success(NoPipeline)))
+    rig.ui.drain()
+
+    rig.recorder.snapshots.drop(1).forEach { StatusTrimPresenter.present(it, null) shouldBe TrimModel.HIDDEN }
+  }
+
+  "2k. T3b: the head kind stays for the whole refresh, also when the repository changes with the placeholder" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.time.advanceBy(PERIOD)
+    val call = rig.fetch.calls.last()
+    val other = TrackedHead("/other/.git", HeadKey.Detached("abc"), "/other", onSingleTag = true)
+
+    call.onHead(other) // reported before the placeholder for the new repository reaches the UI thread
+    rig.applyLast(Resolved(null, null), gitDir = "/other/.git")
+    rig.applyLast(Resolved(Result.success(NO_MR), null), gitDir = "/other/.git")
+    rig.ui.drain()
+
+    rig.recorder.snapshots.takeLast(2).forEach { it.headKind shouldBe HeadKind.TAG }
+    rig.state.snapshot.workTree shouldBe "/other"
+  }
+
+  "2l. T3b: a superseded refresh's head report is ignored" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.time.advanceBy(PERIOD)
+    val stale = rig.fetch.calls.last()
+    rig.state.refreshFull()
+
+    stale.onHead(TrackedHead(GIT_DIR, HeadKey.Detached("abc"), WORK_TREE))
+    rig.ui.drain()
+
+    rig.state.snapshot.headKind shouldBe HeadKind.BRANCH
   }
 
   "3a. refreshFull supersedes the running soft refresh: full fetch, old applies and finish dropped, manual ticket settles" {

@@ -25,6 +25,9 @@ class WindowActivitySource(
   defer: (Runnable) -> Unit,
   private val filter: SharedActivationFilter,
   log: (String) -> Unit,
+  private val startDebouncer: (ActivityDebouncer, (Boolean) -> Unit) -> Unit = { debouncer, onChange ->
+    debouncer.start(onChange)
+  },
 ) : ActivitySource {
   private val debouncer = ActivityDebouncer(read = isOwnShellActive, defer = defer, log = log)
 
@@ -32,7 +35,12 @@ class WindowActivitySource(
 
   override fun register(onChange: (Boolean) -> Unit): Registration {
     val signal = filter.register { debouncer.signal() }
-    debouncer.start(onChange)
+    try {
+      startDebouncer(debouncer, onChange)
+    } catch (e: Exception) {
+      signal.unregister() // T3b: as SwtActivitySource, nothing stays subscribed when register fails
+      throw e
+    }
     return Registration {
       debouncer.stop()
       signal.unregister()

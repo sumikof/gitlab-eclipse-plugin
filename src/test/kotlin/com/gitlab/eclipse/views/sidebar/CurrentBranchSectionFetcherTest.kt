@@ -886,3 +886,52 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     rig.logLines() shouldBe emptyList()
   }
 })
+
+/** Status bar T3b: when the fetch reports the head it looked at (kept apart: the main spec is at its size limit). */
+class CurrentBranchSectionFetcherHeadTest : StringSpec({
+  "10d. status bar T3b: a detached HEAD's head is reported once, after the tag scan (1h) and before either side" {
+    val cases = listOf(listOf("v1.0") to true, listOf("v1", "v2") to false, emptyList<String>() to false)
+    cases.forEach { (tags, single) ->
+      val rig = FetcherRig()
+      rig.answerSuccessfully()
+      every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null, sha = "abc123")
+      every { rig.tags.tagsAt(File(GIT_DIR), "abc123") } returns tags
+      every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } returns null
+      val events = mutableListOf<String>()
+
+      val onHead: (TrackedHead) -> Unit = { head -> events += "head $head ${head.onSingleTag}" }
+
+      rig.fetcher.fetch(null, null, null, soft = false, onHead = onHead) { _, _ -> events += "apply" }
+
+      events shouldContainExactly listOf("apply", "head TrackedHead(Detached) $single", "apply", "apply")
+    }
+  }
+
+  "10f. status bar T3b: a branch head is reported once, before the placeholder, with the work tree" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    val events = mutableListOf<String>()
+    val heads = mutableListOf<TrackedHead>()
+
+    val onHead: (TrackedHead) -> Unit = { head ->
+      heads += head
+      events += "head"
+    }
+
+    val returned = rig.fetcher.fetch(null, null, null, soft = false, onHead = onHead) { _, _ -> events += "apply" }
+
+    events shouldContainExactly listOf("head", "apply", "apply", "apply")
+    heads.single() shouldBe returned
+    heads.single() shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"), workTree = "/repo")
+  }
+
+  "10e. status bar T3b: no repository reports no head" {
+    val rig = FetcherRig()
+    every { rig.resolver.resolveNonInteractive(any()) } returns null
+    val heads = mutableListOf<TrackedHead>()
+
+    rig.fetcher.fetch(null, null, null, soft = false, onHead = { heads += it }) { _, _ -> }
+
+    heads shouldBe emptyList()
+  }
+})
