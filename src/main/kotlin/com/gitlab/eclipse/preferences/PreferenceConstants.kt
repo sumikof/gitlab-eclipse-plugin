@@ -48,6 +48,13 @@ object PreferenceConstants {
   const val SIDEBAR_CUSTOM_QUERIES: String = "gitlab.sidebar.customQueries"
 
   /**
+   * CI-03: show a popup when the current branch's pipeline changes status (VS Code
+   * `gitlab.showPipelineUpdateNotifications`). Default off; read when a change is observed, so toggling it takes
+   * effect without a restart and never replays earlier transitions.
+   */
+  const val PIPELINE_STATUS_NOTIFICATIONS: String = "gitlab.pipeline.showStatusNotifications"
+
+  /**
    * The random ID recorded for the GitLab Duo Tutorial project this plugin created (design §9.2).
    *
    * Hidden: no preference page, no default, never sent to the language server. Compared against

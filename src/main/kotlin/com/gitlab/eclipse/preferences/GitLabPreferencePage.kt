@@ -283,6 +283,14 @@ class GitLabPreferencePage(
         fieldEditorParent
       )
     )
+
+    addField(
+      BooleanFieldEditor(
+        PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS,
+        "Notify when the current branch's pipeline status changes",
+        fieldEditorParent
+      )
+    )
   }
 
   private fun addLabel(label: String) {

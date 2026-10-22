@@ -6,34 +6,19 @@ import com.gitlab.eclipse.api.CurrentUserService
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
-import com.gitlab.eclipse.api.PipelineService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
-import com.gitlab.eclipse.chat.quickchat.ui.DisplayUiScheduler
 import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
+import com.gitlab.eclipse.currentbranch.CurrentBranchStateService
+import com.gitlab.eclipse.currentbranch.WindowEditorFileReader
 import com.gitlab.eclipse.inject.lazyService
-import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
-import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
-import com.gitlab.eclipse.mergerequests.HeadTagReader
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
-import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
-import com.gitlab.eclipse.views.sidebar.autorefresh.AutoRefreshLifecycle
-import com.gitlab.eclipse.views.sidebar.autorefresh.CurrentBranchAutoRefresher
-import com.gitlab.eclipse.views.sidebar.autorefresh.DisplayAutoRefreshTimer
-import com.gitlab.eclipse.views.sidebar.autorefresh.GitHeadProbe
-import com.gitlab.eclipse.views.sidebar.autorefresh.JGitRefsEventSource
-import com.gitlab.eclipse.views.sidebar.autorefresh.SettleOutcome
-import com.gitlab.eclipse.views.sidebar.autorefresh.SwtActivitySource
-import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
-import com.gitlab.eclipse.views.sidebar.autorefresh.autoRefreshHop
-import com.gitlab.eclipse.views.sidebar.autorefresh.settleOnCompletion
-import com.gitlab.eclipse.views.sidebar.autorefresh.settleOutcomeOf
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesRefresh
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryRunner
 import com.gitlab.eclipse.views.sidebar.queries.QueryProject
@@ -41,7 +26,6 @@ import com.gitlab.eclipse.views.sidebar.queries.SidebarQueriesController
 import com.gitlab.eclipse.views.sidebar.queries.staleQueryRootSectionIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.eclipse.jface.action.MenuManager
 import org.eclipse.jface.viewers.IStructuredSelection
@@ -54,9 +38,8 @@ import org.eclipse.swt.widgets.Composite
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
 import org.eclipse.ui.preferences.ScopedPreferenceStore
-import java.io.File
+import org.koin.core.context.GlobalContext
 import java.net.URI
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * GitLab sidebar: a [TreeViewer] over one root per configured sidebar query (ISSUE-01; built by
@@ -64,10 +47,10 @@ import java.util.concurrent.atomic.AtomicReference
  * branch" section (open MR for the checked-out branch, the issues it would close, and the
  * branch's latest pipeline as a Pipeline→Stage→Job subtree).
  *
- * Threading: each refresh runs two independent jobs on the shared IO [CoroutineScope] (design
- * doc §6.6, ISSUE-01 §8 F1) — `fetchJob` (the current-branch section only, so the CI-04 ticket
- * depends on it alone) and the sibling queries job owned by [SidebarQueriesController] — and each
- * settles its slot in the generation's [RefreshSlots] then re-composes the whole tree
+ * Threading: the current-branch section comes from this window's shared state (status-bar design
+ * §4.4: [CurrentBranchSidebarBinding] binds each of its refreshes to the generation's slots), and
+ * the queries job runs on the shared IO [CoroutineScope] owned by [SidebarQueriesController]
+ * (ISSUE-01 §8 F1). Each settles its slot in the generation's [RefreshSlots] then re-composes the whole tree
  * incrementally via [SidebarRefreshCoordinator], hopping to the SWT UI thread with `asyncExec`.
  * Stale generations ([ViewRefreshState]), stale section epochs ([ApplyScope]) and disposed widgets
  * are dropped. The slots outlive the fetch (UI thread only), so a [SidebarViewMode] toggle
@@ -88,8 +71,6 @@ class GitLabSidebarView : ViewPart() {
   companion object {
     /** Must match the view id declared in plugin.xml. */
     const val VIEW_ID = "com.gitlab.eclipse.views.GitLabSidebarView"
-
-    private const val NANOS_PER_MILLI = 1_000_000L
   }
 
   private val logger = logger<GitLabSidebarView>()
@@ -110,30 +91,12 @@ class GitLabSidebarView : ViewPart() {
   // Deliberately not Koin singles (see RepositoryContextResolver KDoc); lazy so that
   // their `service()` default arguments resolve only once the workbench is up.
   private val repositoryContextResolver by lazy { RepositoryContextResolver() }
-  private val currentBranchGitReader by lazy { CurrentBranchGitReader() }
-  private val currentBranchMrLookup by lazy { CurrentBranchMrLookup() }
   private val queryRunner by lazy { CustomQueryRunner(apiClient, currentUserService, log = { logger.warn(it) }) }
   private val queriesRefresh by lazy {
     CustomQueriesRefresh(queryRunner, captureConnection = { apiClient.captureConnection() }, log = { logger.warn(it) })
   }
-  private val pipelineService by lazy { PipelineService() }
   private val jobService by lazy { JobService() }
   private val bridgeService by lazy { BridgeService() }
-  private val currentBranchFetcher by lazy {
-    CurrentBranchSectionFetcher(
-      repositoryContextResolver,
-      currentBranchGitReader,
-      currentBranchMrLookup,
-      pipelineService,
-      jobService,
-      bridgeService,
-      mergeRequestService,
-      HeadTagReader(),
-      apiClient,
-      errorLog = { message, e -> logger.error(message, e) },
-      warnLog = { logger.warn(it) },
-    )
-  }
 
   private lateinit var viewer: TreeViewer
 
@@ -177,10 +140,8 @@ class GitLabSidebarView : ViewPart() {
   }
   private val downstreamLoader by downstreamLoaderLazy
 
-  @Volatile private var fetchJob: Job? = null
-
-  // ISSUE-01 §8: the query side (setting listener, queries job — a sibling of fetchJob on the shared scope, never
-  // its child — and the result cache), SWT-free and tested headless. This view only supplies the SWT ports: the
+  // ISSUE-01 §8: the query side (setting listener, queries job on the shared scope, and the result cache),
+  // SWT-free and tested headless. This view only supplies the SWT ports: the
   // UI hop and applyCompose. Started in createPartControl; disposed in dispose() only if it was ever created.
   private val queriesLazy = lazy {
     SidebarQueriesController(
@@ -196,18 +157,30 @@ class GitLabSidebarView : ViewPart() {
       uiHop = { block -> runOnUiIfAlive(block) },
       apply = { slots, scope, update -> applyCompose(slots, scope, update = update) },
       currentSlots = { currentSlots },
-      activeEditorFile = { repositoryContextResolver.activeEditorFile() },
-      fullRefresh = { refresh() },
+      activeEditorFile = { windowEditorFile() },
+      fullRefresh = { refreshGeneration(initial = true) },
       log = { logger.warn(it) },
     )
   }
   private val queries by queriesLazy
 
-  // CI-04 auto refresh (UI thread only): the refresher is created and started in createPartControl
-  // BEFORE the first refresh() (so that refresh's ticket is adopted); dispose() stops it and cancels
-  // the running soft refresh. With no refresher the view works exactly as before (manual Refresh).
-  private val autoRefresh = AutoRefreshLifecycle { logger.warn(it) }
-  private var autoRefreshHop: (() -> Unit) -> Unit = { }
+  // Status bar §4.4: the "For current branch" section is a subscriber of this window's shared state (fetched,
+  // auto-refreshed and owned by CurrentBranchStateService); this view binds each of its refreshes to the generation's
+  // slots. UI thread only: attached (state resolved, subscribed) in createPartControl, detached in dispose().
+  private val currentBranchBindingLazy = lazy {
+    CurrentBranchSidebarBinding(
+      currentSlots = { currentSlots },
+      // CI-06 §4.6 R2-4: the previous refresh's downstream re-fetch is superseded by this one's.
+      cancelSweep = { downstreamLoader.cancelSweep() },
+      apply = { slots, scope, soft, update -> applyCompose(slots, scope, softRebuild = soft, update = update) },
+      // CI-06 §4.6 R1-2: once per refresh, after its applies (FIFO asyncExec), under the same gate.
+      requestSweep = { slots, scope ->
+        downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, scope) }
+      },
+      log = { logger.warn(it) },
+    )
+  }
+  private val currentBranchBinding by currentBranchBindingLazy
 
   // The live refresh generation's slots, written on the UI thread in refresh() and mutated
   // on the UI thread inside applyCompose (RefreshSlots' contract). `null` = nothing was
@@ -354,8 +327,8 @@ class GitLabSidebarView : ViewPart() {
 
     viewState.addListener(modeListener)
     queries.start()
-    startAutoRefresh()
-    refresh()
+    subscribeCurrentBranch()
+    refreshGeneration(initial = true)
   }
 
   /**
@@ -374,103 +347,34 @@ class GitLabSidebarView : ViewPart() {
   }
 
   /**
-   * Wires and starts the CI-04 auto refresher (design §2): Display timer and activity, JGit refs
-   * events and HEAD probe, all hopping back through [autoRefreshHop]; the port is
-   * [softRefreshCurrentBranch]. Per-refresh reason lines go to the debug log, failures to WARN with
-   * the exception class only. A failure here leaves auto refresh off and the view working as before.
+   * Status bar §4.4: subscribes [currentBranchBinding] to this window's shared current-branch state (created on demand:
+   * the view may open before the plugin-start activation ran). Without a state the section settles as "no repository".
    */
-  private fun startAutoRefresh() {
-    autoRefresh.start {
-      val display = viewer.control.display
-      val scheduler = DisplayUiScheduler(display)
-      val warn: (String) -> Unit = { logger.warn(it) }
-      val hop = autoRefreshHop(scheduler, warn)
-      lateinit var refresher: CurrentBranchAutoRefresher
-      refresher = CurrentBranchAutoRefresher(
-        clock = { System.nanoTime() / NANOS_PER_MILLI },
-        timer = DisplayAutoRefreshTimer(scheduler, warn),
-        activity = SwtActivitySource(display, site.page, this, warn),
-        refs = JGitRefsEventSource({ refresher.trackedGitDir() }, hop, warn),
-        probe = GitHeadProbe(coroutineScope, currentBranchGitReader, hop),
-        port = { ticket -> softRefreshCurrentBranch(ticket) },
-        log = warn,
-        debugLog = { logger.debug(it) },
-      )
-      autoRefreshHop = hop
-      refresher
+  private fun subscribeCurrentBranch() {
+    currentBranchBinding.attach {
+      GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>()?.ensureWindow(site.workbenchWindow)
     }
+  }
+
+  /** The Refresh button (and the CI write handlers): a full refresh, including the window's current branch. */
+  fun refresh() {
+    refreshGeneration(initial = false)
   }
 
   /**
-   * The auto refresher's port (CI-04 design §2.4): re-fetches the "For current branch" section only,
-   * within the live generation — the generation, the queries slot and the caches stay; the
-   * section's epoch is bumped so an older soft refresh's late applies are dropped. The slots
-   * instance and the epoch are captured HERE and checked at every apply. The ticket settles from
-   * the job's completion whatever happens to it ([settleOnCompletion]); if nothing could be launched
-   * it settles as Unknown at once. Never throws (SoftRefreshPort contract).
+   * Starts a new refresh generation. [initial] (opening the view, or a first refresh triggered before anything was
+   * fetched) shows the window's current-branch state as it is (seeded, adopted or fetched once:
+   * [CurrentBranchSidebarBinding.initial]); otherwise the current branch is re-fetched in full (manual Refresh).
+   * The queries side and the caches are handled the same way in both.
    */
-  private fun softRefreshCurrentBranch(ticket: Long) {
-    val recorded = AtomicReference<SettleOutcome?>()
-    val job = try {
-      launchSoftRefresh(recorded)
-    } catch (e: Exception) {
-      logger.warn("Current-branch auto refresh failed to launch: ${e.javaClass.name}")
-      null
-    }
-    val settle: (Long, SettleOutcome) -> Unit = { t, outcome -> autoRefresh.refresher?.onRefreshSettled(t, outcome) }
-    if (job == null) {
-      autoRefreshHop { settle(ticket, SettleOutcome.Unknown) }
-    } else {
-      settleOnCompletion(job, ticket, autoRefreshHop, recorded::get, settle)
-    }
-  }
-
-  private fun launchSoftRefresh(recorded: AtomicReference<SettleOutcome?>): Job? {
-    val slots = currentSlots ?: return null
-    if (viewer.control.isDisposed) return null
-    // CI-06 §4.6 R2-4: the previous refresh's downstream re-fetch is superseded by this one's.
-    downstreamLoader.cancelSweep()
-    slots.currentBranchEpoch++
-    val epoch = slots.currentBranchEpoch
-    val previous = (slots.currentBranch as? Slot.Settled)?.value
-    val previousGitDir = slots.currentBranchGitDir
-    val activeEditorFile = repositoryContextResolver.activeEditorFile()
-    val job = coroutineScope.launch {
-      // Shared scope with a plain Job: nothing may escape (see refresh()).
-      try {
-        val head = currentBranchFetcher.fetch(
-          activeEditorFile,
-          previous,
-          previousGitDir,
-          soft = true,
-        ) { gitDir, update ->
-          applyCompose(slots, ApplyScope.CurrentBranch(epoch), softRebuild = true) {
-            slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
-            slots.currentBranchGitDir = gitDir
-          }
-        }
-        recorded.set(settleOutcomeOf(head))
-        // CI-06 §4.6 R1-2: once per refresh, after its applies (FIFO asyncExec), under the same gate.
-        downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, ApplyScope.CurrentBranch(epoch)) }
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        logger.warn("Current-branch auto refresh failed: ${e.javaClass.name}")
-      }
-    }
-    autoRefresh.replaceSoftJob(job)
-    return job
-  }
-
-  fun refresh() {
+  private fun refreshGeneration(initial: Boolean) {
     val generation = refreshState.begin()
-    // Captured here — refresh() always runs on the UI thread (createPartControl, the
-    // refresh handler, onModeChanged's asyncExec) — because the active-editor read goes
-    // through the workbench, which silently yields null off the UI thread. Only this cheap
-    // workbench read stays on the UI thread; the blocking JGit resolution runs inside the
-    // fetch coroutine below. Non-interactive by design: never a picker during an
-    // auto-refresh; an ambiguous workspace resolves to null → "Select a repository".
-    val activeEditorFile = repositoryContextResolver.activeEditorFile()
+    // Captured here — this always runs on the UI thread (createPartControl, the refresh
+    // handler, onModeChanged's asyncExec) — because the active-editor read goes through the
+    // workbench, which silently yields null off the UI thread. Only this cheap workbench read
+    // stays on the UI thread; the blocking JGit resolution runs inside the queries job.
+    // Non-interactive by design: an ambiguous workspace resolves to null.
+    val activeEditorFile = windowEditorFile()
     val slots = RefreshSlots(generation)
     currentSlots = slots
     // A full refresh eventually rebuilds every MR node (the new generation resets the
@@ -490,62 +394,19 @@ class GitLabSidebarView : ViewPart() {
     DiscussionGenerationRegistry.clearLatestFor(
       collectDiscussionSectionNodeIds((viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()),
     )
-    fetchJob?.cancel()
     // CI-06 §4.6: a full refresh stops every downstream load and the sweep; the rebuilt tree reloads
     // what is still expanded.
     downstreamLoader.cancelAll()
-    // A manual refresh supersedes a running soft one (design §2.4): cancel it, and hand the
-    // refresher this refresh's ticket so the soft one's settle is ignored.
-    autoRefresh.cancelSoftJob()
-    val ticket = autoRefresh.refresher?.let { refresher ->
-      refresher.nextTicket().also { refresher.onManualRefreshStarted(it) }
-    }
-    val recorded = AtomicReference<SettleOutcome?>()
-    val epoch = slots.currentBranchEpoch // read here, on the UI thread that owns the slots
-    val job = coroutineScope.launch {
-      // Shared scope with a plain Job: nothing may escape this launch or every other
-      // consumer of the scope loses its coroutines. The current-branch unit only: the
-      // queries run in their own sibling job (ISSUE-01 §8 F1), so the ticket below settles
-      // from this unit alone. Fetch failures are runCatching'd inside the unit; only
-      // unexpected errors (bugs) surface to the catch below.
-      try {
-        recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
-        // CI-06 §4.6 R1-2: once per refresh, after its applies (FIFO asyncExec), under the same gate.
-        downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, ApplyScope.CurrentBranch(epoch)) }
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        logger.error("Failed to refresh the GitLab sidebar.", e)
-      }
-    }
-    fetchJob = job
-    if (ticket != null) {
-      settleOnCompletion(job, ticket, autoRefreshHop, recorded::get) { settled, outcome ->
-        autoRefresh.refresher?.onRefreshSettled(settled, outcome)
-      }
-    }
+    // The current-branch unit: bound to these slots (applies and the downstream sweep) by the binding; the window
+    // state's own refresh supersedes or coalesces as the design says (§4.1), and reports its errors itself.
+    currentBranchBinding.refresh(initial, slots)
     // The query side of this refresh (UI thread): decodes the setting into slots.queries — before any apply, which
-    // all run later via asyncExec — clears the result cache and replaces the queries job, a sibling of fetchJob.
+    // all run later via asyncExec — clears the result cache and replaces the queries job.
     queries.onFullRefresh(slots, activeEditorFile)
   }
 
-  /**
-   * The "For current branch" section, fetched by [currentBranchFetcher] (design CI-04
-   * §2.3). Each of its updates is applied to the generation's live slot inside [applyCompose]'s
-   * UI-thread step, so the MR and pipeline sub-tasks never tear each other's [Resolved] halves.
-   */
-  private suspend fun fetchCurrentBranch(slots: RefreshSlots, epoch: Long, activeEditorFile: File?): TrackedHead? =
-    currentBranchFetcher.fetch(
-      activeEditorFile,
-      previous = null,
-      previousGitDir = null,
-      soft = false,
-    ) { gitDir, update ->
-      applyCompose(slots, ApplyScope.CurrentBranch(epoch)) {
-        slots.currentBranch = Slot.Settled(update((slots.currentBranch as? Slot.Settled)?.value))
-        slots.currentBranchGitDir = gitDir
-      }
-    }
+  /** R16/R17: this window's active editor file (never another window's), UI thread only. */
+  private fun windowEditorFile() = WindowEditorFileReader.activeEditorFile(site.workbenchWindow)
 
   /**
    * Schedules one incremental apply on the UI thread: run [update] (the settling unit's
@@ -648,7 +509,7 @@ class GitLabSidebarView : ViewPart() {
       if (control.isDisposed) return@asyncExec
       val slots = currentSlots
       if (slots == null) {
-        refresh() // Nothing fetched yet — the fetch will compose with the new mode.
+        refreshGeneration(initial = true) // Nothing fetched yet — the fetch will compose with the new mode.
         return@asyncExec
       }
       (viewer.input as? List<*>)
@@ -846,8 +707,7 @@ class GitLabSidebarView : ViewPart() {
   override fun dispose() {
     if (queriesLazy.isInitialized()) queries.dispose()
     viewState.removeListener(modeListener)
-    autoRefresh.dispose()
-    fetchJob?.cancel()
+    if (currentBranchBindingLazy.isInitialized()) currentBranchBinding.detach()
     if (downstreamLoaderLazy.isInitialized()) downstreamLoader.cancelAll()
     super.dispose()
   }

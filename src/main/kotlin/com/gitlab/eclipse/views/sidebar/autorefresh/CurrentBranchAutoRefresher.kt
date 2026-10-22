@@ -52,8 +52,11 @@ fun interface SoftRefreshPort {
   fun startSoftRefresh(ticket: Long)
 }
 
-/** Why a refresh was requested; the only refresh detail the auto refresh logs. */
-enum class RefreshReason { TIMER, FOCUS, BRANCH, MANUAL, COALESCED }
+/**
+ * Why a refresh was requested; the only refresh detail the auto refresh logs. INITIAL: a window entry's first
+ * fetch (status-bar design §4.1 N1).
+ */
+enum class RefreshReason { TIMER, FOCUS, BRANCH, MANUAL, COALESCED, INITIAL }
 
 /**
  * Decides when the sidebar's "For current branch" section refreshes by itself (CI-04, design §3,
@@ -163,6 +166,21 @@ class CurrentBranchAutoRefresher(
     pending = false
     probeInFlight = false
     probePending = false
+  }
+
+  /**
+   * A refresh asked for from outside this refresher's own triggers (status-bar design §4.1): a window entry's
+   * first fetch ([RefreshReason.INITIAL]) or an editor switch / finished CI write. It coalesces like every
+   * other request, so it never supersedes a running refresh. INITIAL runs only while active: an inactive
+   * window gets its first fetch from the FOCUS rule when it is activated (nothing has settled yet).
+   *
+   * Returns false when not started (never started, start failed, or stopped): the caller then fetches by
+   * itself.
+   */
+  fun requestRefresh(reason: RefreshReason): Boolean {
+    if (lifecycle != Lifecycle.STARTED) return false
+    if (reason != RefreshReason.INITIAL || active) request(reason)
+    return true
   }
 
   fun onManualRefreshStarted(ticket: Long) {

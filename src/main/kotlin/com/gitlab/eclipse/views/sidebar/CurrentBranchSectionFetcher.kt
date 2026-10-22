@@ -79,13 +79,18 @@ class CurrentBranchSectionFetcher(
    * `apply`) it paints no placeholder; it applies nothing for
    * a side whose new success equals the shown one; and failures are logged by [report]'s soft rule.
    *
-   * Returns the repository and HEAD this fetch looked at, or null when no repository resolved.
+   * [onHead] receives, once, the same [TrackedHead] this returns (repository, work tree, HEAD): before the
+   * placeholder for a branch or unreadable HEAD, after the tag scan (still before either side) for a detached
+   * one. Not called without a repository.
+   *
+   * Returns the repository, its work tree and the HEAD this fetch looked at, or null when no repository resolved.
    */
   suspend fun fetch(
     activeEditorFile: File?,
     previous: CurrentBranchSectionInput?,
     previousGitDir: String?,
     soft: Boolean,
+    onHead: (TrackedHead) -> Unit = {},
     apply: SectionApply,
   ): TrackedHead? {
     // JGit enumeration/resolution (IO). resolveNonInteractive and read never throw by
@@ -101,10 +106,16 @@ class CurrentBranchSectionFetcher(
     // Soft refresh over a shown result: keep showing it until the new values arrive (no Loading
     // flicker), and keep each side whose new value equals the shown one (see [unchanged]).
     val shown = if (soft && previousGitDir == context.gitDir) previous as? Resolved else null
+    // Status bar (§4.1 R4, §4.5, T3b): the head kind and work tree, reported before any apply of this repository
+    // so the trim never renders it under an unknown kind. A detached HEAD's kind (tag or not) needs the tag scan,
+    // which stays after the placeholder (1h): it is reported right after that scan, still before either side.
+    val earlyHead = headBeforeTagScan(context, branch)?.also(onHead)
     // Repository resolved, both sides still loading: paint the two placeholders now.
     if (shown == null) apply(context.gitDir) { Resolved(mr = null, pipeline = null) }
     // After the placeholder paint: the (detached-only) tag scan is local JGit I/O the user should not wait on.
     val target = pipelineTargetOf(context, branch)
+    val head = earlyHead
+      ?: TrackedHead(context.gitDir, headKeyOf(branch), context.workTree, onSingleTag = target.isSingleTag).also(onHead)
 
     // Captured ONCE per refresh, on this IO thread, and only when a GET will actually use it
     // (a branch, or a detached HEAD with exactly one tag — R1-5). Every GET of both sides is pinned
@@ -134,7 +145,13 @@ class CurrentBranchSectionFetcher(
         }
       }
     }
-    return TrackedHead(context.gitDir, headKeyOf(branch))
+    return head
+  }
+
+  /** The head as known without the tag scan; null for a detached HEAD, whose tag-or-not needs that scan. */
+  private fun headBeforeTagScan(context: RepositoryContext, branch: CurrentBranch): TrackedHead? {
+    val headKey = headKeyOf(branch)
+    return if (headKey is HeadKey.Detached) null else TrackedHead(context.gitDir, headKey, context.workTree)
   }
 
   /**
@@ -293,6 +310,9 @@ class CurrentBranchSectionFetcher(
  */
 private class PipelineTarget(val effectiveRef: String?, val tags: List<String>) {
   val needsConnection: Boolean get() = effectiveRef != null || tags.size == 1
+
+  /** A detached HEAD whose pipeline side targets its one tag. */
+  val isSingleTag: Boolean get() = effectiveRef == null && tags.size == 1
 }
 
 /**

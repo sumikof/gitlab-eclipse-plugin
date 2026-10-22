@@ -18,8 +18,19 @@ sealed interface HeadKey {
   data object Unavailable : HeadKey
 }
 
-/** The repository (git dir) and HEAD a settled refresh looked at; `toString()` omits the path. */
-data class TrackedHead(val gitDir: String, val head: HeadKey) {
+/**
+ * The repository (git dir) and HEAD a settled refresh looked at; `toString()` omits the paths. [workTree] is the
+ * resolved repository's work tree as resolved (not canonicalised; status-bar design §4.1 R4), null where not
+ * known. [onSingleTag]: a detached HEAD with exactly one tag pointing at it, i.e. the pipeline side targets that
+ * tag (status-bar §4.5: a tag shows the pipeline item only; any other detached HEAD shows nothing). The refresher
+ * compares [head] only.
+ */
+data class TrackedHead(
+  val gitDir: String,
+  val head: HeadKey,
+  val workTree: String? = null,
+  val onSingleTag: Boolean = false,
+) {
   override fun toString() = "TrackedHead($head)"
 }
 

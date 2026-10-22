@@ -58,6 +58,7 @@ class JobActionHandler(
       logger.info("A write to job #$jobId is already in flight; ignoring.")
       return null
     }
+    val window = HandlerUtil.getActiveWorkbenchWindow(event)
     launchCiWrite(
       coroutineScope,
       logger,
@@ -67,7 +68,7 @@ class JobActionHandler(
       apiClient,
       node.sourceInstanceUrl,
       node.sourceAuthFingerprint,
-      HandlerUtil.getActiveWorkbenchWindow(event),
+      { refreshAfterCiWrite(window) },
     ) { connection ->
       when (action) {
         "retry" -> actionService.retry(connection, projectId, jobId)
