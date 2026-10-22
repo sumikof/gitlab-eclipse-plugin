@@ -22,6 +22,7 @@ private fun pipeline(
   status: String = "running",
   ref: String? = "main",
   webUrl: String? = WEB_URL,
+  instance: String = INSTANCE,
 ) = Resolved(
   null,
   Result.success(
@@ -31,7 +32,7 @@ private fun pipeline(
         PipelineKind.BRANCH,
         Result.success(emptyList()),
         Result.success(emptyList()),
-        INSTANCE,
+        instance,
         "fp",
       ),
     ),
@@ -155,5 +156,39 @@ class PipelineStatusNotifierTest : StringSpec({
 
     rig.shown.single().message shouldBe "Pipeline Cancelled"
     rig.shown.single().links.shouldBeEmpty()
+  }
+
+  "the status is observed while notifications are off: turning them on, the next change notifies" {
+    val rig = NotifierRig(enabled = false)
+    rig.apply(pipeline(status = "running"))
+
+    rig.enabled = true
+    rig.apply(pipeline(status = "success"))
+
+    rig.shown shouldHaveSize 1
+  }
+
+  "every transition of one pipeline notifies, in order (running, failed, passed)" {
+    val rig = NotifierRig()
+
+    rig.apply(pipeline(status = "running"))
+    rig.apply(pipeline(status = "failed"))
+    rig.apply(pipeline(status = "success"))
+
+    rig.shown.map { it.message } shouldContainExactly listOf("Pipeline Failed (main)", "Pipeline Passed (main)")
+  }
+
+  "the process-wide dedupe keys on the GitLab instance: another instance notifies too" {
+    val dedupe = PipelineNotificationDedupe()
+    val a = NotifierRig(dedupe = dedupe)
+    val b = NotifierRig(dedupe = dedupe)
+    a.apply(pipeline(status = "running"))
+    b.apply(pipeline(status = "running", instance = "https://other.example.com"))
+
+    a.apply(pipeline(status = "failed"))
+    b.apply(pipeline(status = "failed", instance = "https://other.example.com"))
+
+    a.shown shouldHaveSize 1
+    b.shown shouldHaveSize 1
   }
 })

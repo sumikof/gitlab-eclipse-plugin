@@ -6,12 +6,15 @@ import com.gitlab.eclipse.views.sidebar.NoPipeline
 import com.gitlab.eclipse.views.sidebar.NoRepository
 import com.gitlab.eclipse.views.sidebar.Resolved
 import com.gitlab.eclipse.views.sidebar.autorefresh.HeadKey
+import com.gitlab.eclipse.views.sidebar.autorefresh.Registration
 import com.gitlab.eclipse.views.sidebar.autorefresh.TrackedHead
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
 
 private const val PERIOD = 30_000L
 
@@ -178,6 +181,57 @@ class StatusTrimControllerTest : StringSpec({
     rig.state.settleBranch()
 
     rig.view.renders shouldHaveSize before
+  }
+
+  "a click after dispose does nothing, even on an item rendered before it" {
+    val rig = TrimRig()
+    rig.controller.attach(rig.state.state)
+    rig.state.state.start()
+    rig.state.settleBranch(withMr())
+    rig.last.mr?.text shouldBe "!12"
+    rig.last.pipeline?.action shouldBe TrimAction.ShowPipelineMenu
+
+    rig.controller.dispose()
+    rig.controller.onClick(TrimSlot.MR)
+    rig.controller.onClick(TrimSlot.PIPELINE)
+
+    rig.calls.shouldBeEmpty()
+    rig.view.menus.shouldBeEmpty()
+  }
+
+  "R2: dispose unregisters the subscription" {
+    var unregistered = 0
+    val state = mockk<WindowCurrentBranchState>(relaxed = true)
+    every { state.addListener(any()) } returns Registration { unregistered++ }
+    every { state.snapshot } returns CurrentBranchSnapshot(0, null, null, null, false)
+    val rig = TrimRig()
+
+    rig.controller.attach(state)
+    rig.controller.dispose()
+
+    unregistered shouldBe 1
+  }
+
+  "R19: every trim icon maps to its own asset" {
+    val expected = mapOf(
+      TrimIcon.SUCCESS to "pipeline_success",
+      TrimIcon.FAILED to "pipeline_failed",
+      TrimIcon.RUNNING to "pipeline_running",
+      TrimIcon.PENDING to "pipeline_pending",
+      TrimIcon.CANCELED to "pipeline_canceled",
+      TrimIcon.SKIPPED to "pipeline_skipped",
+      TrimIcon.MANUAL to "pipeline_manual",
+      TrimIcon.UNKNOWN to "pipeline_unknown",
+      TrimIcon.INFO_LOADING to "pipeline_loading",
+      TrimIcon.NO_PIPELINE to "pipeline_none",
+      TrimIcon.MR_OPEN to "mr_open",
+      TrimIcon.MR_DRAFT to "mr_draft",
+      TrimIcon.MR_CREATE to "mr_create",
+      TrimIcon.ISSUE to "issue_open",
+    )
+    expected.keys shouldBe TrimIcon.entries.toSet()
+    TrimIcon.entries.forEach { trimIconName(it) shouldBe expected.getValue(it) }
+    TrimIcon.entries.map { trimIconName(it) }.toSet() shouldHaveSize TrimIcon.entries.size
   }
 })
 

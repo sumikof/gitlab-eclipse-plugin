@@ -4,12 +4,15 @@ import com.gitlab.eclipse.currentbranch.StateRig
 import com.gitlab.eclipse.currentbranch.WindowCurrentBranchState
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.sidebar.autorefresh.RefreshReason
+import com.gitlab.eclipse.views.sidebar.autorefresh.Registration
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.every
+import io.mockk.mockk
 
 private const val PERIOD = 30_000L
 private const val GIT_DIR = "/home/alice/secret-repo/.git"
@@ -337,5 +340,29 @@ class CurrentBranchSidebarBindingTest : StringSpec({
     rig.state.state.start()
 
     rig.events.count { it == "cancelSweep" } shouldBe 1
+  }
+
+  "T4b: detach forgets the refresh bound before it" {
+    val rig = SidebarRig(subscribe = false)
+    rig.binding.attach { rig.state.state }
+    rig.state.state.start() // INITIAL refresh binds through the subscription
+    rig.binding.boundRefreshes shouldBe 1
+
+    rig.binding.detach()
+
+    rig.binding.boundRefreshes shouldBe 0
+  }
+
+  "T4b: detach unregisters the subscription" {
+    var unregistered = 0
+    val state = mockk<WindowCurrentBranchState>(relaxed = true)
+    every { state.addListener(any()) } returns Registration { unregistered++ }
+    val rig = SidebarRig(subscribe = false)
+
+    rig.binding.attach { state }
+    rig.binding.detach()
+    rig.binding.detach()
+
+    unregistered shouldBe 1
   }
 })

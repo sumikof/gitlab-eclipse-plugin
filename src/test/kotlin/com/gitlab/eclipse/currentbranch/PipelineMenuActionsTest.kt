@@ -154,4 +154,15 @@ class PipelineMenuActionsTest : StringSpec({
 
     rig.item(snapshotOf(shown(webUrl = null)), "View pipeline in GitLab").enabled shouldBe false
   }
+
+  "a disabled entry does nothing when run, whatever its kind" {
+    val rig = MenuRig()
+
+    val cancel = rig.item(snapshotOf(shown(status = "success")), "Cancel pipeline")
+    cancel.enabled shouldBe false
+    cancel.run()
+
+    rig.writes.shouldBeEmpty()
+    rig.calls.shouldBeEmpty()
+  }
 })
