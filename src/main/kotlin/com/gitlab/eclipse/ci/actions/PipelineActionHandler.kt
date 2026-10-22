@@ -10,6 +10,7 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.sidebar.GitLabSidebarView
 import com.gitlab.eclipse.views.sidebar.PipelineNode
+import com.gitlab.eclipse.views.sidebar.autorefresh.RefreshReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -210,17 +211,31 @@ internal fun findSidebarViewIn(window: IWorkbenchWindow?): GitLabSidebarView? =
   window?.activePage?.findView(GitLabSidebarView.VIEW_ID) as? GitLabSidebarView
 
 /**
- * ANY thread: after a successful CI write, refreshes [window] on the UI thread — its sidebar when it is open (as
- * before), else its current-branch state (status bar R15), so the status trim updates with the sidebar closed.
+ * ANY thread: after a successful CI write, Create pipeline or an MR auto-push, refreshes [window] on the UI thread
+ * ([refreshAfterWrite]): its sidebar when it is open (as before), else its current-branch state (status bar R15).
  */
 internal fun refreshAfterCiWrite(window: IWorkbenchWindow?) {
   Display.getDefault().asyncExec {
-    findSidebarViewIn(window)?.refresh() ?: refreshCurrentBranchOf(window)
+    val service = runCatching { GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>() }.getOrNull()
+    refreshAfterWrite(window, findSidebarViewIn(window), service)
   }
 }
 
-/** UI thread: a coalesced refresh of [window]'s current-branch state, when there is one. Never throws. */
-internal fun refreshCurrentBranchOf(window: IWorkbenchWindow?) {
-  if (window == null) return
-  runCatching { GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>()?.requestRefresh(window) }
+/**
+ * UI thread. Status bar R15: the open [sidebar]'s full refresh (which also refreshes the window's state), else a
+ * coalesced MANUAL refresh of [window]'s current-branch state, so the status trim updates with the sidebar closed.
+ * Nothing without either. Never throws: a window that is closing (or a state that cannot be created) refreshes
+ * nothing.
+ */
+internal fun refreshAfterWrite(
+  window: IWorkbenchWindow?,
+  sidebar: GitLabSidebarView?,
+  service: CurrentBranchStateService?,
+) {
+  if (sidebar != null) {
+    sidebar.refresh()
+    return
+  }
+  if (window == null || service == null) return
+  runCatching { service.ensureWindow(window)?.requestRefresh(RefreshReason.MANUAL) }
 }
