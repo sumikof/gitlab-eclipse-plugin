@@ -83,6 +83,13 @@ private fun sameSource(old: DownstreamPipelineNode, new: DownstreamPipelineNode)
   normalizeInstanceUrl(old.sourceInstanceUrl) == normalizeInstanceUrl(new.sourceInstanceUrl) &&
     old.sourceAuthFingerprint == new.sourceAuthFingerprint
 
+/**
+ * The donor's (`from`) `loadedChildren` is intentionally NOT cleared: after `viewer.input =` the
+ * expansion remap (`remapInSection` / `pathTo` in CurrentBranchNodeKeys.kt) walks through the OLD
+ * donor's children to find inner stages and grandchildren and map them onto the same instances in
+ * the new tree. Clearing them would lose inner expansion on every 30 s rebuild, and no headless
+ * test would name the cause.
+ */
 private fun moveLoadState(from: DownstreamPipelineNode, to: DownstreamPipelineNode) {
   to.loadState = from.loadState
   to.loadedChildren = from.loadedChildren
