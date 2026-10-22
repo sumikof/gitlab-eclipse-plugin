@@ -198,3 +198,17 @@ private val TRIM_ICON_NAMES = mapOf(
   TrimIcon.MR_CREATE to "mr_create",
   TrimIcon.ISSUE to "issue_open",
 )
+
+/**
+ * T5b: the hop from a background completion back to the UI thread for a trim action, built from the display captured
+ * while the control was alive (never `control.display`, which throws once the control is disposed). A disposed display
+ * runs nothing, and a display disposed between the check and the scheduling (asyncExec throws) is swallowed, so a
+ * write that succeeded after the trim went away is never reported as failed.
+ */
+fun uiHopUnlessDisposed(isDisposed: () -> Boolean, asyncExec: (Runnable) -> Unit): (() -> Unit) -> Unit = { block ->
+  try {
+    if (!isDisposed()) asyncExec(Runnable(block))
+  } catch (@Suppress("SwallowedException") e: RuntimeException) {
+    // Disposed meanwhile: there is no trim left to refresh.
+  }
+}

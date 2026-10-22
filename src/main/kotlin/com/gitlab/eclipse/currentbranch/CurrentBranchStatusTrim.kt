@@ -87,13 +87,16 @@ class CurrentBranchStatusTrim : WorkbenchWindowControlContribution() {
     val service = GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>()
     val state = window?.let { service?.ensureWindow(it) }
     val view = SwtStatusTrimView(root, { message -> log.warn(message) }) { showMenu(root, it) }
+    // Captured now, while the control is alive: a POST may complete after it was disposed (T5b).
+    val display = root.display
+    val uiHop = uiHopUnlessDisposed({ display.isDisposed }, display::asyncExec)
     val actions = PipelineMenuActions(
       openUrl = ::openInBrowser,
       writePipeline = { write, onSuccess ->
         launchPinnedPipelineWrite(
           write,
           // Off the UI thread: hop back, then refresh this window only (R15 also covers a closed sidebar).
-          onSuccess = { root.display.takeUnless { it.isDisposed }?.asyncExec(onSuccess) },
+          onSuccess = { uiHop(onSuccess) },
           scope = GlobalContext.get().get<CoroutineScope>(),
           log = logger<PipelineActionService>(),
           apiClient = GlobalContext.get().get<GitLabApiClient>(),
