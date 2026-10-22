@@ -9,7 +9,6 @@ import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.currentbranch.CurrentBranchStateService
-import com.gitlab.eclipse.currentbranch.WindowCurrentBranchState
 import com.gitlab.eclipse.currentbranch.WindowEditorFileReader
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
@@ -20,7 +19,6 @@ import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.issues.ViewRefreshState
-import com.gitlab.eclipse.views.sidebar.autorefresh.Registration
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesRefresh
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryRunner
 import com.gitlab.eclipse.views.sidebar.queries.QueryProject
@@ -168,10 +166,8 @@ class GitLabSidebarView : ViewPart() {
 
   // Status bar §4.4: the "For current branch" section is a subscriber of this window's shared state (fetched,
   // auto-refreshed and owned by CurrentBranchStateService); this view binds each of its refreshes to the generation's
-  // slots. UI thread only: the state is resolved and subscribed in createPartControl, unsubscribed in dispose().
-  private var currentBranchState: WindowCurrentBranchState? = null
-  private var currentBranchSubscription: Registration? = null
-  private val currentBranchBinding by lazy {
+  // slots. UI thread only: attached (state resolved, subscribed) in createPartControl, detached in dispose().
+  private val currentBranchBindingLazy = lazy {
     CurrentBranchSidebarBinding(
       currentSlots = { currentSlots },
       // CI-06 §4.6 R2-4: the previous refresh's downstream re-fetch is superseded by this one's.
@@ -181,8 +177,10 @@ class GitLabSidebarView : ViewPart() {
       requestSweep = { slots, scope ->
         downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, scope) }
       },
+      log = { logger.warn(it) },
     )
   }
+  private val currentBranchBinding by currentBranchBindingLazy
 
   // The live refresh generation's slots, written on the UI thread in refresh() and mutated
   // on the UI thread inside applyCompose (RefreshSlots' contract). `null` = nothing was
@@ -349,19 +347,13 @@ class GitLabSidebarView : ViewPart() {
   }
 
   /**
-   * Status bar §4.4: this window's shared current-branch state (created on demand: the view may open before the
-   * plugin-start activation ran) and the subscription of [currentBranchBinding]. Total: without a state the
-   * section settles as "no repository" ([CurrentBranchSidebarBinding]).
+   * Status bar §4.4: subscribes [currentBranchBinding] to this window's shared current-branch state (created on demand:
+   * the view may open before the plugin-start activation ran). Without a state the section settles as "no repository".
    */
   private fun subscribeCurrentBranch() {
-    val state = try {
+    currentBranchBinding.attach {
       GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>()?.ensureWindow(site.workbenchWindow)
-    } catch (e: Exception) {
-      logger.warn("Current-branch state unavailable: ${e.javaClass.name}")
-      null
     }
-    currentBranchState = state
-    currentBranchSubscription = state?.addListener(currentBranchBinding)
   }
 
   /** The Refresh button (and the CI write handlers): a full refresh, including the window's current branch. */
@@ -407,11 +399,7 @@ class GitLabSidebarView : ViewPart() {
     downstreamLoader.cancelAll()
     // The current-branch unit: bound to these slots (applies and the downstream sweep) by the binding; the window
     // state's own refresh supersedes or coalesces as the design says (§4.1), and reports its errors itself.
-    if (initial) {
-      currentBranchBinding.initial(currentBranchState, slots)
-    } else {
-      currentBranchBinding.manual(currentBranchState, slots)
-    }
+    currentBranchBinding.refresh(initial, slots)
     // The query side of this refresh (UI thread): decodes the setting into slots.queries — before any apply, which
     // all run later via asyncExec — clears the result cache and replaces the queries job.
     queries.onFullRefresh(slots, activeEditorFile)
@@ -719,9 +707,7 @@ class GitLabSidebarView : ViewPart() {
   override fun dispose() {
     if (queriesLazy.isInitialized()) queries.dispose()
     viewState.removeListener(modeListener)
-    currentBranchSubscription?.unregister()
-    currentBranchSubscription = null
-    currentBranchState = null
+    if (currentBranchBindingLazy.isInitialized()) currentBranchBinding.detach()
     if (downstreamLoaderLazy.isInitialized()) downstreamLoader.cancelAll()
     super.dispose()
   }

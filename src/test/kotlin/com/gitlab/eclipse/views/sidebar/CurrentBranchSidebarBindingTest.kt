@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.currentbranch.StateRig
+import com.gitlab.eclipse.currentbranch.WindowCurrentBranchState
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.sidebar.autorefresh.RefreshReason
 import io.kotest.core.spec.style.StringSpec
@@ -17,7 +18,7 @@ private const val GIT_DIR = "/home/alice/secret-repo/.git"
  * The sidebar side of the binding: one view generation's slots, the apply port as the view's applyCompose (gate checked
  * when the update runs; here at once), and the sweep / cancel-sweep ports recorded.
  */
-private class SidebarRig(val state: StateRig = StateRig()) {
+private class SidebarRig(val state: StateRig = StateRig(), subscribe: Boolean = true) {
   var generation = 1L
   var slots = RefreshSlots(generation)
   val events = mutableListOf<String>()
@@ -39,7 +40,7 @@ private class SidebarRig(val state: StateRig = StateRig()) {
   )
 
   init {
-    state.state.addListener(binding)
+    if (subscribe) state.state.addListener(binding)
   }
 
   fun flushComposes() {
@@ -261,5 +262,80 @@ class CurrentBranchSidebarBindingTest : StringSpec({
     val settled = rig.state.settleBranch()
     (bound.currentBranch as Slot.Settled).value shouldBeSameInstanceAs settled
     rig.slots.currentBranch shouldBe Slot.Pending
+  }
+
+  "T4b: attach subscribes to the provided state, so the window's refreshes bind to the view's slots" {
+    val rig = SidebarRig(subscribe = false)
+
+    rig.binding.attach { rig.state.state }
+    rig.state.state.start() // INITIAL refresh: binds through the subscription
+    val settled = rig.state.settleBranch()
+
+    rig.shown shouldBeSameInstanceAs settled
+    rig.sweeps shouldContainExactly listOf(true)
+  }
+
+  "T4b: refresh(initial = true) seeds a settled window without fetching; refresh(initial = false) fetches in full" {
+    val rig = SidebarRig(subscribe = false)
+    rig.binding.attach { rig.state.state }
+    rig.state.state.start()
+    val settled = rig.state.settleBranch()
+
+    rig.binding.refresh(initial = true, slots = rig.newGeneration())
+    rig.state.fetch.calls shouldHaveSize 1
+    rig.shown shouldBeSameInstanceAs settled
+
+    rig.binding.refresh(initial = false, slots = rig.newGeneration())
+    rig.state.fetch.calls shouldHaveSize 2
+    rig.state.fetch.calls.last().soft shouldBe false
+  }
+
+  "T4b: after detach a settle reaches nothing, and refresh does nothing" {
+    val rig = SidebarRig(subscribe = false)
+    rig.binding.attach { rig.state.state }
+    rig.state.state.start()
+
+    rig.binding.detach()
+    rig.binding.detach()
+    rig.events.clear() // the INITIAL refresh bound before the detach
+    rig.state.settleBranch()
+    rig.binding.refresh(initial = false, slots = rig.newGeneration())
+
+    rig.shown shouldBe null
+    rig.events.shouldBeEmpty()
+    rig.sweeps.shouldBeEmpty()
+    rig.state.fetch.calls shouldHaveSize 1
+  }
+
+  "T4b: attach with no state (null or a failing provider) settles the section as no repository" {
+    listOf<() -> WindowCurrentBranchState?>(
+      { null },
+      { error("/home/alice/secret") },
+    ).forEach { provider ->
+      val logs = mutableListOf<String>()
+      val slots = RefreshSlots(1)
+      val binding = CurrentBranchSidebarBinding(
+        currentSlots = { slots },
+        cancelSweep = {},
+        apply = { _, _, _, update -> update() },
+        requestSweep = { _, _ -> },
+        log = { logs += it },
+      )
+
+      binding.attach(provider)
+      binding.refresh(initial = true, slots = slots)
+
+      (slots.currentBranch as? Slot.Settled)?.value shouldBe NoRepository
+      logs.forEach { it shouldBe "Current-branch state unavailable: java.lang.IllegalStateException" }
+    }
+  }
+
+  "T4b: a second attach is ignored (one subscription)" {
+    val rig = SidebarRig(subscribe = false)
+    rig.binding.attach { rig.state.state }
+    rig.binding.attach { rig.state.state }
+    rig.state.state.start()
+
+    rig.events.count { it == "cancelSweep" } shouldBe 1
   }
 })
