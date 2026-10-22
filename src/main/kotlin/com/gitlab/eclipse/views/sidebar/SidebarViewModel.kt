@@ -40,7 +40,7 @@ private const val DOWNSTREAM_LIST_FAILED_MESSAGE = "Failed to load downstream pi
 /** Sole child of a downstream pipeline whose jobs fetch was denied (403/404); its web URL still opens. */
 private const val DOWNSTREAM_UNAVAILABLE_MESSAGE = "Downstream pipeline unavailable"
 
-/** Sole child of a downstream pipeline whose jobs fetch failed for any other reason. */
+/** Replaces a downstream pipeline's stages when its jobs fetch failed for any reason but 403/404. */
 private const val DOWNSTREAM_LOAD_FAILED_MESSAGE = "Failed to load downstream pipeline"
 
 /** Sole child of a downstream pipeline with no jobs and no bridges (e.g. readable without `read_build`). */
@@ -212,20 +212,25 @@ class SidebarViewModel {
    * over the connection the data came from. A nested "Downstream pipelines" group sits one level
    * deeper with [parent] added to the ancestors (cycle and depth guards).
    *
-   * Failures: jobs 403/404 → [DOWNSTREAM_UNAVAILABLE_MESSAGE] (the row's web URL still opens), any
-   * other jobs failure → [DOWNSTREAM_LOAD_FAILED_MESSAGE]; a bridges failure keeps the job stages and
-   * ends with [DOWNSTREAM_LIST_FAILED_MESSAGE]. Jobs and bridges both empty → [NO_JOBS_MESSAGE]: a
+   * Failures: jobs 403/404 → only [DOWNSTREAM_UNAVAILABLE_MESSAGE] (the project is unreadable; the
+   * row's web URL still opens). Any other jobs failure behaves like the root's: one
+   * [DOWNSTREAM_LOAD_FAILED_MESSAGE] row in place of the stages, followed by whatever the bridges
+   * yield (the nested group, or [DOWNSTREAM_LIST_FAILED_MESSAGE]). A bridges failure keeps the job
+   * stages and ends with [DOWNSTREAM_LIST_FAILED_MESSAGE]. Jobs and bridges both empty → [NO_JOBS_MESSAGE]: a
    * project readable without `read_build` answers the jobs API with `[]`, not 403, and an empty child
    * list would make JFace silently drop the twistie instead of saying why.
    */
   fun buildDownstreamChildren(parent: DownstreamPipelineNode, payload: DownstreamPayload): List<SidebarNode> {
-    val jobs = payload.jobsResult.getOrElse { error ->
-      val denied = CiHttpStatus.isAccessDenied(error)
-      return listOf(MessageNode(if (denied) DOWNSTREAM_UNAVAILABLE_MESSAGE else DOWNSTREAM_LOAD_FAILED_MESSAGE))
+    val jobsError = payload.jobsResult.exceptionOrNull()
+    if (jobsError != null && CiHttpStatus.isAccessDenied(jobsError)) {
+      return listOf(MessageNode(DOWNSTREAM_UNAVAILABLE_MESSAGE))
     }
     val tags = SourceTags(parent.sourceInstanceUrl, parent.sourceAuthFingerprint)
     val bridges = payload.bridgesResult.getOrNull().orEmpty()
-    val stages = stageNodes(keepLatestAttempts(jobs), bridges, parent.projectId, tags)
+    val stages = payload.jobsResult.fold(
+      onSuccess = { jobs -> stageNodes(keepLatestAttempts(jobs), bridges, parent.projectId, tags) },
+      onFailure = { listOf(MessageNode(DOWNSTREAM_LOAD_FAILED_MESSAGE)) },
+    )
     val downstream = downstreamTail(
       payload.bridgesResult,
       DownstreamParent(parent.pipelineId, parent.projectId, parent.depth, parent.ancestorPipelineIds),

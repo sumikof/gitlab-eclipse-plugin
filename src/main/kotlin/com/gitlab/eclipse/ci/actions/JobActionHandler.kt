@@ -53,10 +53,7 @@ class JobActionHandler(
       return null
     }
     val jobId = node.jobId
-    // Keyed by the NODE's instance tag: equal to the snapshot-derived key whenever the pin
-    // would succeed (the pin requires the normalized urls to match), so serialization
-    // semantics are unchanged. A bridge shares the "job" key space: its id is a job id.
-    val key = WriteKey(normalizeInstanceUrl(node.sourceInstanceUrl), "job", jobId)
+    val key = jobWriteKeyOf(node)
     if (!InFlightWriteGuard.tryAcquire(key)) {
       logger.info("A write to job #$jobId is already in flight; ignoring.")
       return null
@@ -97,7 +94,7 @@ internal data class JobWriteTarget(
  * which resolves builds only (`find_build!`) and answers 404 for a bridge; the menus already hide
  * it, and this keeps a stray invocation from sending a request bound to fail.
  */
-internal fun jobWriteTargetOf(node: Any?, action: String): JobWriteTarget? = when (node) {
+internal fun jobWriteTargetOf(node: SidebarNode?, action: String): JobWriteTarget? = when (node) {
   is JobNode -> JobWriteTarget(node.job.id, node.projectId, node.sourceInstanceUrl, node.sourceAuthFingerprint)
   is BridgeNode ->
     if (action == "cancel") {
@@ -107,3 +104,12 @@ internal fun jobWriteTargetOf(node: Any?, action: String): JobWriteTarget? = whe
     }
   else -> null
 }
+
+/**
+ * The in-flight serialization key of a write to [target]. Keyed by the NODE's instance tag: equal to
+ * the snapshot-derived key whenever the pin would succeed (the pin requires the normalized urls to
+ * match). A bridge shares the `"job"` key space on purpose: its id is a job id on the same endpoints,
+ * so a job write and a bridge write to the same id serialize against each other.
+ */
+internal fun jobWriteKeyOf(target: JobWriteTarget): WriteKey =
+  WriteKey(normalizeInstanceUrl(target.sourceInstanceUrl), "job", target.jobId)

@@ -21,28 +21,6 @@ class SidebarViewModelDownstreamTest : StringSpec({
 
   fun job(id: Long, name: String? = "job$id", status: String? = "success", stage: String? = "build") =
     GitLabJob(id = id, name = name, status = status, stage = stage)
-  fun bridge(id: Long, name: String? = "bridge$id", stage: String? = "build", downstream: GitLabPipeline? = null) =
-    GitLabBridge(id, name, stage, "success", "https://gitlab.example.com/p/-/jobs/$id", null, downstream)
-  fun downstream(id: Long, status: String? = "running", projectId: Long? = 42L, source: String? = "parent_pipeline") =
-    GitLabPipeline(
-      id = id,
-      status = status,
-      projectId = projectId,
-      source = source,
-      webUrl = "https://gitlab.example.com/d/-/pipelines/$id",
-    )
-
-  /** Stage names with their children's names (the label part before the status), in tree order. */
-  fun shape(children: List<SidebarNode>) =
-    children.filterIsInstance<StageNode>().map { stage ->
-      stage.name to stage.children.map { it.label.substringBefore(" · ") }
-    }
-
-  fun stageIds(children: List<SidebarNode>) =
-    children.filterIsInstance<StageNode>().map { stage ->
-      stage.children.map { (it as? JobNode)?.job?.id ?: (it as BridgeNode).bridge.id }
-    }
-
   // --- DownstreamPipelineNode ---
 
   fun dsNode(
@@ -50,7 +28,8 @@ class SidebarViewModelDownstreamTest : StringSpec({
     depth: Int = 1,
     ancestors: Set<Long> = setOf(100L),
     bridgeName: String? = "docs",
-    parentProjectId: Long? = 42L,
+    // Differs from the downstream's own project (42) on purpose: rows must carry the downstream's id.
+    parentProjectId: Long? = 10L,
   ) = DownstreamPipelineNode(bridgeName, pipeline, depth, ancestors, SRC_URL, SRC_FP, parentProjectId)
 
   "DownstreamPipelineNode: expandable only with a project id, no cycle and depth ≤ MAX_DOWNSTREAM_DEPTH" {
@@ -87,7 +66,7 @@ class SidebarViewModelDownstreamTest : StringSpec({
       "docs → Pipeline #205 · Running (multi-project)"
     dsNode(pipeline = downstream(205, source = null, projectId = 99L)).label shouldBe
       "docs → Pipeline #205 · Running (multi-project)"
-    dsNode(pipeline = downstream(205, source = null, projectId = 42L)).label shouldBe
+    dsNode(pipeline = downstream(205, source = null, projectId = 42L), parentProjectId = 42L).label shouldBe
       "docs → Pipeline #205 · Running (child)"
     dsNode(pipeline = downstream(205, source = null), parentProjectId = null).label shouldBe
       "docs → Pipeline #205 · Running"
@@ -171,6 +150,43 @@ class SidebarViewModelDownstreamTest : StringSpec({
       .map { it.label } shouldBe listOf("Failed to load downstream pipeline")
     vm.buildDownstreamChildren(dsNode(), payload(Result.failure(RuntimeException("x"))))
       .map { it.label } shouldBe listOf("Failed to load downstream pipeline")
+  }
+
+  "buildDownstreamChildren: a jobs failure other than 403/404 keeps the nested downstream group (same as the root)" {
+    val withDownstream = Result.success(listOf(bridge(32, downstream = downstream(300, projectId = 77L))))
+    listOf(GitLabApiException(500, "x"), RuntimeException("x")).forEach { error ->
+      val children = vm.buildDownstreamChildren(dsNode(), payload(Result.failure(error), withDownstream))
+      children.map { it::class.simpleName } shouldBe listOf("MessageNode", "DownstreamPipelinesNode")
+      children[0].label shouldBe "Failed to load downstream pipeline"
+      (children[1] as DownstreamPipelinesNode).children.single().pipelineId shouldBe 300L
+    }
+    val bothFailed = payload(Result.failure(RuntimeException("x")), Result.failure(RuntimeException("y")))
+    vm.buildDownstreamChildren(dsNode(), bothFailed)
+      .map { it.label } shouldBe listOf("Failed to load downstream pipeline", "Failed to load downstream pipelines")
+  }
+
+  "buildDownstreamChildren: a jobs 403/404 shows only the unavailable row, even with downstreams in the bridges" {
+    val withDownstream = Result.success(listOf(bridge(32, downstream = downstream(300, projectId = 77L))))
+    listOf(403, 404).forEach { code ->
+      vm.buildDownstreamChildren(dsNode(), payload(Result.failure(GitLabApiException(code, "x")), withDownstream))
+        .map { it.label } shouldBe listOf("Downstream pipeline unavailable")
+    }
+  }
+
+  "buildDownstreamChildren: rows of a multi-project downstream carry the downstream's project id, not the parent's" {
+    val parent = dsNode(pipeline = downstream(205, projectId = 77L, source = "pipeline"), parentProjectId = 42L)
+    val children = vm.buildDownstreamChildren(
+      parent,
+      payload(
+        Result.success(listOf(job(31, name = "t", stage = "test"))),
+        Result.success(listOf(bridge(32, name = "b", stage = "test", downstream = downstream(300, projectId = 88L)))),
+      ),
+    )
+    val rows = children.filterIsInstance<StageNode>().flatMap { it.children }
+    rows.map { it::class.simpleName } shouldBe listOf("JobNode", "BridgeNode")
+    (rows[0] as JobNode).projectId shouldBe 77L
+    (rows[1] as BridgeNode).projectId shouldBe 77L
+    (children.last() as DownstreamPipelinesNode).children.single().parentProjectId shouldBe 77L
   }
 
   "buildDownstreamChildren: bridges only (no jobs) -> bridge stage, no No-jobs row" {

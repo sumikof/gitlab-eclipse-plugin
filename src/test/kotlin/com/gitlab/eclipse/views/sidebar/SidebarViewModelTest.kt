@@ -114,8 +114,9 @@ class SidebarViewModelTest : StringSpec({
   fun buildNode(jobsResult: Result<List<GitLabJob>>, pipeline: GitLabPipeline = pipeline(1)) =
     vm.buildPipelineNode(snapshot(pipeline, jobsResult, SRC_URL, SRC_FP))
 
-  "buildPipelineNode: jobs sorted by id ascending, grouped by stage first-appearance order (retry has larger id)" {
-    // sorted by id: 1(build), 2(test), 5(build,retry) -> stage order [build, test]; build group = [1, 5]
+  "buildPipelineNode: distinct jobs given out of order are sorted by id, stages in first-appearance order" {
+    // three distinct jobs (job5, job1, job2), none retried: by id 1(build), 2(test), 5(build)
+    // -> stage order [build, test]; build group = [1, 5]
     val jobs = listOf(
       job(5, stage = "build"),
       job(1, stage = "build"),
@@ -371,37 +372,11 @@ class SidebarViewModelTest : StringSpec({
 
   // --- CI-05 §4.4/§4.5 + CI-06 §4.6 (Task 4): stage status, retry-stable order, bridges, downstream nodes ---
 
-  fun bridge(
-    id: Long,
-    name: String? = "bridge$id",
-    stage: String? = "build",
-    status: String? = "success",
-    allowFailure: Boolean? = null,
-    downstream: GitLabPipeline? = null,
-  ) = GitLabBridge(id, name, stage, status, "https://gitlab.example.com/p/-/jobs/$id", allowFailure, downstream)
-  fun downstream(id: Long, status: String? = "running", projectId: Long? = 42L, source: String? = "parent_pipeline") =
-    GitLabPipeline(
-      id = id,
-      status = status,
-      projectId = projectId,
-      source = source,
-      webUrl = "https://gitlab.example.com/d/-/pipelines/$id",
-    )
   fun withBridges(
     jobs: Result<List<GitLabJob>>,
     bridges: Result<List<GitLabBridge>>,
     pipeline: GitLabPipeline = pipeline(100, projectId = 42L),
   ) = vm.buildPipelineNode(snapshot(pipeline, jobs, SRC_URL, SRC_FP, bridges))
-
-  /** Stage names with their children's names (the label part before the status), in tree order. */
-  fun shape(children: List<SidebarNode>) =
-    children.filterIsInstance<StageNode>().map { stage ->
-      stage.name to stage.children.map { it.label.substringBefore(" · ") }
-    }
-  fun stageIds(children: List<SidebarNode>) =
-    children.filterIsInstance<StageNode>().map { stage ->
-      stage.children.map { (it as? JobNode)?.job?.id ?: (it as BridgeNode).bridge.id }
-    }
 
   "CI-05: a retry keeps every stage and every job in place, including a stage holding only the retried job" {
     val before = listOf(
@@ -446,6 +421,9 @@ class SidebarViewModelTest : StringSpec({
       Result.success(listOf(bridge(2, stage = "deploy", status = "failed", allowFailure = true))),
     )
     allowed.children.single().label shouldBe "deploy · Failed (allowed to fail)"
+    (allowed.children.single().children.last() as BridgeNode).label shouldBe "bridge2 · Failed (allowed to fail)"
+    val plain = withBridges(Result.success(emptyList()), Result.success(listOf(bridge(2, status = "failed"))))
+    (plain.children.single().children.single() as BridgeNode).label shouldBe "bridge2 · Failed"
 
     val running = withBridges(
       Result.success(listOf(job(1, name = "a", stage = "deploy", status = "running"))),

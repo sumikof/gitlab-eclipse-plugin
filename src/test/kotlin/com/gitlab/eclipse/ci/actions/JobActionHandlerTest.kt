@@ -56,8 +56,15 @@ class JobActionHandlerTest : StringSpec({
     listOf("retry", "cancel", "play").forEach { action ->
       jobWriteTargetOf(downstream, action).shouldBeNull()
       jobWriteTargetOf(null, action).shouldBeNull()
-      jobWriteTargetOf("text", action).shouldBeNull()
     }
+  }
+
+  "a job and a bridge write are serialized in the same \"job\" key space, by id and normalized instance" {
+    jobWriteKeyOf(jobWriteTargetOf(jobNode, "retry")!!) shouldBe WriteKey(SRC_URL, "job", 7L)
+    val bridgeTarget = jobWriteTargetOf(bridgeNode, "play")!!
+    jobWriteKeyOf(bridgeTarget) shouldBe WriteKey(normalizeInstanceUrl("https://other.example"), "job", 9L)
+    jobWriteKeyOf(bridgeTarget.copy(sourceInstanceUrl = "https://other.example/")) shouldBe
+      WriteKey("https://other.example", "job", 9L)
   }
 
   val root: Element = javaClass.classLoader.getResourceAsStream("plugin.xml")!!.use {
@@ -89,6 +96,44 @@ class JobActionHandlerTest : StringSpec({
       "com.gitlab.eclipse.commands.DisplayJobLog",
       "com.gitlab.eclipse.commands.DownloadArtifacts",
     ).forEach { visibleTypes(it) shouldBe setOf(JOB_NODE) }
+  }
+
+  fun Element.elementChildren(): List<Element> =
+    (0 until childNodes.length).map { childNodes.item(it) }.filterIsInstance<Element>()
+
+  /** The `<and>` under `<iterate>` of every sidebar menu entry of [commandId] (at least one). */
+  fun visibleWhenAnds(commandId: String): List<Element> {
+    val commands = root.descendants("menuContribution")
+      .flatMap { it.descendants("command") }
+      .filter { it.getAttribute("commandId") == commandId }
+    commands.isEmpty() shouldBe false
+    return commands.map { command ->
+      val iterate = command.descendants("iterate").single()
+      iterate.elementChildren().map { it.tagName } shouldBe listOf("and")
+      iterate.elementChildren().single()
+    }
+  }
+
+  "plugin.xml: Retry Job / Play Job are visible for (JobNode or BridgeNode) and their own property" {
+    mapOf(
+      "com.gitlab.eclipse.commands.RetryJob" to "com.gitlab.eclipse.node.canRetry",
+      "com.gitlab.eclipse.commands.PlayJob" to "com.gitlab.eclipse.node.canPlay",
+    ).forEach { (commandId, property) ->
+      visibleWhenAnds(commandId).forEach { and ->
+        val (or, test) = and.elementChildren()
+        and.elementChildren().map { it.tagName } shouldBe listOf("or", "test")
+        or.elementChildren().map { it.tagName to it.getAttribute("value") } shouldBe
+          listOf("instanceof" to JOB_NODE, "instanceof" to BRIDGE_NODE)
+        test.getAttribute("property") shouldBe property
+      }
+    }
+  }
+
+  "plugin.xml: Cancel Job is visible for JobNode and canCancel only" {
+    visibleWhenAnds("com.gitlab.eclipse.commands.CancelJob").forEach { and ->
+      and.elementChildren().map { it.tagName to (it.getAttribute("value") + it.getAttribute("property")) } shouldBe
+        listOf("instanceof" to JOB_NODE, "test" to "com.gitlab.eclipse.node.canCancel")
+    }
   }
 
   "plugin.xml: no menu entry targets a downstream node" {
