@@ -223,7 +223,8 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     rig.current shouldBe Resolved(Result.success(mr()), Result.success(NoPipeline))
     verify(exactly = 1) { rig.tags.tagsAt(File(GIT_DIR), "abc123") }
     verify(exactly = 0) { rig.api.captureConnection() }
-    verify(exactly = 0) { rig.mrLookup.findMr(any(), any(), rig.connection) }
+    // Nothing was captured, so the (detached → no request) MR search runs unpinned, exactly once.
+    verify(exactly = 1) { rig.mrLookup.findMr(any(), any(), null) }
     verify(exactly = 0) { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) }
   }
 
@@ -725,20 +726,32 @@ class CurrentBranchSectionFetcherTest : StringSpec({
       every { rig.mrLookup.findMr(any(), any(), any()) } returns mr().mr
       every { rig.mrLookup.closesIssues(any(), any()) } throws boom()
       every { rig.mrService.getMrPipelines(any(), any(), any()) } throws boom()
-      every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } returns PIPELINE
+      // Real pipelines carry their ref and web URL: a message appending either must fail this test.
+      val branchPipeline = PIPELINE.copy(ref = branchName, webUrl = "$URL/grp/proj/-/pipelines/5")
+      every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } returns branchPipeline
       every { rig.jobs.getJobsForPipeline(any(), any(), any(), any(), any()) } throws boom()
       every { rig.bridges.getBridgesForPipeline(any(), any(), any(), any()) } throws boom()
       rig.fetch(soft = soft)
 
-      // Tag path: the tag pipeline GET fails.
+      // Tag path: the tag pipeline is found, but its jobs and bridges fail.
       val tagRig = FetcherRig()
       every { tagRig.reader.read(File(GIT_DIR)) } returns tagRig.branch(name = null, sha = "abc123")
       every { tagRig.tags.tagsAt(any(), any()) } returns listOf(tagName)
-      every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws boom()
+      val tagPipeline = GitLabPipeline(id = 8, status = "failed", ref = tagName, webUrl = "$URL/grp/proj/-/pipelines/8")
+      every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } returns tagPipeline
+      every { tagRig.jobs.getJobsForPipeline(any(), any(), any(), any(), any()) } throws boom()
+      every { tagRig.bridges.getBridgesForPipeline(any(), any(), any(), any()) } throws boom()
       tagRig.fetch(soft = soft)
 
-      val lines = rig.logLines() + tagRig.logLines()
-      lines.size shouldBe 5 // mr, mr-pipelines, jobs, bridges + tag
+      // Tag path: the tag pipeline GET itself fails.
+      val tagFailRig = FetcherRig()
+      every { tagFailRig.reader.read(File(GIT_DIR)) } returns tagFailRig.branch(name = null, sha = "abc123")
+      every { tagFailRig.tags.tagsAt(any(), any()) } returns listOf(tagName)
+      every { tagFailRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws boom()
+      tagFailRig.fetch(soft = soft)
+
+      val lines = rig.logLines() + tagRig.logLines() + tagFailRig.logLines()
+      lines.size shouldBe 7 // mr, mr-pipelines, jobs, bridges + tag jobs, tag bridges + tag
       lines.forEach { line ->
         line shouldNotContain branchName
         line shouldNotContain tagName
@@ -747,5 +760,129 @@ class CurrentBranchSectionFetcherTest : StringSpec({
         line shouldNotContain "grp/proj"
       }
     }
+  }
+
+  // ---- Fix round 1 (T3 review m1-m4, mutation-verifier gaps) ----
+
+  "5e. a detached HEAD without a single tag closes the pipeline and tag streaks, so the next soft failure WARNs again" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws IllegalStateException("x")
+    rig.fetch(soft = true) // branch: pipeline streak starts (WARN 1)
+    every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null, sha = "abc123")
+    rig.fetch(soft = true) // detached, 0 tags: nothing to fetch — ends the streak
+    every { rig.reader.read(File(GIT_DIR)) } returns rig.branch()
+    rig.fetch(soft = true) // branch fails again (WARN 2)
+
+    rig.warnings shouldContainExactly listOf(
+      "Current-branch pipeline refresh failed: java.lang.IllegalStateException",
+      "Current-branch pipeline refresh failed: java.lang.IllegalStateException",
+    )
+
+    val tagRig = FetcherRig()
+    tagRig.answerSuccessfully()
+    every { tagRig.reader.read(File(GIT_DIR)) } returns tagRig.branch(name = null, sha = "abc123")
+    every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws IllegalStateException("t")
+    every { tagRig.tags.tagsAt(any(), any()) } returns listOf("v1")
+    tagRig.fetch(soft = true) // tag streak starts (WARN 1)
+    every { tagRig.tags.tagsAt(any(), any()) } returns listOf("v1", "v2")
+    tagRig.fetch(soft = true) // ambiguous: nothing to fetch — ends the streak
+    every { tagRig.tags.tagsAt(any(), any()) } returns listOf("v1")
+    tagRig.fetch(soft = true) // tag fails again (WARN 2)
+
+    tagRig.warnings shouldContainExactly listOf(
+      "Current-branch tag refresh failed: java.lang.IllegalStateException",
+      "Current-branch tag refresh failed: java.lang.IllegalStateException",
+    )
+  }
+
+  "5f. a success ends the mr-pipelines streak and the tag streak (soft 403, success, 403 → two WARNs each)" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    every { rig.mrService.getMrPipelines(any(), any(), any()) } throws GitLabApiException(403, "a")
+    rig.fetch(soft = true)
+    every { rig.mrService.getMrPipelines(any(), any(), any()) } returns emptyList()
+    rig.fetch(soft = true)
+    every { rig.mrService.getMrPipelines(any(), any(), any()) } throws GitLabApiException(403, "b")
+    rig.fetch(soft = true)
+
+    rig.warnings shouldContainExactly List(2) {
+      "Current-branch mr-pipelines refresh failed: com.gitlab.eclipse.api.GitLabApiException"
+    }
+
+    val tagRig = FetcherRig()
+    tagRig.answerSuccessfully()
+    every { tagRig.reader.read(File(GIT_DIR)) } returns tagRig.branch(name = null, sha = "abc123")
+    every { tagRig.tags.tagsAt(any(), any()) } returns listOf("v1")
+    every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws GitLabApiException(403, "a")
+    tagRig.fetch(soft = true)
+    every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } answers { PIPELINE.copy() }
+    tagRig.fetch(soft = true)
+    every { tagRig.pipelines.getLatestPipelineForRef(any(), any(), any()) } throws GitLabApiException(403, "b")
+    tagRig.fetch(soft = true)
+
+    tagRig.warnings shouldContainExactly List(2) {
+      "Current-branch tag refresh failed: com.gitlab.eclipse.api.GitLabApiException"
+    }
+  }
+
+  "1h. tags are enumerated only on the detached path, and only after the placeholder is painted" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    rig.fetch()
+    verify(exactly = 0) { rig.tags.tagsAt(any(), any()) }
+
+    val detached = FetcherRig()
+    detached.answerSuccessfully()
+    every { detached.reader.read(File(GIT_DIR)) } returns detached.branch(name = null, sha = "abc123")
+    var appliedWhenRead = -1
+    every { detached.tags.tagsAt(any(), any()) } answers {
+      appliedWhenRead = detached.applied.size
+      emptyList()
+    }
+    detached.fetch()
+    appliedWhenRead shouldBe 1
+    detached.applied.first() shouldBe Resolved(null, null)
+  }
+
+  "10e. connection capture failure on the tag path fails the side and reports the tag stage" {
+    listOf(false, true).forEach { soft ->
+      val rig = FetcherRig()
+      rig.answerSuccessfully()
+      every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null, sha = "abc123")
+      every { rig.tags.tagsAt(any(), any()) } returns listOf("v1.0")
+      val captureError = IllegalStateException("unstable")
+      every { rig.api.captureConnection() } throws captureError
+
+      rig.fetch(soft = soft)
+
+      (rig.current as Resolved).pipeline shouldBe Result.failure(captureError)
+      verify(exactly = 0) { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) }
+      if (soft) {
+        rig.warnings shouldContainExactly listOf("Current-branch tag refresh failed: java.lang.IllegalStateException")
+      } else {
+        rig.errors shouldContainExactly listOf("Failed to load the tag pipeline." to captureError)
+      }
+    }
+  }
+
+  "8e. cancelled during the MR-pipelines GET: no branch GET, no pipeline-side apply, nothing logged" {
+    val rig = FetcherRig()
+    rig.answerSuccessfully()
+    lateinit var fetchJob: Job
+    every { rig.mrService.getMrPipelines(any(), any(), any()) } answers {
+      fetchJob.cancel()
+      emptyList()
+    }
+
+    coroutineScope {
+      val fetch = async { rig.fetch() }
+      fetchJob = fetch
+      shouldThrow<CancellationException> { fetch.await() }
+    }
+
+    verify(exactly = 0) { rig.pipelines.getLatestPipelineForRef(any(), any(), any()) }
+    rig.applied shouldBe listOf(Resolved(null, null), Resolved(Result.success(mr()), null))
+    rig.logLines() shouldBe emptyList()
   }
 })

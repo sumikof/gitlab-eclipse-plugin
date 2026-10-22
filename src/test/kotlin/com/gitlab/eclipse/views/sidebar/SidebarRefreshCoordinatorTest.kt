@@ -107,6 +107,28 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     sectionOf(out).children.filterIsInstance<PipelineNode>() shouldHaveSize 1
   }
 
+  "settled NoPipeline adds no pipeline row: the section is exactly the MR side" {
+    val slots = RefreshSlots(11L)
+    val mrResult = Result.success(CurrentBranchInfo(mr(2), emptyList()))
+    slots.currentBranch = Slot.Settled(Resolved(mr = mrResult, pipeline = Result.success(NoPipeline)))
+    val children = sectionOf(coordinator().compose(slots, SidebarViewMode.LIST)).children
+    children shouldHaveSize 2
+    (children[0] is MergeRequestNode) shouldBe true
+    (children[1] as MessageNode).label shouldBe "No closing issue found"
+  }
+
+  "settled AmbiguousTags renders exactly one multiple-tags row first and nothing extra on the MR side" {
+    val slots = RefreshSlots(12L)
+    val mrResult = Result.success(CurrentBranchInfo(null, emptyList()))
+    slots.currentBranch = Slot.Settled(Resolved(mr = mrResult, pipeline = Result.success(AmbiguousTags)))
+    val section = sectionOf(coordinator().compose(slots, SidebarViewMode.LIST))
+    val labels = section.children.map { (it as MessageNode).label }
+    labels shouldBe listOf(
+      "Multiple tags point at HEAD; selecting a tag pipeline is not supported.",
+      "No merge request found",
+    )
+  }
+
   "changed mr result rebuilds the MergeRequestNode as a new instance" {
     val c = coordinator()
     val slots = RefreshSlots(9L)

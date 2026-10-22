@@ -98,12 +98,13 @@ class CurrentBranchSectionFetcher(
       return null
     }
     val branch = reader.read(File(context.gitDir))
-    val target = pipelineTargetOf(context, branch)
     // Soft refresh over a shown result: keep showing it until the new values arrive (no Loading
     // flicker), and keep each side whose new value equals the shown one (see [unchanged]).
     val shown = if (soft && previousGitDir == context.gitDir) previous as? Resolved else null
     // Repository resolved, both sides still loading: paint the two placeholders now.
     if (shown == null) apply(context.gitDir) { Resolved(mr = null, pipeline = null) }
+    // After the placeholder paint: the (detached-only) tag scan is local JGit I/O the user should not wait on.
+    val target = pipelineTargetOf(context, branch)
 
     // Captured ONCE per refresh, on this IO thread, and only when a GET will actually use it
     // (a branch, or a detached HEAD with exactly one tag — R1-5). Every GET of both sides is pinned
@@ -136,7 +137,10 @@ class CurrentBranchSectionFetcher(
     return TrackedHead(context.gitDir, headKeyOf(branch))
   }
 
-  /** What the pipeline side looks for: the branch's effective ref, else HEAD's tags (only read when detached). */
+  /**
+   * What the pipeline side looks for: the branch's effective ref, else HEAD's tags. Tags are enumerated only
+   * on that detached path (null effective ref) — a branch refresh never scans them.
+   */
   private fun pipelineTargetOf(context: RepositoryContext, branch: CurrentBranch): PipelineTarget {
     val effectiveRef = EffectiveRef.resolve(branch, context.remoteName)
     val headSha = branch.headSha
@@ -160,8 +164,13 @@ class CurrentBranchSectionFetcher(
     soft: Boolean,
   ): PipelineSide {
     val ref = target.effectiveRef
-    // A detached HEAD queries only a single tag's pipeline: none or several tags fetch nothing.
-    if (ref == null && target.tags.size != 1) return if (target.tags.isEmpty()) NoPipeline else AmbiguousTags
+    // A detached HEAD queries only a single tag's pipeline: none or several tags fetch nothing. Nothing is
+    // failing then, so both pipeline-row stages close their streaks: a later failure WARNs again.
+    if (ref == null && target.tags.size != 1) {
+      report(STAGE_PIPELINE, soft, null) { messageFor(STAGE_PIPELINE) }
+      report(STAGE_TAG, soft, null) { messageFor(STAGE_TAG) }
+      return if (target.tags.isEmpty()) NoPipeline else AmbiguousTags
+    }
     val stage = if (ref != null) STAGE_PIPELINE else STAGE_TAG
     val conn = checkNotNull(connection).getOrElse { error ->
       report(stage, soft, error) { messageFor(stage) }

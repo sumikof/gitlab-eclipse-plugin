@@ -126,7 +126,7 @@ class GitLabSidebarView : ViewPart() {
       pipelineService,
       jobService,
       BridgeService(),
-      MergeRequestService(),
+      mergeRequestService,
       HeadTagReader(),
       apiClient,
       errorLog = { message, e -> logger.error(message, e) },
