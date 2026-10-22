@@ -166,4 +166,125 @@ class RemapExpandedElementsTest : StringSpec({
 
     remapExpandedElements(listOf(oldStage), listOf(newSection), oldInput).single() shouldBeSameInstanceAs newStage
   }
+
+  // CI-06 (Task 5, R-T5-1 / M11): the 30 s soft rebuild re-creates the root pipeline whenever a running
+  // downstream moves its `updated_at`, so the "Downstream pipelines" group (keyed by its parent pipeline
+  // id), each downstream pipeline (keyed by its own id, under its group) and everything nested in them
+  // must keep their expansion. The rebuild runs [transferDownstreamState] before the remap, as applyCompose does.
+  fun ds(id: Long, depth: Int = 1, ancestors: Set<Long> = setOf(5L)) =
+    DownstreamPipelineNode("trigger$id", downstream(id), depth, ancestors, "https://gitlab.example.com", "fp", 42L)
+
+  fun DownstreamPipelineNode.loaded(vararg children: SidebarNode) = apply {
+    loadState = DownstreamLoadState.LOADED
+    loadedChildren = children.toList()
+    shownPayload = DownstreamPayload(Result.success(emptyList()), Result.success(emptyList()))
+  }
+
+  fun pipelineWith(id: Long, status: String, vararg children: SidebarNode) =
+    PipelineNode(
+      GitLabPipeline(id = id, status = status),
+      children.toList(),
+      canRetry = false,
+      canCancel = false,
+      sourceInstanceUrl = "https://gitlab.example.com",
+      sourceAuthFingerprint = "fp",
+    )
+
+  "CI-06: an expanded downstream group, downstream node and inner stage all survive a rebuild with the same ids" {
+    val innerStage = StageNode("deploy", "Running", emptyList())
+    val oldDs = ds(205).loaded(innerStage)
+    val oldGroup = DownstreamPipelinesNode(5L, listOf(oldDs))
+    val oldPipeline = pipelineWith(5, "running", StageNode("build", "Passed", emptyList()), oldGroup)
+    val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(oldPipeline)))
+    val newDs = ds(205)
+    val newGroup = DownstreamPipelinesNode(5L, listOf(ds(204), newDs))
+    val newPipeline = pipelineWith(5, "running", StageNode("build", "Passed", emptyList()), newGroup)
+    val newInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(newPipeline)))
+
+    transferDownstreamState(oldInput, newInput)
+    val remapped = remapExpandedElements(listOf(oldPipeline, oldGroup, oldDs, innerStage), newInput, oldInput)
+
+    remapped shouldBe listOf(newPipeline, newGroup, newDs, innerStage)
+    remapped[3] shouldBeSameInstanceAs newDs.children.single()
+  }
+
+  "CI-06: nested downstream groups, nodes and their stages remap through the transferred parent" {
+    val nestedStage = StageNode("test", "Failed", emptyList())
+    val nested = ds(300, depth = 2, ancestors = setOf(5L, 205L)).loaded(nestedStage)
+    val nestedGroup = DownstreamPipelinesNode(205L, listOf(nested))
+    val oldDs = ds(205).loaded(StageNode("deploy", "Running", emptyList()), nestedGroup)
+    val oldGroup = DownstreamPipelinesNode(5L, listOf(oldDs))
+    val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(pipelineWith(5, "running", oldGroup))))
+    val newDs = ds(205)
+    val newInput = listOf<SidebarNode>(
+      CurrentBranchSectionNode(listOf(pipelineWith(5, "success", DownstreamPipelinesNode(5L, listOf(newDs))))),
+    )
+
+    transferDownstreamState(oldInput, newInput)
+    val remapped = remapExpandedElements(listOf(oldGroup, oldDs, nestedGroup, nested, nestedStage), newInput, oldInput)
+
+    remapped[1] shouldBeSameInstanceAs newDs
+    remapped.drop(2) shouldBe listOf(nestedGroup, nested, nestedStage)
+    newDs.children[1] shouldBeSameInstanceAs nestedGroup
+  }
+
+  "CI-06: without a transfer (old node still loading) the group and the node remap; the stale inner stage passes through" {
+    val innerStage = StageNode("deploy", "Running", emptyList())
+    val oldDs = ds(205).loaded(innerStage).apply { loadState = DownstreamLoadState.LOADING }
+    val oldGroup = DownstreamPipelinesNode(5L, listOf(oldDs))
+    val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(pipelineWith(5, "running", oldGroup))))
+    val newDs = ds(205)
+    val newGroup = DownstreamPipelinesNode(5L, listOf(newDs))
+    val newInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(pipelineWith(5, "running", newGroup))))
+
+    transferDownstreamState(oldInput, newInput)
+
+    remapExpandedElements(listOf(oldGroup, oldDs, innerStage), newInput, oldInput) shouldBe listOf(newGroup, newDs, innerStage)
+  }
+
+  "CI-06: a downstream stage is remapped under its own downstream, never onto the root's stage of the same name" {
+    val oldDsStage = StageNode("build", "Running", emptyList())
+    val oldDs = ds(205).loaded(oldDsStage)
+    val oldGroup = DownstreamPipelinesNode(5L, listOf(oldDs))
+    val oldPipeline = pipelineWith(5, "running", StageNode("build", "Passed", emptyList()), oldGroup)
+    val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(oldPipeline)))
+    val rootBuild = StageNode("build", "Passed", emptyList())
+    val newDsStage = StageNode("build", "Passed", emptyList())
+    val newDs = ds(205).loaded(newDsStage)
+    val newInput = listOf<SidebarNode>(
+      CurrentBranchSectionNode(
+        listOf(pipelineWith(5, "running", rootBuild, DownstreamPipelinesNode(5L, listOf(newDs)))),
+      ),
+    )
+
+    remapExpandedElements(listOf(oldDsStage), newInput, oldInput).single() shouldBeSameInstanceAs newDsStage
+  }
+
+  "CI-06: a downstream node is matched by pipeline id only within its own group" {
+    val oldDs = ds(205)
+    val oldInput = listOf<SidebarNode>(
+      CurrentBranchSectionNode(listOf(pipelineWith(5, "running", DownstreamPipelinesNode(5L, listOf(oldDs))))),
+    )
+    val newInput = listOf<SidebarNode>(
+      CurrentBranchSectionNode(listOf(pipelineWith(6, "running", DownstreamPipelinesNode(6L, listOf(ds(205)))))),
+    )
+
+    remapExpandedElements(listOf(oldDs), newInput, oldInput).single() shouldBeSameInstanceAs oldDs
+  }
+
+  "CI-06: the sweep's subtree remap maps the old children of one downstream node onto its new children" {
+    val oldStage = StageNode("deploy", "Running", emptyList())
+    val nested = ds(300, depth = 2, ancestors = setOf(5L, 205L))
+    val oldGroup = DownstreamPipelinesNode(205L, listOf(nested))
+    val newStage = StageNode("deploy", "Passed", emptyList())
+    val newNested = ds(300, depth = 2, ancestors = setOf(5L, 205L))
+    val newGroup = DownstreamPipelinesNode(205L, listOf(newNested))
+    val oldChildren = listOf<SidebarNode>(oldStage, oldGroup)
+    val newChildren = listOf<SidebarNode>(newStage, newGroup)
+
+    remapInChildren(oldStage, oldChildren, newChildren) shouldBeSameInstanceAs newStage
+    remapInChildren(oldGroup, oldChildren, newChildren) shouldBeSameInstanceAs newGroup
+    remapInChildren(nested, oldChildren, newChildren) shouldBeSameInstanceAs newNested
+    remapInChildren(MessageNode("elsewhere"), oldChildren, newChildren) shouldBe null
+  }
 })
