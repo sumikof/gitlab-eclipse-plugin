@@ -29,25 +29,27 @@ object StatusTrimPresenter {
     when (val input = snapshot.input) {
       null -> previous ?: loading()
       NoRepository -> TrimModel.HIDDEN
-      is Resolved -> presentResolved(input, previous)
+      is Resolved -> presentResolved(input, snapshot.headKind, previous)
     }
 
   private fun loading() = TrimModel(LOADING_PIPELINE_ITEM, LOADING_MR_ITEM, null)
 
-  private fun presentResolved(input: Resolved, previous: TrimModel?): TrimModel {
+  private fun presentResolved(input: Resolved, headKind: HeadKind, previous: TrimModel?): TrimModel {
     val pipelineResult = input.pipeline
     if (pipelineResult == null && input.mr == null && previous != null) return previous
 
+    // A detached HEAD without a single tag is "invalid" in VS Code: everything hidden.
     val side = pipelineResult?.getOrNull()
-    // Ambiguous tags and a tag pipeline both mean there is no branch to show an MR for.
-    if (side == AmbiguousTags) return TrimModel.HIDDEN
+    if (headKind == HeadKind.DETACHED || side == AmbiguousTags) return TrimModel.HIDDEN
 
     val pipeline = when {
       pipelineResult == null -> previous?.pipeline ?: LOADING_PIPELINE_ITEM
       side == null -> null // pipeline side failed
       else -> pipelineItem(side)
     }
-    if (side is PipelineShown && side.snapshot.kind == PipelineKind.TAG) return TrimModel(pipeline, null, null)
+    // A tag has no branch to look an MR up for; the pipeline's own kind is a secondary signal.
+    val isTag = headKind == HeadKind.TAG || (side is PipelineShown && side.snapshot.kind == PipelineKind.TAG)
+    if (isTag) return TrimModel(pipeline, null, null)
     return withMr(pipeline, input.mr, previous)
   }
 

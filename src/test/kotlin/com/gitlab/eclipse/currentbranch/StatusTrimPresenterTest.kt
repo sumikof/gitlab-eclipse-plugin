@@ -18,8 +18,8 @@ import io.kotest.matchers.shouldBe
 
 /** Every row of the status-bar design §4.5 table, plus every CI status and the unknown fallback. */
 class StatusTrimPresenterTest : StringSpec({
-  fun snap(input: CurrentBranchSectionInput?, refreshing: Boolean = false) =
-    CurrentBranchSnapshot(1, "/g", "/w", input, refreshing)
+  fun snap(input: CurrentBranchSectionInput?, refreshing: Boolean = false, headKind: HeadKind = HeadKind.UNKNOWN) =
+    CurrentBranchSnapshot(1, "/g", "/w", input, refreshing, headKind)
 
   fun shown(status: String? = "success", kind: PipelineKind = PipelineKind.BRANCH, id: Long = 7) =
     PipelineShown(
@@ -185,5 +185,36 @@ class StatusTrimPresenterTest : StringSpec({
       p?.icon shouldBe TrimIcon.UNKNOWN
       p?.text shouldBe "Pipeline Status Unknown"
     }
+  }
+
+  "T1b TAG head shows the pipeline item only, even with No pipeline or a branch-kind snapshot" {
+    val withMr = Resolved(info(mr(), issue(1)), ok(NoPipeline))
+    val m = StatusTrimPresenter.present(snap(withMr, headKind = HeadKind.TAG), null)
+    m.pipeline?.text shouldBe "No pipeline"
+    m.mr shouldBe null
+    m.issue shouldBe null
+    val m2 = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(shown())), headKind = HeadKind.TAG), null)
+    m2.pipeline?.text shouldBe "Pipeline Passed"
+    m2.mr shouldBe null
+  }
+
+  "T1b DETACHED head hides everything" {
+    val input = Resolved(info(mr(), issue(1)), ok(shown()))
+    StatusTrimPresenter.present(snap(input, headKind = HeadKind.DETACHED), null) shouldBe TrimModel.HIDDEN
+    StatusTrimPresenter.present(snap(Resolved(info(null), ok(NoPipeline)), headKind = HeadKind.DETACHED), null) shouldBe
+      TrimModel.HIDDEN
+  }
+
+  "T1b BRANCH and UNKNOWN heads follow the branch rules" {
+    val input = Resolved(info(mr(), issue(5)), ok(NoPipeline))
+    val branch = StatusTrimPresenter.present(snap(input, headKind = HeadKind.BRANCH), null)
+    branch.mr?.text shouldBe "!3"
+    branch.issue?.text shouldBe "#5"
+    StatusTrimPresenter.present(snap(input, headKind = HeadKind.UNKNOWN), null) shouldBe branch
+  }
+
+  "T1b placeholders after a rendered model still keep the previous model whatever the head kind" {
+    val prev = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(shown())), headKind = HeadKind.BRANCH), null)
+    StatusTrimPresenter.present(snap(Resolved(null, null), headKind = HeadKind.DETACHED), prev) shouldBe prev
   }
 })
