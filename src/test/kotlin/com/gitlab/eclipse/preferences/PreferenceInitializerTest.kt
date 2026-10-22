@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.preferences
 
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
 import io.mockk.*
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 
@@ -24,6 +25,15 @@ class PreferenceInitializerTest : DescribeSpec({
       verify { store.setDefault(PreferenceConstants.SIDEBAR_CUSTOM_QUERIES, "") }
       verify { store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_VERSION_WARNING_SUPPRESSED, "") }
       verify { store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_NO_CREDITS_DISMISSED_DATE, "") }
+    }
+
+    it("CI-03: pipeline status notifications default to off") {
+      val store = mockk<ScopedPreferenceStore>(relaxed = true)
+
+      PreferenceInitializer(store).initializeDefaultPreferences()
+
+      PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS shouldBe "gitlab.pipeline.showStatusNotifications"
+      verify { store.setDefault(PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS, false) }
     }
   }
 })

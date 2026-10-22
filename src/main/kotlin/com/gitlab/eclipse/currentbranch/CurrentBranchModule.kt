@@ -10,6 +10,8 @@ import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.HeadTagReader
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.preferences.PreferenceConstants
+import com.gitlab.eclipse.utils.ActionNotifications
 import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.views.sidebar.CurrentBranchSectionFetcher
@@ -20,15 +22,19 @@ import com.gitlab.eclipse.views.sidebar.autorefresh.JGitRefsEventSource
 import com.gitlab.eclipse.views.sidebar.autorefresh.Registration
 import com.gitlab.eclipse.views.sidebar.autorefresh.autoRefreshHop
 import kotlinx.coroutines.CoroutineScope
+import org.eclipse.swt.SWT
 import org.eclipse.ui.IEditorReference
 import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWorkbenchPartReference
 import org.eclipse.ui.IWorkbenchWindow
 import org.eclipse.ui.PlatformUI
+import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.dsl.module
 import java.io.File
+import java.net.URI
 
 private const val NANOS_PER_MILLI = 1_000_000L
+private const val NOTIFICATION_AUTO_CLOSE_MILLIS = 8_000L
 
 /**
  * The current-branch state registry (status-bar design §4.1). Activated in the post-start UI turn and disposed
@@ -42,8 +48,15 @@ val currentBranchModule = module {
     val log = logger<CurrentBranchStateService>()
     val warn: (String) -> Unit = { message -> log.warn(message) }
     val filter = SharedActivationFilter(displayActivationFilter { PlatformUI.getWorkbench().display }, warn)
+    val preferences = get<ScopedPreferenceStore>()
+    // CI-03: one process-wide dedupe, so two windows on one repository show one popup per transition.
+    val dedupe = PipelineNotificationDedupe()
     CurrentBranchStateService(
-      createState = { window -> productionWindowState(window, scope, apiClient, mergeRequestService, filter) },
+      createState = { window ->
+        productionWindowState(window, scope, apiClient, mergeRequestService, filter).also { state ->
+          state.addListener(pipelineStatusNotifier(state, preferences, dedupe, warn))
+        }
+      },
       workbench = PlatformUI::getWorkbench,
       isWindowOpen = ::isWindowOpen,
       onDispose = filter::dispose,
@@ -112,6 +125,32 @@ private fun productionWindowState(
     log = warn,
   )
 }
+
+/**
+ * CI-03 (§4.7): the window's pipeline status popup. The preference is read when a change is observed and again in
+ * the popup's gate, together with the window's liveness; the popup opens through `asyncExec` (after the trim's render
+ * of the same apply), auto-closes, and its link only opens the browser.
+ */
+private fun pipelineStatusNotifier(
+  state: WindowCurrentBranchState,
+  preferences: ScopedPreferenceStore,
+  dedupe: PipelineNotificationDedupe,
+  warn: (String) -> Unit,
+) = PipelineStatusNotifier(
+  isEnabled = { preferences.getBoolean(PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS) },
+  isWindowAlive = { !state.isDisposed },
+  dedupe = dedupe,
+  show = { title, message, links, gate ->
+    ActionNotifications.show(title, message, SWT.ICON_INFORMATION, links, NOTIFICATION_AUTO_CLOSE_MILLIS, gate = gate)
+  },
+  openUrl = { url ->
+    try {
+      PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
+    } catch (e: Exception) {
+      warn("Pipeline notification could not open the browser: ${e.javaClass.name}")
+    }
+  },
+)
 
 /**
  * T3b: a window whose shell is gone (or not created) or a closing workbench gets no entry: a trim control rebuilt

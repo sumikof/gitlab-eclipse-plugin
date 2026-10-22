@@ -31,5 +31,7 @@ class PreferenceInitializer(private val store: ScopedPreferenceStore) : Abstract
     store.setDefault(PreferenceConstants.AGENT_PLATFORM_LAYOUT, "new")
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_VERSION_WARNING_SUPPRESSED, "")
     store.setDefault(PreferenceConstants.CODE_SUGGESTIONS_NO_CREDITS_DISMISSED_DATE, "")
+    // CI-03: off by default, as VS Code's gitlab.showPipelineUpdateNotifications.
+    store.setDefault(PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS, false)
   }
 }
