@@ -174,7 +174,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     every { rig.pipelines.getLatestPipelineForRef(PROJECT, "feature", rig.connection) } returns PIPELINE
     every { rig.jobs.getJobsForPipeline(PROJECT, 5, any(), rig.connection, includeRetried = true) } returns JOBS
 
-    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"))
+    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"), workTree = "/repo")
 
     rig.applied shouldContainExactly listOf(
       Resolved(null, null),
@@ -218,7 +218,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     val rig = FetcherRig()
     every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null, sha = "abc123")
 
-    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Detached("abc123"))
+    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Detached("abc123"), workTree = "/repo")
 
     rig.current shouldBe Resolved(Result.success(mr()), Result.success(NoPipeline))
     verify(exactly = 1) { rig.tags.tagsAt(File(GIT_DIR), "abc123") }
@@ -246,7 +246,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     val before = rig.current as Resolved
     val appliedBefore = rig.applied.size
 
-    rig.fetch(soft = true) shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"))
+    rig.fetch(soft = true) shouldBe TrackedHead(GIT_DIR, HeadKey.Branch("feature"), workTree = "/repo")
 
     rig.applied.size shouldBe appliedBefore
     rig.current shouldBeSameInstanceAs before
@@ -288,7 +288,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     every { rig.resolver.resolveNonInteractive(any()) } returns other
     every { rig.reader.read(File("/other/.git")) } returns rig.branch()
 
-    rig.fetch(soft = true) shouldBe TrackedHead("/other/.git", HeadKey.Branch("feature"))
+    rig.fetch(soft = true) shouldBe TrackedHead("/other/.git", HeadKey.Branch("feature"), workTree = "/repo")
 
     rig.applied.drop(3).first() shouldBe Resolved(null, null)
     rig.applied.size shouldBe 6
@@ -619,7 +619,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     every { rig.reader.read(File(GIT_DIR)) } returns rig.branch(name = null, sha = "abc123")
     every { rig.tags.tagsAt(File(GIT_DIR), "abc123") } returns listOf("v1", "v1-rc")
 
-    rig.fetch()
+    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Detached("abc123"), workTree = "/repo", onSingleTag = false)
     rig.pipelineSide() shouldBe AmbiguousTags
     val appliedBefore = rig.applied.size
     rig.fetch(soft = true)
@@ -637,7 +637,7 @@ class CurrentBranchSectionFetcherTest : StringSpec({
     val tagPipeline = GitLabPipeline(id = 8, status = "success", projectId = 42)
     every { rig.pipelines.getLatestPipelineForRef(PROJECT, "v1.0", rig.connection) } returns tagPipeline
 
-    rig.fetch()
+    rig.fetch() shouldBe TrackedHead(GIT_DIR, HeadKey.Detached("abc123"), workTree = "/repo", onSingleTag = true)
 
     rig.shownSnapshot() shouldBe
       snapshotOf(pipeline = tagPipeline, kind = PipelineKind.TAG, bridges = Result.success(BRIDGES))

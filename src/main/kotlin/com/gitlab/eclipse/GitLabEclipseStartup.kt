@@ -15,6 +15,8 @@ import com.gitlab.eclipse.ci.lint.MergedYamlEditorOpener
 import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.codeSuggestionsModule
 import com.gitlab.eclipse.codesuggestions.status.DuoStatusRefresher
+import com.gitlab.eclipse.currentbranch.CurrentBranchStateService
+import com.gitlab.eclipse.currentbranch.currentBranchModule
 import com.gitlab.eclipse.diagnostics.DiagnosticsLog
 import com.gitlab.eclipse.diagnostics.configuredSecrets
 import com.gitlab.eclipse.inject.service
@@ -51,6 +53,7 @@ import org.eclipse.ui.commands.ICommandService
 import org.eclipse.ui.keys.IBindingService
 import org.eclipse.ui.plugin.AbstractUIPlugin
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import org.koin.core.context.GlobalContext
 import org.koin.core.context.startKoin
 import org.osgi.framework.Bundle
 import org.osgi.framework.BundleContext
@@ -192,6 +195,7 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         codeSuggestionsModule,
         telemetryModule,
         apiModule,
+        currentBranchModule,
       )
     }
 
@@ -432,6 +436,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
       // part ones belong to the UI thread.
       LifecycleStep("Lifecycle listeners") { LifecycleListenerRegistrations.closeAll() },
       LifecycleStep("Duo status refresher") { service<DuoStatusRefresher>().dispose() },
+      // Status bar §4.1/§5: every window's current-branch refresher, listeners and fetch; late completions on the
+      // shared IO scope are inert after this.
+      LifecycleStep("Current-branch state") { currentBranchStateOrNull()?.dispose() },
     )
 
     /**
@@ -457,6 +464,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
         refresher.installWindowListeners()
         refresher.request()
       },
+      // Status bar §4.1: an entry (refresher + first fetch) for every open window, and the window listener for
+      // later ones. The trim control may have created some entries already (R3); ensureWindow is idempotent.
+      LifecycleStep("Current-branch state") { currentBranchStateOrNull()?.activate() },
     )
 
     /**
@@ -508,3 +518,10 @@ internal fun GitLabEclipseStartup.startLanguageServer(bundle: Bundle) {
     logUiTurnSkipped("activation", e, normalExit = false)
   }
 }
+
+/**
+ * The current-branch registry if Koin is up, else null, so its activation and shutdown steps are no-ops on a
+ * start whose Koin never came up (or a test container that does not declare it).
+ */
+private fun currentBranchStateOrNull(): CurrentBranchStateService? =
+  GlobalContext.getOrNull()?.getOrNull<CurrentBranchStateService>()

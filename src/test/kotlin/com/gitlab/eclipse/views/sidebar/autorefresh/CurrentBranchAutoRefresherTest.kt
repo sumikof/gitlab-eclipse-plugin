@@ -588,6 +588,71 @@ class CurrentBranchAutoRefresherTest : StringSpec({
     rig.refresher.trackedGitDir() shouldBe null
   }
 
+  "11a. requestRefresh(INITIAL) while active refreshes at once, and its settle arms the periodic timer" {
+    val rig = Rig()
+    rig.refresher.start()
+
+    rig.refresher.requestRefresh(RefreshReason.INITIAL) shouldBe true
+
+    rig.port.tickets shouldHaveSize 1
+    rig.debugLines.last() shouldEndWith "INITIAL"
+    rig.settleLast()
+    rig.time.advanceBy(PERIOD)
+    rig.port.tickets shouldHaveSize 2
+  }
+
+  "11b. requestRefresh(INITIAL) while inactive fetches nothing; the first activation refreshes (FOCUS)" {
+    val rig = Rig(active = false)
+    rig.refresher.start()
+
+    rig.refresher.requestRefresh(RefreshReason.INITIAL) shouldBe true
+    rig.port.tickets shouldHaveSize 0
+
+    rig.activity.set(true)
+    rig.port.tickets shouldHaveSize 1
+    rig.debugLines.last() shouldEndWith "FOCUS"
+  }
+
+  "11c. requestRefresh during a running refresh coalesces into exactly one refresh after its settle" {
+    val rig = Rig()
+    rig.refresher.start()
+    rig.refresher.requestRefresh(RefreshReason.INITIAL)
+
+    rig.refresher.requestRefresh(RefreshReason.BRANCH) shouldBe true
+    rig.refresher.requestRefresh(RefreshReason.MANUAL) shouldBe true
+    rig.port.tickets shouldHaveSize 1
+
+    rig.settleLast()
+    rig.port.tickets shouldHaveSize 2
+    rig.debugLines.last() shouldEndWith "COALESCED"
+  }
+
+  "11d. requestRefresh on a refresher that is not started (never, failed or stopped) returns false and fetches nothing" {
+    val never = Rig()
+    never.refresher.requestRefresh(RefreshReason.BRANCH) shouldBe false
+
+    val failed = Rig()
+    failed.refs.failRegister = IllegalStateException("display gone")
+    failed.refresher.start()
+    failed.refresher.requestRefresh(RefreshReason.INITIAL) shouldBe false
+
+    val stopped = Rig()
+    stopped.refresher.start()
+    stopped.refresher.stop()
+    stopped.refresher.requestRefresh(RefreshReason.MANUAL) shouldBe false
+
+    listOf(never, failed, stopped).forEach { it.port.tickets shouldHaveSize 0 }
+  }
+
+  "11e. requestRefresh(BRANCH) runs even while inactive (an explicit request, unlike the timer)" {
+    val rig = Rig(active = false)
+    rig.refresher.start()
+
+    rig.refresher.requestRefresh(RefreshReason.BRANCH) shouldBe true
+
+    rig.port.tickets shouldHaveSize 1
+  }
+
   "10. every line the refresher logs names only an event type or an exception class, never a path, branch or SHA" {
     val rig = Rig().tracking()
     rig.time.advanceBy(PERIOD) // TIMER
@@ -630,11 +695,16 @@ class CurrentBranchAutoRefresherTest : StringSpec({
       "Current-branch auto refresh could not start listening: java.lang.IllegalArgumentException",
     )
     rig.logs.forEach { line ->
-      line shouldMatch Regex("^[A-Za-z -]+: (TIMER|FOCUS|BRANCH|MANUAL|COALESCED|[A-Za-z0-9_.$]+)$")
+      line shouldMatch Regex("^[A-Za-z -]+: (TIMER|FOCUS|BRANCH|MANUAL|COALESCED|INITIAL|[A-Za-z0-9_.$]+)$")
       listOf(REPO, "secret", SHA, "feature/").forEach { line shouldNotContain it }
     }
 
-    val printed = listOf(MAIN, HeadKey.Detached(SHA), HeadKey.Unavailable, TrackedHead(REPO, MAIN)).joinToString()
+    val printed = listOf(
+      MAIN,
+      HeadKey.Detached(SHA),
+      HeadKey.Unavailable,
+      TrackedHead(REPO, MAIN, workTree = "/home/alice/work/secret-project", onSingleTag = true),
+    ).joinToString()
     printed shouldNotContain "secret"
     printed shouldNotContain SHA
     printed shouldNotContain REPO

@@ -79,7 +79,7 @@ class CurrentBranchSectionFetcher(
    * `apply`) it paints no placeholder; it applies nothing for
    * a side whose new success equals the shown one; and failures are logged by [report]'s soft rule.
    *
-   * Returns the repository and HEAD this fetch looked at, or null when no repository resolved.
+   * Returns the repository, its work tree and the HEAD this fetch looked at, or null when no repository resolved.
    */
   suspend fun fetch(
     activeEditorFile: File?,
@@ -134,7 +134,9 @@ class CurrentBranchSectionFetcher(
         }
       }
     }
-    return TrackedHead(context.gitDir, headKeyOf(branch))
+    // Status bar (§4.1 R4, §4.5): the work tree for the editor-switch rule, and whether a detached HEAD is a tag.
+    val onSingleTag = target.effectiveRef == null && target.tags.size == 1
+    return TrackedHead(context.gitDir, headKeyOf(branch), context.workTree, onSingleTag)
   }
 
   /**

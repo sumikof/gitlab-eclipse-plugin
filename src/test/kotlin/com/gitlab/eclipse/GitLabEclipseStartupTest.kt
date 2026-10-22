@@ -307,6 +307,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
         "Agent Platform views",
         "Lifecycle listeners",
         "Duo status refresher",
+        "Current-branch state",
       )
     }
 
@@ -576,6 +577,13 @@ class GitLabEclipseStartupTest : DescribeSpec({
         statusRefresher.installWindowListeners()
         statusRefresher.request()
       }
+    }
+
+    it("the post-start UI steps install the Duo status refresher, then the current-branch state (status-bar §4.1)") {
+      GitLabEclipseStartup.productionDuoStatusActivationSteps().map { it.name } shouldContainExactly listOf(
+        "Duo status refresher",
+        "Current-branch state",
+      )
     }
 
     it("the production listeners are the failure notifier, the status refresher and the message presenter") {
