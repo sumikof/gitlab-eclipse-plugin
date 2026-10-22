@@ -43,7 +43,8 @@ object StatusTrimPresenter {
     if (headKind == HeadKind.DETACHED || side == AmbiguousTags) return TrimModel.HIDDEN
 
     val pipeline = when {
-      pipelineResult == null -> previous?.pipeline ?: LOADING_PIPELINE_ITEM
+      // A pending side is taken from the previous model as it was, hidden (null) included.
+      pipelineResult == null -> if (previous != null) previous.pipeline else LOADING_PIPELINE_ITEM
       side == null -> null // pipeline side failed
       else -> pipelineItem(side)
     }
@@ -55,9 +56,16 @@ object StatusTrimPresenter {
 
   private fun withMr(pipeline: TrimItemModel?, mrResult: Result<CurrentBranchInfo>?, previous: TrimModel?): TrimModel =
     when {
-      mrResult == null -> TrimModel(pipeline, previous?.mr ?: LOADING_MR_ITEM, previous?.issue)
+      mrResult == null -> pendingMr(pipeline, previous)
       mrResult.isFailure -> TrimModel(pipeline, null, null)
       else -> mrModel(pipeline, mrResult.getOrThrow())
+    }
+
+  private fun pendingMr(pipeline: TrimItemModel?, previous: TrimModel?): TrimModel =
+    if (previous != null) {
+      TrimModel(pipeline, previous.mr, previous.issue)
+    } else {
+      TrimModel(pipeline, LOADING_MR_ITEM, null)
     }
 
   private fun pipelineItem(side: PipelineSide): TrimItemModel? =

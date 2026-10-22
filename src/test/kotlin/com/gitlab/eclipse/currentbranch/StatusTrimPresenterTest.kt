@@ -217,4 +217,45 @@ class StatusTrimPresenterTest : StringSpec({
     val prev = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(shown())), headKind = HeadKind.BRANCH), null)
     StatusTrimPresenter.present(snap(Resolved(null, null), headKind = HeadKind.DETACHED), prev) shouldBe prev
   }
+
+  "R11 a pending MR side stays hidden when the previous model hid it (tag, ambiguous tags, failed MR)" {
+    val tagPrev = StatusTrimPresenter.present(
+      snap(Resolved(info(mr()), ok(shown(kind = PipelineKind.TAG)))),
+      null,
+    )
+    val m = StatusTrimPresenter.present(snap(Resolved(null, ok(shown(kind = PipelineKind.TAG)))), tagPrev)
+    m.mr shouldBe null
+    m.issue shouldBe null
+
+    val failedPrev = StatusTrimPresenter.present(snap(Resolved(boom, ok(shown()))), null)
+    val m2 = StatusTrimPresenter.present(snap(Resolved(null, ok(shown()))), failedPrev)
+    m2.mr shouldBe null
+    m2.issue shouldBe null
+
+    val hiddenPrev = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(AmbiguousTags))), null)
+    val m3 = StatusTrimPresenter.present(snap(Resolved(null, ok(NoPipeline)), refreshing = true), hiddenPrev)
+    m3.mr shouldBe null
+    m3.issue shouldBe null
+  }
+
+  "R11 a pending pipeline side stays hidden when the previous model hid it (failed pipeline, ambiguous tags)" {
+    val failedPrev = StatusTrimPresenter.present(snap(Resolved(info(mr()), boom)), null)
+    StatusTrimPresenter.present(snap(Resolved(info(mr()), null)), failedPrev).pipeline shouldBe null
+
+    val ambiguousPrev = StatusTrimPresenter.present(snap(Resolved(info(mr()), ok(AmbiguousTags))), null)
+    StatusTrimPresenter.present(snap(Resolved(info(mr()), null)), ambiguousPrev).pipeline shouldBe null
+  }
+
+  "R11 the loading texts only appear when there is no previous model at all" {
+    val hidden = StatusTrimPresenter.present(snap(NoRepository), null)
+    val m = StatusTrimPresenter.present(snap(Resolved(info(mr()), null)), hidden)
+    m.pipeline shouldBe null
+    StatusTrimPresenter.present(snap(Resolved(info(mr()), null)), null).pipeline?.text shouldBe "Fetching pipeline…"
+  }
+
+  "toString contains no gitDir or workTree path" {
+    val text = CurrentBranchSnapshot(3, "/secret/git/dir", "/secret/work/tree", NoRepository, true).toString()
+    text.contains("/secret") shouldBe false
+    text.contains("secret") shouldBe false
+  }
 })
