@@ -111,6 +111,18 @@ class StatusTrimControllerTest : StringSpec({
     rig.last shouldBe TrimModel.HIDDEN
   }
 
+  "Fable SHOULD-FIX 1: the initial render (inside createControl) requests no resize and logs nothing; later width changes do" {
+    val rig = TrimRig()
+    rig.state.state.start()
+
+    rig.controller.attach(rig.state.state) // createControl: the separator tool item does not exist yet
+    rig.view.renders.single().second.relayout shouldBe false
+
+    rig.state.settleBranch(withMr()) // "Fetching pipeline…" -> "No pipeline", "Finding MR…" -> "!12": text changes
+    rig.view.renders.last().second.relayout shouldBe true
+    rig.calls.filter { it.startsWith("log ") }.shouldBeEmpty()
+  }
+
   "without a window state the trim renders nothing visible" {
     val rig = TrimRig()
 
@@ -239,9 +251,9 @@ class TrimDifferTest : StringSpec({
   val pipeline = TrimItemModel(TrimIcon.SUCCESS, "Pipeline passed", "Pipeline #7", TrimAction.ShowPipelineMenu)
   val mr = TrimItemModel(TrimIcon.MR_OPEN, "!12", "title", TrimAction.OpenUrl("u"))
 
-  "the first render changes every slot and lays out" {
+  "the first render changes every slot but does not resize: JFace sizes the tool item after createControl" {
     TrimDiffer.diff(null, TrimModel(pipeline, null, null)) shouldBe
-      TrimDiff(setOf(TrimSlot.PIPELINE, TrimSlot.MR, TrimSlot.ISSUE), relayout = true)
+      TrimDiff(setOf(TrimSlot.PIPELINE, TrimSlot.MR, TrimSlot.ISSUE), relayout = false)
   }
 
   "an equal model changes nothing" {

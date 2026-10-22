@@ -16,10 +16,14 @@ data class TrimDiff(val changed: Set<TrimSlot>, val relayout: Boolean) {
  * Diffed re-render (status-bar design §4.5): an item is re-rendered only when its model changed, and the trim is laid
  * out again only when an item appeared, disappeared or changed its text — an icon or tooltip change keeps the width,
  * so a 30 s tick that changes nothing (or only an icon) causes no layout jitter.
+ *
+ * The first render ([old] null) runs inside `createControl`, before JFace's `ControlContribution.fill` has created the
+ * separator tool item — JFace sizes that item from the control right after — so it asks for no resize (Fable
+ * SHOULD-FIX 1: resizing there found no item, logged a WARN on every window open, and spent the log-once).
  */
 object TrimDiffer {
   fun diff(old: TrimModel?, new: TrimModel): TrimDiff {
-    if (old == null) return TrimDiff(TrimSlot.entries.toSet(), relayout = true)
+    if (old == null) return TrimDiff(TrimSlot.entries.toSet(), relayout = false)
     val changed = TrimSlot.entries.filter { old.item(it) != new.item(it) }.toSet()
     val relayout = changed.any { slot ->
       val before = old.item(slot)
@@ -42,7 +46,10 @@ fun TrimModel.item(slot: TrimSlot): TrimItemModel? =
 interface StatusTrimView {
   val isDisposed: Boolean
 
-  /** Applies [model] to the items [diff] names, and runs the width recipe when [TrimDiff.relayout]. */
+  /**
+   * Applies [model] to the items [diff] names and lays the control out; runs the width recipe only when
+   * [TrimDiff.relayout].
+   */
   fun render(model: TrimModel, diff: TrimDiff)
 
   /** Opens the CI actions pulldown under the pipeline item. */

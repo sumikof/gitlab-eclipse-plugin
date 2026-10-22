@@ -206,10 +206,10 @@ private class SwtStatusTrimView(
   override fun render(model: TrimModel, diff: TrimDiff) {
     if (root.isDisposed) return
     diff.changed.forEach { slot -> show(checkNotNull(labels[slot]), model.item(slot)) }
-    if (diff.relayout) {
-      root.layout(true)
-      width.apply(SwtWidthHost(root))
-    }
+    // Visibility (RowData.exclude) and text take effect with a layout, the first paint included; the tool item is
+    // resized only for a width change after JFace created it (never on the first render, Fable SHOULD-FIX 1).
+    root.layout(true)
+    if (diff.relayout) width.apply(SwtWidthHost(root))
   }
 
   override fun showPipelineMenu(items: List<PipelineMenuItem>) = menu(items)
