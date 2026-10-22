@@ -135,23 +135,35 @@ class RemapExpandedElementsTest : StringSpec({
     remapExpandedElements(listOf(oldPipeline), listOf(newSection), oldInput).single() shouldBeSameInstanceAs newPipeline
   }
 
-  "a stage node is remapped by its pipeline's id and its label" {
-    val oldStage = StageNode("test", emptyList())
-    val oldPipeline = pipelineNode(5, "running", StageNode("build", emptyList()), oldStage)
-    val newStage = StageNode("test", emptyList())
-    val newPipeline = pipelineNode(5, "success", StageNode("build", emptyList()), newStage)
+  "a stage node is remapped by its pipeline's id and its name" {
+    val oldStage = StageNode("test", "Running", emptyList())
+    val oldPipeline = pipelineNode(5, "running", StageNode("build", "Passed", emptyList()), oldStage)
+    val newStage = StageNode("test", "Running", emptyList())
+    val newPipeline = pipelineNode(5, "success", StageNode("build", "Passed", emptyList()), newStage)
     val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(oldPipeline)))
-    val otherPipeline = pipelineNode(4, "success", StageNode("test", emptyList()))
+    val otherPipeline = pipelineNode(4, "success", StageNode("test", "Running", emptyList()))
     val newSection = CurrentBranchSectionNode(listOf(otherPipeline, newPipeline))
 
     remapExpandedElements(listOf(oldPipeline, oldStage), listOf(newSection), oldInput) shouldBe listOf(newPipeline, newStage)
   }
 
   "a stage whose pipeline is gone passes through" {
-    val oldStage = StageNode("test", emptyList())
+    val oldStage = StageNode("test", "Running", emptyList())
     val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(pipelineNode(5, "running", oldStage))))
-    val newSection = CurrentBranchSectionNode(listOf(pipelineNode(6, "running", StageNode("test", emptyList()))))
+    val newStage = StageNode("test", "Running", emptyList())
+    val newSection = CurrentBranchSectionNode(listOf(pipelineNode(6, "running", newStage)))
 
     remapExpandedElements(listOf(oldStage), listOf(newSection), oldInput).single() shouldBeSameInstanceAs oldStage
+  }
+
+  "CI-05: a stage whose status changed (so its label changed) is still remapped by name" {
+    val oldStage = StageNode("test", "Running", emptyList())
+    val oldInput = listOf<SidebarNode>(CurrentBranchSectionNode(listOf(pipelineNode(5, "running", oldStage))))
+    val newStage = StageNode("test", "Failed", emptyList())
+    val newSection = CurrentBranchSectionNode(
+      listOf(pipelineNode(5, "failed", StageNode("build", "Running", emptyList()), newStage)),
+    )
+
+    remapExpandedElements(listOf(oldStage), listOf(newSection), oldInput).single() shouldBeSameInstanceAs newStage
   }
 })

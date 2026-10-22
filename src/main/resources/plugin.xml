@@ -1755,7 +1755,10 @@
                     <with variable="activeMenuSelection">
                         <iterate ifEmpty="false">
                             <and>
-                                <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                <or>
+                                    <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                    <instanceof value="com.gitlab.eclipse.views.sidebar.BridgeNode"/>
+                                </or>
                                 <test property="com.gitlab.eclipse.node.canRetry"/>
                             </and>
                         </iterate>
@@ -1785,7 +1788,10 @@
                     <with variable="activeMenuSelection">
                         <iterate ifEmpty="false">
                             <and>
-                                <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                <or>
+                                    <instanceof value="com.gitlab.eclipse.views.sidebar.JobNode"/>
+                                    <instanceof value="com.gitlab.eclipse.views.sidebar.BridgeNode"/>
+                                </or>
                                 <test property="com.gitlab.eclipse.node.canPlay"/>
                             </and>
                         </iterate>

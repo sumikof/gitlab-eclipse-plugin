@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.model.GitLabBridge
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
@@ -7,6 +8,8 @@ import com.gitlab.eclipse.api.model.GitLabNotePermissions
 import com.gitlab.eclipse.api.model.GitLabNotePosition
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiStatus
+import com.gitlab.eclipse.ci.PipelineKind
+import com.gitlab.eclipse.ci.aggregateStatus
 import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 
@@ -165,13 +168,16 @@ class ChangedDirectoryNode(
 
 /**
  * Root node for a single GitLab pipeline (design doc §6.5/§7.2): expands into a
- * Pipeline→Stage→Job subtree built by [SidebarViewModel.buildPipelineNode].
+ * Pipeline→Stage→Job/Bridge subtree, followed by the "Downstream pipelines" group when any bridge
+ * started one (CI-06), built by [SidebarViewModel.buildPipelineNode].
  *
  * Carries what the context-menu handlers need (design doc §8.4/§8.5): the numeric ids to
  * address the REST retry/cancel endpoints, [canRetry]/[canCancel] eligibility derived from
- * the jobs' statuses, and the non-secret source-connection tags ([sourceInstanceUrl] +
- * [sourceAuthFingerprint]) identifying the connection the pipeline was actually fetched
- * over, so a write can refuse to run against a different instance/account.
+ * the latest job attempts' and the bridges' statuses, and the non-secret source-connection tags
+ * ([sourceInstanceUrl] + [sourceAuthFingerprint]) identifying the connection the pipeline was
+ * actually fetched over, so a write can refuse to run against a different instance/account.
+ * [kind] only changes the label: a tag pipeline reads `Tag Pipeline #<id>` (CI-05 §4.2), while MR
+ * and branch pipelines are deliberately not told apart (VS Code parity, design D3).
  */
 class PipelineNode(
   pipeline: GitLabPipeline,
@@ -180,15 +186,24 @@ class PipelineNode(
   val canCancel: Boolean,
   val sourceInstanceUrl: String,
   val sourceAuthFingerprint: String,
+  kind: PipelineKind = PipelineKind.BRANCH,
 ) : SidebarNode {
   val pipelineId: Long = pipeline.id
   val projectId: Long? = pipeline.projectId
-  override val label: String = "Pipeline #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
+  private val kindPrefix: String = if (kind == PipelineKind.TAG) "Tag Pipeline" else "Pipeline"
+  override val label: String = "$kindPrefix #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
   override val activationUrl: String? = pipeline.webUrl
 }
 
-/** Groups a pipeline's [JobNode]s under their CI stage name (or `NO_STAGE` when absent). */
-class StageNode(override val label: String, override val children: List<SidebarNode>) : SidebarNode
+/**
+ * Groups a pipeline's [JobNode]s and [BridgeNode]s under their CI stage [name] (or `NO_STAGE` when
+ * absent). [statusName] is the stage's aggregate status (CI-05 §4.4: the display name of the
+ * highest-priority child). The label carries it, so expansion is carried across a rebuild by
+ * [name], never by [label] — otherwise every status change would collapse the stage.
+ */
+class StageNode(val name: String, val statusName: String, override val children: List<SidebarNode>) : SidebarNode {
+  override val label: String = "$name · $statusName"
+}
 
 /**
  * Leaf node for a single job within a pipeline stage. Carries [projectId] plus the same
@@ -204,6 +219,137 @@ class JobNode(
   override val label: String = "${job.name ?: "(job)"} · ${CiStatus.displayName(job.status, job.allowFailure ?: false)}"
   override val children: List<SidebarNode> = emptyList()
   override val activationUrl: String? = job.webUrl
+}
+
+/**
+ * Leaf node for a trigger job (bridge, CI-06 §4.6), listed in its stage alongside the jobs. Same
+ * write routing as [JobNode] ([projectId] = the project of the pipeline that holds it, plus the
+ * source-connection tags), but a bridge affords only retry and play: it has no log or artifacts,
+ * and GitLab's cancel endpoint answers 404 for it (`find_build!`), so those menus never show.
+ * A separate type — rather than a flag on [JobNode] — is what keeps the log / artifacts / cancel
+ * menus (`instanceof JobNode` in plugin.xml) and their handlers away from bridges.
+ */
+class BridgeNode(
+  val bridge: GitLabBridge,
+  val projectId: Long?,
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+) : SidebarNode {
+  override val label: String =
+    "${bridge.name ?: "(bridge)"} · ${CiStatus.displayName(bridge.status, bridge.allowFailure ?: false)}"
+  override val children: List<SidebarNode> = emptyList()
+  override val activationUrl: String? = bridge.webUrl
+}
+
+/**
+ * Non-lazy "Downstream pipelines" group (CI-06 §4.6): the pipelines the bridges of the pipeline
+ * [parentPipelineId] started, built straight from that pipeline's bridges. The label carries the
+ * highest-priority status among [children].
+ */
+class DownstreamPipelinesNode(
+  val parentPipelineId: Long,
+  override val children: List<DownstreamPipelineNode>,
+) : SidebarNode {
+  override val label: String = "Downstream pipelines · ${downstreamAggregateName(children)}"
+}
+
+/** Display name of the highest-priority pipeline status among [nodes] (ties: first); unknown when empty. */
+private fun downstreamAggregateName(nodes: List<DownstreamPipelineNode>): String {
+  val (status, allowFailure) = aggregateStatus(nodes.map { it.pipeline.status to false })
+  return CiStatus.displayName(status, allowFailure)
+}
+
+/**
+ * Deepest downstream level that may still expand (root pipeline = depth 0, its downstream
+ * pipelines = 1). GitLab's own child-pipeline nesting limit defaults to 2, so this is only a guard
+ * against a pathological chain, alongside the ancestor cycle check.
+ */
+const val MAX_DOWNSTREAM_DEPTH = 10
+
+/** Lazy-load state of a [DownstreamPipelineNode]'s children. UI-thread-confined, like [DiscussionLoadState]. */
+enum class DownstreamLoadState { NOT_LOADED, LOADING, LOADED, FAILED }
+
+/**
+ * What a [DownstreamPipelineNode]'s children were built from: its jobs (`include_retried=true`) and
+ * bridges fetches, each settled on its own. Kept on the node ([DownstreamPipelineNode.shownPayload])
+ * so a refresh sweep can skip rebuilding when a re-fetch is structurally equal.
+ */
+data class DownstreamPayload(
+  val jobsResult: Result<List<GitLabJob>>,
+  val bridgesResult: Result<List<GitLabBridge>>,
+)
+
+/**
+ * One downstream (child or multi-project) pipeline started by the bridge [bridgeName] (CI-06 §4.6).
+ * Its children — stages, and its own downstream group — are fetched lazily on expansion, from the
+ * downstream's own project ([projectId] = `downstream_pipeline.project_id`) over the connection
+ * named by the source tags, then built by [SidebarViewModel.buildDownstreamChildren].
+ *
+ * The node carries its [depth] and the ids of every pipeline above it ([ancestorPipelineIds])
+ * because the content provider's `getParent` returns null: it is [expandable] only when its project
+ * is known, it is not its own ancestor (a cycle), and it is no deeper than [MAX_DOWNSTREAM_DEPTH].
+ * A non-expandable node is a leaf that still opens [GitLabPipeline.webUrl] on activation.
+ *
+ * [parentProjectId] is only used for the kind suffix when the instance omits `source`: a downstream
+ * in another project is then labelled multi-project (design §3.6).
+ */
+class DownstreamPipelineNode(
+  val bridgeName: String?,
+  val pipeline: GitLabPipeline,
+  val depth: Int,
+  val ancestorPipelineIds: Set<Long>,
+  val sourceInstanceUrl: String,
+  val sourceAuthFingerprint: String,
+  val parentProjectId: Long? = null,
+) : SidebarNode {
+  val pipelineId: Long = pipeline.id
+  val projectId: Long? = pipeline.projectId
+
+  val expandable: Boolean =
+    projectId != null && pipelineId !in ancestorPipelineIds && depth <= MAX_DOWNSTREAM_DEPTH
+
+  override val label: String =
+    "${bridgeName ?: "(bridge)"} → Pipeline #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}" +
+      downstreamKindSuffix(pipeline, parentProjectId)
+
+  override val activationUrl: String? = pipeline.webUrl
+
+  /** Lazy-load progress of [loadedChildren]. Written by the view on the SWT UI thread only. */
+  var loadState: DownstreamLoadState = DownstreamLoadState.NOT_LOADED
+
+  /** Lazily-loaded children, written by the view on the SWT UI thread only. `null` = not loaded yet. */
+  var loadedChildren: List<SidebarNode>? = null
+
+  /** The payload [loadedChildren] were built from (UI thread only); `null` until loaded. */
+  var shownPayload: DownstreamPayload? = null
+
+  /**
+   * Load generation (UI thread only): bumped when a load starts or is abandoned, so a result
+   * carrying an older generation is dropped instead of applied.
+   */
+  var loadGeneration: Long = 0
+
+  // One stable instance: JFace tracks tree elements by identity (see MergeRequestNode).
+  private val loadingPlaceholder: List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
+
+  override val children: List<SidebarNode>
+    get() = if (!expandable) emptyList() else loadedChildren ?: loadingPlaceholder
+}
+
+/**
+ * `" (child)"` / `" (multi-project)"` from `downstream_pipeline.source` (`parent_pipeline` /
+ * `pipeline`); without a known source, a downstream in a different project than [parentProjectId]
+ * is multi-project and one in the same project a child. Nothing when neither can be told.
+ */
+private fun downstreamKindSuffix(pipeline: GitLabPipeline, parentProjectId: Long?): String {
+  val projectId = pipeline.projectId
+  return when {
+    pipeline.source == "parent_pipeline" -> " (child)"
+    pipeline.source == "pipeline" -> " (multi-project)"
+    projectId == null || parentProjectId == null -> ""
+    projectId != parentProjectId -> " (multi-project)"
+    else -> " (child)"
+  }
 }
 
 /**

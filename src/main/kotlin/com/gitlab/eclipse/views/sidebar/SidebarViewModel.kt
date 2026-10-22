@@ -3,16 +3,19 @@ package com.gitlab.eclipse.views.sidebar
 import com.gitlab.eclipse.api.CiHttpStatus
 import com.gitlab.eclipse.api.DiscussionService
 import com.gitlab.eclipse.api.DiscussionsReadResult
+import com.gitlab.eclipse.api.model.GitLabBridge
 import com.gitlab.eclipse.api.model.GitLabDiscussion
-import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabNote
-import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.BridgeEntry
 import com.gitlab.eclipse.ci.CiAction
 import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.ci.JobEntry
+import com.gitlab.eclipse.ci.NO_STAGE
+import com.gitlab.eclipse.ci.aggregateStatusName
 import com.gitlab.eclipse.ci.keepLatestAttempts
+import com.gitlab.eclipse.ci.orderStageEntries
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.diff.MrDiffSource
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
@@ -29,8 +32,19 @@ import com.gitlab.eclipse.views.sidebar.queries.truncationNotice
 private const val NO_CURRENT_BRANCH_MR_MESSAGE = "No merge request found"
 private const val NO_CLOSING_ISSUE_MESSAGE = "No closing issue found"
 private const val NO_CHANGED_FILES_MESSAGE = "No changed files"
-private const val NO_STAGE = "(no stage)"
 private const val JOBS_LOAD_FAILED_MESSAGE = "Failed to load jobs"
+
+/** Ends a pipeline's children when its bridges fetch failed: the job stages stay, downstreams are unknown. */
+private const val DOWNSTREAM_LIST_FAILED_MESSAGE = "Failed to load downstream pipelines"
+
+/** Sole child of a downstream pipeline whose jobs fetch was denied (403/404); its web URL still opens. */
+private const val DOWNSTREAM_UNAVAILABLE_MESSAGE = "Downstream pipeline unavailable"
+
+/** Sole child of a downstream pipeline whose jobs fetch failed for any other reason. */
+private const val DOWNSTREAM_LOAD_FAILED_MESSAGE = "Failed to load downstream pipeline"
+
+/** Sole child of a downstream pipeline with no jobs and no bridges (e.g. readable without `read_build`). */
+private const val NO_JOBS_MESSAGE = "No jobs"
 
 /** Shown in the "For current branch" section when no single repository can be resolved. */
 private const val SELECT_REPOSITORY_MESSAGE = "Select a repository"
@@ -145,36 +159,135 @@ class SidebarViewModel {
     }
 
   /**
-   * Builds a [PipelineNode] for [pipeline], grouping its jobs into a Pipeline→Stage→Job
-   * subtree with a deterministic order: jobs are sorted by id ascending, then grouped by
-   * stage in first-appearance order (stable regardless of the GitLab API's return order —
-   * e.g. a retried job with a larger id still sorts into its stage's original position). A
-   * failed [jobsResult] keeps the pipeline row and renders a single "Failed to load jobs"
-   * child instead of the stage subtree (with retry/cancel eligibility off — no job
-   * statuses to derive it from). [sourceInstanceUrl]/[sourceAuthFingerprint] are the
-   * non-secret tags of the pinned connection the pipeline+jobs were fetched over
-   * ([PipelineSnapshot]); they are stamped on the [PipelineNode] and every [JobNode] so
-   * the write handlers can verify the connection has not changed underneath them.
+   * Builds the root [PipelineNode] of [snapshot] (CI-05 §4.4/§4.5, CI-06 §4.6): its stages, then the
+   * "Downstream pipelines" group when a bridge started one.
+   *
+   * Jobs arrive with `include_retried=true`; only each job's latest attempt is shown, placed by its
+   * FIRST attempt's id ([keepLatestAttempts] + [orderStageEntries]), so a retry never moves a job
+   * within its stage nor a stage within the pipeline. Bridges sit in their stages beside the jobs,
+   * ordered by their own id, and count toward the stage's aggregate status.
+   *
+   * The two fetches fail independently: a failed `jobsResult` renders one "Failed to load jobs" row
+   * in place of the stages (bridge rows included — a stage of bridges alone would misrepresent the
+   * pipeline) but keeps the downstream group; a failed `bridgesResult` keeps the job stages and ends
+   * with [DOWNSTREAM_LIST_FAILED_MESSAGE]. [PipelineNode.canRetry]/[PipelineNode.canCancel] come from
+   * the latest attempts plus the bridges (VS Code checks bridges too), so a retried attempt's old
+   * failure never offers a retry. The snapshot's non-secret connection tags are stamped on every
+   * node below so the write handlers can verify the connection has not changed underneath them.
    */
-  fun buildPipelineNode(
-    pipeline: GitLabPipeline,
-    jobsResult: Result<List<GitLabJob>>,
-    sourceInstanceUrl: String,
-    sourceAuthFingerprint: String,
-  ): PipelineNode {
-    val children = jobsResult.fold(
-      onSuccess = { jobs -> buildStageNodes(jobs, pipeline.projectId, sourceInstanceUrl, sourceAuthFingerprint) },
+  fun buildPipelineNode(snapshot: PipelineSnapshot): PipelineNode {
+    val pipeline = snapshot.pipeline
+    val latestJobs = snapshot.jobsResult.map(::keepLatestAttempts)
+    val bridges = snapshot.bridgesResult.getOrNull().orEmpty()
+    val tags = SourceTags(snapshot.sourceInstanceUrl, snapshot.sourceAuthFingerprint)
+    val stages = latestJobs.fold(
+      onSuccess = { jobs -> stageNodes(jobs, bridges, pipeline.projectId, tags) },
       onFailure = { listOf(MessageNode(JOBS_LOAD_FAILED_MESSAGE)) },
     )
-    val jobs = jobsResult.getOrNull().orEmpty()
+    val downstream = downstreamTail(
+      snapshot.bridgesResult,
+      DownstreamParent(pipeline.id, pipeline.projectId, depth = 0, ancestorPipelineIds = emptySet()),
+      tags,
+    )
+    val actions = (latestJobs.getOrNull().orEmpty() + bridges.map(::BridgeEntry))
+      .map { CiStatus.contextAction(it.status, it.allowFailure) }
     return PipelineNode(
       pipeline,
-      children,
-      canRetry = jobs.any { CiStatus.contextAction(it.status, it.allowFailure ?: false) == CiAction.RETRYABLE },
-      canCancel = jobs.any { CiStatus.contextAction(it.status, it.allowFailure ?: false) == CiAction.CANCELLABLE },
-      sourceInstanceUrl = sourceInstanceUrl,
-      sourceAuthFingerprint = sourceAuthFingerprint,
+      stages + downstream,
+      canRetry = CiAction.RETRYABLE in actions,
+      canCancel = CiAction.CANCELLABLE in actions,
+      sourceInstanceUrl = snapshot.sourceInstanceUrl,
+      sourceAuthFingerprint = snapshot.sourceAuthFingerprint,
+      kind = snapshot.kind,
     )
+  }
+
+  /**
+   * Children of an expanded [DownstreamPipelineNode] from its fetched [payload] (CI-06 §4.6). Pure:
+   * the view (Task 5) fetches and calls this on the UI thread.
+   *
+   * Same layout and ordering as the root ([buildPipelineNode]), with every [JobNode] / [BridgeNode]
+   * addressed to the DOWNSTREAM's project ([DownstreamPipelineNode.projectId]) and carrying [parent]'s
+   * connection tags, so a retry / play / cancel / log on a downstream job goes to the right project
+   * over the connection the data came from. A nested "Downstream pipelines" group sits one level
+   * deeper with [parent] added to the ancestors (cycle and depth guards).
+   *
+   * Failures: jobs 403/404 → [DOWNSTREAM_UNAVAILABLE_MESSAGE] (the row's web URL still opens), any
+   * other jobs failure → [DOWNSTREAM_LOAD_FAILED_MESSAGE]; a bridges failure keeps the job stages and
+   * ends with [DOWNSTREAM_LIST_FAILED_MESSAGE]. Jobs and bridges both empty → [NO_JOBS_MESSAGE]: a
+   * project readable without `read_build` answers the jobs API with `[]`, not 403, and an empty child
+   * list would make JFace silently drop the twistie instead of saying why.
+   */
+  fun buildDownstreamChildren(parent: DownstreamPipelineNode, payload: DownstreamPayload): List<SidebarNode> {
+    val jobs = payload.jobsResult.getOrElse { error ->
+      val denied = CiHttpStatus.isAccessDenied(error)
+      return listOf(MessageNode(if (denied) DOWNSTREAM_UNAVAILABLE_MESSAGE else DOWNSTREAM_LOAD_FAILED_MESSAGE))
+    }
+    val tags = SourceTags(parent.sourceInstanceUrl, parent.sourceAuthFingerprint)
+    val bridges = payload.bridgesResult.getOrNull().orEmpty()
+    val stages = stageNodes(keepLatestAttempts(jobs), bridges, parent.projectId, tags)
+    val downstream = downstreamTail(
+      payload.bridgesResult,
+      DownstreamParent(parent.pipelineId, parent.projectId, parent.depth, parent.ancestorPipelineIds),
+      tags,
+    )
+    return (stages + downstream).ifEmpty { listOf(MessageNode(NO_JOBS_MESSAGE)) }
+  }
+
+  /**
+   * The stages of one pipeline: [jobs] (latest attempts) and [bridges] merged and ordered by
+   * [orderStageEntries] (an entry without a stage goes under [NO_STAGE]); each [StageNode] carries
+   * its aggregate status ([aggregateStatusName]) and each row the containing pipeline's [projectId]
+   * and the source [tags].
+   */
+  private fun stageNodes(
+    jobs: List<JobEntry>,
+    bridges: List<GitLabBridge>,
+    projectId: Long?,
+    tags: SourceTags,
+  ): List<SidebarNode> =
+    orderStageEntries(jobs, bridges).map { (stage, entries) ->
+      StageNode(
+        stage,
+        aggregateStatusName(entries),
+        entries.map { entry ->
+          when (entry) {
+            is JobEntry -> JobNode(entry.job, projectId, tags.instanceUrl, tags.authFingerprint)
+            is BridgeEntry -> BridgeNode(entry.bridge, projectId, tags.instanceUrl, tags.authFingerprint)
+          }
+        },
+      )
+    }
+
+  /**
+   * What follows the stages of the pipeline [parent]: the "Downstream pipelines" group when a bridge
+   * started one, nothing when none did, [DOWNSTREAM_LIST_FAILED_MESSAGE] when the bridges fetch
+   * failed. Downstreams are listed by bridge id ascending; several bridges pointing at the same
+   * downstream pipeline yield one row, from the lowest bridge id. Each row is one level below
+   * [parent], with [parent] added to its ancestors.
+   */
+  private fun downstreamTail(
+    bridgesResult: Result<List<GitLabBridge>>,
+    parent: DownstreamParent,
+    tags: SourceTags,
+  ): List<SidebarNode> {
+    val bridges = bridgesResult.getOrElse { return listOf(MessageNode(DOWNSTREAM_LIST_FAILED_MESSAGE)) }
+    val nodes = bridges
+      .sortedBy { it.id }
+      .mapNotNull { bridge -> bridge.downstreamPipeline?.let { bridge.name to it } }
+      .distinctBy { (_, downstream) -> downstream.id }
+      .map { (bridgeName, downstream) ->
+        DownstreamPipelineNode(
+          bridgeName,
+          downstream,
+          depth = parent.depth + 1,
+          ancestorPipelineIds = parent.ancestorPipelineIds + parent.pipelineId,
+          sourceInstanceUrl = tags.instanceUrl,
+          sourceAuthFingerprint = tags.authFingerprint,
+          parentProjectId = parent.projectId,
+        )
+      }
+    return if (nodes.isEmpty()) emptyList() else listOf(DownstreamPipelinesNode(parent.pipelineId, nodes))
   }
 
   /**
@@ -438,6 +551,17 @@ class SidebarViewModel {
   fun buildDiscussionLoadingChildren(): List<SidebarNode> = listOf(MessageNode(LOADING_MESSAGE))
 }
 
+/** The non-secret connection tags stamped on every pipeline-tree node (never the token itself). */
+private class SourceTags(val instanceUrl: String, val authFingerprint: String)
+
+/** The pipeline whose bridges a downstream group is built from: the root (depth 0) or a downstream. */
+private class DownstreamParent(
+  val pipelineId: Long,
+  val projectId: Long?,
+  val depth: Int,
+  val ancestorPipelineIds: Set<Long>,
+)
+
 /**
  * Shared failure rendering for a query root / current-branch section (design doc): a single
  * [MessageNode] with a config-aware message when [error] indicates a missing/invalid GitLab
@@ -488,7 +612,7 @@ private fun currentBranchChildren(info: CurrentBranchInfo): List<SidebarNode> {
 private fun currentBranchResolvedChildren(
   pipeline: Result<PipelineSide>?,
   mr: Result<CurrentBranchInfo>?,
-  buildPipelineNode: (GitLabPipeline, Result<List<GitLabJob>>, String, String) -> PipelineNode,
+  buildPipelineNode: (PipelineSnapshot) -> PipelineNode,
 ): List<SidebarNode> {
   val pipelineChildren =
     when {
@@ -497,19 +621,7 @@ private fun currentBranchResolvedChildren(
         pipeline.fold(
           onSuccess = { side ->
             when (side) {
-              is PipelineShown -> {
-                val snapshot = side.snapshot
-                // jobs come with include_retried=true: show only each job's latest attempt (CI-05 §4.5).
-                val latestJobs = snapshot.jobsResult.map { jobs -> keepLatestAttempts(jobs).map(JobEntry::job) }
-                listOf(
-                  buildPipelineNode(
-                    snapshot.pipeline,
-                    latestJobs,
-                    snapshot.sourceInstanceUrl,
-                    snapshot.sourceAuthFingerprint,
-                  ),
-                )
-              }
+              is PipelineShown -> listOf(buildPipelineNode(side.snapshot))
               NoPipeline -> emptyList()
               AmbiguousTags -> listOf(MessageNode(MULTIPLE_TAGS_MESSAGE))
             }
@@ -541,25 +653,6 @@ private fun currentBranchResolvedChildren(
 @Suppress("SENSELESS_COMPARISON")
 private fun nullSafeDiffs(version: GitLabMrVersion): List<GitLabMrVersion.Diff> =
   if (version.diffs == null) emptyList() else version.diffs
-
-/**
- * Groups a pipeline's jobs into [StageNode]s with a deterministic order: sorted by id
- * ascending, then grouped by stage in first-appearance order (a [LinkedHashMap] via
- * [groupBy], so a retried job with a larger id still lands in its stage's original slot).
- * Each [JobNode] carries the enclosing pipeline's [projectId] and the source-connection
- * tags the jobs were fetched with (see [PipelineNode]'s KDoc).
- */
-private fun buildStageNodes(
-  jobs: List<GitLabJob>,
-  projectId: Long?,
-  sourceInstanceUrl: String,
-  sourceAuthFingerprint: String,
-): List<SidebarNode> =
-  jobs.sortedBy { it.id }
-    .groupBy { it.stage ?: NO_STAGE }
-    .map { (stage, stageJobs) ->
-      StageNode(stage, stageJobs.map { JobNode(it, projectId, sourceInstanceUrl, sourceAuthFingerprint) })
-    }
 
 /** Groups items by project, keyed off the `namespace/path#iid` or `namespace/path!iid` reference. */
 internal fun projectKey(full: String?): String =

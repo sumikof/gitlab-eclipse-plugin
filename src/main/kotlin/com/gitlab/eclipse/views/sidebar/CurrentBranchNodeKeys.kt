@@ -7,7 +7,7 @@ package com.gitlab.eclipse.views.sidebar
 /**
  * The node of [newSection] with the stable key of [element], an old node found (by identity) in
  * [oldSection]: an MR by (project id, iid), a pipeline by id, a stage by its pipeline's id and its
- * label. Null when [element] was not in [oldSection] or has no counterpart.
+ * name. Null when [element] was not in [oldSection] or has no counterpart.
  */
 internal fun remapInSection(element: Any, oldSection: SidebarNode, newSection: SidebarNode): SidebarNode? {
   val oldChildren = oldSection.children
@@ -21,14 +21,18 @@ internal fun remapInSection(element: Any, oldSection: SidebarNode, newSection: S
   }
 }
 
-/** A stage of an old section pipeline, remapped within the new pipeline of the same id by label. */
+/**
+ * A stage of an old section pipeline, remapped within the new pipeline of the same id by
+ * [StageNode.name] — never by label, which carries the stage's status (CI-05 §4.4) and would
+ * collapse the stage on every status change.
+ */
 private fun remapStage(element: Any, oldChildren: List<SidebarNode>, newChildren: List<SidebarNode>): SidebarNode? {
   if (element !is StageNode) return null
   val oldPipeline = oldChildren.filterIsInstance<PipelineNode>().firstOrNull { pipeline ->
     pipeline.children.any { it === element }
   } ?: return null
   val newPipeline = newChildren.pipelineWithId(oldPipeline.pipelineId) ?: return null
-  return newPipeline.children.firstOrNull { it is StageNode && it.label == element.label }
+  return newPipeline.children.firstOrNull { it is StageNode && it.name == element.name }
 }
 
 private fun List<SidebarNode>.pipelineWithId(id: Long): PipelineNode? =
