@@ -336,8 +336,9 @@ class GitLabSidebarView : ViewPart() {
             }
             return
           }
-          // CI-06: a downstream pipeline loads its stages on first expansion (the loader skips any
-          // node that is not NOT_LOADED, so collapse / re-expand never starts a second fetch).
+          // CI-06: a downstream pipeline loads its stages on first expansion, and retries after an
+          // unconfirmed connection (FAILED); a LOADING or LOADED node is skipped by the loader, so
+          // collapse / re-expand never starts a second fetch.
           val downstream = event.element as? DownstreamPipelineNode
           if (downstream != null) {
             downstreamLoader.load(downstream)
@@ -663,7 +664,8 @@ class GitLabSidebarView : ViewPart() {
         .filterIsInstance<MergeRequestNode>()
         .filter { it.loadedChildren == null }
         .forEach { loadMrChildren(it) }
-      downstreamLoader.loadAll(viewer.expandedElements.toList())
+      // Downstream nodes need no call here: applyCompose's own UI block loads the expanded ones after
+      // the compose and the expansion restore, which is the only point where the new tree is in place.
     }
   }
 

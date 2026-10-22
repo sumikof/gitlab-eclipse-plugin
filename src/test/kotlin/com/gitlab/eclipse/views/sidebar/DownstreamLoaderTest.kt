@@ -5,9 +5,6 @@ import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.GitLabApiException
 import com.gitlab.eclipse.api.JobService
-import com.gitlab.eclipse.api.model.GitLabBridge
-import com.gitlab.eclipse.api.model.GitLabJob
-import com.gitlab.eclipse.api.model.GitLabPipeline
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
@@ -17,121 +14,22 @@ import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
-import java.util.Collections
-import java.util.IdentityHashMap
-
-private const val URL = "https://gitlab.example.com"
-private const val FP = "fp0"
-private val SNAPSHOT = ConnectionSnapshot(URL, "tok", FP, 1L)
 
 /**
- * CI-06 §4.6 (Task 5): [DownstreamLoader] driven through its seams — no Display. `uiDispatch` queues
- * the block (like `asyncExec`) and [Harness.drainUi] runs the queue; `launchOffUi` launches on the
- * test scope, which runs only when the scheduler advances. The tree port records refreshes and
- * answers expansion from a set.
+ * CI-06 §4.6 (Task 5): the first load of a [DownstreamPipelineNode] — gates, messages, logs, cancellation —
+ * and the production [ServiceDownstreamSource]. Driven through [DownstreamHarness]; no Display.
  */
 class DownstreamLoaderTest : StringSpec({
-  fun job(id: Long, name: String = "job$id", status: String = "success", stage: String = "test") =
-    GitLabJob(id = id, name = name, status = status, stage = stage)
-
-  fun ds(id: Long, depth: Int = 1, ancestors: Set<Long> = setOf(100L), projectId: Long? = 42L, fp: String = FP) =
-    DownstreamPipelineNode("trigger$id", downstream(id, projectId = projectId), depth, ancestors, URL, fp, 10L)
-
-  fun section(vararg nodes: SidebarNode): List<SidebarNode> =
-    listOf(
-      CurrentBranchSectionNode(
-        listOf(
-          PipelineNode(
-            GitLabPipeline(id = 100L, status = "running", projectId = 10L),
-            listOf(DownstreamPipelinesNode(100L, nodes.filterIsInstance<DownstreamPipelineNode>())),
-            canRetry = false,
-            canCancel = false,
-            sourceInstanceUrl = URL,
-            sourceAuthFingerprint = FP,
-          ),
-        ),
-      ),
-    )
-
-  class Harness(scope: CoroutineScope) {
-    val ui = ArrayDeque<() -> Unit>()
-    val logs = mutableListOf<String>()
-    var disposed = false
-    val expanded: MutableSet<SidebarNode> = Collections.newSetFromMap(IdentityHashMap())
-    var roots: List<SidebarNode> = emptyList()
-    val refreshed = mutableListOf<Pair<DownstreamPipelineNode, List<SidebarNode>?>>()
-    var connection: ConnectionSnapshot? = SNAPSHOT
-    var pins = 0
-    val jobCalls = mutableListOf<Pair<String, Long>>()
-    val bridgeCalls = mutableListOf<Pair<String, Long>>()
-    var jobsAnswer: (Long) -> List<GitLabJob> = { listOf(job(it * 10)) }
-    var bridgesAnswer: (Long) -> List<GitLabBridge> = { emptyList() }
-
-    val source = object : DownstreamSource {
-      override fun pinConnection(instanceUrl: String, authFingerprint: String): ConnectionSnapshot? {
-        pins++
-        return connection?.takeIf { it.instanceUrl == instanceUrl && it.authFingerprint == authFingerprint }
-      }
-
-      override fun jobs(projectId: String, pipelineId: Long, isActive: () -> Boolean, connection: ConnectionSnapshot) =
-        jobsAnswer(pipelineId).also { jobCalls += projectId to pipelineId }
-
-      override fun bridges(projectId: String, pipelineId: Long, isActive: () -> Boolean, connection: ConnectionSnapshot) =
-        bridgesAnswer(pipelineId).also { bridgeCalls += projectId to pipelineId }
-    }
-
-    val tree = object : DownstreamTree {
-      override fun roots(): List<SidebarNode> = roots
-      override fun isDisposed(): Boolean = disposed
-      override fun isExpanded(node: SidebarNode): Boolean = node in expanded
-      override fun refreshSubtree(node: DownstreamPipelineNode, oldChildren: List<SidebarNode>?) {
-        refreshed += node to oldChildren
-      }
-    }
-
-    val loader = DownstreamLoader(
-      launchOffUi = { block -> scope.launch { block() } },
-      uiDispatch = { ui.addLast(it) },
-      source = source,
-      tree = tree,
-      buildChildren = SidebarViewModel()::buildDownstreamChildren,
-      warnLog = { logs += it },
-    )
-
-    fun drainUi() {
-      while (ui.isNotEmpty()) ui.removeFirst()()
-    }
-  }
-
-  fun TestScope.harness() = Harness(this)
-
-  /** Runs the IO side and the UI queue until both are idle (a UI block may launch more IO, and vice versa). */
-  fun TestScope.settle(h: Harness) {
-    do {
-      h.drainUi()
-      testScheduler.advanceUntilIdle()
-    } while (h.ui.isNotEmpty())
-  }
-
-  /** Loads [node] (expanded, in the tree) to LOADED with the harness's current answers. */
-  fun TestScope.loadToLoaded(h: Harness, node: DownstreamPipelineNode) {
-    h.expanded += node
-    h.loader.load(node)
-    settle(h)
-    node.loadState shouldBe DownstreamLoadState.LOADED
-  }
-
   // --- initial load ---
 
   "expand: NOT_LOADED → LOADING with a new generation, then jobs + bridges on the downstream's project → LOADED" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
 
       h.loader.load(node)
 
@@ -142,17 +40,17 @@ class DownstreamLoaderTest : StringSpec({
       h.bridgeCalls shouldContainExactly listOf("42" to 205L)
       node.loadState shouldBe DownstreamLoadState.LOADED
       shape(node.children) shouldBe listOf("test" to listOf("job2050"))
-      node.shownPayload shouldBe DownstreamPayload(Result.success(listOf(job(2050))), Result.success(emptyList()))
+      node.shownPayload shouldBe DownstreamPayload(Result.success(listOf(dsJob(2050))), Result.success(emptyList()))
       h.refreshed.single().first shouldBeSameInstanceAs node
       h.logs.shouldBeEmpty()
     }
   }
 
-  "expand: a node that is not NOT_LOADED (LOADING / LOADED / FAILED) is not loaded again" {
+  "expand: a LOADING or LOADED node is not loaded again" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.loader.load(node)
       h.loader.load(node)
       settle(h)
@@ -168,11 +66,11 @@ class DownstreamLoaderTest : StringSpec({
     runTest {
       val h = harness()
       val nodes = listOf(
-        ds(205, projectId = null),
-        ds(206, ancestors = setOf(100L, 206L)),
-        ds(207, depth = MAX_DOWNSTREAM_DEPTH + 1),
+        dsNode(205, projectId = null),
+        dsNode(206, ancestors = setOf(100L, 206L)),
+        dsNode(207, depth = MAX_DOWNSTREAM_DEPTH + 1),
       )
-      h.roots = section(*nodes.toTypedArray())
+      h.roots = dsSection(*nodes.toTypedArray())
 
       nodes.forEach(h.loader::load)
       settle(h)
@@ -189,8 +87,8 @@ class DownstreamLoaderTest : StringSpec({
   "a stale generation is dropped" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.loader.load(node)
       testScheduler.advanceUntilIdle()
 
@@ -206,12 +104,12 @@ class DownstreamLoaderTest : StringSpec({
   "a detached node (no longer reachable from the viewer input) is dropped" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.loader.load(node)
       testScheduler.advanceUntilIdle()
 
-      h.roots = section(ds(205)) // a rebuild replaced it with another instance
+      h.roots = dsSection(dsNode(205)) // a rebuild replaced it with another instance
       h.drainUi()
 
       node.loadedChildren.shouldBeNull()
@@ -223,8 +121,8 @@ class DownstreamLoaderTest : StringSpec({
   "a disposed view applies nothing" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.loader.load(node)
       testScheduler.advanceUntilIdle()
 
@@ -239,8 +137,8 @@ class DownstreamLoaderTest : StringSpec({
   "initial load without a confirmed connection: the message row, no fetch" {
     runTest {
       val h = harness()
-      val node = ds(205, fp = "fp-other")
-      h.roots = section(node)
+      val node = dsNode(205, fp = "fp-other")
+      h.roots = dsSection(node)
 
       h.loader.load(node)
       settle(h)
@@ -257,7 +155,7 @@ class DownstreamLoaderTest : StringSpec({
 
   "a pin that throws is logged by class only and shown as an unconfirmed connection" {
     runTest {
-      val h = Harness(this)
+      val h = DownstreamHarness(this)
       val throwing = object : DownstreamSource by h.source {
         override fun pinConnection(instanceUrl: String, authFingerprint: String): ConnectionSnapshot? =
           error("secret https://gitlab.example.com/token")
@@ -270,8 +168,8 @@ class DownstreamLoaderTest : StringSpec({
         buildChildren = SidebarViewModel()::buildDownstreamChildren,
         warnLog = { h.logs += it },
       )
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
 
       loader.load(node)
       settle(h)
@@ -285,8 +183,8 @@ class DownstreamLoaderTest : StringSpec({
     runTest {
       val h = harness()
       h.jobsAnswer = { emptyList() }
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
 
       h.loader.load(node)
       settle(h)
@@ -300,8 +198,8 @@ class DownstreamLoaderTest : StringSpec({
     runTest {
       val h = harness()
       h.jobsAnswer = { throw GitLabApiException(403, "body with trigger205 and https://gitlab.example.com/x") }
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
 
       h.loader.load(node)
       settle(h)
@@ -315,8 +213,8 @@ class DownstreamLoaderTest : StringSpec({
     runTest {
       val h = harness()
       h.bridgesAnswer = { if (it == 205L) listOf(bridge(9, name = "nested", downstream = downstream(300))) else emptyList() }
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
 
       h.loader.load(node)
       settle(h)
@@ -325,7 +223,7 @@ class DownstreamLoaderTest : StringSpec({
       nested.depth shouldBe 2
       nested.ancestorPipelineIds shouldBe setOf(100L, 205L)
       nested.loadState shouldBe DownstreamLoadState.NOT_LOADED
-      h.roots = section(node)
+      h.roots = dsSection(node)
       h.loader.load(nested)
       settle(h)
       nested.loadState shouldBe DownstreamLoadState.LOADED
@@ -336,9 +234,9 @@ class DownstreamLoaderTest : StringSpec({
   "loadAll loads only NOT_LOADED downstream nodes among the given elements" {
     runTest {
       val h = harness()
-      val a = ds(205)
-      val b = ds(206).apply { loadState = DownstreamLoadState.LOADED }
-      h.roots = section(a, b)
+      val a = dsNode(205)
+      val b = dsNode(206).apply { loadState = DownstreamLoadState.LOADED }
+      h.roots = dsSection(a, b)
 
       h.loader.loadAll(listOf(MessageNode("x"), a, b))
       settle(h)
@@ -350,8 +248,8 @@ class DownstreamLoaderTest : StringSpec({
   "cancelAll cancels an in-flight load: nothing is fetched, the node is NOT_LOADED with a new generation" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.loader.load(node)
 
       h.loader.cancelAll()
@@ -367,14 +265,14 @@ class DownstreamLoaderTest : StringSpec({
   "transfer: an abandoned LOADING node's job is cancelled; a LOADED one moves to the rebuilt node" {
     runTest {
       val h = harness()
-      val loading = ds(205)
-      val loaded = ds(206)
-      h.roots = section(loading, loaded)
+      val loading = dsNode(205)
+      val loaded = dsNode(206)
+      h.roots = dsSection(loading, loaded)
       loadToLoaded(h, loaded)
       h.loader.load(loading)
-      val freshLoading = ds(205)
-      val freshLoaded = ds(206)
-      val newRoots = section(freshLoading, freshLoaded)
+      val freshLoading = dsNode(205)
+      val freshLoaded = dsNode(206)
+      val newRoots = dsSection(freshLoading, freshLoaded)
 
       h.loader.transfer(h.roots, newRoots)
       h.roots = newRoots
@@ -386,194 +284,104 @@ class DownstreamLoaderTest : StringSpec({
     }
   }
 
-  // --- refresh sweep ---
+  // --- fix round 1 ---
 
-  "sweep gate: rejected or disposed → nothing happens" {
+  "x13: load() on a disposed view starts nothing" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      val children = node.loadedChildren
-      h.expanded.clear()
-
-      h.loader.requestSweep { false }
-      settle(h)
+      val node = dsNode(205)
+      h.roots = dsSection(node)
       h.disposed = true
-      h.loader.requestSweep { true }
-      settle(h)
 
-      node.loadedChildren shouldBeSameInstanceAs children
-      node.loadState shouldBe DownstreamLoadState.LOADED
-    }
-  }
-
-  "sweep: a collapsed LOADED node is reset to NOT_LOADED without fetching" {
-    runTest {
-      val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      h.expanded.clear()
-      h.refreshed.clear()
-
-      h.loader.requestSweep { true }
-      settle(h)
-
-      node.loadState shouldBe DownstreamLoadState.NOT_LOADED
-      node.loadedChildren.shouldBeNull()
-      node.shownPayload.shouldBeNull()
-      node.loadGeneration shouldBe 2L
-      h.jobCalls shouldContainExactly listOf("42" to 205L)
-      h.refreshed.single() shouldBe (node to null)
-    }
-  }
-
-  "sweep: an expanded node whose re-fetch is structurally equal is not replaced" {
-    runTest {
-      val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      val children = node.loadedChildren
-      h.refreshed.clear()
-
-      h.loader.requestSweep { true }
-      settle(h)
-
-      h.jobCalls shouldContainExactly listOf("42" to 205L, "42" to 205L)
-      node.loadedChildren shouldBeSameInstanceAs children
-      h.refreshed.shouldBeEmpty()
-    }
-  }
-
-  "sweep: a changed payload replaces the children, carrying a LOADED grandchild's state, then refreshes with the old children" {
-    runTest {
-      val h = harness()
-      h.bridgesAnswer = { if (it == 205L) listOf(bridge(9, downstream = downstream(300))) else emptyList() }
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      val oldChildren = node.loadedChildren!!
-      val nested = (oldChildren.last() as DownstreamPipelinesNode).children.single()
-      loadToLoaded(h, nested)
-      val nestedChildren = nested.loadedChildren
-      h.refreshed.clear()
-      h.jobsAnswer = { if (it == 205L) listOf(job(2050, status = "failed")) else listOf(job(it * 10)) }
-
-      h.loader.requestSweep { true }
-      settle(h)
-
-      node.loadedChildren shouldBe node.children
-      (node.loadedChildren === oldChildren) shouldBe false
-      shape(node.children) shouldBe listOf("build" to listOf("bridge9"), "test" to listOf("job2050"))
-      (node.children[1].children.single() as JobNode).job.status shouldBe "failed"
-      val freshNested = (node.children.last() as DownstreamPipelinesNode).children.single()
-      (freshNested === nested) shouldBe false
-      freshNested.loadState shouldBe DownstreamLoadState.LOADED
-      freshNested.loadedChildren shouldBeSameInstanceAs nestedChildren
-      h.refreshed.first() shouldBe (node to oldChildren)
-    }
-  }
-
-  "sweep: without a confirmed connection the expanded nodes are left as they are" {
-    runTest {
-      val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      val children = node.loadedChildren
-      h.connection = null
-      h.jobsAnswer = { listOf(job(1, status = "failed")) }
-
-      h.loader.requestSweep { true }
-      settle(h)
-
-      node.loadState shouldBe DownstreamLoadState.LOADED
-      node.loadedChildren shouldBeSameInstanceAs children
-      h.jobCalls shouldContainExactly listOf("42" to 205L)
-    }
-  }
-
-  "sweep: one connection pin per sweep for every expanded node on the same connection" {
-    runTest {
-      val h = harness()
-      val a = ds(205)
-      val b = ds(206)
-      h.roots = section(a, b)
-      loadToLoaded(h, a)
-      loadToLoaded(h, b)
-      h.pins = 0
-
-      h.loader.requestSweep { true }
-      settle(h)
-
-      h.pins shouldBe 1
-      h.jobCalls.drop(2) shouldContainExactly listOf("42" to 205L, "42" to 206L)
-    }
-  }
-
-  "sweep: LOADING and NOT_LOADED nodes are not swept" {
-    runTest {
-      val h = harness()
-      val loading = ds(205).apply { loadState = DownstreamLoadState.LOADING }
-      val idle = ds(206)
-      h.roots = section(loading, idle)
-      h.expanded += listOf(loading, idle)
-
-      h.loader.requestSweep { true }
+      h.loader.load(node)
       settle(h)
 
       h.pins shouldBe 0
-      h.jobCalls.shouldBeEmpty()
-      loading.loadState shouldBe DownstreamLoadState.LOADING
+      node.loadState shouldBe DownstreamLoadState.NOT_LOADED
+      node.loadGeneration shouldBe 0L
     }
   }
 
-  "cancelSweep drops a sweep result already queued for the UI thread" {
+  "m5: re-expanding a FAILED node (connection not confirmed) retries the load" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      val children = node.loadedChildren
-      h.jobsAnswer = { listOf(job(1, status = "failed")) }
+      val node = dsNode(205)
+      h.roots = dsSection(node)
+      h.connection = null
+      h.loader.load(node)
+      settle(h)
+      node.loadState shouldBe DownstreamLoadState.FAILED
 
-      h.loader.requestSweep { true }
-      h.drainUi()
-      testScheduler.advanceUntilIdle()
-      h.loader.cancelSweep()
-      h.drainUi()
+      h.connection = DS_SNAPSHOT
+      h.loader.load(node)
+      settle(h)
 
-      node.loadedChildren shouldBeSameInstanceAs children
+      node.loadState shouldBe DownstreamLoadState.LOADED
+      shape(node.children) shouldBe listOf("test" to listOf("job2050"))
+      h.jobCalls shouldContainExactly listOf("42" to 205L)
     }
   }
 
-  "sweep failures are logged only at the start of a streak" {
+  "m2a / x14 / x20: cancelAll during the jobs fetch stops the load — no bridges, no log, nothing applied" {
     runTest {
       val h = harness()
-      val node = ds(205)
-      h.roots = section(node)
-      loadToLoaded(h, node)
-      h.jobsAnswer = { throw GitLabApiException(500, "body") }
+      val node = dsNode(205)
+      h.roots = dsSection(node)
+      var activeAfterCancel: Boolean? = null
+      h.jobsAnswer = {
+        h.loader.cancelAll()
+        activeAfterCancel = h.jobsIsActive.single()()
+        listOf(dsJob(1))
+      }
 
-      h.loader.requestSweep { true }
-      settle(h)
-      h.loader.requestSweep { true }
-      settle(h)
-      h.logs shouldContainExactly listOf("Downstream pipeline load failed: com.gitlab.eclipse.api.GitLabApiException (HTTP 500)")
-
-      h.jobsAnswer = { listOf(job(2050)) }
-      h.loader.requestSweep { true }
-      settle(h)
-      h.jobsAnswer = { throw IllegalStateException("x") }
-      h.loader.requestSweep { true }
+      h.loader.load(node)
       settle(h)
 
-      h.logs shouldContainExactly listOf(
-        "Downstream pipeline load failed: com.gitlab.eclipse.api.GitLabApiException (HTTP 500)",
-        "Downstream pipeline load failed: java.lang.IllegalStateException",
+      activeAfterCancel shouldBe false
+      h.bridgeCalls.shouldBeEmpty()
+      h.logs.shouldBeEmpty()
+      h.refreshed.shouldBeEmpty()
+      node.loadState shouldBe DownstreamLoadState.NOT_LOADED
+      node.loadedChildren.shouldBeNull()
+    }
+  }
+
+  "m2b: a CancellationException from a fetch is never folded into a failed Result" {
+    runTest {
+      val h = harness()
+      val node = dsNode(205)
+      h.roots = dsSection(node)
+      h.jobsAnswer = { throw CancellationException("cancelled") }
+
+      h.loader.load(node)
+      settle(h)
+
+      h.bridgeCalls.shouldBeEmpty()
+      h.logs.shouldBeEmpty()
+      h.refreshed.shouldBeEmpty()
+      node.loadedChildren.shouldBeNull()
+      node.shownPayload.shouldBeNull()
+    }
+  }
+
+  "m3: an Error thrown off the UI thread is caught and logged by class, never escaping the shared scope" {
+    runTest {
+      val h = harness()
+      val node = dsNode(205)
+      h.roots = dsSection(node)
+      val loader = DownstreamLoader(
+        launchOffUi = { b -> launch { b() } },
+        uiDispatch = { throw AssertionError("dispatch failed") },
+        source = h.source,
+        tree = h.tree,
+        buildChildren = SidebarViewModel()::buildDownstreamChildren,
+        warnLog = { h.logs += it },
       )
+
+      loader.load(node)
+      testScheduler.advanceUntilIdle()
+
+      h.logs shouldContainExactly listOf("Downstream pipeline load failed: java.lang.AssertionError")
     }
   }
 
@@ -585,20 +393,20 @@ class DownstreamLoaderTest : StringSpec({
     val bridgeService = mockk<BridgeService>()
     every { apiClient.captureConnectionIf(any()) } answers {
       val accept = firstArg<(String) -> Boolean>()
-      if (accept(URL)) SNAPSHOT else null
+      if (accept(DS_URL)) DS_SNAPSHOT else null
     }
-    every { jobService.getJobsForPipeline(any(), any(), any(), any(), any()) } returns listOf(job(1))
+    every { jobService.getJobsForPipeline(any(), any(), any(), any(), any()) } returns listOf(dsJob(1))
     every { bridgeService.getBridgesForPipeline(any(), any(), any(), any()) } returns emptyList()
     val source = ServiceDownstreamSource(apiClient, jobService, bridgeService)
     val active = { true }
 
-    source.pinConnection("$URL/", FP) shouldBe SNAPSHOT
-    source.pinConnection(URL, "fp-other").shouldBeNull()
-    source.pinConnection("https://other.example.com", FP).shouldBeNull()
-    source.jobs("42", 205L, active, SNAPSHOT) shouldBe listOf(job(1))
-    source.bridges("42", 205L, active, SNAPSHOT).shouldBeEmpty()
+    source.pinConnection("$DS_URL/", DS_FP) shouldBe DS_SNAPSHOT
+    source.pinConnection(DS_URL, "fp-other").shouldBeNull()
+    source.pinConnection("https://other.example.com", DS_FP).shouldBeNull()
+    source.jobs("42", 205L, active, DS_SNAPSHOT) shouldBe listOf(dsJob(1))
+    source.bridges("42", 205L, active, DS_SNAPSHOT).shouldBeEmpty()
 
-    verify { jobService.getJobsForPipeline("42", 205L, active, SNAPSHOT, includeRetried = true) }
-    verify { bridgeService.getBridgesForPipeline("42", 205L, active, SNAPSHOT) }
+    verify { jobService.getJobsForPipeline("42", 205L, active, DS_SNAPSHOT, includeRetried = true) }
+    verify { bridgeService.getBridgesForPipeline("42", 205L, active, DS_SNAPSHOT) }
   }
 })

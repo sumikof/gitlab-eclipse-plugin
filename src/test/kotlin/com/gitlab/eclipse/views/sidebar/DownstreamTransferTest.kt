@@ -189,6 +189,33 @@ class DownstreamTransferTest : StringSpec({
     nestedLoading.loadGeneration shouldBe 1L
   }
 
+  "i6: the search descends below a LOADED downstream node — a nested LOADING load the rebuild dropped is abandoned" {
+    val nestedLoading = ds(300, depth = 2, ancestors = setOf(100L, 205L)).apply {
+      loadState = DownstreamLoadState.LOADING
+      loadGeneration = 1
+    }
+    val old = ds(205).loaded(listOf(DownstreamPipelinesNode(205L, listOf(nestedLoading))))
+
+    transferDownstreamState(section(old), section()) shouldContainExactly listOf(nestedLoading)
+
+    nestedLoading.loadGeneration shouldBe 2L
+  }
+
+  "i6: a nested LOADED node below a downstream that was not carried over still donates to its rebuilt counterpart" {
+    val innerStage = StageNode("deploy", "Running", emptyList())
+    val oldNested = ds(300, depth = 2, ancestors = setOf(100L, 205L)).loaded(listOf(innerStage))
+    // The old nested node is only reachable through its LOADED parent 205, which the new tree no longer has;
+    val oldParent = ds(205).loaded(listOf(DownstreamPipelinesNode(205L, listOf(oldNested))))
+    val freshNested = ds(300, depth = 2, ancestors = setOf(100L, 205L))
+    // its rebuilt counterpart sits under another (kept-state) parent and must still find it.
+    val newParent = ds(206).loaded(listOf(DownstreamPipelinesNode(206L, listOf(freshNested))))
+
+    transferDownstreamState(section(oldParent), section(newParent))
+
+    freshNested.loadState shouldBe DownstreamLoadState.LOADED
+    freshNested.children.single() shouldBeSameInstanceAs innerStage
+  }
+
   "nested nodes under a NOT-loaded node are not searched (a placeholder has none)" {
     downstreamNodesIn(section(ds(205))).map { it.pipelineId } shouldContainExactly listOf(205L)
   }

@@ -118,13 +118,15 @@ internal class DownstreamLoader(
 
   /**
    * UI thread. Starts the first load of an expanded [node] — from the expansion listener, or after a
-   * programmatic expansion restore (which fires no event). Only an expandable NOT_LOADED node loads:
-   * a LOADING one already has a fetch in flight, a LOADED one is kept fresh by the sweep, and a FAILED
-   * one (connection not confirmed) waits for a refresh of the view.
+   * programmatic expansion restore (which fires no event). An expandable NOT_LOADED node loads, and so
+   * does a FAILED one (connection not confirmed): re-expanding it is a retry, as for a discussions
+   * section. A LOADING one already has a fetch in flight; a LOADED one is kept fresh by the sweep.
+   * A FAILED node keeps showing its message until the retry's result replaces it.
    */
   fun load(node: DownstreamPipelineNode) {
     val request = node.requestOrNull() ?: return
-    if (node.loadState != DownstreamLoadState.NOT_LOADED || tree.isDisposed()) return
+    val startable = node.loadState == DownstreamLoadState.NOT_LOADED || node.loadState == DownstreamLoadState.FAILED
+    if (!startable || tree.isDisposed()) return
     node.loadState = DownstreamLoadState.LOADING
     val generation = ++node.loadGeneration
     val job = launchOffUi {
@@ -217,15 +219,23 @@ internal class DownstreamLoader(
     sweepJob = launchOffUi { offUiGuarded { reloadAll(targets, seq) } }
   }
 
-  /** Pre-order: an expanded LOADED node is a target and its children are searched; a collapsed one is reset. */
+  /**
+   * POST-order: an expanded LOADED node's children are searched first, then the node itself becomes a
+   * target; a collapsed one is reset. Post-order is what keeps a nested node fresh while its parent
+   * also changes: the nested result is fetched — and, FIFO through [uiDispatch], applied — before the
+   * parent's, so when the parent's rebuild then moves the nested node's state onto its rebuilt
+   * counterpart ([transferDownstreamState]) it moves the already-updated state. In pre-order the
+   * parent's rebuild would bump the nested node's generation first and drop the nested result on
+   * every sweep for as long as the parent keeps changing.
+   */
   private fun collectSweep(nodes: List<SidebarNode>, targets: MutableList<SweepTarget>) {
     for (node in nodes) {
       when {
         node !is DownstreamPipelineNode -> collectSweep(node.children, targets)
         node.loadState != DownstreamLoadState.LOADED -> Unit
         tree.isExpanded(node) -> {
-          node.requestOrNull()?.let { targets += SweepTarget(node, node.loadGeneration, it) }
           collectSweep(node.children, targets)
+          node.requestOrNull()?.let { targets += SweepTarget(node, node.loadGeneration, it) }
         }
         else -> reset(node)
       }
@@ -270,7 +280,7 @@ internal class DownstreamLoader(
   private fun applySweep(target: SweepTarget, seq: Long, payload: DownstreamPayload) {
     val node = target.node
     val current = seq == sweepSeq && node.loadState == DownstreamLoadState.LOADED && isLive(node, target.generation)
-    if (!current || payload == node.shownPayload) return
+    if (!current || sameOutcome(payload, node.shownPayload)) return
     val oldChildren = node.loadedChildren.orEmpty()
     val fresh = buildChildren(node, payload)
     // Before the re-render: the grandchildren keep their state, and loads the rebuild orphaned stop.
@@ -323,7 +333,8 @@ internal class DownstreamLoader(
       block()
     } catch (e: CancellationException) {
       throw e
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+      // Throwable, not Exception: the shared scope is not a SupervisorJob, so nothing may escape.
       logFailure(e)
     }
   }
@@ -348,6 +359,30 @@ private fun DownstreamPipelineNode.requestOrNull(): DownstreamRequest? {
     null
   }
 }
+
+/**
+ * Whether a sweep's [fresh] payload shows the same thing as the [shown] one (spec R1-8): successes are
+ * compared structurally; failures by [failureKey] (`Result.failure` compares the throwable by
+ * identity, so a node that keeps failing the same way would otherwise be rebuilt on every sweep).
+ */
+private fun sameOutcome(fresh: DownstreamPayload, shown: DownstreamPayload?): Boolean =
+  shown != null &&
+    sameOutcome(fresh.jobsResult, shown.jobsResult) &&
+    sameOutcome(fresh.bridgesResult, shown.bridgesResult)
+
+private fun <T> sameOutcome(fresh: Result<T>, shown: Result<T>): Boolean {
+  val freshError = fresh.exceptionOrNull()
+  val shownError = shown.exceptionOrNull()
+  return when {
+    freshError == null && shownError == null -> fresh.getOrNull() == shown.getOrNull()
+    freshError != null && shownError != null -> failureKey(freshError) == failureKey(shownError)
+    else -> false
+  }
+}
+
+/** The comparable part of a failure: its class, plus the HTTP status of a [GitLabApiException]. */
+private fun failureKey(error: Throwable): Pair<Class<*>, Int?> =
+  error.javaClass to (error as? GitLabApiException)?.statusCode
 
 private fun DownstreamPayload.failures(): List<Throwable> =
   listOfNotNull(jobsResult.exceptionOrNull(), bridgesResult.exceptionOrNull())
