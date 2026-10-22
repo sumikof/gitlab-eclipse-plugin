@@ -49,14 +49,22 @@ val currentBranchModule = module {
     val warn: (String) -> Unit = { message -> log.warn(message) }
     val filter = SharedActivationFilter(displayActivationFilter { PlatformUI.getWorkbench().display }, warn)
     val preferences = get<ScopedPreferenceStore>()
-    // CI-03: one process-wide dedupe, so two windows on one repository show one popup per transition.
-    val dedupe = PipelineNotificationDedupe()
     CurrentBranchStateService(
-      createState = { window ->
-        productionWindowState(window, scope, apiClient, mergeRequestService, filter).also { state ->
-          state.addListener(pipelineStatusNotifier(state, preferences, dedupe, warn))
-        }
-      },
+      createState = withPipelineNotifier(
+        createBase = { window -> productionWindowState(window, scope, apiClient, mergeRequestService, filter) },
+        notifierFor = { state, dedupe ->
+          pipelineStatusNotifier(
+            state = state,
+            dedupe = dedupe,
+            isEnabled = { preferences.getBoolean(PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS) },
+            show = { title, message, links, gate ->
+              val severity = SWT.ICON_INFORMATION
+              ActionNotifications.show(title, message, severity, links, NOTIFICATION_AUTO_CLOSE_MILLIS, gate = gate)
+            },
+            openUrl = { url -> openInBrowser(url, warn) },
+          )
+        },
+      ),
       workbench = PlatformUI::getWorkbench,
       isWindowOpen = ::isWindowOpen,
       onDispose = filter::dispose,
@@ -127,30 +135,46 @@ private fun productionWindowState(
 }
 
 /**
- * CI-03 (§4.7): the window's pipeline status popup. The preference is read when a change is observed and again in
- * the popup's gate, together with the window's liveness; the popup opens through `asyncExec` (after the trim's render
- * of the same apply), auto-closes, and its link only opens the browser.
+ * CI-03 (§4.7): wraps [createBase] so every window state it creates gets its pipeline status notifier from
+ * [notifierFor], subscribed before the state starts. ONE [PipelineNotificationDedupe] is created here and handed to
+ * every window's notifier, so two windows on one repository show one popup per transition.
  */
-private fun pipelineStatusNotifier(
+internal fun withPipelineNotifier(
+  createBase: (IWorkbenchWindow) -> WindowCurrentBranchState,
+  notifierFor: (WindowCurrentBranchState, PipelineNotificationDedupe) -> CurrentBranchListener,
+): (IWorkbenchWindow) -> WindowCurrentBranchState {
+  val dedupe = PipelineNotificationDedupe()
+  return { window -> createBase(window).also { state -> state.addListener(notifierFor(state, dedupe)) } }
+}
+
+/**
+ * CI-03 (§4.7): [state]'s pipeline status notifier. [isEnabled] is the preference, read when a change is observed and
+ * again in the popup's gate, together with the window's liveness (its [state] not disposed); [show] opens the popup
+ * asynchronously (production: `ActionNotifications.show`, after the trim's render of the same apply); the link only
+ * opens the browser.
+ */
+internal fun pipelineStatusNotifier(
   state: WindowCurrentBranchState,
-  preferences: ScopedPreferenceStore,
   dedupe: PipelineNotificationDedupe,
-  warn: (String) -> Unit,
+  isEnabled: () -> Boolean,
+  show: PipelineNotificationPopup,
+  openUrl: (String) -> Unit,
 ) = PipelineStatusNotifier(
-  isEnabled = { preferences.getBoolean(PreferenceConstants.PIPELINE_STATUS_NOTIFICATIONS) },
+  isEnabled = isEnabled,
   isWindowAlive = { !state.isDisposed },
   dedupe = dedupe,
-  show = { title, message, links, gate ->
-    ActionNotifications.show(title, message, SWT.ICON_INFORMATION, links, NOTIFICATION_AUTO_CLOSE_MILLIS, gate = gate)
-  },
-  openUrl = { url ->
-    try {
-      PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
-    } catch (e: Exception) {
-      warn("Pipeline notification could not open the browser: ${e.javaClass.name}")
-    }
-  },
+  show = show,
+  openUrl = openUrl,
 )
+
+/** Opens [url] in the external browser; a failure is logged by exception class only. */
+private fun openInBrowser(url: String, warn: (String) -> Unit) {
+  try {
+    PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
+  } catch (e: Exception) {
+    warn("Pipeline notification could not open the browser: ${e.javaClass.name}")
+  }
+}
 
 /**
  * T3b: a window whose shell is gone (or not created) or a closing workbench gets no entry: a trim control rebuilt
