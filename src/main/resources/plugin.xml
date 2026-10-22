@@ -1926,6 +1926,16 @@
             </toolbar>
         </menuContribution>
 
+        <!-- Status bar CI-02 / MR-07: the current branch's pipeline, MR and closing issue (one control per window). -->
+        <menuContribution locationURI="toolbar:org.eclipse.ui.trim.status">
+            <toolbar id="com.gitlab.eclipse.menus.currentBranchTrim" label="GitLab Current Branch">
+                <control
+                        class="com.gitlab.eclipse.currentbranch.CurrentBranchStatusTrim"
+                        id="com.gitlab.eclipse.currentbranch.statusTrim">
+                </control>
+            </toolbar>
+        </menuContribution>
+
         <menuContribution locationURI="menu:gitlab-eclipse-plugin.menus.statusWidgetMenu">
             <command
                     commandId="gitlab-eclipse-plugin.commands.chatStatus"

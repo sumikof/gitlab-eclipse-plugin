@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.mergerequests
 
+import com.gitlab.eclipse.ci.actions.refreshAfterCiWrite
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.utils.NotificationUtils
@@ -11,6 +12,8 @@ import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
+import org.eclipse.ui.IWorkbenchWindow
+import org.eclipse.ui.handlers.HandlerUtil
 import java.io.File
 
 /**
@@ -38,14 +41,15 @@ class OpenCreateNewMrHandler(
     // selectActiveContext must run on the UI thread (it captures the active editor at call
     // time; JGit resolution then runs in the background); a null context is a silent no-op
     // because the resolver already notified the user.
+    val window = HandlerUtil.getActiveWorkbenchWindow(event)
     resolver.selectActiveContext { context ->
-      if (context != null) openCreateNewMr(context)
+      if (context != null) openCreateNewMr(context, window)
     }
     logger.info("openCreateNewMR requested.")
     return null
   }
 
-  private fun openCreateNewMr(context: RepositoryContext) {
+  private fun openCreateNewMr(context: RepositoryContext, window: IWorkbenchWindow?) {
     // The callback fires on the UI thread, and everything below is JGit I/O (branch read,
     // status, possibly a network push) — hop to a background coroutine before doing it.
     coroutineScope.launch {
@@ -58,7 +62,7 @@ class OpenCreateNewMrHandler(
             browser.open(MrUrlBuilder.newMergeRequestUrl(context.webUrl, branchName))
           hasUncommittedChanges(context) ->
             NotificationUtils.show("Commit and push the branch before creating a merge request.")
-          else -> pushAndOpen(context, branchName)
+          else -> pushAndOpen(context, branchName, window)
         }
       } catch (e: CancellationException) {
         throw e
@@ -87,10 +91,13 @@ class OpenCreateNewMrHandler(
 
   /** Auto-push path (§8.5): the new-MR URL is opened ONLY on [PushOutcome.Ok] — every other
    *  outcome means the branch is not (verifiably) on the remote and the URL would be broken. */
-  private fun pushAndOpen(context: RepositoryContext, branchName: String) {
+  private fun pushAndOpen(context: RepositoryContext, branchName: String, window: IWorkbenchWindow?) {
     when (val outcome = pushService.push(context, branchName)) {
-      PushOutcome.Ok ->
+      PushOutcome.Ok -> {
         browser.open(MrUrlBuilder.newMergeRequestUrl(context.webUrl, branchName))
+        // Status bar R15: the push changed what the current branch tracks; refresh this window's state.
+        refreshAfterCiWrite(window)
+      }
       is PushOutcome.Rejected ->
         NotificationUtils.show(
           "Push was rejected (${outcome.status}) — the branch may be protected or behind. " +

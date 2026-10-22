@@ -105,7 +105,7 @@ class CreatePipelineHandler(
         when (result) {
           is CreateResult.Created -> {
             logger.info(audit)
-            Display.getDefault().asyncExec { findSidebarViewIn(window)?.refresh() }
+            refreshAfterCiWrite(window) // the sidebar, else the window's status trim (R15)
             NotificationUtils.show("Pipeline created.")
           }
           is CreateResult.Failed -> {
