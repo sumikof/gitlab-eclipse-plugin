@@ -233,4 +233,33 @@ class CurrentBranchSidebarBindingTest : StringSpec({
     rig.binding.manual(null, rig.newGeneration())
     rig.shown shouldBe NoRepository
   }
+
+  "R9: a sweep requested by a finished refresh is rejected by its gate once a newer refresh has bound the slots" {
+    val state = StateRig()
+    val slots = RefreshSlots(1)
+    val pending = mutableListOf<ApplyScope.CurrentBranch>()
+    val binding = CurrentBranchSidebarBinding(
+      currentSlots = { slots },
+      cancelSweep = {},
+      apply = { _, _, _, update -> update() },
+      requestSweep = { _, scope -> pending += scope },
+    )
+    state.state.addListener(binding)
+    state.state.start()
+    binding.initial(state.state, slots)
+    state.settleBranch() // refresh 1 finishes: sweep requested under its epoch
+    state.time.advanceBy(PERIOD) // timer refresh 2 binds the same slots
+    slots.acceptsApply({ it == 1L }, pending.single()) shouldBe false
+  }
+
+  "applies land in the slots the refresh was bound to, even if the view's current slots changed" {
+    val rig = SidebarRig()
+    rig.state.state.start()
+    val bound = rig.slots
+    rig.binding.initial(rig.state.state, bound)
+    rig.slots = RefreshSlots(rig.generation) // new slots object, not bound
+    val settled = rig.state.settleBranch()
+    (bound.currentBranch as Slot.Settled).value shouldBeSameInstanceAs settled
+    rig.slots.currentBranch shouldBe Slot.Pending
+  }
 })

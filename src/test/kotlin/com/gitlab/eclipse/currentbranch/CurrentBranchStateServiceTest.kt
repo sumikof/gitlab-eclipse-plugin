@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.currentbranch
 
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -106,8 +107,12 @@ class CurrentBranchStateServiceTest : StringSpec({
   "T3b: a window-liveness check that throws counts as closed" {
     val a = window()
     val rig = ServiceRig()
+    var creations = 0
     val service = CurrentBranchStateService(
-      createState = { error("must not be created") },
+      createState = {
+        creations++
+        error("must not be created")
+      },
       workbench = { rig.workbench },
       isWindowOpen = { throw IllegalStateException("workbench gone") },
       onDispose = {},
@@ -115,6 +120,8 @@ class CurrentBranchStateServiceTest : StringSpec({
     )
 
     service.ensureWindow(a).shouldBeNull()
+    creations shouldBe 0
+    rig.logs.shouldBeEmpty()
   }
 
   "two windows get separate entries with their own editor file" {

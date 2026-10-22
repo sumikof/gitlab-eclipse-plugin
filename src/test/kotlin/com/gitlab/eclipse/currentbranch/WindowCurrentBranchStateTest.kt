@@ -632,4 +632,59 @@ class WindowCurrentBranchStateTest : StringSpec({
       listOf("secret", "/home/alice", "Main.kt").forEach { line shouldNotContain it }
     }
   }
+
+  "R6: a coalesced refresh started by a settle is announced after that settle's finish" {
+    val rig = StateRig().started()
+    rig.state.requestRefresh(RefreshReason.BRANCH)
+    rig.settleBranch()
+    rig.recorder.events shouldContainExactly listOf(
+      "started 1 soft=true",
+      "applied 1",
+      "finished 1 Looked",
+      "started 2 soft=true",
+    )
+  }
+
+  "a finish for a repository the snapshot does not show leaves work tree and head kind alone" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.time.advanceBy(PERIOD)
+    rig.fetch.calls.last().finish(TrackedHead("/other/.git", HeadKey.Detached("abc"), "/other"))
+    rig.ui.drain()
+    rig.state.snapshot.gitDir shouldBe GIT_DIR
+    rig.state.snapshot.workTree shouldBe CANONICAL_WORK_TREE
+    rig.state.snapshot.headKind shouldBe HeadKind.BRANCH
+  }
+
+  "refreshFull after a settle hands the fetcher no previous value (placeholders)" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.state.refreshFull()
+    rig.fetch.calls.last().soft shouldBe false
+    rig.fetch.calls.last().previous.shouldBeNull()
+  }
+
+  "T3b: an apply for a repository other than the reported head's stays UNKNOWN" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.time.advanceBy(PERIOD)
+    rig.fetch.calls.last().onHead(TrackedHead("/other/.git", HeadKey.Detached("abc"), "/other", onSingleTag = true))
+    rig.applyLast(Resolved(null, null), gitDir = "/third/.git")
+    rig.ui.drain()
+    rig.state.snapshot.headKind shouldBe HeadKind.UNKNOWN
+    rig.state.snapshot.workTree.shouldBeNull()
+  }
+
+  "T3b: a superseded refresh's head report does not leak into the next refresh's repository switch" {
+    val rig = StateRig().started()
+    rig.settleBranch()
+    rig.time.advanceBy(PERIOD)
+    rig.fetch.calls.last().onHead(TrackedHead("/other/.git", HeadKey.Detached("abc"), "/other", onSingleTag = true))
+    rig.ui.drain() // recorded for refresh 2, not applied (snapshot still on GIT_DIR)
+    rig.state.refreshFull()
+    rig.applyLast(Resolved(null, null), gitDir = "/other/.git") // refresh 3's placeholder, before its own report
+    rig.ui.drain()
+    rig.state.snapshot.headKind shouldBe HeadKind.UNKNOWN
+    rig.state.snapshot.workTree.shouldBeNull()
+  }
 })
