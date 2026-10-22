@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.BridgeService
 import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.CurrentUserService
 import com.gitlab.eclipse.api.GitLabApiClient
@@ -12,6 +13,7 @@ import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
+import com.gitlab.eclipse.mergerequests.HeadTagReader
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
 import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
@@ -116,6 +118,7 @@ class GitLabSidebarView : ViewPart() {
   }
   private val pipelineService by lazy { PipelineService() }
   private val jobService by lazy { JobService() }
+  private val bridgeService by lazy { BridgeService() }
   private val currentBranchFetcher by lazy {
     CurrentBranchSectionFetcher(
       repositoryContextResolver,
@@ -123,6 +126,9 @@ class GitLabSidebarView : ViewPart() {
       currentBranchMrLookup,
       pipelineService,
       jobService,
+      bridgeService,
+      mergeRequestService,
+      HeadTagReader(),
       apiClient,
       errorLog = { message, e -> logger.error(message, e) },
       warnLog = { logger.warn(it) },
@@ -130,6 +136,46 @@ class GitLabSidebarView : ViewPart() {
   }
 
   private lateinit var viewer: TreeViewer
+
+  /**
+   * CI-06 §4.6: lazy, refresh-safe loading of the downstream pipeline nodes. SWT-free and tested
+   * headless ([DownstreamLoader]); this view supplies only the ports, each used on the thread its
+   * KDoc names: the IO launch on the shared scope, the `asyncExec` hop ([runOnUiIfAlive], which drops
+   * the block once the control is disposed), and the viewer reads / refreshes (UI thread). Built
+   * lazily because the ports capture [viewer]; dispose() cancels it only if it was ever created.
+   */
+  private val downstreamLoaderLazy = lazy {
+    DownstreamLoader(
+      launchOffUi = { block -> coroutineScope.launch { block() } },
+      uiDispatch = { block -> runOnUiIfAlive(block) },
+      source = ServiceDownstreamSource(apiClient, jobService, bridgeService),
+      tree = object : DownstreamTree {
+        override fun roots(): List<SidebarNode> = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
+
+        override fun isDisposed(): Boolean = viewer.control.isDisposed
+
+        override fun isExpanded(node: SidebarNode): Boolean = viewer.getExpandedState(node)
+
+        // A refresh re-creates the items of children that are new instances collapsed, so the expansion
+        // under a node whose children the sweep rebuilt is carried over by stable key, parents first
+        // (expandedElements is pre-order). Children carried over by the transfer are the same
+        // instances and keep their items as they are.
+        override fun refreshSubtree(node: DownstreamPipelineNode, oldChildren: List<SidebarNode>?) {
+          if (viewer.control.isDisposed) return
+          val expanded = if (oldChildren == null) emptyList() else viewer.expandedElements.toList()
+          viewer.refresh(node)
+          if (oldChildren != null) {
+            expanded
+              .mapNotNull { remapInChildren(it, oldChildren, node.children) }
+              .forEach { viewer.setExpandedState(it, true) }
+          }
+        }
+      },
+      buildChildren = viewModel::buildDownstreamChildren,
+      warnLog = { logger.warn(it) },
+    )
+  }
+  private val downstreamLoader by downstreamLoaderLazy
 
   @Volatile private var fetchJob: Job? = null
 
@@ -290,6 +336,14 @@ class GitLabSidebarView : ViewPart() {
             }
             return
           }
+          // CI-06: a downstream pipeline loads its stages on first expansion, and retries after an
+          // unconfirmed connection (FAILED); a LOADING or LOADED node is skipped by the loader, so
+          // collapse / re-expand never starts a second fetch.
+          val downstream = event.element as? DownstreamPipelineNode
+          if (downstream != null) {
+            downstreamLoader.load(downstream)
+            return
+          }
           val node = event.element as? MergeRequestNode ?: return
           if (node.loadedChildren == null) loadMrChildren(node)
         }
@@ -374,6 +428,8 @@ class GitLabSidebarView : ViewPart() {
   private fun launchSoftRefresh(recorded: AtomicReference<SettleOutcome?>): Job? {
     val slots = currentSlots ?: return null
     if (viewer.control.isDisposed) return null
+    // CI-06 §4.6 R2-4: the previous refresh's downstream re-fetch is superseded by this one's.
+    downstreamLoader.cancelSweep()
     slots.currentBranchEpoch++
     val epoch = slots.currentBranchEpoch
     val previous = (slots.currentBranch as? Slot.Settled)?.value
@@ -394,6 +450,8 @@ class GitLabSidebarView : ViewPart() {
           }
         }
         recorded.set(settleOutcomeOf(head))
+        // CI-06 §4.6 R1-2: once per refresh, after its applies (FIFO asyncExec), under the same gate.
+        downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, ApplyScope.CurrentBranch(epoch)) }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -433,6 +491,9 @@ class GitLabSidebarView : ViewPart() {
       collectDiscussionSectionNodeIds((viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()),
     )
     fetchJob?.cancel()
+    // CI-06 §4.6: a full refresh stops every downstream load and the sweep; the rebuilt tree reloads
+    // what is still expanded.
+    downstreamLoader.cancelAll()
     // A manual refresh supersedes a running soft one (design §2.4): cancel it, and hand the
     // refresher this refresh's ticket so the soft one's settle is ignored.
     autoRefresh.cancelSoftJob()
@@ -449,6 +510,8 @@ class GitLabSidebarView : ViewPart() {
       // unexpected errors (bugs) surface to the catch below.
       try {
         recorded.set(settleOutcomeOf(fetchCurrentBranch(slots, epoch, activeEditorFile)))
+        // CI-06 §4.6 R1-2: once per refresh, after its applies (FIFO asyncExec), under the same gate.
+        downstreamLoader.requestSweep { slots.acceptsApply(refreshState::isCurrent, ApplyScope.CurrentBranch(epoch)) }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -527,6 +590,10 @@ class GitLabSidebarView : ViewPart() {
         // memo kept are the same instances and keep theirs. Checked on every compose, not only a settings change:
         // whichever apply runs first after a settings change swapped the slot performs the swap in the tree.
         DiscussionGenerationRegistry.clearLatestFor(staleQueryRootSectionIds(oldInput, input))
+        // CI-06 §4.6 R1-1 / R2-2: a rebuilt downstream node takes over its LOADED predecessor's children
+        // (same pipeline id, same connection tags) BEFORE the swap, so it neither flashes "Loading…" nor
+        // collapses what is expanded inside it; loads the rebuild abandoned are cancelled.
+        downstreamLoader.transfer(oldInput, input)
         // Pre-order capture: restoring in the same order expands parents first, so nested
         // entries' widgets exist (materialized by the parent's expansion) when their turn
         // comes. Programmatic expansion fires no treeExpanded events — no spurious loads.
@@ -539,6 +606,8 @@ class GitLabSidebarView : ViewPart() {
           .filterIsInstance<MergeRequestNode>()
           .filter { it.loadedChildren == null }
           .forEach { loadMrChildren(it) }
+        // Same for a downstream node restored as expanded without a carried-over state (CI-06 §4.6).
+        downstreamLoader.loadAll(viewer.expandedElements.toList())
       }
     } catch (@Suppress("SwallowedException") e: SWTException) {
       // Display disposed between acquisition and scheduling — nothing to paint.
@@ -595,6 +664,8 @@ class GitLabSidebarView : ViewPart() {
         .filterIsInstance<MergeRequestNode>()
         .filter { it.loadedChildren == null }
         .forEach { loadMrChildren(it) }
+      // Downstream nodes need no call here: applyCompose's own UI block loads the expanded ones after
+      // the compose and the expansion restore, which is the only point where the new tree is in place.
     }
   }
 
@@ -777,6 +848,7 @@ class GitLabSidebarView : ViewPart() {
     viewState.removeListener(modeListener)
     autoRefresh.dispose()
     fetchJob?.cancel()
+    if (downstreamLoaderLazy.isInitialized()) downstreamLoader.cancelAll()
     super.dispose()
   }
 }

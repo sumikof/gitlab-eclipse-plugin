@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.views.sidebar
 
+import com.gitlab.eclipse.api.model.GitLabBridge
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import io.kotest.core.spec.style.StringSpec
@@ -104,5 +105,44 @@ class CiActionPropertyTesterTest : StringSpec({
   "non-node receiver -> false" {
     test("a string", "canRetry") shouldBe false
     test(null, "canRetry") shouldBe false
+  }
+
+  // CI-06 §4.6: a bridge affords retry and play only (GitLab's cancel answers 404 for a bridge).
+  fun bridgeNode(status: String? = "success", allowFailure: Boolean? = null, projectId: Long? = 42L) =
+    BridgeNode(
+      GitLabBridge(id = 2, name = "trigger", stage = "build", status = status, allowFailure = allowFailure),
+      projectId = projectId,
+      sourceInstanceUrl = SRC_URL,
+      sourceAuthFingerprint = SRC_FP,
+    )
+  fun all(receiver: Any?) = listOf("canRetry", "canCancel", "canPlay").map { test(receiver, it) }
+
+  "failed bridge -> canRetry only (also when allowed to fail)" {
+    all(bridgeNode(status = "failed")) shouldBe listOf(true, false, false)
+    all(bridgeNode(status = "failed", allowFailure = true)) shouldBe listOf(true, false, false)
+  }
+  "manual bridge -> canPlay only" {
+    all(bridgeNode(status = "manual")) shouldBe listOf(false, false, true)
+  }
+  "running / pending bridge -> never canCancel" {
+    all(bridgeNode(status = "running")) shouldBe listOf(false, false, false)
+    all(bridgeNode(status = "pending")) shouldBe listOf(false, false, false)
+  }
+  "bridge with null projectId -> all false" {
+    all(bridgeNode(status = "failed", projectId = null)) shouldBe listOf(false, false, false)
+    all(bridgeNode(status = "manual", projectId = null)) shouldBe listOf(false, false, false)
+  }
+  "downstream nodes and stages afford no CI action" {
+    val downstream = DownstreamPipelineNode(
+      "docs",
+      GitLabPipeline(id = 205, status = "failed", projectId = 42L),
+      depth = 1,
+      ancestorPipelineIds = setOf(100L),
+      sourceInstanceUrl = SRC_URL,
+      sourceAuthFingerprint = SRC_FP,
+    )
+    all(downstream) shouldBe listOf(false, false, false)
+    all(DownstreamPipelinesNode(100L, listOf(downstream))) shouldBe listOf(false, false, false)
+    all(StageNode("build", "Failed", emptyList())) shouldBe listOf(false, false, false)
   }
 })

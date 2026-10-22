@@ -3,6 +3,7 @@ package com.gitlab.eclipse.api
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.inject.service
 
 /** Fetches merge requests: for a source branch, a merge request's closing issues and its latest diff version. */
@@ -71,5 +72,22 @@ class MergeRequestService(private val apiClient: GitLabApiClient = service()) {
       type = GitLabMrVersion::class.java,
       connection = connection,
     )
+  }
+
+  /**
+   * Fetches the pipelines of merge request [mrIid] in project [projectId] (numeric, put in the
+   * path as-is). Only ONE page of up to 100 is read: the server orders merge_request_event
+   * pipelines first, then by id descending, so the newest candidates are on the first page.
+   * Pipelines may belong to the source or the target project; callers must use each
+   * pipeline's own `project_id` for follow-up calls. When [connection] is non-null the read
+   * is pinned to that snapshot. API errors (403/404) propagate unchanged.
+   */
+  fun getMrPipelines(projectId: Long, mrIid: Long, connection: ConnectionSnapshot? = null): List<GitLabPipeline> {
+    return apiClient.fetchObject(
+      "/projects/$projectId/merge_requests/$mrIid/pipelines",
+      mapOf("per_page" to "100"),
+      Array<GitLabPipeline>::class.java,
+      connection,
+    ).toList()
   }
 }

@@ -16,16 +16,22 @@ class JobService(private val apiClient: GitLabApiClient = service()) {
    * preference store / token manager; `connection = null` (the default) keeps the current
    * global-reading behavior. Kept as the last parameter so the existing trailing-lambda call
    * site `getJobsForPipeline(projectId, pipelineId) { ... }` still compiles unchanged.
+   *
+   * With [includeRetried] the `include_retried=true` query is added so earlier attempts of a
+   * job are returned too; when false NO query parameter is sent (the default server behavior
+   * already excludes retried jobs).
    */
   fun getJobsForPipeline(
     projectId: String,
     pipelineId: Long,
     isActive: () -> Boolean = { true },
     connection: ConnectionSnapshot? = null,
+    includeRetried: Boolean = false,
   ): List<GitLabJob> {
     return apiClient.fetchListWithinDeadline(
       ApiRequest(
         path = "/projects/$projectId/pipelines/$pipelineId/jobs",
+        query = if (includeRetried) mapOf("include_retried" to "true") else emptyMap(),
         elementType = GitLabJob::class.java,
       ),
       JOBS_DEADLINE,

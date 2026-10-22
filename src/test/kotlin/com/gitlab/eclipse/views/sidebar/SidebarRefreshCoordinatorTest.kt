@@ -3,6 +3,7 @@ package com.gitlab.eclipse.views.sidebar
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.PipelineKind
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryDefaults
 import com.gitlab.eclipse.views.sidebar.queries.QueryConfig
@@ -51,11 +52,15 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     (node.children[0] as MessageNode).label shouldBe LOADING
   }
   fun snapshot() =
-    PipelineSnapshot(
-      GitLabPipeline(id = 10, status = "success"),
-      Result.success(emptyList()),
-      "https://gitlab.example.com",
-      "fp0",
+    PipelineShown(
+      PipelineSnapshot(
+        GitLabPipeline(id = 10, status = "success"),
+        PipelineKind.BRANCH,
+        Result.success(emptyList()),
+        Result.success(emptyList()),
+        "https://gitlab.example.com",
+        "fp0",
+      ),
     )
 
   "fresh slots render one Loading root per default query, then a Loading current-branch section" {
@@ -100,6 +105,28 @@ class SidebarRefreshCoordinatorTest : StringSpec({
     val out = c.compose(slots, SidebarViewMode.LIST)
     mrNodeOf(sectionOf(out)) shouldBeSameInstanceAs first
     sectionOf(out).children.filterIsInstance<PipelineNode>() shouldHaveSize 1
+  }
+
+  "settled NoPipeline adds no pipeline row: the section is exactly the MR side" {
+    val slots = RefreshSlots(11L)
+    val mrResult = Result.success(CurrentBranchInfo(mr(2), emptyList()))
+    slots.currentBranch = Slot.Settled(Resolved(mr = mrResult, pipeline = Result.success(NoPipeline)))
+    val children = sectionOf(coordinator().compose(slots, SidebarViewMode.LIST)).children
+    children shouldHaveSize 2
+    (children[0] is MergeRequestNode) shouldBe true
+    (children[1] as MessageNode).label shouldBe "No closing issue found"
+  }
+
+  "settled AmbiguousTags renders exactly one multiple-tags row first and nothing extra on the MR side" {
+    val slots = RefreshSlots(12L)
+    val mrResult = Result.success(CurrentBranchInfo(null, emptyList()))
+    slots.currentBranch = Slot.Settled(Resolved(mr = mrResult, pipeline = Result.success(AmbiguousTags)))
+    val section = sectionOf(coordinator().compose(slots, SidebarViewMode.LIST))
+    val labels = section.children.map { (it as MessageNode).label }
+    labels shouldBe listOf(
+      "Multiple tags point at HEAD; selecting a tag pipeline is not supported.",
+      "No merge request found",
+    )
   }
 
   "changed mr result rebuilds the MergeRequestNode as a new instance" {

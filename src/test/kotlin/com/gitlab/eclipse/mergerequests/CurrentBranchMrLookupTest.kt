@@ -207,6 +207,44 @@ class CurrentBranchMrLookupTest : DescribeSpec({
       verify(exactly = 0) { mrService.getClosesIssues(any(), any(), any()) }
     }
 
+    // CI-05 §4.1: the sidebar shares ONE MR search between the MR side and the pipeline side, so
+    // the search and the closes_issues request are separately callable; lookup stays their composition.
+    it("findMr returns the selected MR, pinned to the connection, without requesting closes_issues") {
+      val conn = ConnectionSnapshot("https://gitlab.example.com", "tok-1", "fp-1", 1L)
+      val theMr = mr()
+      every { projectDetail.getProject(ENCODED_PROJECT_ID, conn) } returns GitLabProject(id = REPO_PROJECT_ID)
+      every { mrService.findOpenMrsForBranch("feature", conn) } returns listOf(mr(id = 9L, sourceProjectId = 99L), theMr)
+
+      lookup().findMr(context(), branch(), conn) shouldBe theMr
+
+      verify(exactly = 1) { projectDetail.getProject(ENCODED_PROJECT_ID, conn) }
+      verify(exactly = 0) { mrService.getClosesIssues(any(), any(), any()) }
+    }
+
+    it("findMr returns null without any service call for a detached HEAD, and null when nothing matches") {
+      lookup().findMr(context(), branch(name = null)) shouldBe null
+      verify(exactly = 0) { projectDetail.getProject(any(), any()) }
+
+      every { mrService.findOpenMrsForBranch("feature") } returns emptyList()
+      lookup().findMr(context(), branch()) shouldBe null
+    }
+
+    it("findMr propagates a service failure to the caller") {
+      every { mrService.findOpenMrsForBranch("feature") } throws IllegalStateException("down")
+
+      runCatching { lookup().findMr(context(), branch()) }.exceptionOrNull()?.message shouldBe "down"
+    }
+
+    it("closesIssues requests the MR's own (target) project, pinned to the connection") {
+      val conn = ConnectionSnapshot("https://gitlab.example.com", "tok-1", "fp-1", 1L)
+      val theMr = mr(projectId = 777L)
+      every { mrService.getClosesIssues("777", theMr.iid, conn) } returns emptyList()
+
+      lookup().closesIssues(theMr, conn) shouldBe emptyList()
+
+      verify(exactly = 1) { mrService.getClosesIssues("777", theMr.iid, conn) }
+    }
+
     // Every other test in this describe block calls lookup() without a connection argument, so
     // the default null is exercised implicitly by the whole file and must keep matching the
     // beforeEach getProject(ENCODED_PROJECT_ID) stub (no connection arg) unchanged — that is the

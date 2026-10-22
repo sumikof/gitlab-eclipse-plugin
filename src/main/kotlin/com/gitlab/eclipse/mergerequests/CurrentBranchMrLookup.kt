@@ -23,8 +23,8 @@ class CurrentBranchMrLookup(
   private val empty = CurrentBranchInfo(null, emptyList())
 
   /**
-   * When [connection] is non-null, every one of the three service calls below is pinned to that
-   * same snapshot, so a settings change mid-lookup cannot split them across instances or accounts.
+   * When [connection] is non-null, every one of the three service calls ([findMr] then [closesIssues]) is
+   * pinned to that same snapshot, so a settings change mid-lookup cannot split them across instances or accounts.
    * `null` (the default) keeps the pre-existing per-call global-reading behavior, unchanged.
    *
    * [includeClosesIssues] `false` skips the closes_issues request and returns an empty list, for a
@@ -36,7 +36,24 @@ class CurrentBranchMrLookup(
     connection: ConnectionSnapshot? = null,
     includeClosesIssues: Boolean = true,
   ): CurrentBranchInfo {
-    val localName = branch.name ?: return empty
+    val mr = findMr(context, branch, connection) ?: return empty
+    if (!includeClosesIssues) return CurrentBranchInfo(mr, emptyList())
+    return CurrentBranchInfo(mr, closesIssues(mr, connection))
+  }
+
+  /**
+   * The MR half of [lookup] (CI-05 §4.1): the current branch's open MR whose source project is the
+   * repository's own project — the head-SHA match first, else the most recently updated candidate —
+   * or null for a detached HEAD (no request at all) or when nothing matches. Split out so the
+   * sidebar can run this search ONCE per refresh and share it between its MR side and its pipeline
+   * side (which needs the MR to list the MR's pipelines). [connection] pins both requests.
+   */
+  fun findMr(
+    context: RepositoryContext,
+    branch: CurrentBranch,
+    connection: ConnectionSnapshot? = null,
+  ): GitLabMergeRequest? {
+    val localName = branch.name ?: return null
 
     val effectiveBranch = EffectiveRef.resolve(branch, context.remoteName) ?: localName
 
@@ -45,12 +62,12 @@ class CurrentBranchMrLookup(
       .filter { it.sourceProjectId == repoProjectId }
 
     val shaMatch = branch.headSha?.let { headSha -> candidates.firstOrNull { it.sha == headSha } }
-    val mr = shaMatch ?: candidates.maxByOrNull { it.updatedAt.orEmpty() } ?: return empty
-
-    if (!includeClosesIssues) return CurrentBranchInfo(mr, emptyList())
-    val closesIssues = mrService.getClosesIssues(mr.projectId.toString(), mr.iid, connection)
-    return CurrentBranchInfo(mr, closesIssues)
+    return shaMatch ?: candidates.maxByOrNull { it.updatedAt.orEmpty() }
   }
+
+  /** The closes_issues half of [lookup]: requested against [mr]'s own (target) project, pinned to [connection]. */
+  fun closesIssues(mr: GitLabMergeRequest, connection: ConnectionSnapshot? = null): List<GitLabIssue> =
+    mrService.getClosesIssues(mr.projectId.toString(), mr.iid, connection)
 }
 
 /** The current branch's open MR only, without its closing issues (the editor comment's G6 lookup). */

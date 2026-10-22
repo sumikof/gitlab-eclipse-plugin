@@ -31,6 +31,25 @@ class LogHygieneAuditTest : DescribeSpec({
       violations.shouldBeEmpty()
     }
 
+    // CI-05/CI-06 §4.7: the current-branch fetcher handles refs, tag names and pipeline URLs, so it logs ONLY
+    // through its injected errorLog/warnLog lambdas, whose stage + class-name messages its own tests pin. The
+    // generic scan above does not know `$ref`/`$tag`, so any direct logger call there is rejected outright.
+    it("the current-branch fetcher never calls a logger directly") {
+      val fetcher = File("src/main/kotlin/com/gitlab/eclipse/views/sidebar/CurrentBranchSectionFetcher.kt").readText()
+      logCalls(fetcher).shouldBeEmpty()
+      Regex("""\blogger\b""").containsMatchIn(fetcher) shouldBe false
+    }
+
+    // CI-06 §4.7 (Task 5): the downstream loader logs ONLY through its injected warnLog, whose one
+    // message format (exception class + HTTP status) DownstreamLoaderTest pins; the transfer never logs.
+    it("the downstream loader and transfer never call a logger directly") {
+      listOf("DownstreamLoader.kt", "DownstreamTransfer.kt").forEach { name ->
+        val source = File("src/main/kotlin/com/gitlab/eclipse/views/sidebar/$name").readText()
+        logCalls(source).shouldBeEmpty()
+        Regex("""\blogger\b""").containsMatchIn(source) shouldBe false
+      }
+    }
+
     describe("the detector itself") {
       listOf(
         "logger.info(\"showMessage: \$message\")",
@@ -103,9 +122,13 @@ private val AUDITED_FILES = listOf(
   "lsp/messages/LanguageServerMessageDialog.kt",
   "lsp/messages/LanguageServerMessagePresenter.kt",
   "lsp/messages/ShowMessageDeduplicator.kt",
+  "mergerequests/HeadTagReader.kt",
   "preferences/PreferenceConstants.kt",
   "preferences/PreferenceInitializer.kt",
   "utils/ActionNotificationPopup.kt",
+  "views/sidebar/CurrentBranchSectionFetcher.kt",
+  "views/sidebar/DownstreamLoader.kt",
+  "views/sidebar/DownstreamTransfer.kt",
   "GitLabEclipseStartup.kt",
 ).map { "src/main/kotlin/com/gitlab/eclipse/$it" }
 

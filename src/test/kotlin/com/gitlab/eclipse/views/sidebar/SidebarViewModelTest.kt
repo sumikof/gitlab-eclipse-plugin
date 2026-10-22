@@ -1,11 +1,13 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.api.GitLabApiException
+import com.gitlab.eclipse.api.model.GitLabBridge
 import com.gitlab.eclipse.api.model.GitLabIssue
 import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.PipelineKind
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
 import com.gitlab.eclipse.views.sidebar.queries.CustomQuery
@@ -19,6 +21,16 @@ import io.kotest.matchers.shouldBe
 
 private const val SRC_URL = "https://gitlab.example.com"
 private const val SRC_FP = "fp0"
+
+/** A snapshot of [kind] (branch by default) with [bridges] (none by default). */
+private fun snapshot(
+  pipeline: GitLabPipeline,
+  jobs: Result<List<GitLabJob>>,
+  url: String,
+  fp: String,
+  bridges: Result<List<GitLabBridge>> = Result.success(emptyList()),
+  kind: PipelineKind = PipelineKind.BRANCH,
+) = PipelineSnapshot(pipeline, kind, jobs, bridges, url, fp)
 
 class SidebarViewModelTest : StringSpec({
   val vm = SidebarViewModel()
@@ -100,10 +112,11 @@ class SidebarViewModelTest : StringSpec({
     webUrl: String? = "https://gitlab.example.com/p/-/jobs/$id",
   ) = GitLabJob(id = id, name = name, status = status, stage = stage, webUrl = webUrl, allowFailure = allowFailure)
   fun buildNode(jobsResult: Result<List<GitLabJob>>, pipeline: GitLabPipeline = pipeline(1)) =
-    vm.buildPipelineNode(pipeline, jobsResult, SRC_URL, SRC_FP)
+    vm.buildPipelineNode(snapshot(pipeline, jobsResult, SRC_URL, SRC_FP))
 
-  "buildPipelineNode: jobs sorted by id ascending, grouped by stage first-appearance order (retry has larger id)" {
-    // sorted by id: 1(build), 2(test), 5(build,retry) -> stage order [build, test]; build group = [1, 5]
+  "buildPipelineNode: distinct jobs given out of order are sorted by id, stages in first-appearance order" {
+    // three distinct jobs (job5, job1, job2), none retried: by id 1(build), 2(test), 5(build)
+    // -> stage order [build, test]; build group = [1, 5]
     val jobs = listOf(
       job(5, stage = "build"),
       job(1, stage = "build"),
@@ -112,8 +125,8 @@ class SidebarViewModelTest : StringSpec({
     val node = buildNode(Result.success(jobs))
     node.children shouldHaveSize 2
     val stages = node.children.map { it as StageNode }
-    stages[0].label shouldBe "build"
-    stages[1].label shouldBe "test"
+    stages[0].name shouldBe "build"
+    stages[1].name shouldBe "test"
     stages[0].children.map { (it as JobNode).job.id } shouldBe listOf(1L, 5L)
     stages[1].children.map { (it as JobNode).job.id } shouldBe listOf(2L)
   }
@@ -122,14 +135,14 @@ class SidebarViewModelTest : StringSpec({
     val jobs = listOf(job(1, stage = "test"), job(2, stage = "test"))
     val node = buildNode(Result.success(jobs))
     node.children shouldHaveSize 1
-    (node.children[0] as StageNode).label shouldBe "test"
+    (node.children[0] as StageNode).name shouldBe "test"
     node.children[0].children shouldHaveSize 2
   }
 
   "buildPipelineNode: multiple stages preserve first-appearance order" {
     val jobs = listOf(job(3, stage = "deploy"), job(1, stage = "build"), job(2, stage = "test"))
     val node = buildNode(Result.success(jobs))
-    node.children.map { (it as StageNode).label } shouldBe listOf("build", "test", "deploy")
+    node.children.map { (it as StageNode).name } shouldBe listOf("build", "test", "deploy")
   }
 
   "buildPipelineNode: empty jobs -> empty children" {
@@ -148,7 +161,7 @@ class SidebarViewModelTest : StringSpec({
   "buildPipelineNode: null stage grouped under (no stage)" {
     val node = buildNode(Result.success(listOf(job(1, stage = null))))
     node.children shouldHaveSize 1
-    (node.children[0] as StageNode).label shouldBe "(no stage)"
+    (node.children[0] as StageNode).name shouldBe "(no stage)"
   }
 
   "JobNode label: status display name, missing name -> (job)" {
@@ -240,10 +253,12 @@ class SidebarViewModelTest : StringSpec({
 
   "source tag carry: PipelineNode and every JobNode carry the tags passed to buildPipelineNode" {
     val node = vm.buildPipelineNode(
-      pipeline(1, projectId = 7L),
-      Result.success(listOf(job(1, stage = "build"), job(2, stage = "test"))),
-      "https://other.example.org",
-      "fp9",
+      snapshot(
+        pipeline(1, projectId = 7L),
+        Result.success(listOf(job(1, stage = "build"), job(2, stage = "test"))),
+        "https://other.example.org",
+        "fp9",
+      ),
     )
     node.sourceInstanceUrl shouldBe "https://other.example.org"
     node.sourceAuthFingerprint shouldBe "fp9"
@@ -273,7 +288,7 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = Result.success(CurrentBranchInfo(null, emptyList())),
-        pipeline = Result.success(null),
+        pipeline = Result.success(NoPipeline),
       ),
     )
     node.children shouldHaveSize 1
@@ -310,7 +325,7 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = null,
-        pipeline = Result.success(PipelineSnapshot(pipeline(9), Result.success(emptyList()), SRC_URL, SRC_FP)),
+        pipeline = Result.success(PipelineShown(snapshot(pipeline(9), Result.success(emptyList()), SRC_URL, SRC_FP))),
       ),
     )
     node.children shouldHaveSize 2
@@ -323,12 +338,209 @@ class SidebarViewModelTest : StringSpec({
     val node = vm.buildCurrentBranchSection(
       Resolved(
         mr = null,
-        pipeline = Result.success(PipelineSnapshot(pipeline(1), Result.success(jobs), "https://x", "fpX")),
+        pipeline = Result.success(PipelineShown(snapshot(pipeline(1), Result.success(jobs), "https://x", "fpX"))),
       ),
     )
     val pipelineNode = node.children[0] as PipelineNode
     pipelineNode.sourceInstanceUrl shouldBe "https://x"
     pipelineNode.sourceAuthFingerprint shouldBe "fpX"
+  }
+
+  "buildCurrentBranchSection(input): AmbiguousTags renders the multiple-tags message, MR side unaffected" {
+    val node = vm.buildCurrentBranchSection(
+      Resolved(mr = Result.success(CurrentBranchInfo(null, emptyList())), pipeline = Result.success(AmbiguousTags)),
+    )
+    node.children shouldHaveSize 2
+    (node.children[0] as MessageNode).label shouldBe "Multiple tags point at HEAD; selecting a tag pipeline is not supported."
+    (node.children[1] as MessageNode).label shouldBe "No merge request found"
+  }
+
+  "buildCurrentBranchSection(input): retried attempts (include_retried) render only the latest attempt of each job" {
+    val jobs = listOf(
+      job(1, name = "build", status = "failed"),
+      job(4, name = "build", status = "success"),
+      job(2, name = "test"),
+    )
+    val shown = PipelineShown(snapshot(pipeline(1), Result.success(jobs), SRC_URL, SRC_FP))
+    val node = vm.buildCurrentBranchSection(Resolved(mr = null, pipeline = Result.success(shown)))
+    val pipelineNode = node.children[0] as PipelineNode
+    val shownJobIds = pipelineNode.children.flatMap { stage ->
+      (stage as StageNode).children.map { (it as JobNode).job.id }
+    }
+    shownJobIds.sorted() shouldBe listOf(2L, 4L)
+  }
+
+  // --- CI-05 §4.4/§4.5 + CI-06 §4.6 (Task 4): stage status, retry-stable order, bridges, downstream nodes ---
+
+  fun withBridges(
+    jobs: Result<List<GitLabJob>>,
+    bridges: Result<List<GitLabBridge>>,
+    pipeline: GitLabPipeline = pipeline(100, projectId = 42L),
+  ) = vm.buildPipelineNode(snapshot(pipeline, jobs, SRC_URL, SRC_FP, bridges))
+
+  "CI-05: a retry keeps every stage and every job in place, including a stage holding only the retried job" {
+    val before = listOf(
+      job(1, name = "compile", stage = "build", status = "failed"),
+      job(2, name = "unit", stage = "test", status = "failed"),
+      job(3, name = "lint", stage = "test"),
+      job(4, name = "ship", stage = "deploy", status = "manual"),
+    )
+    val after = before + job(10, name = "compile", stage = "build", status = "success") +
+      job(11, name = "unit", stage = "test", status = "running")
+
+    val beforeNode = buildNode(Result.success(before))
+    val afterNode = buildNode(Result.success(after))
+
+    shape(afterNode.children) shouldBe shape(beforeNode.children)
+    shape(afterNode.children) shouldBe
+      listOf("build" to listOf("compile"), "test" to listOf("unit", "lint"), "deploy" to listOf("ship"))
+    stageIds(afterNode.children) shouldBe listOf(listOf(10L), listOf(11L, 3L), listOf(4L))
+  }
+
+  "CI-05: a stage's status is the latest attempts' aggregate, not a retried attempt's" {
+    val jobs = listOf(job(1, name = "compile", status = "failed"), job(5, name = "compile", status = "success"))
+    (buildNode(Result.success(jobs)).children.single() as StageNode).label shouldBe "build · Passed"
+  }
+
+  "CI-05: stage label is `name · status` aggregated over jobs AND bridges (failed bridge wins over passed jobs)" {
+    val node = withBridges(
+      Result.success(listOf(job(1, name = "a", stage = "deploy"), job(3, name = "b", stage = "deploy"))),
+      Result.success(listOf(bridge(2, name = "trigger", stage = "deploy", status = "failed"))),
+    )
+    val stage = node.children.single() as StageNode
+    stage.name shouldBe "deploy"
+    stage.statusName shouldBe "Failed"
+    stage.label shouldBe "deploy · Failed"
+    stage.children.map { it.label } shouldBe listOf("a · Passed", "trigger · Failed", "b · Passed")
+    (stage.children[1] is BridgeNode) shouldBe true
+  }
+
+  "CI-05: an allow_failure failed bridge reads as allowed-to-fail, a running job outranks a failed bridge" {
+    val allowed = withBridges(
+      Result.success(listOf(job(1, name = "a", stage = "deploy"))),
+      Result.success(listOf(bridge(2, stage = "deploy", status = "failed", allowFailure = true))),
+    )
+    allowed.children.single().label shouldBe "deploy · Failed (allowed to fail)"
+    (allowed.children.single().children.last() as BridgeNode).label shouldBe "bridge2 · Failed (allowed to fail)"
+    val plain = withBridges(Result.success(emptyList()), Result.success(listOf(bridge(2, status = "failed"))))
+    (plain.children.single().children.single() as BridgeNode).label shouldBe "bridge2 · Failed"
+
+    val running = withBridges(
+      Result.success(listOf(job(1, name = "a", stage = "deploy", status = "running"))),
+      Result.success(listOf(bridge(2, stage = "deploy", status = "failed"))),
+    )
+    running.children.single().label shouldBe "deploy · Running"
+  }
+
+  "CI-06: a bridge in its own stage sorts by its id among the jobs' first attempts" {
+    val node = withBridges(
+      Result.success(listOf(job(1, name = "a", stage = "build"), job(9, name = "c", stage = "test"))),
+      Result.success(listOf(bridge(5, name = "docs", stage = "docs"))),
+    )
+    node.children.map { (it as StageNode).name } shouldBe listOf("build", "docs", "test")
+  }
+
+  "CI-06: a BridgeNode carries the pipeline's project id and source tags, and opens its web URL" {
+    val node = withBridges(
+      Result.success(emptyList()),
+      Result.success(listOf(bridge(2, name = "trigger", status = "manual"))),
+    )
+    val bridgeNode = node.children.single().children.single() as BridgeNode
+    bridgeNode.label shouldBe "trigger · Manual"
+    bridgeNode.projectId shouldBe 42L
+    bridgeNode.sourceInstanceUrl shouldBe SRC_URL
+    bridgeNode.sourceAuthFingerprint shouldBe SRC_FP
+    bridgeNode.activationUrl shouldBe "https://gitlab.example.com/p/-/jobs/2"
+    bridgeNode.children shouldHaveSize 0
+  }
+
+  "CI-05: a TAG snapshot is labelled `Tag Pipeline`, MR and branch snapshots are not told apart" {
+    fun labelOf(kind: PipelineKind) =
+      vm.buildPipelineNode(snapshot(pipeline(7), Result.success(emptyList()), SRC_URL, SRC_FP, kind = kind)).label
+    labelOf(PipelineKind.TAG) shouldBe "Tag Pipeline #7 · Passed"
+    labelOf(PipelineKind.MERGE_REQUEST) shouldBe "Pipeline #7 · Passed"
+    labelOf(PipelineKind.BRANCH) shouldBe "Pipeline #7 · Passed"
+  }
+
+  "CI-05: canRetry/canCancel use only the latest attempts (an old failed attempt does not offer retry)" {
+    val node = buildNode(
+      Result.success(listOf(job(1, name = "compile", status = "failed"), job(5, name = "compile", status = "running"))),
+    )
+    node.canRetry shouldBe false
+    node.canCancel shouldBe true
+  }
+
+  "CI-06: canRetry/canCancel include the bridges" {
+    val retry = withBridges(
+      Result.success(listOf(job(1, status = "running"))),
+      Result.success(listOf(bridge(2, status = "failed"))),
+    )
+    retry.canRetry shouldBe true
+    val cancel = withBridges(
+      Result.success(listOf(job(1, status = "skipped"))),
+      Result.success(listOf(bridge(2, status = "running"))),
+    )
+    cancel.canCancel shouldBe true
+    cancel.canRetry shouldBe false
+  }
+
+  "CI-06: downstream group lists started downstreams by bridge id, deduped by pipeline id (min bridge id)" {
+    val node = withBridges(
+      Result.success(listOf(job(1))),
+      Result.success(
+        listOf(
+          bridge(8, name = "dup", downstream = downstream(205)),
+          bridge(5, name = "docs", downstream = downstream(205)),
+          bridge(4, name = "not-started", downstream = null),
+          bridge(
+            3,
+            name = "deploy-app",
+            downstream = downstream(207, status = "failed", projectId = 99L, source = "pipeline"),
+          ),
+        ),
+      ),
+    )
+    val group = node.children.last() as DownstreamPipelinesNode
+    group.parentPipelineId shouldBe 100L
+    group.label shouldBe "Downstream pipelines · Running"
+    group.children.map { it.label } shouldBe listOf(
+      "deploy-app → Pipeline #207 · Failed (multi-project)",
+      "docs → Pipeline #205 · Running (child)",
+    )
+    group.children.forEach { child ->
+      child.depth shouldBe 1
+      child.ancestorPipelineIds shouldBe setOf(100L)
+      child.sourceInstanceUrl shouldBe SRC_URL
+      child.sourceAuthFingerprint shouldBe SRC_FP
+      child.parentProjectId shouldBe 42L
+      child.loadState shouldBe DownstreamLoadState.NOT_LOADED
+    }
+    group.children.map { it.projectId } shouldBe listOf(99L, 42L)
+    node.children.dropLast(1).all { it is StageNode } shouldBe true
+  }
+
+  "CI-06: no downstream group when no bridge started a downstream pipeline" {
+    val node = withBridges(Result.success(listOf(job(1))), Result.success(listOf(bridge(2))))
+    node.children.none { it is DownstreamPipelinesNode } shouldBe true
+    val noBridges = withBridges(Result.success(listOf(job(1))), Result.success(emptyList()))
+    noBridges.children.map { (it as StageNode).name } shouldBe listOf("build")
+  }
+
+  "CI-06: failed bridges keep the job stages, show no bridge rows and end with the downstream failure message" {
+    val jobs = listOf(job(1), job(2, stage = "test"))
+    val node = withBridges(Result.success(jobs), Result.failure(RuntimeException("boom")))
+    node.children.map { it.label } shouldBe
+      listOf("build · Passed", "test · Passed", "Failed to load downstream pipelines")
+    node.children.flatMap { it.children }.none { it is BridgeNode } shouldBe true
+  }
+
+  "CI-06: failed jobs keep the downstream group built from the bridges" {
+    val node = withBridges(
+      Result.failure(RuntimeException("boom")),
+      Result.success(listOf(bridge(2, downstream = downstream(205)))),
+    )
+    node.children.map { it::class.simpleName } shouldBe listOf("MessageNode", "DownstreamPipelinesNode")
+    node.children[0].label shouldBe "Failed to load jobs"
   }
 
   // --- ChangedFileNode.mrRef (editor-thread-ui design §8.3): set exactly when a Discussions section is built ---

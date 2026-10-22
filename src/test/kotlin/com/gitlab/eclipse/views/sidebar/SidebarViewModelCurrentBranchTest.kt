@@ -9,7 +9,7 @@ import io.kotest.matchers.shouldBe
 
 /**
  * MR-side rendering of the "For current branch" section, exercised through the
- * [CurrentBranchSectionInput] overload with a settled-empty pipeline (`Result.success(null)`
+ * [CurrentBranchSectionInput] overload with a settled-empty pipeline (`Result.success(NoPipeline)`
  * contributes zero pipeline children by contract), which is exactly how the Task-9 view and
  * the coordinator's MR-side memo call it. Assertions unchanged from the pre-Task-9
  * `Result`-based overload these tests originally targeted.
@@ -29,7 +29,7 @@ class SidebarViewModelCurrentBranchTest : StringSpec({
       references = full?.let { GitLabMergeRequest.Reference(it) },
     )
   fun section(mrResult: Result<CurrentBranchInfo>) =
-    vm.buildCurrentBranchSection(Resolved(mr = mrResult, pipeline = Result.success(null)))
+    vm.buildCurrentBranchSection(Resolved(mr = mrResult, pipeline = Result.success(NoPipeline)))
 
   "failure produces a CurrentBranchSectionNode with a single message node" {
     val node = section(Result.failure(RuntimeException("boom")))

@@ -78,7 +78,7 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
   /**
    * MR-side children (MergeRequestNode + closing issues, or the Loading/failure message),
    * memoized by [mr]'s identity. Built through the Task-7 overload with a settled-empty
-   * pipeline — `Result.success(null)` contributes zero pipeline children by contract (see
+   * pipeline — `Result.success(NoPipeline)` contributes zero pipeline children by contract (see
    * [SidebarViewModel.buildCurrentBranchSection]'s KDoc: "no row at all"), so the built
    * section's children ARE exactly the MR side. Keeps the rendering byte-identical to the
    * view-model without duplicating its private message constants here.
@@ -86,7 +86,7 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
   private fun mrSide(mr: Result<CurrentBranchInfo>?): List<SidebarNode> {
     val key = resultKey(mr)
     if (mrSideKey === key) return mrSideNodes
-    val nodes = viewModel.buildCurrentBranchSection(Resolved(mr = mr, pipeline = Result.success(null))).children
+    val nodes = viewModel.buildCurrentBranchSection(Resolved(mr = mr, pipeline = Result.success(NoPipeline))).children
     mrSideKey = key
     mrSideNodes = nodes
     return nodes
@@ -99,7 +99,7 @@ class SidebarRefreshCoordinator(private val viewModel: SidebarViewModel) {
    * [SidebarViewModel.buildCurrentBranchSection]'s KDoc), so dropping the last child leaves
    * exactly the pipeline side.
    */
-  private fun pipelineSide(pipeline: Result<PipelineSnapshot?>?): List<SidebarNode> {
+  private fun pipelineSide(pipeline: Result<PipelineSide>?): List<SidebarNode> {
     val key = resultKey(pipeline)
     if (pipelineSideKey === key) return pipelineSideNodes
     val nodes = viewModel.buildCurrentBranchSection(Resolved(mr = null, pipeline = pipeline)).children.dropLast(1)
