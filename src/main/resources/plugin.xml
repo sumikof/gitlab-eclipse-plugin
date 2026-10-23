@@ -2166,6 +2166,62 @@
     </extension>
 
     <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
+    <extension point="org.eclipse.ui.themes">
+        <themeElementCategory
+                id="com.gitlab.eclipse.sidebar.themeCategory"
+                label="GitLab Sidebar">
+            <description>Colors of the changed files in the GitLab sidebar.</description>
+        </themeElementCategory>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeAddedForeground"
+                label="Sidebar Added File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_GREEN">
+            <description>Foreground of an added file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeDeletedForeground"
+                label="Sidebar Deleted File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_RED">
+            <description>Foreground of a deleted file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeRenamedForeground"
+                label="Sidebar Renamed File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_YELLOW">
+            <description>Foreground of a renamed file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeAddedForegroundDark"
+                label="Sidebar Added File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_GREEN">
+            <description>Foreground of an added file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeDeletedForegroundDark"
+                label="Sidebar Deleted File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_RED">
+            <description>Foreground of a deleted file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeRenamedForegroundDark"
+                label="Sidebar Renamed File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_YELLOW">
+            <description>Foreground of a renamed file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+    </extension>
+
     <extension point="org.eclipse.ui.editors">
         <editor
                 id="com.gitlab.eclipse.views.webview.WebviewEditorPart"

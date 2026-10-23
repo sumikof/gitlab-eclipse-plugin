@@ -18,6 +18,7 @@ import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
+import com.gitlab.eclipse.utils.theming.ThemeUtils
 import com.gitlab.eclipse.views.issues.ViewRefreshState
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueriesRefresh
 import com.gitlab.eclipse.views.sidebar.queries.CustomQueryRunner
@@ -28,6 +29,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.eclipse.jface.action.MenuManager
+import org.eclipse.jface.resource.JFaceResources
+import org.eclipse.jface.resource.LocalResourceManager
 import org.eclipse.jface.viewers.IStructuredSelection
 import org.eclipse.jface.viewers.ITreeViewerListener
 import org.eclipse.jface.viewers.TreeExpansionEvent
@@ -264,7 +267,16 @@ class GitLabSidebarView : ViewPart() {
   override fun createPartControl(parent: Composite) {
     viewer = TreeViewer(parent, SWT.SINGLE or SWT.H_SCROLL or SWT.V_SCROLL)
     viewer.contentProvider = SidebarContentProvider()
-    viewer.labelProvider = SidebarLabelProvider()
+    // Design A D2/D3: the icons belong to this manager and go with the tree; the colors to the theme's registry.
+    val resources = LocalResourceManager(JFaceResources.getResources(), viewer.control)
+    viewer.labelProvider = SidebarLabelProvider(
+      image = { name -> ThemeUtils.getThemedIcon(name)?.let { resources.create(it) } },
+      color = { role ->
+        val theme = PlatformUI.getWorkbench().themeManager.currentTheme
+        theme.colorRegistry.get(changeColorId(role, with(ThemeUtils) { theme.isDarkTheme() }))
+      },
+      onImageError = { name, e -> logger.warn("sidebar: icon $name could not be created: ${e.javaClass.name}") },
+    )
     viewer.tree.headerVisible = false
     // Publish the tree selection to the workbench so selection-based command handlers
     // (e.g. CheckoutMrBranchHandler via HandlerUtil.getCurrentSelection) can see it.
