@@ -57,7 +57,7 @@ class CiStatusIconTest : DescribeSpec({
   }
 
   describe("agrees with the status-bar trim for allowFailure=false") {
-    withData(nameFn = { "status='${it.status}'" }, CASES.filter { !it.allowFailure && it.status != "RUNNING" }) { c ->
+    withData(nameFn = { "status='${it.status}'" }, CASES.filter { !it.allowFailure }) { c ->
       ciStatusIcon(c.status).iconName shouldBe trimIconName(StatusTrimPresenter.iconFor(c.status))
     }
   }
