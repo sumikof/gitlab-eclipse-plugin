@@ -152,6 +152,8 @@ class ChangedFileNode(
   val diffSource: MrDiffSource? = null,
   val aMode: String? = null,
   val bMode: String? = null,
+  /** True for a leaf of the TREE view, where only the last path segment is displayed. */
+  val inTree: Boolean = false,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()
@@ -190,6 +192,9 @@ class PipelineNode(
 ) : SidebarNode {
   val pipelineId: Long = pipeline.id
   val projectId: Long? = pipeline.projectId
+
+  /** Raw GitLab status of the pipeline, for the status icon. */
+  val status: String? = pipeline.status
   private val kindPrefix: String = if (kind == PipelineKind.TAG) "Tag Pipeline" else "Pipeline"
   override val label: String = "$kindPrefix #${pipeline.id} · ${CiStatus.displayName(pipeline.status)}"
   override val activationUrl: String? = pipeline.webUrl
@@ -202,6 +207,17 @@ class PipelineNode(
  * [name], never by [label] — otherwise every status change would collapse the stage.
  */
 class StageNode(val name: String, val statusName: String, override val children: List<SidebarNode>) : SidebarNode {
+  /** Raw (status, allowFailure) of the highest-priority child; same rule as [statusName], used for the icon. */
+  val aggregate: Pair<String?, Boolean> = aggregateStatus(
+    children.mapNotNull {
+      when (it) {
+        is JobNode -> it.job.status to (it.job.allowFailure ?: false)
+        is BridgeNode -> it.bridge.status to (it.bridge.allowFailure ?: false)
+        else -> null
+      }
+    },
+  )
+
   override val label: String = "$name · $statusName"
 }
 
@@ -250,13 +266,10 @@ class DownstreamPipelinesNode(
   val parentPipelineId: Long,
   override val children: List<DownstreamPipelineNode>,
 ) : SidebarNode {
-  override val label: String = "Downstream pipelines · ${downstreamAggregateName(children)}"
-}
+  /** Highest-priority (status, allowFailure) among [children]; declared before [label], which reads it. */
+  val aggregate: Pair<String?, Boolean> = aggregateStatus(children.map { it.pipeline.status to false })
 
-/** Display name of the highest-priority pipeline status among [nodes] (ties: first); unknown when empty. */
-private fun downstreamAggregateName(nodes: List<DownstreamPipelineNode>): String {
-  val (status, allowFailure) = aggregateStatus(nodes.map { it.pipeline.status to false })
-  return CiStatus.displayName(status, allowFailure)
+  override val label: String = "Downstream pipelines · ${CiStatus.displayName(aggregate.first, aggregate.second)}"
 }
 
 /**

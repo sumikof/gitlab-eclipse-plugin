@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabMrVersion
 import com.gitlab.eclipse.api.model.GitLabPipeline
+import com.gitlab.eclipse.ci.CiStatusIcon
 import com.gitlab.eclipse.ci.PipelineKind
 import com.gitlab.eclipse.mergerequests.CurrentBranchInfo
 import com.gitlab.eclipse.mergerequests.review.MergeRequestRef
@@ -400,6 +401,21 @@ class SidebarViewModelTest : StringSpec({
   "CI-05: a stage's status is the latest attempts' aggregate, not a retried attempt's" {
     val jobs = listOf(job(1, name = "compile", status = "failed"), job(5, name = "compile", status = "success"))
     (buildNode(Result.success(jobs)).children.single() as StageNode).label shouldBe "build · Passed"
+  }
+
+  "CI-05: a tie in a built stage gives the same winner to the icon and the status text, in either order" {
+    // manual and a null status share priority 0; the first entry (by id) wins
+    val manualFirst = buildNode(
+      Result.success(listOf(job(1, status = "manual"), job(2, status = null))),
+    ).children.single() as StageNode
+    sidebarStatusIcon(manualFirst) shouldBe CiStatusIcon.MANUAL
+    manualFirst.statusName shouldBe "Manual"
+
+    val unknownFirst = buildNode(
+      Result.success(listOf(job(1, status = null), job(2, status = "manual"))),
+    ).children.single() as StageNode
+    sidebarStatusIcon(unknownFirst) shouldBe CiStatusIcon.UNKNOWN
+    unknownFirst.statusName shouldBe "Status Unknown"
   }
 
   "CI-05: stage label is `name · status` aggregated over jobs AND bridges (failed bridge wins over passed jobs)" {

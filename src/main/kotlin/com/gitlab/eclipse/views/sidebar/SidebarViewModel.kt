@@ -383,7 +383,9 @@ class SidebarViewModel {
   ): List<SidebarNode> {
     val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
-    val fileNodes = diffs.map { diff -> toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef, diffSource) }
+    val fileNodes = diffs.map { diff ->
+      toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef, diffSource, mode == SidebarViewMode.TREE)
+    }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
       SidebarViewMode.TREE -> buildChangedFileTree(fileNodes)
@@ -396,6 +398,7 @@ class SidebarViewModel {
     mrWebUrl: String?,
     mrRef: MergeRequestRef?,
     diffSource: MrDiffSource?,
+    inTree: Boolean,
   ): ChangedFileNode {
     val changeType =
       when {
@@ -414,6 +417,7 @@ class SidebarViewModel {
       diffSource = diffSource,
       aMode = diff.aMode,
       bMode = diff.bMode,
+      inTree = inTree,
     )
   }
 

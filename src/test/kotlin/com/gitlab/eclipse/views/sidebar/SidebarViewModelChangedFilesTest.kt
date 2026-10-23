@@ -39,6 +39,7 @@ class SidebarViewModelChangedFilesTest : StringSpec({
     (nodes[0] as ChangedFileNode).newPath shouldBe "a.kt"
     (nodes[1] as ChangedFileNode).newPath shouldBe "b.kt"
     (nodes[2] as ChangedFileNode).newPath shouldBe "c.kt"
+    nodes.forEach { (it as ChangedFileNode).inTree shouldBe false }
   }
 
   "LIST mode: diffHeadSha comes from version.headCommitSha" {
@@ -68,6 +69,8 @@ class SidebarViewModelChangedFilesTest : StringSpec({
     dir.children.map { (it as ChangedFileNode).newPath }.toSet() shouldBe setOf("src/main/A.kt", "src/main/B.kt")
     val rootFile = nodes.filterIsInstance<ChangedFileNode>().single()
     rootFile.newPath shouldBe "README.md"
+    rootFile.inTree shouldBe true
+    dir.children.forEach { (it as ChangedFileNode).inTree shouldBe true }
   }
 
   "TREE mode: collapses a single-child directory chain into one node" {
