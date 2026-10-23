@@ -46,6 +46,7 @@ class SidebarDecorationsTest : StringSpec({
     sidebarStatusIcon(stage(job("success"), job("failed", true))) shouldBe CiStatusIcon.FAILED_ALLOWED
     sidebarStatusIcon(stage(job("success"), job("running"))) shouldBe CiStatusIcon.RUNNING
     sidebarStatusIcon(stage(job("success"), bridge("failed"))) shouldBe CiStatusIcon.FAILED
+    sidebarStatusIcon(stage(job("success"), bridge("failed", true))) shouldBe CiStatusIcon.FAILED_ALLOWED
   }
   "empty stage is unknown" {
     sidebarStatusIcon(stage()) shouldBe CiStatusIcon.UNKNOWN
