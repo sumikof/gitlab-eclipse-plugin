@@ -10,8 +10,12 @@ import io.mockk.mockk
 import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.Image
 
-private fun job(status: String?, allowFailure: Boolean? = null) =
-  JobNode(GitLabJob(id = 1, name = "j", status = status, allowFailure = allowFailure), 1L, "https://gitlab.example.com", "fp0")
+private fun job(status: String?, allowFailure: Boolean? = null) = JobNode(
+  GitLabJob(id = 1, name = "j", status = status, allowFailure = allowFailure),
+  1L,
+  "https://gitlab.example.com",
+  "fp0",
+)
 
 private fun file(type: ChangeType) = ChangedFileNode("dir/file.kt", "dir/file.kt", type, "sha")
 

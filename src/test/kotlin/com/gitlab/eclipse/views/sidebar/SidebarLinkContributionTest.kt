@@ -5,6 +5,7 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldNotBeEmpty
 import org.w3c.dom.Element
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -35,6 +36,7 @@ class SidebarLinkContributionTest : StringSpec({
       val command = checkNotNull(byId[id]) { "command $id" }
       command.getAttribute("name") shouldBe name
       command.getAttribute("categoryId") shouldBe "gitlab-eclipse-plugin"
+      command.getAttribute("description").shouldNotBeEmpty()
     }
   }
 

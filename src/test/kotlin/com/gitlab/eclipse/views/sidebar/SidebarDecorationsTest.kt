@@ -6,6 +6,8 @@ import com.gitlab.eclipse.api.model.GitLabJob
 import com.gitlab.eclipse.api.model.GitLabMergeRequest
 import com.gitlab.eclipse.api.model.GitLabPipeline
 import com.gitlab.eclipse.ci.CiStatusIcon
+import com.gitlab.eclipse.ci.JobEntry
+import com.gitlab.eclipse.ci.aggregateStatusName
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
 
@@ -18,7 +20,8 @@ private fun job(status: String?, allowFailure: Boolean? = null) =
 private fun bridge(status: String?, allowFailure: Boolean? = null) =
   BridgeNode(GitLabBridge(id = 2, name = "b", status = status, allowFailure = allowFailure), 1L, SRC_URL, SRC_FP)
 
-private fun stage(vararg children: SidebarNode, statusName: String = "x") = StageNode("build", statusName, children.toList())
+private fun stage(vararg children: SidebarNode, statusName: String = "x") =
+  StageNode("build", statusName, children.toList())
 
 private fun downstream(status: String?, id: Long = 5) =
   DownstreamPipelineNode("br", GitLabPipeline(id = id, status = status), 1, emptySet(), SRC_URL, SRC_FP)
@@ -52,14 +55,10 @@ class SidebarDecorationsTest : StringSpec({
     sidebarStatusIcon(stage()) shouldBe CiStatusIcon.UNKNOWN
   }
   "stage icon and statusName follow the same tie rule" {
-    val manualFirst = stage(job("manual"), job(null), statusName = com.gitlab.eclipse.ci.aggregateStatusName(
-      listOf(com.gitlab.eclipse.ci.JobEntry(GitLabJob(id = 1, status = "manual"), null),
-        com.gitlab.eclipse.ci.JobEntry(GitLabJob(id = 2, status = null), null)),
-    ))
-    val unknownFirst = stage(job(null), job("manual"), statusName = com.gitlab.eclipse.ci.aggregateStatusName(
-      listOf(com.gitlab.eclipse.ci.JobEntry(GitLabJob(id = 2, status = null), null),
-        com.gitlab.eclipse.ci.JobEntry(GitLabJob(id = 1, status = "manual"), null)),
-    ))
+    val manual = JobEntry(GitLabJob(id = 1, status = "manual"), null)
+    val unknown = JobEntry(GitLabJob(id = 2, status = null), null)
+    val manualFirst = stage(job("manual"), job(null), statusName = aggregateStatusName(listOf(manual, unknown)))
+    val unknownFirst = stage(job(null), job("manual"), statusName = aggregateStatusName(listOf(unknown, manual)))
     sidebarStatusIcon(manualFirst) shouldBe CiStatusIcon.MANUAL
     manualFirst.statusName shouldBe "Manual"
     manualFirst.label shouldBe "build · Manual"

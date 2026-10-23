@@ -270,8 +270,10 @@ class GitLabSidebarView : ViewPart() {
     // Design A D2/D3: the icons belong to this manager and go with the tree; the colors to the theme's registry.
     val resources = LocalResourceManager(JFaceResources.getResources(), viewer.control)
     viewer.labelProvider = SidebarLabelProvider(
-      image = { name -> ThemeUtils.getThemedIcon(name)?.let { resources.create(it) } },
-      // A paint during workbench shutdown gets no workbench: null keeps the default foreground (the letter remains).
+      // A paint during workbench shutdown gets no workbench: no icon, and the default foreground (the letter remains).
+      image = { name ->
+        if (PlatformUI.isWorkbenchRunning()) ThemeUtils.getThemedIcon(name)?.let { resources.create(it) } else null
+      },
       color = { role ->
         if (PlatformUI.isWorkbenchRunning()) {
           val theme = PlatformUI.getWorkbench().themeManager.currentTheme
@@ -280,7 +282,9 @@ class GitLabSidebarView : ViewPart() {
           null
         }
       },
-      onImageError = { name, e -> logger.warn("sidebar: icon $name could not be created: ${e.javaClass.name}") },
+      onImageError = { name, e ->
+        logger.warn("sidebar: icon $name could not be created: ${e.javaClass.name}: ${e.message}")
+      },
     )
     viewer.tree.headerVisible = false
     // Publish the tree selection to the workbench so selection-based command handlers

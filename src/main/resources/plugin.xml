@@ -411,12 +411,14 @@
         <command
                 id="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
                 name="Open in GitLab"
+                description="Open the selected GitLab sidebar item in the browser"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
         <command
                 id="com.gitlab.eclipse.commands.CopySidebarItemLink"
                 name="Copy Link to Clipboard"
+                description="Copy the web link of the selected GitLab sidebar item"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 

@@ -34,11 +34,20 @@ private val RAW_CASES: List<Pair<String?, String?>> = listOf(
 
 private fun pipelineNode(url: String?) = PipelineNode(
   GitLabPipeline(id = 1, status = "success", webUrl = url),
-  emptyList(), canRetry = false, canCancel = false, sourceInstanceUrl = SRC_URL, sourceAuthFingerprint = SRC_FP,
+  emptyList(),
+  canRetry = false,
+  canCancel = false,
+  sourceInstanceUrl = SRC_URL,
+  sourceAuthFingerprint = SRC_FP,
 )
 
 private fun downstream(url: String?) = DownstreamPipelineNode(
-  "bridge", GitLabPipeline(id = 2, status = "success", webUrl = url), 1, emptySet(), SRC_URL, SRC_FP,
+  "bridge",
+  GitLabPipeline(id = 2, status = "success", webUrl = url),
+  1,
+  emptySet(),
+  SRC_URL,
+  SRC_FP,
 )
 
 class SidebarWebLinkTest : DescribeSpec({
@@ -57,6 +66,11 @@ class SidebarWebLinkTest : DescribeSpec({
       // Gson can put a null into the non-null Kotlin field, as a real `"web_url": null` response would.
       val json = """{"id":1,"iid":1,"title":"t","web_url":null,"state":"opened"}"""
       val node = IssueNode(Gson().fromJson(json, GitLabIssue::class.java))
+      sidebarWebUrl(node) shouldBe null
+    }
+    it("returns null, without throwing, for a merge request whose web_url is null") {
+      val json = """{"id":1,"iid":3,"title":"t","project_id":9,"web_url":null,"state":"opened"}"""
+      val node = MergeRequestNode(Gson().fromJson(json, GitLabMergeRequest::class.java))
       sidebarWebUrl(node) shouldBe null
     }
     it("returns the url of a merge request although it is not activatable") {

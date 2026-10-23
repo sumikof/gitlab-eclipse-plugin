@@ -23,8 +23,9 @@ fun openableWebUrl(raw: String?): String? {
 }
 
 /**
- * The web URL "Open in browser" would open for [node], or null when it has none. A [MergeRequestNode] is not
+ * The web URL "Open in GitLab" would open for [node], or null when it has none. A [MergeRequestNode] is not
  * activatable (its [SidebarNode.activationUrl] is null) but still has a [MergeRequestNode.url].
+ * An allow-list, failing closed: a new node type with an [SidebarNode.activationUrl] is not openable until added here.
  */
 fun sidebarWebUrl(node: SidebarNode): String? =
   when (node) {

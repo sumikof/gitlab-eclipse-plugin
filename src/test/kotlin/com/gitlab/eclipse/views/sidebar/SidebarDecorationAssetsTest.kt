@@ -42,7 +42,7 @@ class SidebarDecorationAssetsTest : StringSpec({
   "every sidebar color declares a value that names a real SWT color constant" {
     sidebarColors.forEach { it.getAttribute("value").shouldNotBeEmpty() }
     sidebarColors.map { it.getAttribute("value") }.filter {
-      runCatching { SWT::class.java.getField(it) }.isFailure
+      !it.startsWith("COLOR_") || runCatching { SWT::class.java.getField(it) }.isFailure
     }.shouldBeEmpty()
   }
 
