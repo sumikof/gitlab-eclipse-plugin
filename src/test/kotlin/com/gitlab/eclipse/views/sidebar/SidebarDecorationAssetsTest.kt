@@ -6,6 +6,7 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.string.shouldNotBeEmpty
+import org.eclipse.swt.SWT
 import org.w3c.dom.Element
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -38,8 +39,11 @@ class SidebarDecorationAssetsTest : StringSpec({
     sidebarColors.filter { it.getAttribute("categoryId") !in categories }.map { it.getAttribute("id") }.shouldBeEmpty()
   }
 
-  "every sidebar color declares a value" {
+  "every sidebar color declares a value that names a real SWT color constant" {
     sidebarColors.forEach { it.getAttribute("value").shouldNotBeEmpty() }
+    sidebarColors.map { it.getAttribute("value") }.filter {
+      runCatching { SWT::class.java.getField(it) }.isFailure
+    }.shouldBeEmpty()
   }
 
   "every CI status icon exists for both tones (light/dark folders), at 1x and @2x" {
