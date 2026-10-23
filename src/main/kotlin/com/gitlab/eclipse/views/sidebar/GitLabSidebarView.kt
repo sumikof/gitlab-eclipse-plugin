@@ -271,9 +271,14 @@ class GitLabSidebarView : ViewPart() {
     val resources = LocalResourceManager(JFaceResources.getResources(), viewer.control)
     viewer.labelProvider = SidebarLabelProvider(
       image = { name -> ThemeUtils.getThemedIcon(name)?.let { resources.create(it) } },
+      // A paint during workbench shutdown gets no workbench: null keeps the default foreground (the letter remains).
       color = { role ->
-        val theme = PlatformUI.getWorkbench().themeManager.currentTheme
-        theme.colorRegistry.get(changeColorId(role, with(ThemeUtils) { theme.isDarkTheme() }))
+        if (PlatformUI.isWorkbenchRunning()) {
+          val theme = PlatformUI.getWorkbench().themeManager.currentTheme
+          theme.colorRegistry.get(changeColorId(role, with(ThemeUtils) { theme.isDarkTheme() }))
+        } else {
+          null
+        }
       },
       onImageError = { name, e -> logger.warn("sidebar: icon $name could not be created: ${e.javaClass.name}") },
     )

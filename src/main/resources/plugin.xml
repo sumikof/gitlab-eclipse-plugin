@@ -2165,7 +2165,6 @@
         </menuContribution>
     </extension>
 
-    <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
     <extension point="org.eclipse.ui.themes">
         <themeElementCategory
                 id="com.gitlab.eclipse.sidebar.themeCategory"
@@ -2222,6 +2221,7 @@
         </colorDefinition>
     </extension>
 
+    <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
     <extension point="org.eclipse.ui.editors">
         <editor
                 id="com.gitlab.eclipse.views.webview.WebviewEditorPart"
