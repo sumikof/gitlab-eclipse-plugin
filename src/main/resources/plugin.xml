@@ -409,6 +409,18 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                name="Open in GitLab"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                name="Copy Link to Clipboard"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ResolveThread"
                 name="Resolve Thread"
                 categoryId="gitlab-eclipse-plugin">
@@ -1090,6 +1102,16 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                class="com.gitlab.eclipse.views.sidebar.OpenSidebarItemInGitLabHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                class="com.gitlab.eclipse.views.sidebar.CopySidebarItemLinkHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ResolveThread"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.ThreadResolveHandler"
         />
@@ -1194,6 +1216,14 @@
                 namespace="com.gitlab.eclipse.node"
                 properties="canReplyToThread,canResolveThread,canUnresolveThread,canEditNote,canDeleteNote,canCommentOnMergeRequest"
                 class="com.gitlab.eclipse.views.sidebar.DiscussionActionPropertyTester">
+        </propertyTester>
+
+        <propertyTester
+                id="com.gitlab.eclipse.node.sidebarLinkPropertyTester"
+                type="com.gitlab.eclipse.views.sidebar.SidebarNode"
+                namespace="com.gitlab.eclipse.node"
+                properties="hasWebUrl"
+                class="com.gitlab.eclipse.views.sidebar.SidebarLinkPropertyTester">
         </propertyTester>
     </extension>
 
@@ -1682,6 +1712,29 @@
              validate the selection themselves (and notify on mismatch); the visibleWhen
              expressions here only keep irrelevant items out of the menu. -->
         <menuContribution locationURI="popup:com.gitlab.eclipse.views.GitLabSidebarView">
+            <command
+                    commandId="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                    label="Open in GitLab">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <test property="com.gitlab.eclipse.node.hasWebUrl"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+            <command
+                    commandId="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                    label="Copy Link to Clipboard">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <test property="com.gitlab.eclipse.node.hasWebUrl"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+            <separator name="com.gitlab.eclipse.sidebar.links" visible="true"/>
             <command
                     commandId="com.gitlab.eclipse.commands.CheckoutMrBranch"
                     label="Checkout Merge Request Branch">
