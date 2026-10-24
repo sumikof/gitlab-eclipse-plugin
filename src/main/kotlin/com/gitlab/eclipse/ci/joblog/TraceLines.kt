@@ -16,8 +16,11 @@ data class RawLineInfo(val text: String, val events: List<SectionEvent>)
 
 private val sectionMarker = Regex("""section_(start|end):\d+:([^\[\r\s]+)(?:\[([^\]\r]*)])?""")
 
-/** Matches C0 controls except TAB (LF and CR are consumed earlier), plus DEL. ESC is kept for the ANSI parser. */
-private val residualControl = Regex("[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]")
+/**
+ * Matches C0 controls except TAB (LF and CR are consumed earlier), plus DEL. ESC and BEL are kept for the ANSI
+ * parser: BEL terminates an OSC sequence, and the parser drops any stray one itself.
+ */
+private val residualControl = Regex("[\u0000-\u0006\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]")
 
 /**
  * Normalizes one trace line (no `\n`): detects section markers before the last `\r`, keeps only the text after

@@ -48,6 +48,9 @@ private val LINE_CASES = listOf(
   LineCase("name may contain non-word characters", "section_end:1:a/b:c\r", "", listOf(SectionEvent.End("a/b:c"))),
   LineCase("marker after the last CR is not detected", "text\rsection_end:1:a", "", emptyList()),
   LineCase("strips C0 but keeps tab", "a\u0000b\u0008c\td", "abc\td", emptyList()),
+  LineCase("strips VT and FF", "a\u000Bb\u000Cc", "abc", emptyList()),
+  LineCase("keeps BEL for the OSC terminator", "a\u0007b", "a\u0007b", emptyList()),
+  LineCase("name stops at whitespace", "section_start:1:a b", " b", listOf(SectionEvent.Start("a", false))),
   LineCase("strips DEL", "x\u007Fy", "xy", emptyList()),
   LineCase("keeps ESC for the ANSI parser", "\u001B[32;1mhi\u001B[0;m", "\u001B[32;1mhi\u001B[0;m", emptyList()),
 )
@@ -60,6 +63,18 @@ class TraceLinesTest : DescribeSpec({
       val info = normalizeTraceLine(case.input)
       info.text shouldBe case.text
       info.events shouldBe case.events
+    }
+  }
+
+  describe("normalizeTraceLine followed by parseAnsiLine") {
+    fun visible(line: String) = parseAnsiLine(normalizeTraceLine(line).text, AnsiStyle.DEFAULT).text
+
+    it("drops an OSC hyperlink but keeps its label") {
+      visible("see \u001B]8;;http://x\u0007link\u001B]8;;\u0007 done") shouldBe "see link done"
+    }
+
+    it("drops an OSC title") {
+      visible("\u001B]0;title\u0007text") shouldBe "text"
     }
   }
 

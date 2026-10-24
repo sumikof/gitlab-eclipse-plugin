@@ -66,13 +66,16 @@ private class LineParser(private val line: String, initial: AnsiStyle) {
       if (c == ESC) {
         i = consumeEscape(i)
       } else {
-        text.append(c)
+        if (isPrintable(c)) text.append(c)
         i++
       }
     }
     closeRun()
     return ParsedLine(text.toString(), runs, style)
   }
+
+  /** Drops C0 controls (except TAB) and DEL that are left outside escape sequences, e.g. a stray BEL. */
+  private fun isPrintable(c: Char): Boolean = c == '\t' || (c >= ' ' && c != '\u007F')
 
   private fun closeRun() {
     if (!style.isDefault && text.length > runStart) addRun(StyleRun(runStart, text.length - runStart, style))

@@ -112,6 +112,8 @@ private val CASES = listOf(
   ),
   SgrCase("charset escape removed", "a\u001B(Bb", "ab", emptyList()),
   SgrCase("ESC 7 removed", "a\u001B7b", "ab", emptyList()),
+  SgrCase("stray BEL removed", "a\u0007b", "ab", emptyList()),
+  SgrCase("other C0 and DEL removed, TAB kept", "a\u0001b\u007Fc\td", "abc\td", emptyList()),
   SgrCase("style without text yields no run", "\u001B[31m\u001B[0mx", "x", emptyList()),
 )
 
