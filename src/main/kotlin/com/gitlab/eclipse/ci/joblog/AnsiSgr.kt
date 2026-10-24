@@ -75,8 +75,18 @@ private class LineParser(private val line: String, initial: AnsiStyle) {
   }
 
   private fun closeRun() {
-    if (!style.isDefault && text.length > runStart) runs.add(StyleRun(runStart, text.length - runStart, style))
+    if (!style.isDefault && text.length > runStart) addRun(StyleRun(runStart, text.length - runStart, style))
     runStart = text.length
+  }
+
+  /** Adds [run], extending the previous run instead when it is adjacent and has the same style. */
+  private fun addRun(run: StyleRun) {
+    val last = runs.lastOrNull()
+    if (last != null && last.start + last.length == run.start && last.style == run.style) {
+      runs[runs.size - 1] = last.copy(length = last.length + run.length)
+    } else {
+      runs.add(run)
+    }
   }
 
   private fun changeStyle(next: AnsiStyle) {
@@ -91,9 +101,17 @@ private class LineParser(private val line: String, initial: AnsiStyle) {
     return when {
       next == '[' -> consumeCsi(at + 2)
       next == ']' -> skipOsc(line, at + 2)
-      next != null && next in '\u0040'..'\u005F' -> at + 2
+      next != null && next in '\u0020'..'\u002F' -> skipIntermediates(at + 1)
+      next != null && next in '\u0030'..'\u005F' -> at + 2
       else -> at + 1
     }
+  }
+
+  /** Skips an `ESC <intermediates> <final>` sequence such as `ESC ( B`; [from] is the first intermediate byte. */
+  private fun skipIntermediates(from: Int): Int {
+    var j = from
+    while (j < line.length && line[j] in '\u0020'..'\u002F') j++
+    return if (j < line.length && line[j] in '\u0030'..'\u007E') j + 1 else j
   }
 
   private fun consumeCsi(from: Int): Int {

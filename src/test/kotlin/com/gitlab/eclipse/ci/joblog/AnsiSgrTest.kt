@@ -77,6 +77,41 @@ private val CASES = listOf(
     "abcdefg",
     listOf(StyleRun(2, 2, red), StyleRun(6, 1, AnsiStyle(bold = true))),
   ),
+  SgrCase("re-entered same style merged", "\u001B[31ma\u001B[0m\u001B[31mb", "ab", listOf(StyleRun(0, 2, red))),
+  SgrCase(
+    "same style merged across a bodyless detour",
+    "\u001B[31ma\u001B[1m\u001B[22mb",
+    "ab",
+    listOf(StyleRun(0, 2, red)),
+  ),
+  SgrCase("256 cube first", "\u001B[38;5;16mx", "x", listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Rgb(0, 0, 0))))),
+  SgrCase(
+    "256 cube blue step",
+    "\u001B[38;5;17mx",
+    "x",
+    listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Rgb(0, 0, 95)))),
+  ),
+  SgrCase(
+    "256 cube mixed",
+    "\u001B[38;5;67mx",
+    "x",
+    listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Rgb(95, 135, 175)))),
+  ),
+  SgrCase(
+    "256 gray last",
+    "\u001B[38;5;255mx",
+    "x",
+    listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Rgb(238, 238, 238)))),
+  ),
+  SgrCase("256 named last", "\u001B[38;5;15mx", "x", listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Named(15))))),
+  SgrCase(
+    "truecolor max",
+    "\u001B[38;2;255;255;255mx",
+    "x",
+    listOf(StyleRun(0, 1, AnsiStyle(fg = AnsiColor.Rgb(255, 255, 255)))),
+  ),
+  SgrCase("charset escape removed", "a\u001B(Bb", "ab", emptyList()),
+  SgrCase("ESC 7 removed", "a\u001B7b", "ab", emptyList()),
   SgrCase("style without text yields no run", "\u001B[31m\u001B[0mx", "x", emptyList()),
 )
 
