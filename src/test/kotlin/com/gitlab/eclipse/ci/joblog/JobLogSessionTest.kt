@@ -524,6 +524,13 @@ class JobLogSessionTest : DescribeSpec({
       w.env.pending.single().delayMs shouldBe 0
     }
 
+    it("Ruling 3: the only editor, attached hidden, does not pause the first request") {
+      // Its first partVisible may not have reached the listener yet: pausing here could park it for good.
+      w.open(FakeView(visible = false))
+
+      w.env.pending.single().delayMs shouldBe 0
+    }
+
     it("I-3: a hidden editor attached to a live session does not pause it") {
       live(FakeView())
 

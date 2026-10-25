@@ -323,6 +323,24 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
       notices shouldContainExactly listOf(RAW_LOG_SAVED_MESSAGE)
     }
 
+    it("a save started after the plugin stopped and started again runs to the end and says so (r2 N-1)") {
+      val w = FakeWorld()
+      w.open(FakeView())
+      w.registry.disposeAll()
+      w.open(FakeView())
+      val finish = CompletableDeferred<Unit>()
+      val notices = mutableListOf<String>()
+      handlerOn(w, target, notices) { _, _, _, _ -> finish.await() }.run(input())
+      val save = w.env.launched.last()
+
+      save.isActive shouldBe true
+      finish.complete(Unit)
+
+      notices shouldContainExactly listOf(RAW_LOG_SAVED_MESSAGE)
+      save.isCompleted shouldBe true
+      save.isCancelled shouldBe false
+    }
+
     it("stopping the plugin ends a stalled save at once, says nothing and leaves no file") {
       val own = tempdir().toPath()
       val apiClient = mockk<GitLabApiClient>()

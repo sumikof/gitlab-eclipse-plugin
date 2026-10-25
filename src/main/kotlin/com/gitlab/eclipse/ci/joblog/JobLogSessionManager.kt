@@ -43,7 +43,8 @@ internal class JobLogSessionRegistry(
   private val sessions = HashMap<JobLogKey, JobLogSession>()
 
   // Save Raw Log downloads outlive the editor that started them; only stopping the plugin ends them.
-  private val saves = SaveJobs()
+  // Replaced on every stop: a closed tracker cancels what it is given, and the plugin may start again.
+  private var saves = SaveJobs()
 
   /**
    * Starts (or restarts) the session of [target] and asks [show] to bring an editor for it up.
@@ -106,6 +107,7 @@ internal class JobLogSessionRegistry(
   /** Plugin stop: every session and every running save is dropped, whether or not its editors get closed. */
   fun disposeAll() {
     saves.cancelAll()
+    saves = SaveJobs()
     val all = sessions.values.toList()
     sessions.clear()
     all.forEach(JobLogSession::dispose)

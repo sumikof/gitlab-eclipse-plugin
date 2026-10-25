@@ -115,6 +115,8 @@ class JobLogEditor : TextEditor() {
   // click survive (B2 review I-1). Another kind, or the log, goes through the platform as before.
   override fun updatePartControl(input: IEditorInput?) {
     if (statusPages.keepsShowing((input as? JobLogEditorInput)?.content?.page)) return
+    // The platform disposes the status control now: the page it held is no longer ours (R2-4).
+    statusPages.forget()
     super.updatePartControl(input)
   }
 
