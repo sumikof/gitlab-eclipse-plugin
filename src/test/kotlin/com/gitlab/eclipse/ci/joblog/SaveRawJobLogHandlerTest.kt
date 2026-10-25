@@ -19,15 +19,22 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.eclipse.core.runtime.ILog
 import org.w3c.dom.Element
+import java.io.IOException
 import java.io.InputStream
 import java.net.http.HttpTimeoutException
 import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.xml.parsers.DocumentBuilderFactory
 
 // Test streams that never end stop here, so a broken cancellation fails at once instead of filling the disk.
@@ -61,6 +68,7 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
     val pins = mutableListOf<Pair<String, String>>()
     val downloads = mutableListOf<List<Any>>()
     var launches = 0
+    val launchKeys = mutableListOf<JobLogKey>()
     var pinResult: ConnectionSnapshot? = null
     var failure: Exception? = null
 
@@ -78,8 +86,9 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
         failure?.let { throw it }
       },
       notify = { notices += it },
-      background = { block ->
+      background = { key, block ->
         launches++
+        launchKeys += key
         runBlocking { block() }
       },
       log = log,
@@ -155,6 +164,7 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
       f.run()
 
       f.launches shouldBe 1
+      f.launchKeys shouldContainExactly listOf(JobLogKey.of(NODE_URL, NODE_FP, PROJECT_ID, JOB_ID))
       f.downloads shouldContainExactly listOf(listOf(PROJECT_ID, JOB_ID, snapshot, target))
       f.notices shouldContainExactly listOf(RAW_LOG_SAVED_MESSAGE)
       f.lines.shouldBeEmpty()
@@ -218,8 +228,8 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
           check(total <= ENDLESS_CAP_BYTES) { "endless test stream passed 64 MiB: cancellation did not stop the copy" }
         }
       }
-      every { apiClient.downloadTo(any(), any(), any()) } answers {
-        thirdArg<(InputStream) -> Unit>().invoke(endless)
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(InputStream) -> Unit>(3).invoke(endless)
       }
 
       runBlocking {
@@ -232,6 +242,47 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
 
       job.isCancelled shouldBe true
       reads shouldBe 3
+      Files.list(own).use { it.count() } shouldBe 0L
+    }
+
+    // B1 review N-5: without the close hook this read would block until the 10 minute deadline.
+    it("ends a read blocked on a stalled connection as soon as the coroutine is cancelled") {
+      val own = tempdir().toPath()
+      val apiClient = mockk<GitLabApiClient>()
+      val reading = CountDownLatch(1)
+      val closed = CountDownLatch(1)
+      val stalled = object : InputStream() {
+        override fun read(): Int = -1
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+          reading.countDown()
+          closed.await()
+          throw IOException("Stream closed")
+        }
+
+        override fun close() {
+          closed.countDown()
+        }
+      }
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(() -> Unit) -> Unit>(2).invoke { stalled.close() }
+        arg<(InputStream) -> Unit>(3).invoke(stalled)
+      }
+
+      lateinit var job: Job
+      runBlocking {
+        job = launch {
+          downloadRawTraceCancellably(JobTraceService(apiClient), PROJECT_ID, JOB_ID, snapshot, own.resolve("x.log"))
+        }
+        Executors.newSingleThreadExecutor().asCoroutineDispatcher().use { waiter ->
+          withContext(waiter) { reading.await(5, TimeUnit.SECONDS) } shouldBe true
+        }
+        job.cancel()
+        withTimeout(5_000) { job.join() }
+      }
+
+      job.isCancelled shouldBe true
+      closed.count shouldBe 0L
       Files.list(own).use { it.count() } shouldBe 0L
     }
   }

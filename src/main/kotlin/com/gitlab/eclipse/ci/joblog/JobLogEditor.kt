@@ -3,6 +3,7 @@ package com.gitlab.eclipse.ci.joblog
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
 import org.eclipse.core.runtime.ILog
+import org.eclipse.core.runtime.IStatus
 import org.eclipse.jface.preference.IPreferenceStore
 import org.eclipse.jface.resource.ColorDescriptor
 import org.eclipse.jface.resource.JFaceResources
@@ -37,9 +38,10 @@ private const val GREEN_BITS = 8
 
 /**
  * Read-only job-log editor (design §5.3): a [ProjectionViewer] folds the GitLab sections and a
- * [JobLogPresenter] colors only what is on screen. The document comes from the shared
- * [JobLogContent] through [JobLogDocumentProvider]; [applyRendered] puts the matching folds and
- * style runs on top. UI thread only.
+ * [JobLogPresenter] colors only what is on screen. The document of a key is shared by all its
+ * editors ([JobLogDocumentProvider.SHARED]); [applyRendered] puts the matching folds and style
+ * runs on top. The editor follows the job's session ([JobLogEditorSessionLink]), which also picks
+ * the page: a non-log page is a status of the provider, shown through [isErrorStatus]. UI thread only.
  */
 class JobLogEditor : TextEditor() {
   companion object {
@@ -50,14 +52,21 @@ class JobLogEditor : TextEditor() {
   private var presenter: JobLogPresenter? = null
   private var applied: RenderResult? = null
   private val foldingUnavailable = OneTimeAudit { logger<JobLogEditor>() }
+  private val sessionLink = JobLogEditorSessionLink(this)
 
   val jobLogInput: JobLogEditorInput?
     get() = editorInput as? JobLogEditorInput
 
+  internal val viewer: ProjectionViewer?
+    get() = sourceViewer as? ProjectionViewer
+
+  internal val jobLogPresenter: JobLogPresenter?
+    get() = presenter
+
   override fun initializeEditor() {
     super.initializeEditor()
     setSourceViewerConfiguration(JobLogSourceViewerConfiguration(preferenceStore))
-    setDocumentProvider(JobLogDocumentProvider())
+    setDocumentProvider(JobLogDocumentProvider.SHARED)
   }
 
   // Same steps as AbstractDecoratedTextEditor.createSourceViewer, with a ProjectionViewer.
@@ -75,10 +84,14 @@ class JobLogEditor : TextEditor() {
     projectionSupport = ProjectionSupport(viewer, annotationAccess, sharedColors).also { it.install() }
     viewer.doOperation(ProjectionViewer.TOGGLE)
     presenter = JobLogPresenter(viewer, ::isDarkTheme).also { it.install() }
-    // The document was just read from the shared content; a reload that came before the
-    // control existed is already in it, so apply the same result now.
-    jobLogInput?.content?.rendered?.let(::applyRendered)
+    // The shared document already holds any log rendered so far; the session puts its colors and
+    // folds on this viewer when it attaches it.
+    sessionLink.connect()
   }
+
+  // The loading, waiting, unavailable and erased pages are INFO statuses, not errors.
+  override fun isErrorStatus(status: IStatus?): Boolean =
+    JobLogDocumentProvider.isPageStatus(status) || super.isErrorStatus(status)
 
   /**
    * UI thread. Puts the folds and style runs of [result] on the document, which the caller has
@@ -125,22 +138,23 @@ class JobLogEditor : TextEditor() {
   override fun isEditable(): Boolean = false
 
   override fun dispose() {
+    sessionLink.disconnect()
     projectionSupport?.dispose()
     projectionSupport = null
     presenter = null
     applied = null
     super.dispose()
   }
+}
 
-  private fun replaceFolds(model: ProjectionAnnotationModel, document: IDocument, folds: List<FoldRegion>) {
-    val existing = model.annotationIterator.asSequence().toList().toTypedArray()
-    val additions = HashMap<Annotation, Position>()
-    for (fold in folds) {
-      val position = foldPosition(document, fold) ?: continue
-      additions[ProjectionAnnotation(fold.collapsedInitially)] = position
-    }
-    model.modifyAnnotations(existing, additions, null)
+private fun replaceFolds(model: ProjectionAnnotationModel, document: IDocument, folds: List<FoldRegion>) {
+  val existing = model.annotationIterator.asSequence().toList().toTypedArray()
+  val additions = HashMap<Annotation, Position>()
+  for (fold in folds) {
+    val position = foldPosition(document, fold) ?: continue
+    additions[ProjectionAnnotation(fold.collapsedInitially)] = position
   }
+  model.modifyAnnotations(existing, additions, null)
 }
 
 /** From the start of [FoldRegion.startLine] to the end of [FoldRegion.endLine], its delimiter included. */

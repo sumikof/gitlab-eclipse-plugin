@@ -5,14 +5,12 @@ import io.kotest.matchers.shouldBe
 import org.eclipse.ui.editors.text.StorageDocumentProvider
 
 /**
- * Headless test for the ONE mechanism manual-refresh (FR-2/AC-2) hinges on: a
- * shared-mutable-content [JobLogEditorInput], when its document is reset through a real
- * [StorageDocumentProvider], yields the NEW text. This is exactly what
- * `JobLogEditorOpener.openOrReload` does to each open editor after updating the shared
- * [JobLogContent].
+ * Headless tests of the shared-mutable-content [JobLogEditorInput]: when its document is reset
+ * through a real [StorageDocumentProvider], it yields the NEW text.
  *
- * The workbench-touching paths (openOrReload window iteration, U5 listener lifecycle,
- * disposeAtShutdown) cannot run headless and are manual-verified per the design.
+ * The workbench-touching paths (`JobLogEditorOpener.show`, `disposeAtShutdown`) cannot run
+ * headless and are manual-verified per the design; the editors' lifetime is the session's
+ * (`JobLogSessionRegistryTest`).
  */
 class JobLogEditorOpenerTest : DescribeSpec({
   describe("document reset through a real StorageDocumentProvider") {
@@ -25,8 +23,7 @@ class JobLogEditorOpenerTest : DescribeSpec({
       try {
         provider.getDocument(input).get() shouldBe "old trace"
 
-        // Simulate openOrReload updating the shared content, then the exact call it makes
-        // on each open editor.
+        // Update the shared content, then reset the document from it.
         content.text = "new trace 新"
         provider.resetDocument(input)
 
@@ -36,7 +33,7 @@ class JobLogEditorOpenerTest : DescribeSpec({
       }
     }
 
-    it("shows the text of a new RenderResult through the job-log provider, as openOrReload sets it") {
+    it("shows the text of a new RenderResult through the job-log provider after a reset") {
       val content = JobLogContent(RenderResult.EMPTY)
       val key = JobLogKey.of("https://x.example/", "fp", 1L, 9L)
       val input = JobLogEditorInput(key, content, "https://x.example/", "fp")
@@ -70,6 +67,10 @@ class JobLogEditorOpenerTest : DescribeSpec({
       content.text = "plain"
 
       content.rendered shouldBe RenderResult("plain", StyleRunIndex.EMPTY, emptyList(), omitted = false)
+    }
+
+    it("shows the log page unless a session says otherwise") {
+      JobLogContent("trace").page shouldBe JobLogPage.Log
     }
 
     it("the wipe used on close leaves nothing behind") {

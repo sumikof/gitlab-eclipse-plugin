@@ -9,10 +9,14 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
 import org.eclipse.core.runtime.ILog
@@ -23,6 +27,7 @@ import org.eclipse.ui.handlers.HandlerUtil
 import java.io.IOException
 import java.net.http.HttpTimeoutException
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicReference
 
 internal const val RAW_LOG_SAVED_MESSAGE = "Saved the raw job log."
 internal const val RAW_LOG_SAVE_FAILED_MESSAGE = "Couldn't save the raw job log."
@@ -59,7 +64,7 @@ class SaveRawJobLogHandler(
     downloadRawTraceCancellably(JobTraceService(), projectId, jobId, c, t)
   },
   private val notify: (String) -> Unit = { NotificationUtils.show(it) },
-  private val background: (suspend () -> Unit) -> Unit = { block -> service<CoroutineScope>().launch { block() } },
+  private val background: (JobLogKey, suspend () -> Unit) -> Unit = JobLogSessionManager::launchSave,
   private val log: ILog = logger<SaveRawJobLogHandler>(),
 ) : AbstractHandler() {
   override fun execute(event: ExecutionEvent): Any? {
@@ -79,7 +84,7 @@ class SaveRawJobLogHandler(
       log.error(jobLogAuditMessage(AUDIT_ACTION, projectId, jobId, kind, httpStatus, correlationId, exceptionClass))
       notify(RAW_LOG_SAVE_FAILED_MESSAGE)
     }
-    background {
+    background(input.key) {
       // Shared scope: nothing but cancellation may escape, or the scope's other coroutines stop.
       try {
         val connection = pin(input.instanceUrl, input.authFingerprint)
@@ -107,9 +112,12 @@ class SaveRawJobLogHandler(
 }
 
 /**
- * [JobTraceService.downloadRawTrace] that stops at the next chunk once the calling coroutine is
- * cancelled (review M-4): the copy throws `CancellationException`, the temporary file is removed
- * and the target is left as it was.
+ * [JobTraceService.downloadRawTrace] that stops once the calling coroutine is cancelled (closing
+ * the editor's last tab or stopping the plugin cancels it, see [JobLogSessionManager.launchSave]):
+ * the copy stops at the next chunk (review M-4), and a read blocked on a stalled connection is
+ * ended at once by closing the body (B1 review N-5), instead of waiting for the 10 minute deadline.
+ * Either way it ends in `CancellationException`, the temporary file is removed and the target is
+ * left as it was.
  */
 internal suspend fun downloadRawTraceCancellably(
   service: JobTraceService,
@@ -117,9 +125,32 @@ internal suspend fun downloadRawTraceCancellably(
   jobId: Long,
   connection: ConnectionSnapshot,
   target: Path,
-) {
-  val context = currentCoroutineContext()
-  service.downloadRawTrace(projectId, jobId, connection, target) { !context.isActive }
+  io: CoroutineDispatcher = Dispatchers.IO,
+) = coroutineScope {
+  val closeBody = AtomicReference<() -> Unit>()
+  // Cancellation does not reach a blocked read; this child closes the body when the save is cancelled.
+  val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+    try {
+      awaitCancellation()
+    } finally {
+      closeBody.get()?.invoke()
+    }
+  }
+  try {
+    withContext(io) {
+      val onOpened = { close: () -> Unit ->
+        closeBody.set(close)
+        if (!isActive) close()
+      }
+      service.downloadRawTrace(projectId, jobId, connection, target, onOpened) { !isActive }
+    }
+  } catch (e: IOException) {
+    // The body was closed under the read because the save was cancelled.
+    if (!isActive) throw CancellationException("Raw job log download cancelled")
+    throw e
+  } finally {
+    watcher.cancel()
+  }
 }
 
 /**

@@ -75,19 +75,19 @@ class JobTraceServiceTest : DescribeSpec({
     val dir = tempdir()
 
     it("streams the body into the target file") {
-      every { apiClient.downloadTo(any(), any(), any()) } answers {
-        thirdArg<(InputStream) -> Unit>().invoke(ByteArrayInputStream("raw \u65E5 log".toByteArray()))
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(InputStream) -> Unit>(3).invoke(ByteArrayInputStream("raw \u65E5 log".toByteArray()))
       }
       val target = dir.toPath().resolve("job.log")
 
       service.downloadRawTrace(42L, 9L, connection, target)
 
       Files.readAllBytes(target).decodeToString() shouldBe "raw \u65E5 log"
-      verify { apiClient.downloadTo("/projects/42/jobs/9/trace", connection, any()) }
+      verify { apiClient.downloadTo("/projects/42/jobs/9/trace", connection, any(), any()) }
     }
 
     it("leaves no partial file when the download fails") {
-      every { apiClient.downloadTo(any(), any(), any()) } throws IOException("boom")
+      every { apiClient.downloadTo(any(), any(), any(), any()) } throws IOException("boom")
       val target = dir.toPath().resolve("failed.log")
 
       shouldThrow<IOException> { service.downloadRawTrace(1L, 2L, connection, target) }
@@ -98,14 +98,29 @@ class JobTraceServiceTest : DescribeSpec({
 
     it("stops a cancelled download and leaves neither the target nor a partial file") {
       val own = tempdir().toPath()
-      every { apiClient.downloadTo(any(), any(), any()) } answers {
-        thirdArg<(InputStream) -> Unit>().invoke(ByteArrayInputStream(ByteArray(1_000_000)))
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(InputStream) -> Unit>(3).invoke(ByteArrayInputStream(ByteArray(1_000_000)))
       }
       val target = own.resolve("cancelled.log")
 
       shouldThrow<CancellationException> { service.downloadRawTrace(1L, 2L, connection, target) { true } }
 
       Files.list(own).use { it.count() } shouldBe 0L
+    }
+
+    it("hands the client's close hook to the caller") {
+      val own = tempdir().toPath()
+      var closedByHook = false
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(() -> Unit) -> Unit>(2).invoke { closedByHook = true }
+        arg<(InputStream) -> Unit>(3).invoke(ByteArrayInputStream("x".toByteArray()))
+      }
+      var hook: (() -> Unit)? = null
+
+      service.downloadRawTrace(1L, 2L, connection, own.resolve("hook.log"), onOpened = { hook = it })
+      hook?.invoke()
+
+      closedByHook shouldBe true
     }
   }
 })

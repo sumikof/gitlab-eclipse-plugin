@@ -375,9 +375,15 @@ class GitLabApiClient(
   /**
    * Streams a response body to [sink] without any size cap, pinned to [connection]. Non-2xx →
    * [GitLabApiException] without reading the body. The body must finish within [DOWNLOAD_BODY_TIMEOUT]: on expiry
-   * the stream is closed and the call fails with [HttpTimeoutException].
+   * the stream is closed and the call fails with [HttpTimeoutException]. [onOpened] receives a function that closes
+   * the body at once, for a caller that is cancelled while [sink] is blocked in a read (the read then fails).
    */
-  fun downloadTo(path: String, connection: ConnectionSnapshot, sink: (InputStream) -> Unit) {
+  fun downloadTo(
+    path: String,
+    connection: ConnectionSnapshot,
+    onOpened: (closeNow: () -> Unit) -> Unit = {},
+    sink: (InputStream) -> Unit,
+  ) {
     val httpRequest = HttpRequest.newBuilder(buildUri(path, emptyMap(), baseOverride = connection.instanceUrl))
       .header("Authorization", "Bearer ${connection.token}")
       .header("Accept", "*/*")
@@ -396,6 +402,7 @@ class GitLabApiClient(
       if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
         throw GitLabApiException(response.statusCode(), "", response.headers().firstValue("x-request-id").orElse(null))
       }
+      onOpened { closeQuietly(stream) }
       sink(stream)
     } catch (e: IOException) {
       throw if (expired.get()) HttpTimeoutException("Response body not received in time") else e

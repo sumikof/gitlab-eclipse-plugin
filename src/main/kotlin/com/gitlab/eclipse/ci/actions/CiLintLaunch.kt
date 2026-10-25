@@ -26,7 +26,7 @@ internal const val GENERIC_CI_LINT_ERROR = "GitLab: Couldn't validate the CI con
 
 /**
  * Pins the connection and runs one CI lint in the background (top-level on purpose — same shape
- * as [launchDisplayJobLog]). The pin ([GitLabApiClient.captureConnectionIf]) runs INSIDE the
+ * as [launchCiWrite]). The pin ([GitLabApiClient.captureConnectionIf]) runs INSIDE the
  * launch, on the scope's IO dispatcher: once the instance url matches, capturing the connection
  * reads the token, which in OAuth mode may perform a synchronous refresh HTTP call that must
  * never block the UI thread. The instance-url comparison is bound here as the capture predicate

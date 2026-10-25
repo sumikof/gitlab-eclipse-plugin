@@ -9,9 +9,11 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.spyk
 import io.mockk.verify
+import org.eclipse.core.runtime.IStatus
 import org.eclipse.jface.text.source.IAnnotationModelExtension
 import org.eclipse.ui.editors.text.StorageDocumentProvider
 import org.eclipse.ui.texteditor.IElementStateListener
+import java.time.LocalTime
 
 // A lone surrogate does not survive a trip through UTF-8 bytes (it comes back as '?'), so the
 // document holding it proves the text was set directly instead of re-read from JobLogStorage.
@@ -158,6 +160,64 @@ class JobLogDocumentProviderTest : DescribeSpec({
         provider.resetDocument(input)
       }
       events shouldContainExactly listOf("aboutToBeReplaced", "dirty=true", "replaced", "dirty=false")
+    }
+  }
+
+  // The editor's page comes from the provider's status (design B3).
+  describe("getStatus") {
+    fun statusFor(page: JobLogPage?): IStatus {
+      val content = JobLogContent("trace")
+      page?.let { content.page = it }
+      return JobLogDocumentProvider().getStatus(JobLogEditorInput(key, content))
+    }
+
+    it("is OK for the log, the default page") {
+      statusFor(null).isOK shouldBe true
+      statusFor(JobLogPage.Log).isOK shouldBe true
+    }
+
+    it("is an INFO page status with its own code for every other page") {
+      listOf(
+        JobLogPage.Loading to JobLogDocumentProvider.LOADING_CODE,
+        JobLogPage.Waiting("pending", LocalTime.NOON) to JobLogDocumentProvider.WAITING_CODE,
+        JobLogPage.Unavailable("why") to JobLogDocumentProvider.UNAVAILABLE_CODE,
+        JobLogPage.Erased to JobLogDocumentProvider.ERASED_CODE,
+      ).forEach { (page, code) ->
+        val status = statusFor(page)
+        status.severity shouldBe IStatus.INFO
+        status.code shouldBe code
+        status.plugin shouldBe JobLogDocumentProvider.PLUGIN_ID
+        JobLogDocumentProvider.isPageStatus(status) shouldBe true
+      }
+      JobLogDocumentProvider.isPageStatus(statusFor(JobLogPage.Log)) shouldBe false
+    }
+
+    it("follows the content of each input, read at call time") {
+      val waiting = JobLogContent("a").apply { page = JobLogPage.Loading }
+      val other = JobLogContent("b")
+      val provider = JobLogDocumentProvider()
+      val input = JobLogEditorInput(key, waiting)
+
+      provider.getStatus(input).code shouldBe JobLogDocumentProvider.LOADING_CODE
+      provider.getStatus(JobLogEditorInput(JobLogKey.of("https://y.example/", "fp", 1L, 9L), other)).isOK shouldBe true
+
+      waiting.page = JobLogPage.Erased
+      provider.getStatus(input).code shouldBe JobLogDocumentProvider.ERASED_CODE
+    }
+  }
+
+  // L-B2-1 (A): one provider, so equal inputs (same key) share one document.
+  describe("SHARED") {
+    it("gives two inputs of the same key the same document") {
+      val content = JobLogContent("shared\n")
+      val first = JobLogEditorInput(key, content)
+      val second = JobLogEditorInput(key, content)
+      val provider = JobLogDocumentProvider.SHARED
+      connected(provider, first) {
+        connected(provider, second) {
+          provider.getDocument(second) shouldBeSameInstanceAs provider.getDocument(first)
+        }
+      }
     }
   }
 })

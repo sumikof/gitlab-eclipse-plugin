@@ -200,5 +200,40 @@ class GitLabApiClientFetchTraceTest : DescribeSpec({
       e.message shouldBe "connection reset"
       closed.get() shouldBe true
     }
+
+    // B1 review N-5: a cancelled caller ends a read blocked on a stalled connection.
+    it("hands out a hook that closes the body at once, before the sink runs") {
+      val closed = AtomicBoolean(false)
+      val stream = object : InputStream() {
+        override fun read(): Int = if (closed.get()) throw IOException("Stream closed") else 'a'.code
+
+        override fun close() {
+          closed.set(true)
+        }
+      }
+      every { http.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) } returns
+        streamResponse(stream, 200)
+      var closeNow: (() -> Unit)? = null
+
+      val e = shouldThrow<IOException> {
+        client.downloadTo("/p", connection, onOpened = { closeNow = it }) {
+          closeNow!!.invoke()
+          it.read()
+        }
+      }
+
+      e.message shouldBe "Stream closed"
+      closed.get() shouldBe true
+    }
+
+    it("does not hand out the hook for a non-2xx status") {
+      every { http.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) } returns
+        streamResponse(ByteArrayInputStream(ByteArray(0)), 500)
+      var handed = false
+
+      shouldThrow<GitLabApiException> { client.downloadTo("/p", connection, onOpened = { handed = true }) { } }
+
+      handed shouldBe false
+    }
   }
 })
