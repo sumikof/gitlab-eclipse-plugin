@@ -239,6 +239,11 @@ class JobLogRendererTest : DescribeSpec({
       renderInitial(raw, 0L).first.text shouldBe "a b\nc\n"
     }
 
+    it("keeps a continuation line that opens the log") {
+      val raw = bytes("$TS 00O+ a\n$TS 00O b\n$TS 00O c\n")
+      renderInitial(raw, 0L).first.text shouldBe " a\nb\nc\n"
+    }
+
     it("groups a huge run of continuation lines in linear time") {
       val line = "$TS 00O+ " + "x".repeat(56) + "\n"
       val raw = bytes("$TS 00O start\n" + line.repeat(100_000))

@@ -31,10 +31,14 @@ internal sealed interface TailOutcome {
 }
 
 private const val DEFAULT_BODY_TIMEOUT_SECONDS = 30L
+private val REARM_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos()
 private const val NOT_MODIFIED = 304
 private const val SUCCESS_MIN = 200
 private const val SUCCESS_MAX = 299
 private const val LF: Byte = 0x0A
+
+/** How far into the kept tail a line break is looked for; beyond it the first line is considered too long to drop. */
+private const val TAIL_LF_SEARCH_BYTES = 1 * 1024 * 1024
 private const val CONTINUATION_MASK = 0xC0
 private const val CONTINUATION_BITS = 0x80
 
@@ -43,12 +47,14 @@ private const val CONTINUATION_BITS = 0x80
  * arrive), so memory stays bounded however large the trace is.
  *
  * - 304 → [TraceFetch.NotModified], other non-2xx → [TailOutcome.Rejected]; neither reads any body;
- * - a body that outlives [bodyTimeout] fails with [HttpTimeoutException] (same deadline as [BoundedBytesHandler]).
+ * - a body that stays silent for [bodyTimeout] fails with [HttpTimeoutException]. It is an idle deadline: every received
+ *   chunk pushes it back (re-armed at most once a second), so a slow but steady download of a large trace survives.
  */
 internal class TailKeepingBodyHandler(
   private val maxBytes: Int,
   internal val bodyTimeout: Duration = Duration.ofSeconds(DEFAULT_BODY_TIMEOUT_SECONDS),
   private val deadline: BodyDeadline = SharedBodyDeadline,
+  private val clock: () -> Long = System::nanoTime,
 ) : HttpResponse.BodyHandler<TailOutcome> {
   override fun apply(responseInfo: HttpResponse.ResponseInfo): HttpResponse.BodySubscriber<TailOutcome> {
     val status = responseInfo.statusCode()
@@ -57,7 +63,13 @@ internal class TailKeepingBodyHandler(
       status !in SUCCESS_MIN..SUCCESS_MAX -> ImmediateSubscriber(
         TailOutcome.Rejected(status, responseInfo.headers().firstValue("x-request-id").orElse(null)),
       )
-      else -> TailSubscriber(maxBytes, responseInfo.headers().firstValue("ETag").orElse(null), bodyTimeout, deadline)
+      else -> TailSubscriber(
+        maxBytes,
+        responseInfo.headers().firstValue("ETag").orElse(null),
+        bodyTimeout,
+        deadline,
+        clock,
+      )
     }
   }
 }
@@ -90,12 +102,14 @@ private class TailSubscriber(
   private val etag: String?,
   private val bodyTimeout: Duration,
   private val deadline: BodyDeadline,
+  private val clock: () -> Long,
 ) : HttpResponse.BodySubscriber<TailOutcome> {
   private val result = CompletableFuture<TailOutcome>()
   private val chunks = ArrayDeque<ByteArray>()
   private var headSkip = 0
   private var kept = 0L
   private var total = 0L
+  private var lastArmedAt = 0L
 
   @Volatile
   private var subscription: Flow.Subscription? = null
@@ -107,16 +121,30 @@ private class TailSubscriber(
 
   override fun onSubscribe(subscription: Flow.Subscription) {
     this.subscription = subscription
-    // The expiry action captures only the future and the subscription, never this subscriber or its chunks.
+    armDeadline(subscription)
+    subscription.request(Long.MAX_VALUE)
+  }
+
+  /** The expiry action captures only the future and the subscription, never this subscriber or its chunks. */
+  private fun armDeadline(subscription: Flow.Subscription) {
     val body = result
+    lastArmedAt = clock()
     disarm = deadline.arm(bodyTimeout) {
       if (body.completeExceptionally(HttpTimeoutException(BODY_TIMED_OUT))) subscription.cancel()
     }
-    subscription.request(Long.MAX_VALUE)
+  }
+
+  /** Pushes the idle deadline back, but at most once per [REARM_INTERVAL_NANOS]. */
+  private fun extendDeadline() {
+    val current = subscription ?: return
+    if (clock() - lastArmedAt < REARM_INTERVAL_NANOS) return
+    disarm()
+    armDeadline(current)
   }
 
   override fun onNext(item: List<ByteBuffer>) {
     if (result.isDone) return
+    extendDeadline()
     for (buffer in item) {
       val bytes = ByteArray(buffer.remaining())
       buffer.get(bytes)
@@ -174,10 +202,21 @@ private class TailSubscriber(
   }
 }
 
-/** Starts just after the first line break; without one, skips leading UTF-8 continuation bytes. */
+/**
+ * Starts just after the first line break, provided that break lies within the first [TAIL_LF_SEARCH_BYTES] of the
+ * tail and is not its last byte (a break at the very end would leave nothing to show). Otherwise a giant line is cut
+ * where it falls: leading UTF-8 continuation bytes are skipped so the text starts on a character boundary.
+ */
 private fun alignToBoundary(tail: ByteArray): ByteArray {
-  val lf = tail.indexOf(LF)
-  if (lf >= 0) return tail.copyOfRange(lf + 1, tail.size)
+  val searchEnd = minOf(tail.size, TAIL_LF_SEARCH_BYTES)
+  var lf = -1
+  for (i in 0 until searchEnd) {
+    if (tail[i] == LF) {
+      lf = i
+      break
+    }
+  }
+  if (lf in 0 until tail.size - 1) return tail.copyOfRange(lf + 1, tail.size)
   var start = 0
   while (start < tail.size && (tail[start].toInt() and CONTINUATION_MASK) == CONTINUATION_BITS) start++
   return tail.copyOfRange(start, tail.size)

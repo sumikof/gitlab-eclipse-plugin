@@ -45,16 +45,31 @@ private fun info(status: Int, headers: Map<String, List<String>> = emptyMap()) =
     override fun version(): HttpClient.Version = HttpClient.Version.HTTP_1_1
   }
 
+private class TailArm(val action: () -> Unit, var disarmed: Boolean = false)
+
 private class TailManualDeadline : BodyDeadline {
   val armed = CompletableFuture<Pair<Duration, () -> Unit>>()
+  val arms = mutableListOf<TailArm>()
   var disarmed = 0
+
+  val active: Int get() = arms.count { !it.disarmed }
 
   override fun arm(timeout: Duration, onExpiry: () -> Unit): () -> Unit {
     armed.complete(timeout to onExpiry)
-    return { disarmed++ }
+    val arm = TailArm(onExpiry)
+    arms.add(arm)
+    return {
+      arm.disarmed = true
+      disarmed++
+    }
   }
 
-  fun fire() = armed.get(5, TimeUnit.SECONDS).second()
+  /** Fires the newest arm, like the timer would once the idle period has passed with no further re-arm. */
+  fun fire() = arms.last().action()
+}
+
+private class TailClock(var nanos: Long = 0L) : () -> Long {
+  override fun invoke(): Long = nanos
 }
 
 private fun buffers(chunks: List<ByteArray>): List<ByteBuffer> = chunks.map { ByteBuffer.wrap(it) }
@@ -131,11 +146,35 @@ class TailKeepingBodyHandlerTest : DescribeSpec({
       }
     }
 
-    it("returns an empty body when the kept tail ends exactly at a line break") {
-      val b = body(drive(200, chunks = listOf("abcdefghijklmnopqrstuvwxyz\n".toByteArray()), cap = 1).first)
+    it("does not return an empty body when a giant last line is followed by a single line break") {
+      val b = body(drive(200, chunks = listOf("abcdefghijklmnopqrstuvwxyz\n".toByteArray()), cap = 10).first)
 
-      b.bytes.size shouldBe 0
-      b.omittedBytes shouldBe b.totalBytes
+      b.bytes.decodeToString() shouldBe "rstuvwxyz\n"
+      b.totalBytes shouldBe 27L
+      b.omittedBytes shouldBe 17L
+    }
+
+    it("aligns to a UTF-8 boundary when the only line break is beyond the first MiB of the tail") {
+      val raw = "日".repeat(1_500_000).toByteArray() + "\nabc".toByteArray()
+      val cap = 2_000_000
+
+      val b = body(drive(200, chunks = split(raw, 65_536), cap = cap).first)
+
+      // The kept tail starts on the last byte of a character, which is skipped; the break is not used.
+      b.bytes.size shouldBe cap - 1
+      b.bytes.decodeToString().startsWith("日") shouldBe true
+      b.omittedBytes shouldBe raw.size - (cap - 1).toLong()
+    }
+
+    it("still starts after the first line break when it lies within the first MiB of the tail") {
+      val raw = "y".repeat(100).toByteArray() + "\n".toByteArray() + "z".repeat(2 * 1024 * 1024).toByteArray()
+      val cap = 2 * 1024 * 1024 + 51
+
+      val b = body(drive(200, chunks = split(raw, 65_536), cap = cap).first)
+
+      b.bytes.size shouldBe 2 * 1024 * 1024
+      b.bytes[0] shouldBe 'z'.code.toByte()
+      b.omittedBytes shouldBe 101L
     }
 
     it("without a line break starts at a UTF-8 character boundary") {
@@ -199,6 +238,44 @@ class TailKeepingBodyHandlerTest : DescribeSpec({
       subscriber.onNext(buffers(listOf("abc".toByteArray())))
 
       deadline.fire()
+
+      subscription.cancelled shouldBe true
+      val e = shouldThrow<ExecutionException> { subscriber.body.toCompletableFuture().get(1, TimeUnit.SECONDS) }
+      (e.cause is HttpTimeoutException) shouldBe true
+    }
+
+    it("keeps pushing the deadline back while data keeps flowing, at most once a second") {
+      val deadline = TailManualDeadline()
+      val clock = TailClock()
+      val subscriber = TailKeepingBodyHandler(CAP, Duration.ofSeconds(30), deadline, clock).apply(info(200))
+      val subscription = TailFakeSubscription()
+      subscriber.onSubscribe(subscription)
+
+      repeat(5) {
+        clock.nanos += Duration.ofMillis(400).toNanos()
+        subscriber.onNext(buffers(listOf("a".toByteArray())))
+      }
+      deadline.arms.size shouldBe 2 // armed at 0 s, re-armed at 1.2 s; the 0.4 s steps in between are skipped
+
+      repeat(100) {
+        clock.nanos += Duration.ofSeconds(20).toNanos() // far more than 30 s of wall time in total
+        subscriber.onNext(buffers(listOf("a".toByteArray())))
+      }
+      deadline.active shouldBe 1
+      subscription.cancelled shouldBe false
+      subscriber.body.toCompletableFuture().isDone shouldBe false
+    }
+
+    it("times out when the body goes silent") {
+      val deadline = TailManualDeadline()
+      val clock = TailClock()
+      val subscriber = TailKeepingBodyHandler(CAP, Duration.ofSeconds(30), deadline, clock).apply(info(200))
+      val subscription = TailFakeSubscription()
+      subscriber.onSubscribe(subscription)
+      clock.nanos += Duration.ofSeconds(2).toNanos()
+      subscriber.onNext(buffers(listOf("abc".toByteArray())))
+
+      deadline.fire() // no chunk since the last re-arm
 
       subscription.cancelled shouldBe true
       val e = shouldThrow<ExecutionException> { subscriber.body.toCompletableFuture().get(1, TimeUnit.SECONDS) }
