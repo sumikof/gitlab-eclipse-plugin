@@ -11,8 +11,17 @@ import org.eclipse.ui.IStorageEditorInput
  * `equals`/`hashCode` depend solely on [key] so the same job reuses the same editor
  * while a different instance/account/job opens a different one (AC-8). `exists() == false`
  * and a null persistable keep the input out of EditorHistory and workbench mementos.
+ *
+ * [instanceUrl] and [authFingerprint] are the connection the log was read from, kept so that
+ * later actions on the open editor can pin the same connection again (design B7). They are
+ * internal and deliberately left out of `toString` (none is defined), so they never reach a log.
  */
-class JobLogEditorInput(val key: JobLogKey, val content: JobLogContent) : IStorageEditorInput {
+class JobLogEditorInput(
+  val key: JobLogKey,
+  val content: JobLogContent,
+  internal val instanceUrl: String = "",
+  internal val authFingerprint: String = "",
+) : IStorageEditorInput {
   private val displayName = "job-${key.jobId}.log"
 
   override fun getStorage(): IStorage = JobLogStorage(content, displayName)

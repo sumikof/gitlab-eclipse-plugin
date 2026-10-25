@@ -2284,6 +2284,15 @@
                 name="GitLab Webview"
                 icon="icons/notification.png"
         />
+        <!-- Job log viewer (CI-09). Opened only by Display Log through page.openEditor(input, id):
+             never the default editor, no file associations. -->
+        <editor
+                id="com.gitlab.eclipse.editors.JobLog"
+                class="com.gitlab.eclipse.ci.joblog.JobLogEditor"
+                contributorClass="org.eclipse.ui.editors.text.TextEditorActionContributor"
+                name="GitLab Job Log"
+                default="false"
+        />
     </extension>
 
     <extension point="org.eclipse.ui.editors.annotationTypes">

@@ -5,10 +5,11 @@ import com.gitlab.eclipse.api.JobTraceService
 import com.gitlab.eclipse.ci.joblog.JobLogEditorOpener
 import com.gitlab.eclipse.ci.joblog.JobLogGenerationRegistry
 import com.gitlab.eclipse.ci.joblog.JobLogKey
-import com.gitlab.eclipse.ci.joblog.TraceResult
-import com.gitlab.eclipse.ci.joblog.fetchAndFormatTrace
-import com.gitlab.eclipse.ci.joblog.readAuditMessage
-import com.gitlab.eclipse.ci.joblog.stripTraceFormatting
+import com.gitlab.eclipse.ci.joblog.JobLogLoad
+import com.gitlab.eclipse.ci.joblog.RenderResult
+import com.gitlab.eclipse.ci.joblog.fetchAndRenderTrace
+import com.gitlab.eclipse.ci.joblog.jobLogAuditMessage
+import com.gitlab.eclipse.ci.joblog.renderInitial
 import com.gitlab.eclipse.inject.lazyService
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
@@ -29,8 +30,11 @@ internal const val NO_PROJECT_MESSAGE = "Couldn't determine the job's project; r
 internal const val LOG_NOT_FOUND_MESSAGE = "The log doesn't exist or you don't have access to it."
 internal const val GENERIC_LOG_ERROR_MESSAGE = "Couldn't load the job log. Try again."
 
+private const val AUDIT_ACTION = "displayJobLog"
+
 /**
- * Opens the trace of the job selected in the GitLab sidebar in an in-memory editor (design §14).
+ * Opens the trace of the job selected in the GitLab sidebar in the folding, colored job-log
+ * editor ([com.gitlab.eclipse.ci.joblog.JobLogEditor], design §14 / B §5.3).
  * Thin SWT shell, same shape as [JobActionHandler]: resolve the selection on the UI thread, then
  * pin the connection + fetch in the background ([launchDisplayJobLog]) and marshal the result
  * back. There is NO [InFlightWriteGuard] — the READ is idempotent (design §13); instead every
@@ -81,15 +85,19 @@ class DisplayJobLogHandler(
 }
 
 /**
- * Pins the connection and runs one trace fetch in the background (top-level on purpose — same
- * shape as [launchCiWrite]). The pin ([pinnedConnectionFor]) runs INSIDE the launch, on the
+ * Pins the connection and runs one trace fetch + render in the background (top-level on purpose —
+ * same shape as [launchCiWrite]). The pin ([pinnedConnectionFor]) runs INSIDE the launch, on the
  * scope's IO dispatcher: capturing the connection reads the token, which in OAuth mode may
  * perform a synchronous refresh HTTP call that must never block the UI thread. A null pin means
  * the connection changed since the sidebar was loaded and the READ is NOT sent (never to the
- * wrong instance) — notify instead. CancellationException is rethrown so cancellation
- * propagates cleanly and neither reflects nor notifies; any other unclassified throwable is
- * caught here — it must never escape and cancel the shared scope. Audit lines
- * ([readAuditMessage]) never contain a token or response body.
+ * wrong instance) — notify instead. The trace tail is parsed here too ([renderInitial]), off the
+ * UI thread (AC-B1-3). CancellationException is rethrown so cancellation propagates cleanly and
+ * neither reflects nor notifies; any other unclassified throwable is caught here — it must never
+ * escape and cancel the shared scope. Audit lines ([jobLogAuditMessage]) carry no URL, path,
+ * token or log text, and no throwable is ever handed to [log] (only the exception class name).
+ *
+ * [reflect] and [notify] are the UI hops; their defaults are the only lines that touch the
+ * Display, so tests replace them and run headless.
  */
 internal fun launchDisplayJobLog(
   scope: CoroutineScope,
@@ -102,6 +110,8 @@ internal fun launchDisplayJobLog(
   traceService: JobTraceService,
   nodeInstanceUrl: String,
   nodeAuthFingerprint: String,
+  reflect: (RenderResult) -> Unit = { reflectLatest(log, key, myGen, it, nodeInstanceUrl, nodeAuthFingerprint) },
+  notify: (String) -> Unit = { notifyIfLatest(key, myGen, it) },
 ) {
   scope.launch {
     // Shared scope with a plain Job: nothing may escape this launch or every other
@@ -109,44 +119,46 @@ internal fun launchDisplayJobLog(
     try {
       val connection = pinnedConnectionFor(apiClient, nodeInstanceUrl, nodeAuthFingerprint)
       if (connection == null) {
-        log.error(readAuditMessage("displayJobLog", nodeInstanceUrl, projectId, jobId, "connectionRejected"))
-        notifyIfLatest(key, myGen, CONNECTION_CHANGED_MESSAGE)
+        log.error(jobLogAuditMessage(AUDIT_ACTION, projectId, jobId, "connectionRejected"))
+        notify(CONNECTION_CHANGED_MESSAGE)
         return@launch
       }
-      val result = fetchAndFormatTrace(
-        { traceService.getTrace(projectId, jobId, connection) },
-        ::stripTraceFormatting,
+      val load = fetchAndRenderTrace(
+        { traceService.getTraceSnapshot(projectId, jobId, null, connection) },
+        { bytes, omittedBytes -> renderInitial(bytes, omittedBytes).first },
       )
-      when (result) {
-        is TraceResult.Loaded -> reflectLatest(log, key, myGen, result.text)
-        is TraceResult.Failed -> {
+      when (load) {
+        is JobLogLoad.Rendered -> reflect(load.result)
+        is JobLogLoad.Failed -> {
+          val failure = load.failure
           log.error(
-            readAuditMessage(
-              "displayJobLog",
-              nodeInstanceUrl,
+            jobLogAuditMessage(
+              AUDIT_ACTION,
               projectId,
               jobId,
-              result.kind,
-              result.httpStatus,
-              result.correlationId,
+              failure.kind,
+              failure.httpStatus,
+              failure.correlationId,
             ),
           )
-          notifyIfLatest(key, myGen, if (result.notCommittal) LOG_NOT_FOUND_MESSAGE else GENERIC_LOG_ERROR_MESSAGE)
+          notify(if (failure.notCommittal) LOG_NOT_FOUND_MESSAGE else GENERIC_LOG_ERROR_MESSAGE)
         }
       }
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      // Unclassified escape: must not cancel the shared scope. Same token/body-free structured
-      // audit line as the classified path; the exception rides along in the log entry.
-      log.error(readAuditMessage("displayJobLog", nodeInstanceUrl, projectId, jobId, "unexpected"), e)
-      notifyIfLatest(key, myGen, GENERIC_LOG_ERROR_MESSAGE)
+      // Unclassified escape: must not cancel the shared scope. Same structured audit line as the
+      // classified path, with the exception class only (never the throwable: its message or
+      // stack may carry a URL or log text).
+      val exceptionClass = e.javaClass.simpleName
+      log.error(jobLogAuditMessage(AUDIT_ACTION, projectId, jobId, "unexpected", exceptionClass = exceptionClass))
+      notify(GENERIC_LOG_ERROR_MESSAGE)
     }
   }
 }
 
 /**
- * Marshals the loaded text to the UI thread and reflects it into the editor ONLY if this run is
+ * Marshals the rendered log to the UI thread and reflects it into the editor ONLY if this run is
  * still the active activation's latest generation for [key] (design §14.2 step 3). The gate and
  * the open/reload happen in the same UI turn, so they are atomic w.r.t. any newer run. asyncExec
  * itself can throw [SWTException] on a disposed Display — swallowed, never allowed to cancel the
@@ -154,18 +166,34 @@ internal fun launchDisplayJobLog(
  * background thread once the workbench is torn down — also swallowed: the helper must be total
  * (never throw), or the launch's terminal catch would propagate it and cancel the shared scope.
  */
-private fun reflectLatest(log: ILog, key: JobLogKey, myGen: Long, text: String) {
+private fun reflectLatest(
+  log: ILog,
+  key: JobLogKey,
+  myGen: Long,
+  rendered: RenderResult,
+  instanceUrl: String,
+  authFingerprint: String,
+) {
   try {
     currentDisplay.asyncExec {
       try {
         if (currentDisplay.isDisposed) return@asyncExec
         if (!JobLogGenerationRegistry.shouldAct(key, myGen)) return@asyncExec
-        JobLogEditorOpener.openOrReload(key, text)
+        JobLogEditorOpener.openOrReload(key, rendered, instanceUrl, authFingerprint)
       } catch (ignored: SWTException) {
         /* display disposed mid-turn: no-op */
       } catch (e: Exception) {
         // open/reload can throw in-UI where the background catch can't see it (design §14.2).
-        log.error("Job log editor open/reload failed for $key", e)
+        val exceptionClass = e.javaClass.simpleName
+        log.error(
+          jobLogAuditMessage(
+            AUDIT_ACTION,
+            key.projectId,
+            key.jobId,
+            "editorFailed",
+            exceptionClass = exceptionClass,
+          ),
+        )
         if (JobLogGenerationRegistry.shouldAct(key, myGen)) {
           NotificationUtils.showOnUiThread(GENERIC_LOG_ERROR_MESSAGE)
         }

@@ -24,8 +24,6 @@ import java.lang.ref.WeakReference
  * isolation the activation guard relies on. All mutable state is UI-thread-only.
  */
 object JobLogEditorOpener {
-  const val DEFAULT_TEXT_EDITOR_ID = "org.eclipse.ui.DefaultTextEditor"
-
   private val logger by lazy { logger<JobLogEditorOpener>() }
 
   /**
@@ -37,8 +35,9 @@ object JobLogEditorOpener {
   private var windowListener: IWindowListener? = null
 
   /**
-   * Updates the shared content for [key] to [text], refreshes every already-open editor for
+   * Updates the shared content for [key] to [rendered], refreshes every already-open editor for
    * [key] across all windows/pages, and makes sure the result is visible in the active page.
+   * [instanceUrl] / [authFingerprint] ride on a newly opened editor's input (design B7).
    * UI thread only. Generation/latest gating is the caller's responsibility.
    *
    * @throws PartInitException if the active page cannot open a new editor (the caller's
@@ -46,18 +45,18 @@ object JobLogEditorOpener {
    * @throws CoreException if resetting the document of an editor on the ACTIVE page fails
    *   (same surfacing path); background-page reset failures are logged and swallowed.
    */
-  fun openOrReload(key: JobLogKey, text: String) {
+  fun openOrReload(key: JobLogKey, rendered: RenderResult, instanceUrl: String, authFingerprint: String) {
     ensureListenersRegistered()
 
     // Any already-open editor for [key] strong-references this same JobLogContent via its
-    // input, so the weak ref is still live and returns the SAME instance - updating its text
+    // input, so the weak ref is still live and returns the SAME instance - updating its result
     // makes every open editor's getStorage() see the new text on reset. A new key creates
     // a fresh content.
     val content = contentRegistry[key]?.get()
-      ?: JobLogContent(text).also { contentRegistry[key] = WeakReference(it) }
-    content.text = text
+      ?: JobLogContent(rendered).also { contentRegistry[key] = WeakReference(it) }
+    content.rendered = rendered
 
-    val input = JobLogEditorInput(key, content)
+    val input = JobLogEditorInput(key, content, instanceUrl, authFingerprint)
 
     // findEditors returns ALL matching editors per page (including clones/splits of the same
     // input), collected across ALL windows/pages so every open tab gets refreshed.
@@ -71,7 +70,8 @@ object JobLogEditorOpener {
     val activePage = PlatformUI.getWorkbench().activeWorkbenchWindow?.activePage
 
     // Reset each matched editor's document so the new text shows (not just focus): reset
-    // re-reads from the input's storage, which now reflects the updated shared content.
+    // re-reads from the input's storage, which now reflects the updated shared content; then
+    // the editor puts the result's folds and colors on it.
     // Background-page failures are best-effort (logged); a failure on the ACTIVE page
     // propagates so reflectLatest surfaces it instead of leaving the user looking at a
     // stale log that appears refreshed.
@@ -80,9 +80,21 @@ object JobLogEditorOpener {
       try {
         textEditor.documentProvider?.resetDocument(textEditor.editorInput)
       } catch (e: CoreException) {
-        logger.error("Failed to reset job-log document for ${input.name}.", e)
+        // Exception class only: the job-log path never hands a throwable to the log.
+        val exceptionClass = e.javaClass.simpleName
+        logger.error(
+          jobLogAuditMessage(
+            "displayJobLog",
+            key.projectId,
+            key.jobId,
+            "resetFailed",
+            exceptionClass = exceptionClass,
+          ),
+        )
         if (page == activePage) throw e
+        return@forEach
       }
+      (textEditor as? JobLogEditor)?.applyRendered(rendered)
     }
 
     // Guarantee visibility in the invoking (active) page: bring an existing editor to front,
@@ -95,7 +107,7 @@ object JobLogEditorOpener {
     } else {
       // Let a terminal open failure propagate: reflectLatest's catch audits + shows a
       // latest-gated notification, so a GET-succeeded-but-cannot-display case isn't silent.
-      activePage.openEditor(input, DEFAULT_TEXT_EDITOR_ID)
+      (activePage.openEditor(input, JobLogEditor.ID) as? JobLogEditor)?.applyRendered(rendered)
     }
   }
 
@@ -126,7 +138,7 @@ object JobLogEditorOpener {
       }
     }
     removeListeners()
-    contentRegistry.values.forEach { it.get()?.text = "" }
+    contentRegistry.values.forEach { it.get()?.rendered = RenderResult.EMPTY }
     contentRegistry.clear()
   }
 
@@ -181,8 +193,8 @@ object JobLogEditorOpener {
       .filter { it != editorRef }
       .any { (safeInput(it) as? JobLogEditorInput)?.key == closedKey }
     if (!stillOpen) {
-      // Wipe trace text immediately rather than waiting for GC.
-      contentRegistry.remove(closedKey)?.get()?.text = ""
+      // Drop the text, style runs and folds immediately rather than waiting for GC (B11).
+      contentRegistry.remove(closedKey)?.get()?.rendered = RenderResult.EMPTY
     }
   }
 
