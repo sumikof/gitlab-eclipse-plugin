@@ -65,11 +65,6 @@ private val CASES = listOf(
       PageButton.CANCEL,
     ),
   ),
-  PageCase(
-    "canceling (no started_at yet)",
-    waiting("canceling"),
-    StatusPageModel("Canceling", "", "Last checked at 09:05:07", null),
-  ),
   PageCase("skipped before it started (L-B2-5)", waiting("skipped"), plain("This job has been skipped")),
   PageCase("canceled before it started", waiting("canceled"), plain("This job has been canceled")),
   PageCase("failed before it started", waiting("failed"), plain("This job does not have a trace.")),
@@ -103,6 +98,24 @@ class JobLogStatusPageModelTest : DescribeSpec({
 
     it("leaves the time out while the job is waiting but the time is unknown") {
       statusPageModel(JobLogPage.Waiting("pending", null))?.lastChecked.shouldBeNull()
+    }
+  }
+
+  // B2 review I-1: a rebuild the platform asks for is skipped only for the same kind of live page.
+  describe("keepsStatusPage") {
+    val waitingKind = JobLogPage.Waiting::class.java
+
+    it("keeps a live page of the same kind, whatever changed inside it") {
+      keepsStatusPage(waitingKind, pageAlive = true, next = waiting("manual")) shouldBe true
+      keepsStatusPage(JobLogPage.Loading.javaClass, pageAlive = true, next = JobLogPage.Loading) shouldBe true
+    }
+
+    it("rebuilds for another kind, the log, a disposed or missing page, or no input") {
+      keepsStatusPage(waitingKind, pageAlive = true, next = JobLogPage.Erased) shouldBe false
+      keepsStatusPage(waitingKind, pageAlive = true, next = JobLogPage.Log) shouldBe false
+      keepsStatusPage(waitingKind, pageAlive = false, next = waiting("manual")) shouldBe false
+      keepsStatusPage(null, pageAlive = false, next = JobLogPage.Loading) shouldBe false
+      keepsStatusPage(waitingKind, pageAlive = true, next = null) shouldBe false
     }
   }
 

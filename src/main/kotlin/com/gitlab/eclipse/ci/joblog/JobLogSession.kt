@@ -133,9 +133,6 @@ internal class JobLogSession(
   internal var pollState = PollState()
     private set
 
-  /** Save Raw Log downloads of this key; cancelled when the session is disposed. */
-  internal val saves = SaveJobs()
-
   /** Bytes kept only to diff and continue the next poll: the compare window and the unfinished tail. */
   internal val retainedBytes: Long
     get() = progress.retainedBytes
@@ -167,10 +164,15 @@ internal class JobLogSession(
     step(PollEvent.Opened(visible))
   }
 
-  /** Adds [view]; a duplicate tab gets the colors and folds of the log already rendered. */
+  /**
+   * Adds [view]; a duplicate tab gets the colors and folds of the log already rendered. A visible
+   * view resumes a paused session (its own partVisible may have come before its listener); a hidden
+   * one never pauses it here, so a missed first partVisible cannot park the session for good.
+   */
   fun attach(view: JobLogSessionView) {
     if (disposed || !views.add(view)) return
-    if (progress.rendered) views.decorate(view, progress.runs, progress.folds)
+    if (progress.rendered) views.decorate(view, progress.runs, progress.folds.toList())
+    if (!visible && view.isVisible) visibilityChanged()
   }
 
   /** Removes [view]. True when no view is left: the caller then disposes the session. */
@@ -202,7 +204,6 @@ internal class JobLogSession(
     commands.cancelTimer()
     job?.cancel()
     job = null
-    saves.cancelAll()
     pollState = JobLogPollPolicy.step(pollState, PollEvent.Closed).first
     views.clear()
     progress.wipe()
@@ -238,6 +239,10 @@ internal class JobLogSession(
       is PollOutcome.Unpinned -> PollEvent.Failed(PollFailureKind.UNPINNED, outcome.elapsedMs)
       is PollOutcome.Status -> statusEvent(outcome.result, outcome.elapsedMs, onFailure)
       is PollOutcome.Trace -> progress.event(outcome.result, outcome.elapsedMs, commands::applyUpdate, onFailure)
+      is PollOutcome.Failure -> {
+        onFailure(outcome.failure)
+        PollEvent.Failed(outcome.failure.kind, outcome.elapsedMs)
+      }
     }
     step(event)
   }
@@ -347,7 +352,10 @@ internal class JobLogSession(
       when (outcome) {
         is PollOutcome.Trace ->
           progress.event(outcome.result, outcome.elapsedMs, ::applyUpdate) { audit.failure(action, it) }
-        else -> audit.line(action, "connectionRejected")
+        is PollOutcome.Failure -> audit.failure(action, outcome.failure)
+        is PollOutcome.Unpinned -> audit.line(action, "connectionRejected")
+        // A final trace never reads the status.
+        is PollOutcome.Status -> Unit
       }
       progress.finishing()?.let(::applyUpdate)
       progress.release()
@@ -366,7 +374,7 @@ internal class JobLogSession(
   }
 }
 
-/** Background jobs that must not outlive the session (Save Raw Log). UI thread. */
+/** Background jobs that must not outlive the plugin (Save Raw Log); they may outlive their editors. UI thread. */
 internal class SaveJobs {
   private val jobs = ArrayList<Job>()
   private var closed = false
@@ -396,6 +404,9 @@ private sealed interface PollOutcome {
   class Status(val result: StatusStepResult, override val elapsedMs: Long) : PollOutcome
 
   class Unpinned(override val elapsedMs: Long) : PollOutcome
+
+  /** A failure outside the request itself (the pin, an unexpected exception), whatever was asked. */
+  class Failure(val failure: PollFailure, override val elapsedMs: Long) : PollOutcome
 }
 
 /** The background half of a cycle: pin, request, classify. Holds the connection tags privately. */
@@ -423,7 +434,7 @@ private class PollIo(
     } catch (e: Exception) {
       // The class name is all that is kept: a message can carry the URL.
       val unexpected = PollFailure(PollFailureKind.TRANSIENT, "unexpected", exceptionClass = e.javaClass.simpleName)
-      PollOutcome.Trace(TraceStepResult.Failed(unexpected), elapsedSince(t0))
+      PollOutcome.Failure(unexpected, elapsedSince(t0))
     }
   }
 
@@ -437,8 +448,11 @@ private class TraceProgress {
   private var state: RenderState? = null
   var runs = StyleRunIndex.EMPTY
     private set
-  var folds: List<FoldRegion> = emptyList()
-    private set
+
+  // Appended to in place: copying the list on every append is O(folds) on the UI thread.
+  private val foldList = ArrayList<FoldRegion>()
+  val folds: List<FoldRegion>
+    get() = foldList
 
   /** Some log was put on the document since the session started. */
   var rendered = false
@@ -477,11 +491,12 @@ private class TraceProgress {
     when (update) {
       is JobLogUpdate.Full -> {
         runs = update.result.runs
-        folds = update.result.folds
+        foldList.clear()
+        foldList.addAll(update.result.folds)
       }
       is JobLogUpdate.Append -> {
         runs = update.runs
-        folds = folds + update.newFolds
+        foldList.addAll(update.newFolds)
       }
     }
     rendered = true
@@ -507,7 +522,7 @@ private class TraceProgress {
   fun wipe() {
     release()
     runs = StyleRunIndex.EMPTY
-    folds = emptyList()
+    foldList.clear()
     rendered = false
   }
 }

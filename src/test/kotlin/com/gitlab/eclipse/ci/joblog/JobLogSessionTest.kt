@@ -511,6 +511,28 @@ class JobLogSessionTest : DescribeSpec({
     }
   }
 
+  describe("B2 review") {
+    it("I-3: a visible editor attached while every other one is hidden resumes polling at once") {
+      val hidden = FakeView()
+      live(hidden)
+      hidden.visible = false
+      w.registry.visibilityChanged(FAKE_KEY)
+      w.env.pending.shouldBeEmpty()
+
+      w.registry.attach(FAKE_KEY, FakeView(visible = true))
+
+      w.env.pending.single().delayMs shouldBe 0
+    }
+
+    it("I-3: a hidden editor attached to a live session does not pause it") {
+      live(FakeView())
+
+      w.registry.attach(FAKE_KEY, FakeView(visible = false))
+
+      w.env.pending.single().delayMs shouldBe 3_000
+    }
+  }
+
   describe("memory") {
     it("keeps the compare window while live, drops it on stop, and keeps runs for a new duplicate tab") {
       val view = FakeView()

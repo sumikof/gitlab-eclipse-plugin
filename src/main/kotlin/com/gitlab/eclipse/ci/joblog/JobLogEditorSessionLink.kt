@@ -77,7 +77,7 @@ internal class JobLogEditorSessionLink(private val editor: JobLogEditor) : JobLo
 
   override fun decorate(runs: StyleRunIndex, folds: List<FoldRegion>) {
     val document = editor.viewer?.document ?: return
-    editor.applyRendered(RenderResult(document.get(), runs, folds, omitted = false))
+    editor.decorations.apply(runs, folds, document.length)
   }
 
   private fun visibilityOf(partRef: IWorkbenchPartReference, now: Boolean) {
@@ -107,12 +107,12 @@ private class ViewerSurface(
   override fun refreshVisible() = presenter.refreshVisible()
 
   override fun addFolds(folds: List<FoldRegion>) {
-    // A missing model is audited by applyRendered (foldingUnavailable); the colors still apply.
+    // A missing model is audited by the decorations (foldingUnavailable); the colors still apply.
     val model = viewer.projectionAnnotationModel ?: return
     addFoldAnnotations(model, document, folds)
   }
 
-  override fun applyRendered(result: RenderResult) = editor.applyRendered(result)
+  override fun applyRendered(result: RenderResult) = editor.decorations.applyRendered(result)
 
   // Not selectAndReveal (B1 M-8): the caret and a selection being copied stay where they are.
   override fun revealEnd() = viewer.revealRange(document.length, 0)

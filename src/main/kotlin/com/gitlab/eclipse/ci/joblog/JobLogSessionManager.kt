@@ -42,6 +42,9 @@ internal class JobLogSessionRegistry(
 ) {
   private val sessions = HashMap<JobLogKey, JobLogSession>()
 
+  // Save Raw Log downloads outlive the editor that started them; only stopping the plugin ends them.
+  private val saves = SaveJobs()
+
   /**
    * Starts (or restarts) the session of [target] and asks [show] to bring an editor for it up.
    * [show] opens or activates the editor synchronously, which attaches it; a session that ends the
@@ -91,16 +94,18 @@ internal class JobLogSessionRegistry(
   }
 
   /**
-   * Runs a Save Raw Log download of [key] in the background, bound to the session: closing the
-   * key's last editor or stopping the plugin cancels it.
+   * Runs a Save Raw Log download of [key] in the background. Saving starts only from an open job
+   * log, so without a session nothing starts. Closing the key's last editor lets the download finish
+   * and notify as usual; stopping the plugin cancels it ([disposeAll]).
    */
   fun launchSave(key: JobLogKey, block: suspend () -> Unit) {
-    val job = env.launchIo(block)
-    sessions[key]?.saves?.track(job)
+    if (sessions[key] == null) return
+    saves.track(env.launchIo(block))
   }
 
-  /** Plugin stop: every session is dropped, whether or not its editors get closed. */
+  /** Plugin stop: every session and every running save is dropped, whether or not its editors get closed. */
   fun disposeAll() {
+    saves.cancelAll()
     val all = sessions.values.toList()
     sessions.clear()
     all.forEach(JobLogSession::dispose)

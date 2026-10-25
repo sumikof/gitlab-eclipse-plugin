@@ -119,21 +119,30 @@ class JobLogSessionRegistryTest : DescribeSpec({
     }
   }
 
-  // B1 review N-5: a running Save Raw Log does not outlive the job log's editors or the plugin.
+  // B1 review N-5 / B2 review I-2: a running Save Raw Log outlives the job log's editors, not the plugin.
   describe("launchSave") {
     fun saveRunning(): Job {
       w.registry.launchSave(FAKE_KEY) { awaitCancellation() }
       return w.env.launched.last()
     }
 
-    it("cancels the download when the last editor closes") {
+    it("keeps the download running when the last editor closes") {
       val view = FakeView()
       w.open(view)
       val save = saveRunning()
 
       w.registry.detach(FAKE_KEY, view)
 
+      w.session shouldBe null
+      save.isActive shouldBe true
+      w.registry.disposeAll()
       save.isCancelled shouldBe true
+    }
+
+    it("starts nothing for a key without a session (B2 review M-9)") {
+      w.registry.launchSave(FAKE_KEY) { awaitCancellation() }
+
+      w.env.launched.shouldBeEmpty()
     }
 
     it("cancels the download when the plugin stops") {

@@ -112,8 +112,8 @@ class SaveRawJobLogHandler(
 }
 
 /**
- * [JobTraceService.downloadRawTrace] that stops once the calling coroutine is cancelled (closing
- * the editor's last tab or stopping the plugin cancels it, see [JobLogSessionManager.launchSave]):
+ * [JobTraceService.downloadRawTrace] that stops once the calling coroutine is cancelled (stopping
+ * the plugin cancels it; closing the editor does not, see [JobLogSessionManager.launchSave]):
  * the copy stops at the next chunk (review M-4), and a read blocked on a stalled connection is
  * ended at once by closing the body (B1 review N-5), instead of waiting for the 10 minute deadline.
  * Either way it ends in `CancellationException`, the temporary file is removed and the target is

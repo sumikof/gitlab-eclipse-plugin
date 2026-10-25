@@ -10,7 +10,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import org.eclipse.core.runtime.ILog
 
-/** Review M-1: the `foldingUnavailable` line of [JobLogEditor.applyRendered] is logged once, without a throwable. */
+/** Review M-1: the `foldingUnavailable` line of [JobLogDecorations] is logged once, without a throwable. */
 class OneTimeAuditTest : DescribeSpec({
   it("logs the first message only, as a plain line") {
     val log = mockk<ILog>(relaxUnitFun = true)

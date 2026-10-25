@@ -18,6 +18,7 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
@@ -284,6 +285,81 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
 
       job.isCancelled shouldBe true
       closed.count shouldBe 0L
+      Files.list(own).use { it.count() } shouldBe 0L
+    }
+  }
+
+  // B2 review I-2: a save outlives the job log's editors, not the plugin.
+  describe("lifetime with the session registry") {
+    fun handlerOn(
+      w: FakeWorld,
+      saveTo: Path,
+      notices: MutableList<String>,
+      download: suspend (Long, Long, ConnectionSnapshot, Path) -> Unit,
+    ) = SaveRawJobLogHandler(
+      chooseTarget = { saveTo },
+      pin = { _, _ -> snapshot },
+      download = download,
+      notify = { notices += it },
+      background = w.registry::launchSave,
+      log = mockk(relaxUnitFun = true),
+    )
+
+    fun input() = JobLogEditorInput(FAKE_KEY, JobLogContent(""), FAKE_URL, FAKE_FP)
+
+    it("closing the last tab lets a running save finish and say so") {
+      val w = FakeWorld()
+      val view = FakeView()
+      w.open(view)
+      val finish = CompletableDeferred<Unit>()
+      val notices = mutableListOf<String>()
+      handlerOn(w, target, notices) { _, _, _, _ -> finish.await() }.run(input())
+
+      w.registry.detach(FAKE_KEY, view)
+
+      w.session shouldBe null
+      notices.shouldBeEmpty()
+      finish.complete(Unit)
+      notices shouldContainExactly listOf(RAW_LOG_SAVED_MESSAGE)
+    }
+
+    it("stopping the plugin ends a stalled save at once, says nothing and leaves no file") {
+      val own = tempdir().toPath()
+      val apiClient = mockk<GitLabApiClient>()
+      val reading = CountDownLatch(1)
+      val closed = CountDownLatch(1)
+      val stalled = object : InputStream() {
+        override fun read(): Int = -1
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+          reading.countDown()
+          check(closed.await(5, TimeUnit.SECONDS)) { "the body was never closed" }
+          throw IOException("Stream closed")
+        }
+
+        override fun close() {
+          closed.countDown()
+        }
+      }
+      every { apiClient.downloadTo(any(), any(), any(), any()) } answers {
+        arg<(() -> Unit) -> Unit>(2).invoke { stalled.close() }
+        arg<(InputStream) -> Unit>(3).invoke(stalled)
+      }
+      val w = FakeWorld()
+      w.open(FakeView())
+      val notices = mutableListOf<String>()
+      handlerOn(w, own.resolve("x.log"), notices) { projectId, jobId, connection, path ->
+        downloadRawTraceCancellably(JobTraceService(apiClient), projectId, jobId, connection, path)
+      }.run(input())
+      reading.await(5, TimeUnit.SECONDS) shouldBe true
+      val save = w.env.launched.last()
+
+      w.registry.disposeAll()
+      runBlocking { withTimeout(5_000) { save.join() } }
+
+      save.isCancelled shouldBe true
+      closed.count shouldBe 0L
+      notices.shouldBeEmpty()
       Files.list(own).use { it.count() } shouldBe 0L
     }
   }

@@ -29,6 +29,7 @@ import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.RGB
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Control
+import org.eclipse.ui.IEditorInput
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.editors.text.TextEditor
 import org.eclipse.ui.editors.text.TextSourceViewerConfiguration
@@ -40,7 +41,7 @@ private const val GREEN_BITS = 8
 /**
  * Read-only job-log editor (design §5.3): a [ProjectionViewer] folds the GitLab sections and a
  * [JobLogPresenter] colors only what is on screen. The document of a key is shared by all its
- * editors ([JobLogDocumentProvider.SHARED]); [applyRendered] puts the matching folds and style
+ * editors ([JobLogDocumentProvider.SHARED]); [decorations] puts the matching folds and style
  * runs on top, and live output is appended through [JobLogUiApplier]. The editor follows the
  * job's session ([JobLogEditorSessionLink]), which also picks the page: a non-log page is a status
  * of the provider, shown through [isErrorStatus]. UI thread only.
@@ -52,8 +53,10 @@ class JobLogEditor : TextEditor() {
 
   private var projectionSupport: ProjectionSupport? = null
   private var presenter: JobLogPresenter? = null
-  private var applied: RenderResult? = null
-  private val foldingUnavailable = OneTimeAudit { logger<JobLogEditor>() }
+
+  /** Puts the folds and style runs on the viewer ([JobLogDecorations]). */
+  internal val decorations = JobLogDecorations(this)
+
   private val sessionLink = JobLogEditorSessionLink(this)
 
   /** The loading, waiting, unavailable and erased pages ([JobLogStatusPage]). */
@@ -107,36 +110,12 @@ class JobLogEditor : TextEditor() {
     return super.createStatusControl(parent, status)
   }
 
-  /**
-   * UI thread. Puts the folds and style runs of [result] on the document, which the caller has
-   * already reset to `result.text`. Replaces every fold annotation and forgets what was colored.
-   * Before the control exists this does nothing ([createPartControl] applies the content then).
-   * Once the control exists, a missing document or projection model is a wiring fault (review
-   * C-1, M-1): it is audited once per editor as `foldingUnavailable`, and the colors still apply.
-   */
-  fun applyRendered(result: RenderResult) {
-    if (result === applied) return
-    val reportFoldingUnavailable = {
-      jobLogInput?.key?.let { key ->
-        foldingUnavailable.error { jobLogAuditMessage("displayJobLog", key.projectId, key.jobId, "foldingUnavailable") }
-      }
-    }
-    val viewer = sourceViewer as? ProjectionViewer
-    val document = viewer?.document
-    if (viewer == null || document == null) {
-      if (sourceViewer != null) reportFoldingUnavailable()
-      return
-    }
-    applied = result
-    // A failed reset leaves other text in the document: show it plain rather than misplaced.
-    val matches = document.length == result.text.length
-    val model = viewer.projectionAnnotationModel
-    if (model == null) {
-      reportFoldingUnavailable()
-    } else {
-      replaceFolds(model, document, if (matches) result.folds else emptyList())
-    }
-    presenter?.setRuns(if (matches) result.runs else StyleRunIndex.EMPTY)
+  // StatusTextEditor rebuilds the status control on every activation (sanityCheckState): keep the
+  // page on screen while its kind is unchanged, so a running write's disabled button and a first
+  // click survive (B2 review I-1). Another kind, or the log, goes through the platform as before.
+  override fun updatePartControl(input: IEditorInput?) {
+    if (statusPages.keepsShowing((input as? JobLogEditorInput)?.content?.page)) return
+    super.updatePartControl(input)
   }
 
   override fun isDirty(): Boolean = false
@@ -151,8 +130,57 @@ class JobLogEditor : TextEditor() {
     projectionSupport?.dispose()
     projectionSupport = null
     presenter = null
-    applied = null
+    decorations.reset()
     super.dispose()
+  }
+}
+
+/**
+ * The folds and style runs of one [JobLogEditor]. Before the control exists this does nothing
+ * (the session decorates the viewer when it attaches it). Once the control exists, a missing
+ * document or projection model is a wiring fault (review C-1, M-1): it is audited once per editor
+ * as `foldingUnavailable`, and the colors still apply. UI thread only.
+ */
+internal class JobLogDecorations(private val editor: JobLogEditor) {
+  private var applied: RenderResult? = null
+  private val foldingUnavailable = OneTimeAudit { logger<JobLogEditor>() }
+
+  /** Replaces every fold annotation and forgets what was colored. The same result twice is applied once. */
+  fun applyRendered(result: RenderResult) {
+    if (result === applied) return
+    if (apply(result.runs, result.folds, result.text.length)) applied = result
+  }
+
+  /**
+   * [runs] and [folds] of a document of [expectedLength] chars, without its text (a duplicate tab
+   * of a large log need not copy it, B2 review M-2). False before the control exists.
+   */
+  fun apply(runs: StyleRunIndex, folds: List<FoldRegion>, expectedLength: Int): Boolean {
+    val viewer = editor.viewer
+    val document = viewer?.document
+    if (viewer == null || document == null) {
+      if (viewer != null) reportFoldingUnavailable()
+      return false
+    }
+    // A failed reset leaves other text in the document: show it plain rather than misplaced.
+    val matches = document.length == expectedLength
+    val model = viewer.projectionAnnotationModel
+    if (model == null) {
+      reportFoldingUnavailable()
+    } else {
+      replaceFolds(model, document, if (matches) folds else emptyList())
+    }
+    editor.jobLogPresenter?.setRuns(if (matches) runs else StyleRunIndex.EMPTY)
+    return true
+  }
+
+  fun reset() {
+    applied = null
+  }
+
+  private fun reportFoldingUnavailable() {
+    val key = editor.jobLogInput?.key ?: return
+    foldingUnavailable.error { jobLogAuditMessage("displayJobLog", key.projectId, key.jobId, "foldingUnavailable") }
   }
 }
 
