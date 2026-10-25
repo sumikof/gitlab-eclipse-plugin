@@ -139,6 +139,43 @@ fun appendRender(state: RenderState, appended: ByteArray): Delta.Append {
   )
 }
 
+/**
+ * Confirms everything still pending in [state]: the unfinished last line and, for timestamped traces, the last line
+ * group. Use it for the final fetch of a finished job, when no further bytes can continue those lines. The result
+ * replaces the document from [Delta.Append.replaceFrom] like any append and also reports the folds that close there.
+ */
+fun finishRender(state: RenderState): Delta.Append {
+  val split = splitRawLines(state.pendingRaw)
+  val mode = state.timestamp ?: detectTimestampMode(split.complete.firstOrNull() ?: split.partial)
+  val hasPartial = split.partial.isNotEmpty()
+  val partial = if (hasPartial) listOf(bodyOf(split.partial, mode)) else emptyList()
+  val items = split.complete.map { bodyOf(it, mode) } + partial
+  val groups = groupLines(items)
+
+  val builder = DocBuilder(
+    state.confirmedChars,
+    state.confirmedLines,
+    state.style,
+    state.sections,
+    state.collapsedFolds,
+  )
+  groups.forEachIndexed { i, line ->
+    builder.addLine(line, terminate = !(hasPartial && i == groups.size - 1), trackFolds = true)
+  }
+
+  val newState = RenderState(
+    confirmedBytes = state.confirmedBytes + state.pendingRaw.size,
+    confirmedChars = state.confirmedChars + builder.text.length,
+    confirmedLines = state.confirmedLines + groups.size,
+    style = builder.style,
+    sections = builder.sections,
+    timestamp = state.timestamp ?: if (state.pendingRaw.isNotEmpty()) mode else null,
+    pendingRaw = ByteArray(0),
+    collapsedFolds = builder.collapsedFolds,
+  )
+  return Delta.Append(state.confirmedChars, builder.text.toString(), builder.runs, builder.folds, newState)
+}
+
 private class RawLines(val complete: List<String>, val ends: List<Int>, val partial: String)
 
 /** Splits at every LF; complete lines lose a trailing CR (CRLF). [RawLines.ends] are byte offsets after each LF. */

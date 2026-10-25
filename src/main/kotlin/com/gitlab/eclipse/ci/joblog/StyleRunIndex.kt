@@ -33,13 +33,26 @@ class StyleRunIndex private constructor(
    */
   fun appendFrom(replaceFrom: Int, runs: List<StyleRun>): StyleRunIndex {
     val kept = countStartingBefore(replaceFrom)
-    val builder = Builder(styles)
-    for (i in 0 until kept) {
-      val length = minOf(lengths[i], replaceFrom - starts[i])
-      builder.add(StyleRun(starts[i], length, styles[styleIds[i]]))
+    val added = runs.count { it.length > 0 }
+    val newStarts = IntArray(kept + added)
+    val newLengths = IntArray(kept + added)
+    val newIds = IntArray(kept + added)
+    starts.copyInto(newStarts, 0, 0, kept)
+    lengths.copyInto(newLengths, 0, 0, kept)
+    styleIds.copyInto(newIds, 0, 0, kept)
+    // Runs are sorted and do not overlap, so only the last kept run can straddle replaceFrom.
+    if (kept > 0) newLengths[kept - 1] = minOf(lengths[kept - 1], replaceFrom - starts[kept - 1])
+
+    val table = StyleTable(styles)
+    var next = kept
+    for (run in runs) {
+      if (run.length <= 0) continue
+      newStarts[next] = run.start
+      newLengths[next] = run.length
+      newIds[next] = table.idOf(run.style)
+      next++
     }
-    runs.forEach { builder.add(it) }
-    return builder.build()
+    return StyleRunIndex(newStarts, newLengths, newIds, table.styles)
   }
 
   fun toList(): List<StyleRun> = (0 until size).map { StyleRun(starts[it], lengths[it], styles[styleIds[it]]) }
@@ -72,25 +85,15 @@ class StyleRunIndex private constructor(
     return low
   }
 
-  private class Builder(known: List<AnsiStyle>) {
-    private val styles = ArrayList(known)
-    private val ids = HashMap<AnsiStyle, Int>().also { map -> styles.forEachIndexed { i, s -> map.putIfAbsent(s, i) } }
-    private val starts = ArrayList<Int>()
-    private val lengths = ArrayList<Int>()
-    private val styleIds = ArrayList<Int>()
+  /** The known styles plus any new ones (a copy of the small style list; the run arrays are what is big). */
+  private class StyleTable(known: List<AnsiStyle>) {
+    val styles = ArrayList(known)
+    private val ids = HashMap<AnsiStyle, Int>().also { map -> known.forEachIndexed { i, s -> map.putIfAbsent(s, i) } }
 
-    fun add(run: StyleRun) {
-      if (run.length <= 0) return
-      val id = ids.getOrPut(run.style) {
-        styles.add(run.style)
-        styles.size - 1
-      }
-      starts.add(run.start)
-      lengths.add(run.length)
-      styleIds.add(id)
+    fun idOf(style: AnsiStyle): Int = ids.getOrPut(style) {
+      styles.add(style)
+      styles.size - 1
     }
-
-    fun build(): StyleRunIndex = StyleRunIndex(starts.toIntArray(), lengths.toIntArray(), styleIds.toIntArray(), styles)
   }
 
   companion object {

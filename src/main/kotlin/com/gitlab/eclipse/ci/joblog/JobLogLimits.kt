@@ -11,3 +11,9 @@ const val OMITTED_HEADER = "Earlier output was omitted. Use Save Raw Log to save
  * (R4). Twice this is the hard limit for live following.
  */
 const val MAX_DISPLAY_RAW_BYTES: Int = 16 * 1024 * 1024
+
+/** Hard limit of raw bytes shown while following a live log; beyond it the document is rebuilt from the tail. */
+const val HARD_DISPLAY_RAW_BYTES: Long = 2L * MAX_DISPLAY_RAW_BYTES
+
+/** How much of the previous body's end is kept to check that a new body still starts with the old one. Provisional. */
+const val COMPARE_WINDOW_BYTES: Int = 64 * 1024

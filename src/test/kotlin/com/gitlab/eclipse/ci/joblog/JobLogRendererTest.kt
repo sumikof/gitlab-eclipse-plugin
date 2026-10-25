@@ -278,4 +278,55 @@ class JobLogRendererTest : DescribeSpec({
       }
     }
   }
+
+  describe("finishRender") {
+    for ((name, raw) in CORPORA) {
+      it("equals the one-shot render once everything is confirmed, for every split of $name") {
+        val (whole, wholeState) = renderInitial(raw, 0L)
+        val wholeFinish = finishRender(wholeState)
+        val wholeFolds = whole.folds + wholeFinish.newFolds
+        for (cut in 0..raw.size) {
+          val chunked = renderChunked(raw, 0L, listOf(cut))
+          val delta = finishRender(chunked.state)
+          val text = chunked.text.substring(0, delta.replaceFrom) + delta.text
+          text shouldBe whole.text
+          StyleRunIndex.of(chunked.runs).appendFrom(delta.replaceFrom, delta.runs).toList() shouldBe whole.runs.toList()
+          (chunked.folds + delta.newFolds) shouldBe wholeFolds
+          delta.state.pendingRaw.size shouldBe 0
+          delta.state.confirmedBytes shouldBe raw.size.toLong()
+        }
+      }
+    }
+
+    it("closes a section that ends in the last timestamped line group") {
+      val raw = bytes(
+        "$TS 00O section_start:1:s\r\u001B[0K\n$TS 00O body\n$TS 00O section_end:1:s\r\u001B[0K\n",
+      )
+      val (whole, state) = renderInitial(raw, 0L)
+      whole.folds shouldBe emptyList()
+      finishRender(state).newFolds.size shouldBe 1
+    }
+
+    it("confirms an unfinished last line without adding a line break") {
+      val (first, state) = renderInitial(bytes("a\nb"), 0L)
+      first.text shouldBe "a\nb"
+      val delta = finishRender(state)
+      delta.replaceFrom shouldBe 2
+      delta.text shouldBe "b"
+      delta.state.confirmedChars shouldBe 3
+    }
+
+    it("does nothing when nothing is pending") {
+      val (_, state) = renderInitial(bytes("a\n"), 0L)
+      val delta = finishRender(state)
+      delta.text shouldBe ""
+      delta.runs shouldBe emptyList()
+      delta.state shouldBe state
+    }
+
+    it("keeps the omitted header out of the replaced range") {
+      val (_, state) = renderInitial(bytes("a"), OMITTED)
+      (finishRender(state).replaceFrom >= HEADER.length) shouldBe true
+    }
+  }
 })

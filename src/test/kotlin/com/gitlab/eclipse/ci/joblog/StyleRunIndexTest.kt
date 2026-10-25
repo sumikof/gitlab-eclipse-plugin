@@ -97,4 +97,19 @@ class StyleRunIndexTest : DescribeSpec({
       built shouldBe StyleRunIndex.of(RUNS)
     }
   }
+
+  describe("appendFrom on a big index") {
+    it("appends to one million runs and cuts the run that straddles the boundary") {
+      val big = StyleRunIndex.of(List(1_000_000) { StyleRun(it * 2, 2, if (it % 2 == 0) red else bold) })
+      val result = big.appendFrom(1_999_999, listOf(StyleRun(1_999_999, 5, bold)))
+
+      result.size shouldBe 1_000_001
+      result.runsIn(1_999_996, 20) shouldBe listOf(
+        StyleRun(1_999_996, 2, red),
+        StyleRun(1_999_998, 1, bold),
+        StyleRun(1_999_999, 5, bold),
+      )
+      big.size shouldBe 1_000_000
+    }
+  }
 })
