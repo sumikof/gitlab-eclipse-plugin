@@ -188,6 +188,42 @@ class TailKeepingBodyHandlerTest : DescribeSpec({
       b.omittedBytes shouldBe 6L
     }
 
+    // Spec: only the first TAIL_LF_SEARCH_BYTES (1 MiB) of the kept tail are searched, i.e. indexes 0 until 1 MiB
+    // (`for (i in 0 until searchEnd)`). A line break at index 1 MiB - 1 is used; one at index 1 MiB is not.
+    // The tail is [2 continuation bytes][a...][LF][b...] so the two alignments give distinguishable results.
+    fun boundaryTail(lfIndex: Int, tailSize: Int): ByteArray {
+      val tail = ByteArray(tailSize) { 'b'.code.toByte() }
+      for (i in 0 until lfIndex) tail[i] = 'a'.code.toByte()
+      tail[0] = 0x80.toByte()
+      tail[1] = 0x80.toByte()
+      tail[lfIndex] = '\n'.code.toByte()
+      return tail
+    }
+
+    it("uses a line break at the last searched index (1 MiB - 1 into the tail)") {
+      val oneMiB = 1024 * 1024
+      val cap = oneMiB + 10
+      val raw = "xxxxx".toByteArray() + boundaryTail(oneMiB - 1, cap)
+
+      val b = body(drive(200, chunks = split(raw, 65_536), cap = cap).first)
+
+      b.bytes.size shouldBe 10 // the 10 'b' bytes after the break
+      b.bytes[0] shouldBe 'b'.code.toByte()
+      b.omittedBytes shouldBe raw.size - 10L
+    }
+
+    it("ignores a line break exactly 1 MiB into the tail and aligns to the UTF-8 boundary instead") {
+      val oneMiB = 1024 * 1024
+      val cap = oneMiB + 10
+      val raw = "xxxxx".toByteArray() + boundaryTail(oneMiB, cap)
+
+      val b = body(drive(200, chunks = split(raw, 65_536), cap = cap).first)
+
+      b.bytes.size shouldBe cap - 2 // only the 2 leading continuation bytes are skipped
+      b.bytes[0] shouldBe 'a'.code.toByte()
+      b.omittedBytes shouldBe raw.size - (cap - 2).toLong()
+    }
+
     it("handles a long single line with a bounded cap") {
       val raw = ByteArray(200_000) { 'x'.code.toByte() }
 

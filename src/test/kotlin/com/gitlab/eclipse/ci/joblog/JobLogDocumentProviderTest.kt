@@ -7,6 +7,8 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.spyk
+import io.mockk.verify
 import org.eclipse.jface.text.source.IAnnotationModelExtension
 import org.eclipse.ui.editors.text.StorageDocumentProvider
 import org.eclipse.ui.texteditor.IElementStateListener
@@ -109,6 +111,20 @@ class JobLogDocumentProviderTest : DescribeSpec({
         provider.getDocument(input) shouldBeSameInstanceAs document
         document.get() shouldBe UNENCODABLE
       }
+    }
+
+    it("does not build a second document: createDocument runs only on connect") {
+      // The base doResetDocument calls createDocument again and copies its text over, which keeps
+      // both the text and the document instance the same, so only the call count tells them apart.
+      val content = JobLogContent("old")
+      val input = JobLogEditorInput(key, content)
+      val provider = spyk(JobLogDocumentProvider(), recordPrivateCalls = true)
+      connected(provider, input) {
+        content.rendered = rendered("new\n")
+        provider.resetDocument(input)
+        provider.getDocument(input).get() shouldBe "new\n"
+      }
+      verify(exactly = 1) { provider["createDocument"](input) }
     }
 
     it("tells the editor the content was replaced and is not dirty, like the base provider") {

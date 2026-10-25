@@ -13,6 +13,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
 
+// Test streams that never end stop here, so a broken cancellation fails at once instead of filling the disk.
+private const val ENDLESS_CAP_BYTES = 64L * 1024 * 1024
+
 private fun leftovers(dir: Path): List<String> =
   Files.list(dir).use { stream -> stream.map { it.fileName.toString() }.toList() }
 
@@ -103,12 +106,20 @@ class RawTraceWriterTest : DescribeSpec({
       var reads = 0
       var cancelled = false
       val endless = object : InputStream() {
-        override fun read(): Int = 0
+        private var total = 0L
+
+        override fun read(): Int = 0.also { count(1) }
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
           reads++
           if (reads == 3) cancelled = true
+          count(len)
           return len
+        }
+
+        private fun count(n: Int) {
+          total += n
+          check(total <= ENDLESS_CAP_BYTES) { "endless test stream passed 64 MiB: cancellation did not stop the copy" }
         }
       }
 
