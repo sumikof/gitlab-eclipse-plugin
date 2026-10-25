@@ -316,6 +316,17 @@ class JobLogRendererTest : DescribeSpec({
       delta.state.confirmedChars shouldBe 3
     }
 
+    it("detects the timestamps itself when the whole trace is one unfinished line, and keeps the header out") {
+      val (first, state) = renderInitial(bytes("$TS 00O only one line"), OMITTED)
+
+      val delta = finishRender(state)
+
+      (delta.replaceFrom >= HEADER.length) shouldBe true
+      (first.text.substring(0, delta.replaceFrom) + delta.text) shouldBe HEADER + "only one line"
+      delta.state.timestamp shouldBe TimestampMode.TIMESTAMPED
+      delta.state.pendingRaw.size shouldBe 0
+    }
+
     it("does nothing when nothing is pending") {
       val (_, state) = renderInitial(bytes("a\n"), 0L)
       val delta = finishRender(state)

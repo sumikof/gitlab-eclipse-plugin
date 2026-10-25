@@ -191,6 +191,13 @@ private val STEP_CASES = listOf(
     listOf(PollCommand.FetchTrace(10_000)),
   ),
   StepCase(
+    "R2-3 no etag at exactly the hard limit is not large",
+    live,
+    changed(etag = false, total = HARD_DISPLAY_RAW_BYTES),
+    live.copy(inFlight = null, pollsSinceStatus = 1, scheduled = TRACE),
+    listOf(PollCommand.FetchTrace(3_000)),
+  ),
+  StepCase(
     "R2-3 etag present stays at 3 s",
     live,
     changed(etag = true, total = LARGE),
@@ -217,6 +224,27 @@ private val STEP_CASES = listOf(
     seen("running", hasTrace = true),
     live.copy(inFlight = null, unchangedStreak = 3, pollsSinceStatus = 0, scheduled = TRACE),
     listOf(PollCommand.FetchTrace(3_000)),
+  ),
+  StepCase(
+    "P22 a changed status is remembered (running to canceling)",
+    live.copy(inFlight = STATUS),
+    seen("canceling", hasTrace = true),
+    live.copy(status = "canceling", inFlight = null, pollsSinceStatus = 0, scheduled = TRACE),
+    listOf(PollCommand.FetchTrace(3_000)),
+  ),
+  StepCase(
+    "P26 a status result while STARTING changes nothing but the in-flight mark",
+    PollState(phase = PollPhase.STARTING, status = "running", inFlight = STATUS),
+    seen("success", hasTrace = true),
+    PollState(phase = PollPhase.STARTING, status = "running"),
+    emptyList(),
+  ),
+  StepCase(
+    "P26 a status result while STARTING after failures still reports the recovery",
+    PollState(phase = PollPhase.STARTING, status = "running", inFlight = STATUS, failures = 2),
+    seen("running"),
+    PollState(phase = PollPhase.STARTING, status = "running"),
+    listOf(PollCommand.ReportRecovered),
   ),
   StepCase(
     "P23 final trace ends the session",

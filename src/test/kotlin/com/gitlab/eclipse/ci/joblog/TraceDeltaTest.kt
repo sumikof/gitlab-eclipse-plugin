@@ -33,6 +33,8 @@ private val DELTA_CASES = listOf(
   DeltaCase("empty log then cut start", cursor(0, 0, 0, ""), body("xyz", 9, 6), "Full:GAP"),
   DeltaCase("empty log then grew", cursor(0, 0, 0, ""), body("ab", 2, 0), "Appended:ab"),
   DeltaCase("rewritten same size", cursor(6, 0, 2, "cdef"), body("abcdXf", 6, 0), "Full:MISMATCH"),
+  DeltaCase("rewritten in the last overlap byte only", cursor(6, 0, 2, "cdef"), body("abcdeX", 6, 0), "Full:MISMATCH"),
+  DeltaCase("last overlap byte rewritten, grown", cursor(6, 0, 2, "cdef"), body("abcdeXg", 7, 0), "Full:MISMATCH"),
   DeltaCase("rewritten before growth", cursor(6, 0, 2, "cdef"), body("abXdefgh", 8, 0), "Full:MISMATCH"),
   DeltaCase("hard limit reached", cursor(6, 0, 2, "cdef"), body("abcdefgh", 8, 0), "Full:HARD_LIMIT"),
   DeltaCase("hard limit counts from display start", cursor(6, 4, 2, "cdef"), body("efgh", 8, 4), "Appended:gh"),
@@ -71,6 +73,13 @@ class TraceDeltaTest : DescribeSpec({
       cursor.displayStartBytes shouldBe 14
       cursor.compareStartBytes shouldBe 16
       String(cursor.compareBytes) shouldBe "ghij"
+    }
+
+    it("keeps displayStartBytes as given, independent of the body's omitted bytes") {
+      val cursor = cursorAfter(body("efghij", 20, 14), 2, WINDOW)
+      cursor.displayStartBytes shouldBe 2
+      cursor.compareStartBytes shouldBe 16
+      cursor.totalBytes shouldBe 20
     }
 
     it("copies the bytes") {

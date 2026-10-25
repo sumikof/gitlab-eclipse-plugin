@@ -14,6 +14,8 @@ import java.net.http.HttpTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 
+private const val HARD_LIMIT = 8L
+
 private fun bytes(s: String) = s.toByteArray(Charsets.UTF_8)
 
 private fun body(text: String, etag: String?, total: Long, omitted: Long) =
@@ -163,6 +165,64 @@ class JobLogPollStepTest : DescribeSpec({
       val update = changed.update.shouldBeInstanceOf<JobLogUpdate.Append>()
       val expected = snapshot.runs.appendFrom(update.replaceFrom, appendRender(state, bytes(" text\n")).runs)
       update.runs shouldBe expected
+    }
+
+    it("takes the new etag from an unchanged body too") {
+      val snapshot = snap("\"1\"", cursorOf("a\nb"))
+
+      val result = traceStep(snapshot, { body("a\nb", "\"2\"", 3, 0) })
+
+      show(result) shouldBe "Unchanged(etag=\"2\",total=3)"
+    }
+
+    it("takes the etag from the answer on a full render as well") {
+      val first = traceStep(snap(null, null), { body("a\nb", "W/\"9\"", 3, 0) })
+      first.shouldBeInstanceOf<TraceStepResult.Changed>().etag shouldBe "W/\"9\""
+
+      val snapshot = snap("\"1\"", cursorOf("a\nb"), stateAfter("a\nb"))
+      val mismatch = traceStep(snapshot, { body("X\nbc\n", "\"2\"", 5, 0) })
+      mismatch.shouldBeInstanceOf<TraceStepResult.Changed>().etag shouldBe "\"2\""
+      mismatch.update.shouldBeInstanceOf<JobLogUpdate.Full>()
+    }
+
+    it("keeps the display start across appends and takes the omitted bytes on a full render") {
+      // Raw offsets: the first fetch cut 100 bytes off; the server window then moves on to 102 (omitted differs).
+      val first = traceStep(snap(null, null), { body("x\nab", "e1", 104, 100) }, HARD_LIMIT)
+        .shouldBeInstanceOf<TraceStepResult.Changed>()
+      first.update.shouldBeInstanceOf<JobLogUpdate.Full>()
+      first.cursor.displayStartBytes shouldBe 100
+
+      val second = traceStep(
+        TraceSnapshot("e1", first.cursor, first.state, (first.update as JobLogUpdate.Full).result.runs),
+        { body("abcde", "e2", 107, 102) },
+        HARD_LIMIT,
+      ).shouldBeInstanceOf<TraceStepResult.Changed>()
+      val append = second.update.shouldBeInstanceOf<JobLogUpdate.Append>()
+      second.cursor.displayStartBytes shouldBe 100 // kept from the first render, not the body's omitted bytes (102)
+
+      val third = traceStep(
+        TraceSnapshot("e2", second.cursor, second.state, append.runs),
+        { body("abcdefg", "e3", 109, 102) },
+        HARD_LIMIT,
+      )
+      // 109 - 100 = 9 raw bytes shown since the display start, over the limit of 8: rebuild from the tail.
+      show(third) shouldBe "Full(omitted=true)"
+      third.shouldBeInstanceOf<TraceStepResult.Changed>().cursor.displayStartBytes shouldBe 102
+    }
+
+    it("does not hit the hard limit while the bytes shown since the display start stay within it") {
+      val first = traceStep(snap(null, null), { body("x\nab", "e1", 104, 100) }, HARD_LIMIT)
+        .shouldBeInstanceOf<TraceStepResult.Changed>()
+
+      val second = traceStep(
+        TraceSnapshot("e1", first.cursor, first.state, (first.update as JobLogUpdate.Full).result.runs),
+        { body("abcdef", "e2", 108, 102) },
+        HARD_LIMIT,
+      )
+
+      // 108 - 100 = 8 raw bytes, exactly the limit: still an append (the unfinished "ab" is re-rendered with "cdef").
+      second.shouldBeInstanceOf<TraceStepResult.Changed>().update.shouldBeInstanceOf<JobLogUpdate.Append>()
+        .text shouldBe "abcdef"
     }
 
     it("rethrows cancellation and turns other errors into failures") {
