@@ -53,10 +53,16 @@ internal class JobLogEditorSessionLink(private val editor: JobLogEditor) : JobLo
     key = null
   }
 
+  // Same kind: the page on screen is updated in place (time, status, button). Another kind: the
+  // status control is rebuilt, so the old page is forgotten first (R2-4).
   override fun showPage(page: JobLogPage) {
     val kind = page.javaClass
-    if (kind == shownKind) return
+    if (kind == shownKind) {
+      editor.statusPages.update(page)
+      return
+    }
     shownKind = kind
+    editor.statusPages.forget()
     editor.updatePartControl(editor.editorInput)
   }
 

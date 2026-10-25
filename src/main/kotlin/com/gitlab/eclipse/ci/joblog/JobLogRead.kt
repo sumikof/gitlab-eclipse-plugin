@@ -26,6 +26,12 @@ fun readAuditMessage(
   correlationId?.let { append(" correlationId=").append(it) }
 }
 
+/** The first word of a job-log audit line: a read, or a write from the waiting page (as [writeAuditMessage]). */
+enum class JobLogAuditPrefix(val tag: String) {
+  READ("ciReadAction"),
+  WRITE("ciWriteAction"),
+}
+
 /**
  * Audit line for the job log viewer. Unlike [readAuditMessage] it has no instance URL, and nothing in it can carry
  * a URL, a file path, log text or a credential: only fixed-vocabulary tags, numeric ids and the exception class.
@@ -38,8 +44,9 @@ fun jobLogAuditMessage(
   httpStatus: Int? = null,
   correlationId: String? = null,
   exceptionClass: String? = null,
+  prefix: JobLogAuditPrefix = JobLogAuditPrefix.READ,
 ): String = buildString {
-  append("ciReadAction action=").append(action)
+  append(prefix.tag).append(" action=").append(action)
   append(" projectId=").append(projectId)
   append(" jobId=").append(jobId)
   append(" outcome=").append(outcome)

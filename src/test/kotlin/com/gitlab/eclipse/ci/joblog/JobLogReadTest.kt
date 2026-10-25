@@ -71,7 +71,14 @@ class JobLogReadTest : DescribeSpec({
 
     it("has no parameter that could carry a URL, path, body or credential") {
       ::jobLogAuditMessage.parameters.map { it.name } shouldBe
-        listOf("action", "projectId", "jobId", "outcome", "httpStatus", "correlationId", "exceptionClass")
+        listOf("action", "projectId", "jobId", "outcome", "httpStatus", "correlationId", "exceptionClass", "prefix")
+    }
+
+    it("starts with ciReadAction by default and ciWriteAction for a waiting-page write, the rest unchanged") {
+      jobLogAuditMessage("play", 7L, 42L, "success", 201) shouldBe
+        "ciReadAction action=play projectId=7 jobId=42 outcome=success httpStatus=201"
+      jobLogAuditMessage("play", 7L, 42L, "success", 201, prefix = JobLogAuditPrefix.WRITE) shouldBe
+        "ciWriteAction action=play projectId=7 jobId=42 outcome=success httpStatus=201"
     }
   }
 })

@@ -28,6 +28,7 @@ import org.eclipse.swt.custom.StyleRange
 import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.RGB
 import org.eclipse.swt.widgets.Composite
+import org.eclipse.swt.widgets.Control
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.editors.text.TextEditor
 import org.eclipse.ui.editors.text.TextSourceViewerConfiguration
@@ -54,6 +55,9 @@ class JobLogEditor : TextEditor() {
   private var applied: RenderResult? = null
   private val foldingUnavailable = OneTimeAudit { logger<JobLogEditor>() }
   private val sessionLink = JobLogEditorSessionLink(this)
+
+  /** The loading, waiting, unavailable and erased pages ([JobLogStatusPage]). */
+  internal val statusPages = JobLogStatusPages(this)
 
   val jobLogInput: JobLogEditorInput?
     get() = editorInput as? JobLogEditorInput
@@ -94,6 +98,15 @@ class JobLogEditor : TextEditor() {
   override fun isErrorStatus(status: IStatus?): Boolean =
     JobLogDocumentProvider.isPageStatus(status) || super.isErrorStatus(status)
 
+  // A page status gets the job's page, made from the content's page at this moment (B1 N-3).
+  override fun createStatusControl(parent: Composite, status: IStatus): Control {
+    val page = jobLogInput?.content?.page
+    if (JobLogDocumentProvider.isPageStatus(status) && page != null) {
+      statusPages.create(parent, page)?.let { return it }
+    }
+    return super.createStatusControl(parent, status)
+  }
+
   /**
    * UI thread. Puts the folds and style runs of [result] on the document, which the caller has
    * already reset to `result.text`. Replaces every fold annotation and forgets what was colored.
@@ -126,12 +139,6 @@ class JobLogEditor : TextEditor() {
     presenter?.setRuns(if (matches) result.runs else StyleRunIndex.EMPTY)
   }
 
-  /** UI thread. Moves the caret to the end of the log and reveals it. */
-  fun scrollToBottom() {
-    val document = sourceViewer?.document ?: return
-    selectAndReveal(document.length, 0)
-  }
-
   override fun isDirty(): Boolean = false
 
   override fun isSaveAsAllowed(): Boolean = false
@@ -140,12 +147,19 @@ class JobLogEditor : TextEditor() {
 
   override fun dispose() {
     sessionLink.disconnect()
+    statusPages.forget()
     projectionSupport?.dispose()
     projectionSupport = null
     presenter = null
     applied = null
     super.dispose()
   }
+}
+
+/** UI thread. Moves the caret to the end of the log and reveals it. */
+internal fun JobLogEditor.scrollToBottom() {
+  val document = viewer?.document ?: return
+  selectAndReveal(document.length, 0)
 }
 
 private fun replaceFolds(model: ProjectionAnnotationModel, document: IDocument, folds: List<FoldRegion>) {

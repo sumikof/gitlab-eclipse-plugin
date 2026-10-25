@@ -146,6 +146,11 @@ internal inline fun <reified T> selectedSidebarNode(event: ExecutionEvent): T? {
  * UI thread themselves and refresh the window the command was invoked from (captured on the UI
  * thread in `execute()`), not whichever window happens to be active when the POST completes
  * ([refreshAfterCiWrite]).
+ *
+ * [onDone] runs on the scope's thread after the guard is released, whatever the outcome (the job
+ * log's waiting page re-enables its button there). [auditMessage] builds every audit line from the
+ * outcome and, for an unclassified throwable, its class name; [attachThrowable] false logs that line
+ * alone. The defaults are the sidebar's audit (instance URL, throwable attached).
  */
 internal fun launchCiWrite(
   scope: CoroutineScope,
@@ -157,6 +162,11 @@ internal fun launchCiWrite(
   nodeInstanceUrl: String,
   nodeAuthFingerprint: String,
   onSuccess: () -> Unit,
+  onDone: () -> Unit = {},
+  auditMessage: (outcome: WriteOutcome, exceptionClass: String?) -> String = { outcome, _ ->
+    writeAuditMessage(action, key.instanceUrl, projectId, key.targetKind, key.targetId, outcome)
+  },
+  attachThrowable: Boolean = true,
   call: (ConnectionSnapshot) -> PostResult,
 ) {
   scope.launch {
@@ -170,11 +180,11 @@ internal fun launchCiWrite(
       }
       when (val outcome = classifyWrite { call(connection) }) {
         is WriteOutcome.Success -> {
-          log.info(writeAuditMessage(action, key.instanceUrl, projectId, key.targetKind, key.targetId, outcome))
+          log.info(auditMessage(outcome, null))
           onSuccess()
         }
         is WriteOutcome.Failure -> {
-          log.error(writeAuditMessage(action, key.instanceUrl, projectId, key.targetKind, key.targetId, outcome))
+          log.error(auditMessage(outcome, null))
           NotificationUtils.show("The action failed. Refresh the sidebar to check the current state.")
         }
       }
@@ -185,21 +195,23 @@ internal fun launchCiWrite(
       // must not cancel the shared scope. No refresh — state is unknown. Same structured
       // token-free audit line as the classified path (synthetic "unexpected" kind) so the
       // failure stays correlatable to the target instance; the exception rides along.
-      log.error(
-        writeAuditMessage(
-          action,
-          key.instanceUrl,
-          projectId,
-          key.targetKind,
-          key.targetId,
-          WriteOutcome.Failure(httpStatus = null, correlationId = null, failureKind = "unexpected"),
-        ),
-        e,
-      )
+      val unexpected = WriteOutcome.Failure(httpStatus = null, correlationId = null, failureKind = "unexpected")
+      val line = auditMessage(unexpected, e.javaClass.simpleName)
+      if (attachThrowable) log.error(line, e) else log.error(line)
       NotificationUtils.show("The action failed. Refresh the sidebar to check the current state.")
     } finally {
       InFlightWriteGuard.release(key)
+      runDone(onDone, log)
     }
+  }
+}
+
+// A throwing onDone must not escape the launch and cancel the shared scope.
+private fun runDone(onDone: () -> Unit, log: ILog) {
+  try {
+    onDone()
+  } catch (e: Exception) {
+    log.error("ciWriteAction onDone failed exceptionClass=${e.javaClass.simpleName}")
   }
 }
 
