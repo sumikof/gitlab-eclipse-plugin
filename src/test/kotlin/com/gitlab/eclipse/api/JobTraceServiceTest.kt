@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
+import java.util.concurrent.CancellationException
 
 class JobTraceServiceTest : DescribeSpec({
   val apiClient = mockk<GitLabApiClient>()
@@ -93,6 +94,18 @@ class JobTraceServiceTest : DescribeSpec({
 
       Files.exists(target) shouldBe false
       Files.list(dir.toPath()).use { it.filter { p -> p.fileName.toString().endsWith(".part") }.count() } shouldBe 0L
+    }
+
+    it("stops a cancelled download and leaves neither the target nor a partial file") {
+      val own = tempdir().toPath()
+      every { apiClient.downloadTo(any(), any(), any()) } answers {
+        thirdArg<(InputStream) -> Unit>().invoke(ByteArrayInputStream(ByteArray(1_000_000)))
+      }
+      val target = own.resolve("cancelled.log")
+
+      shouldThrow<CancellationException> { service.downloadRawTrace(1L, 2L, connection, target) { true } }
+
+      Files.list(own).use { it.count() } shouldBe 0L
     }
   }
 })

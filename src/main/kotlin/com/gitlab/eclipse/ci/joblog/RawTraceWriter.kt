@@ -1,11 +1,15 @@
 package com.gitlab.eclipse.ci.joblog
 
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.CancellationException
+
+private const val COPY_BUFFER_BYTES = 64 * 1024
 
 /** Writes a raw trace so that [target] is either untouched or complete, never half written. */
 object RawTraceWriter {
@@ -26,6 +30,22 @@ object RawTraceWriter {
         // Nothing more can be done; the original failure (if any) is what matters.
       }
     }
+  }
+
+  /**
+   * Copies [input] to [out], asking [isCancelled] before every read and once more at the end. When it says yes the
+   * copy stops with [CancellationException], so [write] removes the temporary file and leaves the target as it was
+   * (review M-4: closing the editor or stopping the plugin must not keep a download running).
+   */
+  fun copy(input: InputStream, out: OutputStream, isCancelled: () -> Boolean) {
+    val buffer = ByteArray(COPY_BUFFER_BYTES)
+    while (true) {
+      if (isCancelled()) throw CancellationException("Raw job log download cancelled")
+      val read = input.read(buffer)
+      if (read < 0) break
+      out.write(buffer, 0, read)
+    }
+    if (isCancelled()) throw CancellationException("Raw job log download cancelled")
   }
 
   private fun moveOver(source: Path, target: Path) {

@@ -1,10 +1,13 @@
 package com.gitlab.eclipse.ci.joblog
 
 import com.gitlab.eclipse.api.ConnectionSnapshot
+import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.GitLabApiException
+import com.gitlab.eclipse.api.JobTraceService
 import com.gitlab.eclipse.ci.actions.CONNECTION_CHANGED_MESSAGE
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
@@ -15,11 +18,15 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.eclipse.core.runtime.ILog
 import org.w3c.dom.Element
+import java.io.InputStream
 import java.net.http.HttpTimeoutException
 import java.nio.file.AccessDeniedException
+import java.nio.file.Files
 import java.nio.file.Path
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -181,6 +188,40 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
       f.notices.shouldBeEmpty()
       f.lines.shouldBeEmpty()
       f.verifyNothingLeaked()
+    }
+  }
+
+  // Review M-4: the default download seam stops when the shared scope cancels the coroutine.
+  describe("downloadRawTraceCancellably") {
+    it("stops at the next chunk once the coroutine is cancelled and leaves no file behind") {
+      val own = tempdir().toPath()
+      val apiClient = mockk<GitLabApiClient>()
+      var reads = 0
+      lateinit var job: Job
+      val endless = object : InputStream() {
+        override fun read(): Int = 0
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+          reads++
+          if (reads == 3) job.cancel()
+          return len
+        }
+      }
+      every { apiClient.downloadTo(any(), any(), any()) } answers {
+        thirdArg<(InputStream) -> Unit>().invoke(endless)
+      }
+
+      runBlocking {
+        // Not started until join, so job is assigned before the first read.
+        job = launch {
+          downloadRawTraceCancellably(JobTraceService(apiClient), PROJECT_ID, JOB_ID, snapshot, own.resolve("x.log"))
+        }
+        job.join()
+      }
+
+      job.isCancelled shouldBe true
+      reads shouldBe 3
+      Files.list(own).use { it.count() } shouldBe 0L
     }
   }
 

@@ -10,6 +10,8 @@ import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
@@ -32,7 +34,8 @@ private const val AUDIT_ACTION = "saveRawJobLog"
  * open job to a file the user picks, even when the editor shows only its tail. The dialog runs on
  * the UI thread; the pin ([pinnedConnectionFor], same connection the log was read from) and the
  * download run in the background, because the pin may refresh an OAuth token over the network.
- * [RawTraceWriter] keeps the target either untouched or complete.
+ * [RawTraceWriter] keeps the target either untouched or complete, also when the scope is cancelled
+ * mid-download ([downloadRawTraceCancellably]).
  *
  * Neither the notifications nor the audit lines ([jobLogAuditMessage]) carry the path, the URL or
  * any log text, and no throwable is handed to [log]: a JDK file-system exception message can
@@ -47,8 +50,13 @@ class SaveRawJobLogHandler(
   private val pin: (instanceUrl: String, authFingerprint: String) -> ConnectionSnapshot? = { url, fingerprint ->
     pinnedConnectionFor(service(), url, fingerprint)
   },
-  private val download: (projectId: Long, jobId: Long, ConnectionSnapshot, Path) -> Unit = { projectId, jobId, c, t ->
-    JobTraceService().downloadRawTrace(projectId, jobId, c, t)
+  private val download: suspend (
+    projectId: Long,
+    jobId: Long,
+    ConnectionSnapshot,
+    Path,
+  ) -> Unit = { projectId, jobId, c, t ->
+    downloadRawTraceCancellably(JobTraceService(), projectId, jobId, c, t)
   },
   private val notify: (String) -> Unit = { NotificationUtils.show(it) },
   private val background: (suspend () -> Unit) -> Unit = { block -> service<CoroutineScope>().launch { block() } },
@@ -96,6 +104,22 @@ class SaveRawJobLogHandler(
       }
     }
   }
+}
+
+/**
+ * [JobTraceService.downloadRawTrace] that stops at the next chunk once the calling coroutine is
+ * cancelled (review M-4): the copy throws `CancellationException`, the temporary file is removed
+ * and the target is left as it was.
+ */
+internal suspend fun downloadRawTraceCancellably(
+  service: JobTraceService,
+  projectId: Long,
+  jobId: Long,
+  connection: ConnectionSnapshot,
+  target: Path,
+) {
+  val context = currentCoroutineContext()
+  service.downloadRawTrace(projectId, jobId, connection, target) { !context.isActive }
 }
 
 /**

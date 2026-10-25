@@ -26,10 +26,21 @@ class JobTraceService(private val apiClient: GitLabApiClient = service()) {
     maxBytes: Int = MAX_DISPLAY_RAW_BYTES,
   ): TraceFetch = apiClient.fetchTrace("/projects/$projectId/jobs/$jobId/trace", etag, maxBytes, connection)
 
-  /** Streams the whole raw trace into [target] (atomically, via a temporary file next to it). */
-  fun downloadRawTrace(projectId: Long, jobId: Long, connection: ConnectionSnapshot, target: Path) {
+  /**
+   * Streams the whole raw trace into [target] (atomically, via a temporary file next to it). Once [isCancelled] says
+   * yes the copy stops with a `CancellationException` and [target] is left as it was.
+   */
+  fun downloadRawTrace(
+    projectId: Long,
+    jobId: Long,
+    connection: ConnectionSnapshot,
+    target: Path,
+    isCancelled: () -> Boolean = { false },
+  ) {
     RawTraceWriter.write(target) { out ->
-      apiClient.downloadTo("/projects/$projectId/jobs/$jobId/trace", connection) { it.copyTo(out) }
+      apiClient.downloadTo("/projects/$projectId/jobs/$jobId/trace", connection) { body ->
+        RawTraceWriter.copy(body, out, isCancelled)
+      }
     }
   }
 }

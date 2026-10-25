@@ -5,9 +5,13 @@ import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 
 private fun leftovers(dir: Path): List<String> =
   Files.list(dir).use { stream -> stream.map { it.fileName.toString() }.toList() }
@@ -81,6 +85,58 @@ class RawTraceWriterTest : DescribeSpec({
       shouldThrow<IOException> { RawTraceWriter.write(own.resolve("missing").resolve("f.log")) { it.write(1) } }
 
       leftovers(own) shouldBe emptyList()
+    }
+  }
+
+  // Review M-4.
+  describe("copy") {
+    it("copies everything while not cancelled") {
+      val bytes = ByteArray(200_000) { (it % 253).toByte() }
+      val out = ByteArrayOutputStream()
+
+      RawTraceWriter.copy(ByteArrayInputStream(bytes), out) { false }
+
+      out.toByteArray().contentEquals(bytes) shouldBe true
+    }
+
+    it("stops before the next read once cancelled") {
+      var reads = 0
+      var cancelled = false
+      val endless = object : InputStream() {
+        override fun read(): Int = 0
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+          reads++
+          if (reads == 3) cancelled = true
+          return len
+        }
+      }
+
+      shouldThrow<CancellationException> { RawTraceWriter.copy(endless, ByteArrayOutputStream()) { cancelled } }
+
+      reads shouldBe 3
+    }
+
+    it("fails a copy that was cancelled after the last read, so the target is never replaced") {
+      val own = tempdir().toPath()
+      val target = own.resolve("g.log")
+      Files.writeString(target, "keep me")
+      var cancelled = false
+      val input = object : InputStream() {
+        private val data = ByteArrayInputStream("new".toByteArray())
+
+        override fun read(): Int = data.read()
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int =
+          data.read(b, off, len).also { if (it < 0) cancelled = true }
+      }
+
+      shouldThrow<CancellationException> {
+        RawTraceWriter.write(target) { out -> RawTraceWriter.copy(input, out) { cancelled } }
+      }
+
+      Files.readString(target) shouldBe "keep me"
+      leftovers(own) shouldBe listOf("g.log")
     }
   }
 })

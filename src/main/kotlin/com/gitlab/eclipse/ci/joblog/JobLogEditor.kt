@@ -1,10 +1,13 @@
 package com.gitlab.eclipse.ci.joblog
 
+import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
+import org.eclipse.core.runtime.ILog
 import org.eclipse.jface.preference.IPreferenceStore
 import org.eclipse.jface.resource.ColorDescriptor
 import org.eclipse.jface.resource.JFaceResources
 import org.eclipse.jface.resource.LocalResourceManager
+import org.eclipse.jface.text.BadLocationException
 import org.eclipse.jface.text.IDocument
 import org.eclipse.jface.text.ITextPresentationListener
 import org.eclipse.jface.text.IUndoManager
@@ -15,6 +18,7 @@ import org.eclipse.jface.text.source.Annotation
 import org.eclipse.jface.text.source.ISourceViewer
 import org.eclipse.jface.text.source.IVerticalRuler
 import org.eclipse.jface.text.source.projection.ProjectionAnnotation
+import org.eclipse.jface.text.source.projection.ProjectionAnnotationModel
 import org.eclipse.jface.text.source.projection.ProjectionSupport
 import org.eclipse.jface.text.source.projection.ProjectionViewer
 import org.eclipse.swt.SWT
@@ -45,6 +49,7 @@ class JobLogEditor : TextEditor() {
   private var projectionSupport: ProjectionSupport? = null
   private var presenter: JobLogPresenter? = null
   private var applied: RenderResult? = null
+  private val foldingUnavailable = OneTimeAudit { logger<JobLogEditor>() }
 
   val jobLogInput: JobLogEditorInput?
     get() = editorInput as? JobLogEditorInput
@@ -79,15 +84,31 @@ class JobLogEditor : TextEditor() {
    * UI thread. Puts the folds and style runs of [result] on the document, which the caller has
    * already reset to `result.text`. Replaces every fold annotation and forgets what was colored.
    * Before the control exists this does nothing ([createPartControl] applies the content then).
+   * Once the control exists, a missing document or projection model is a wiring fault (review
+   * C-1, M-1): it is audited once per editor as `foldingUnavailable`, and the colors still apply.
    */
   fun applyRendered(result: RenderResult) {
     if (result === applied) return
-    val viewer = sourceViewer as? ProjectionViewer ?: return
-    val document = viewer.document ?: return
+    val reportFoldingUnavailable = {
+      jobLogInput?.key?.let { key ->
+        foldingUnavailable.error { jobLogAuditMessage("displayJobLog", key.projectId, key.jobId, "foldingUnavailable") }
+      }
+    }
+    val viewer = sourceViewer as? ProjectionViewer
+    val document = viewer?.document
+    if (viewer == null || document == null) {
+      if (sourceViewer != null) reportFoldingUnavailable()
+      return
+    }
     applied = result
     // A failed reset leaves other text in the document: show it plain rather than misplaced.
     val matches = document.length == result.text.length
-    replaceFolds(viewer, document, if (matches) result.folds else emptyList())
+    val model = viewer.projectionAnnotationModel
+    if (model == null) {
+      reportFoldingUnavailable()
+    } else {
+      replaceFolds(model, document, if (matches) result.folds else emptyList())
+    }
     presenter?.setRuns(if (matches) result.runs else StyleRunIndex.EMPTY)
   }
 
@@ -111,8 +132,7 @@ class JobLogEditor : TextEditor() {
     super.dispose()
   }
 
-  private fun replaceFolds(viewer: ProjectionViewer, document: IDocument, folds: List<FoldRegion>) {
-    val model = viewer.projectionAnnotationModel ?: return
+  private fun replaceFolds(model: ProjectionAnnotationModel, document: IDocument, folds: List<FoldRegion>) {
     val existing = model.annotationIterator.asSequence().toList().toTypedArray()
     val additions = HashMap<Annotation, Position>()
     for (fold in folds) {
@@ -131,6 +151,20 @@ private fun foldPosition(document: IDocument, fold: FoldRegion): Position? {
   return Position(start, end - start)
 }
 
+/**
+ * Logs one line the first time [error] is called and ignores later calls: a fault that repeats on
+ * every reload should not flood the Error Log. Only a message, never a throwable. UI thread only.
+ */
+internal class OneTimeAudit(private val log: () -> ILog) {
+  private var reported = false
+
+  fun error(message: () -> String) {
+    if (reported) return
+    reported = true
+    log().error(message())
+  }
+}
+
 /** No undo history and no spelling reconciler: the text never changes by hand (design B4). */
 internal class JobLogSourceViewerConfiguration(store: IPreferenceStore) : TextSourceViewerConfiguration(store) {
   override fun getUndoManager(sourceViewer: ISourceViewer?): IUndoManager? = null
@@ -140,11 +174,12 @@ internal class JobLogSourceViewerConfiguration(store: IPreferenceStore) : TextSo
 
 /**
  * Lazy coloring (design §5.3, R2-1). Each presentation colors only the part of its extent that is
- * on screen (plus one screen above and below) and records it in [colored]; scrolling or resizing
- * schedules one deferred pass that invalidates just the visible parts not colored yet. Nothing is
- * invalidated from inside [applyTextPresentation], and coloring never changes line heights (no
- * font, metrics or rise), so a viewport change settles after one round. The colors belong to a
- * [LocalResourceManager] tied to the text widget and are freed with it. UI thread only.
+ * on screen (plus one screen of lines above and below, folded text left out: [visibleRanges]) and
+ * records it in [colored]; scrolling or resizing schedules one deferred pass that invalidates just
+ * the visible parts not colored yet. Nothing is invalidated from inside [applyTextPresentation],
+ * and coloring never changes line heights (no font, metrics or rise), so a viewport change settles
+ * after one round. The colors belong to a [LocalResourceManager] tied to the text widget and are
+ * freed with it. UI thread only.
  */
 internal class JobLogPresenter(
   private val viewer: ProjectionViewer,
@@ -177,13 +212,15 @@ internal class JobLogPresenter(
     val extentEnd = extent.offset + extent.length
     if (extent.offset <= 0 && extentEnd >= documentLength) colored.clear()
     colored.subtract(extent.offset, extent.length)
-    val visible = visibleRange(documentLength)
-    val from = maxOf(extent.offset, visible.first)
-    val to = minOf(extentEnd, visible.last + 1)
-    if (to <= from) return
-    val ranges = styleRanges(from, to - from)
-    if (ranges.isNotEmpty()) presentation.mergeStyleRanges(ranges)
-    colored.add(from, to - from)
+    val ranges = ArrayList<StyleRange>()
+    for (visible in visibleRanges()) {
+      val from = maxOf(extent.offset, visible.first)
+      val to = minOf(extentEnd, visible.last + 1)
+      if (to <= from) continue
+      ranges += styleRanges(from, to - from)
+      colored.add(from, to - from)
+    }
+    if (ranges.isNotEmpty()) presentation.mergeStyleRanges(ranges.toTypedArray())
   }
 
   private fun scheduleRefresh() {
@@ -201,20 +238,26 @@ internal class JobLogPresenter(
 
   private fun refreshVisible() {
     if (widget.isDisposed) return
-    val documentLength = viewer.document?.length ?: return
-    val visible = visibleRange(documentLength)
-    if (visible.isEmpty()) return
-    colored.missingIn(visible.first, visible.last + 1 - visible.first).forEach {
-      viewer.invalidateTextPresentation(it.first, it.last + 1 - it.first)
+    for (visible in visibleRanges()) {
+      colored.missingIn(visible.first, visible.last + 1 - visible.first).forEach {
+        viewer.invalidateTextPresentation(it.first, it.last + 1 - it.first)
+      }
     }
   }
 
-  /** The model range on screen widened by one screen on each side, clamped to the document. */
-  private fun visibleRange(documentLength: Int): IntRange {
-    val top = viewer.topIndexStartOffset.coerceAtLeast(0)
-    val bottom = viewer.bottomIndexEndOffset.let { if (it < top) documentLength else it + 1 }
-    val screen = bottom - top
-    return (top - screen).coerceAtLeast(0) until (bottom + screen).coerceAtMost(documentLength)
+  /**
+   * Model ranges of the widget lines on screen and one screen of lines above and below (review
+   * I-1). Taken line by line through the projection, so the body of a collapsed section is in none
+   * of them and the work stays proportional to the screen.
+   */
+  private fun visibleRanges(): List<IntRange> {
+    val document = viewer.document ?: return emptyList()
+    val bottom = widget.getLineIndex((widget.clientArea.height - 1).coerceAtLeast(0))
+    val lines = visibleModelLines(widget.topIndex, bottom, widget.lineCount) { widgetLine ->
+      val modelOffset = viewer.widgetOffset2ModelOffset(widget.getOffsetAtLine(widgetLine))
+      if (modelOffset < 0) -1 else modelLineOf(document, modelOffset)
+    }
+    return modelLineOffsets(document, lines)
   }
 
   private fun styleRanges(offset: Int, length: Int): Array<StyleRange> {
@@ -246,6 +289,13 @@ internal class JobLogPresenter(
 
   private fun toInt(rgb: RGB): Int = (rgb.red shl RED_BITS) or (rgb.green shl GREEN_BITS) or rgb.blue
 }
+
+private fun modelLineOf(document: IDocument, offset: Int): Int =
+  try {
+    document.getLineOfOffset(offset)
+  } catch (ignored: BadLocationException) {
+    -1
+  }
 
 /** The 16-color palette follows the workbench theme; off the workbench (shutdown) it is light. */
 private fun isDarkTheme(): Boolean =
