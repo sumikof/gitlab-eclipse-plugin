@@ -19,6 +19,9 @@ private val TAIL_CASES = listOf(
   TailCase("a\nb\n", 3, true),
   TailCase("a\nb\n", 1, false),
   TailCase("abc", 2, true),
+  // The last line is one character: the bottom line's end offset is exactly its start.
+  TailCase("a\nb", 2, true),
+  TailCase("a\nb", 1, false),
 )
 
 /** Records every call, in order and by name, into [log]; the document changes are recorded too. */

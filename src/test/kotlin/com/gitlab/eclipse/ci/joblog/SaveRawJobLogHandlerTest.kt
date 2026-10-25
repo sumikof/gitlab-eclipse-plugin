@@ -237,7 +237,7 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
         job = launch {
           downloadRawTraceCancellably(JobTraceService(apiClient), PROJECT_ID, JOB_ID, snapshot, own.resolve("x.log"))
         }
-        job.join()
+        withTimeout(5_000) { job.join() }
       }
 
       job.isCancelled shouldBe true
@@ -256,7 +256,8 @@ class SaveRawJobLogHandlerTest : DescribeSpec({
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
           reading.countDown()
-          closed.await()
+          // Bounded: a broken close hook fails the test instead of hanging it.
+          check(closed.await(5, TimeUnit.SECONDS)) { "the body was never closed" }
           throw IOException("Stream closed")
         }
 

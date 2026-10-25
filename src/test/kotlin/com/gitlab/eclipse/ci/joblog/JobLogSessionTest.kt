@@ -433,6 +433,84 @@ class JobLogSessionTest : DescribeSpec({
     }
   }
 
+  describe("fix round 1") {
+    // A log rewritten from scratch (not a continuation) comes back as a second Full while live.
+    fun secondFull(view: FakeView) {
+      w.remote.traces(body("x\ny\n", etag = "\"2\""))
+      w.env.advance(3_000)
+      view.calls.count { it == "full" } shouldBe 2
+    }
+
+    it("a later Full while live follows the tail when it was on screen, like an append") {
+      val view = FakeView()
+      live(view)
+      view.reveals shouldBe 1
+
+      secondFull(view)
+
+      view.reveals shouldBe 2
+    }
+
+    it("a later Full while live does not pull a reader who scrolled up back to the end") {
+      val view = FakeView()
+      live(view)
+      view.tailVisible = false
+
+      secondFull(view)
+
+      view.reveals shouldBe 1
+    }
+
+    it("a timer still armed when the plugin stops sends nothing (the gate at fire time)") {
+      val view = FakeView()
+      live(view)
+      w.env.pending.single().delayMs shouldBe 3_000
+
+      w.env.active = false
+      w.env.advance(TEN_MINUTES)
+
+      w.remote.requests shouldContainExactly listOf("job", "trace etag=null")
+    }
+
+    it("a session disposed before any editor took its first log drops that log too") {
+      val view = FakeView().apply { hasSurface = false }
+      w.open(view)
+      w.remote.jobs(job("running", STARTED))
+      w.remote.traces(body(LIVE_TEXT, etag = ETAG_1))
+      w.env.advance(0)
+      val content = w.session.shouldNotBeNull().content
+      content.rendered.text shouldBe LIVE_TEXT
+
+      w.registry.detach(FAKE_KEY, view)
+
+      content.rendered shouldBe RenderResult.EMPTY
+    }
+
+    it("closing the visible editor of two, the hidden one left, pauses polling") {
+      val shown = FakeView()
+      val hidden = FakeView(visible = false)
+      live(shown, hidden)
+
+      w.registry.detach(FAKE_KEY, shown)
+      w.env.advance(TEN_MINUTES)
+
+      w.env.pending.shouldBeEmpty()
+      w.remote.requests shouldContainExactly listOf("job", "trace etag=null")
+    }
+
+    it("an editor that throws is audited by class only, without a throwable, and polling goes on") {
+      val view = FakeView().apply { failPages = true }
+      w.open(view)
+      w.remote.jobs(job("pending"))
+
+      w.env.advance(0)
+
+      w.errors shouldContainExactly
+        listOf(auditLine("displayJobLog", "outcome=editorFailed exceptionClass=IllegalStateException"))
+      w.env.pending.single().delayMs shouldBe 5_000
+    }
+  }
+
   describe("memory") {
     it("keeps the compare window while live, drops it on stop, and keeps runs for a new duplicate tab") {
       val view = FakeView()

@@ -182,7 +182,16 @@ internal class FakeView(
   var reveals = 0
   val calls = mutableListOf<String>()
 
-  override val surface: JobLogTextSurface = object : JobLogTextSurface {
+  /** False: the editor has no viewer yet, so no update reaches it. */
+  var hasSurface = true
+
+  /** True: [showPage] throws, as a broken editor would. */
+  var failPages = false
+
+  override val surface: JobLogTextSurface?
+    get() = if (hasSurface) fakeSurface else null
+
+  private val fakeSurface = object : JobLogTextSurface {
     override val document: IDocument
       get() = this@FakeView.document
 
@@ -214,6 +223,7 @@ internal class FakeView(
     get() = visible
 
   override fun showPage(page: JobLogPage) {
+    check(!failPages) { "broken editor" }
     calls += "page:" + when (page) {
       JobLogPage.Loading -> "Loading"
       is JobLogPage.Waiting -> "Waiting(${page.status})"
