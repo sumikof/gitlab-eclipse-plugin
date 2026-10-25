@@ -104,6 +104,16 @@ class ColoredRegionSetTest : DescribeSpec({
     }
   }
 
+  describe("add out of order") {
+    it("keeps spans sorted when adding to the left of an existing span") {
+      val set = ColoredRegionSet().apply {
+        add(10, 5)
+        add(0, 5)
+      }
+      set.missingIn(0, 20) shouldBe listOf(5..9, 15..19)
+    }
+  }
+
   describe("clear") {
     it("forgets everything") {
       val set = ColoredRegionSet().apply {

@@ -233,6 +233,24 @@ class JobLogRendererTest : DescribeSpec({
     }
   }
 
+  describe("timestamped continuation lines") {
+    it("joins a continuation after a CRLF line without losing the first part") {
+      val raw = bytes("$TS 00O a\r\n$TS 00O+ b\r\n$TS 00O c\n")
+      renderInitial(raw, 0L).first.text shouldBe "a b\nc\n"
+    }
+
+    it("groups a huge run of continuation lines in linear time") {
+      val line = "$TS 00O+ " + "x".repeat(56) + "\n"
+      val raw = bytes("$TS 00O start\n" + line.repeat(100_000))
+      val started = System.nanoTime()
+      val text = renderInitial(raw, 0L).first.text
+      val elapsedMs = (System.nanoTime() - started) / 1_000_000
+      text.count { it == 'x' } shouldBe 100_000 * 56
+      text.count { it == '\n' } shouldBe 1
+      (elapsedMs < 4_000) shouldBe true
+    }
+  }
+
   describe("incremental rendering equals one-shot rendering") {
     for ((name, raw) in CORPORA) {
       it("holds for every single split point of $name, with and without an omitted header") {

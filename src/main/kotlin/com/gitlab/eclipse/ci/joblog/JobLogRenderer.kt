@@ -162,9 +162,19 @@ private fun bodyOf(line: String, mode: TimestampMode): Pair<String, Boolean> =
 /** Joins each continuation line onto the line before it; the first item always starts a group. */
 private fun groupLines(items: List<Pair<String, Boolean>>): List<String> {
   val groups = ArrayList<String>()
+  val current = StringBuilder()
+  var open = false
   items.forEachIndexed { i, (body, continues) ->
-    if (i > 0 && continues) groups[groups.size - 1] = groups.last() + body else groups.add(body)
+    if (i > 0 && continues) {
+      current.append(body)
+    } else {
+      if (open) groups.add(current.toString())
+      current.setLength(0)
+      current.append(body)
+      open = true
+    }
   }
+  if (open) groups.add(current.toString())
   return groups
 }
 
