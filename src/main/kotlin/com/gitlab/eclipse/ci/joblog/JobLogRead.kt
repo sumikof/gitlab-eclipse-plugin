@@ -75,3 +75,25 @@ fun readAuditMessage(
   httpStatus?.let { append(" httpStatus=").append(it) }
   correlationId?.let { append(" correlationId=").append(it) }
 }
+
+/**
+ * Audit line for the job log viewer. Unlike [readAuditMessage] it has no instance URL, and nothing in it can carry
+ * a URL, a file path, log text or a credential: only fixed-vocabulary tags, numeric ids and the exception class.
+ */
+fun jobLogAuditMessage(
+  action: String,
+  projectId: Long?,
+  jobId: Long,
+  outcome: String,
+  httpStatus: Int? = null,
+  correlationId: String? = null,
+  exceptionClass: String? = null,
+): String = buildString {
+  append("ciReadAction action=").append(action)
+  append(" projectId=").append(projectId)
+  append(" jobId=").append(jobId)
+  append(" outcome=").append(outcome)
+  httpStatus?.let { append(" httpStatus=").append(it) }
+  correlationId?.let { append(" correlationId=").append(it) }
+  exceptionClass?.let { append(" exceptionClass=").append(it) }
+}

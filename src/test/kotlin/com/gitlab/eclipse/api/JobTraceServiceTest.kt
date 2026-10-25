@@ -2,11 +2,17 @@ package com.gitlab.eclipse.api
 
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.engine.spec.tempdir
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeSameInstanceAs
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.io.ByteArrayInputStream
+import java.io.IOException
+import java.io.InputStream
+import java.nio.file.Files
 
 class JobTraceServiceTest : DescribeSpec({
   val apiClient = mockk<GitLabApiClient>()
@@ -42,6 +48,51 @@ class JobTraceServiceTest : DescribeSpec({
       every { apiClient.fetchText(any(), any()) } throws GitLabApiException(404, "not found", "corr-1")
 
       shouldThrow<GitLabApiException> { service.getTrace(1L, 2L, connection) }
+    }
+  }
+
+  describe("getTraceSnapshot") {
+    it("builds the trace path and forwards etag, cap and connection") {
+      every { apiClient.fetchTrace(any(), any(), any(), any()) } returns TraceFetch.NotModified
+
+      val result = service.getTraceSnapshot(42L, 9L, "W/\"abc\"", connection, maxBytes = 100)
+
+      result shouldBeSameInstanceAs TraceFetch.NotModified
+      verify(exactly = 1) { apiClient.fetchTrace("/projects/42/jobs/9/trace", "W/\"abc\"", 100, connection) }
+    }
+
+    it("defaults to the display limit and no etag") {
+      every { apiClient.fetchTrace(any(), any(), any(), any()) } returns TraceFetch.NotModified
+
+      service.getTraceSnapshot(1L, 2L, null, connection)
+
+      verify { apiClient.fetchTrace("/projects/1/jobs/2/trace", null, 16 * 1024 * 1024, connection) }
+    }
+  }
+
+  describe("downloadRawTrace") {
+    val dir = tempdir()
+
+    it("streams the body into the target file") {
+      every { apiClient.downloadTo(any(), any(), any()) } answers {
+        thirdArg<(InputStream) -> Unit>().invoke(ByteArrayInputStream("raw \u65E5 log".toByteArray()))
+      }
+      val target = dir.toPath().resolve("job.log")
+
+      service.downloadRawTrace(42L, 9L, connection, target)
+
+      Files.readAllBytes(target).decodeToString() shouldBe "raw \u65E5 log"
+      verify { apiClient.downloadTo("/projects/42/jobs/9/trace", connection, any()) }
+    }
+
+    it("leaves no partial file when the download fails") {
+      every { apiClient.downloadTo(any(), any(), any()) } throws IOException("boom")
+      val target = dir.toPath().resolve("failed.log")
+
+      shouldThrow<IOException> { service.downloadRawTrace(1L, 2L, connection, target) }
+
+      Files.exists(target) shouldBe false
+      Files.list(dir.toPath()).use { it.filter { p -> p.fileName.toString().endsWith(".part") }.count() } shouldBe 0L
     }
   }
 })

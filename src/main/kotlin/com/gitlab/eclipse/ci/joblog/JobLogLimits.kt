@@ -5,3 +5,9 @@ const val MAX_INITIALLY_COLLAPSED = 500
 
 /** First line of the document (followed by a newline) when the start of the log was cut off. Contains no numbers. */
 const val OMITTED_HEADER = "Earlier output was omitted. Use Save Raw Log to save the full log."
+
+/**
+ * Most raw trace bytes kept for display (the tail). Provisional value: adjust after trying real logs on a machine
+ * (R4). Twice this is the hard limit for live following.
+ */
+const val MAX_DISPLAY_RAW_BYTES: Int = 16 * 1024 * 1024
