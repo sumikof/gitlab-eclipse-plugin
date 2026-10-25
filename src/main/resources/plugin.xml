@@ -171,6 +171,20 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.SaveRawJobLog"
+                name="Save Raw Log"
+                description="Save the full, unformatted job log to a file"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                name="Scroll to Bottom"
+                description="Scroll the job log to its end"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.DownloadArtifacts"
                 name="Download Artifacts"
                 categoryId="gitlab-eclipse-plugin">
@@ -907,6 +921,27 @@
                 class="com.gitlab.eclipse.ci.actions.DisplayJobLogHandler"
         />
 
+        <!-- Job log viewer actions (CI-09): only while the job log editor is active. -->
+        <handler
+                commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                class="com.gitlab.eclipse.ci.joblog.SaveRawJobLogHandler">
+            <activeWhen>
+                <with variable="activeEditorId">
+                    <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                </with>
+            </activeWhen>
+        </handler>
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                class="com.gitlab.eclipse.ci.joblog.ScrollJobLogToBottomHandler">
+            <activeWhen>
+                <with variable="activeEditorId">
+                    <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                </with>
+            </activeWhen>
+        </handler>
+
         <handler
                 commandId="com.gitlab.eclipse.commands.DownloadArtifacts"
                 class="com.gitlab.eclipse.ci.actions.DownloadArtifactsHandler"
@@ -1265,6 +1300,52 @@
                                 <equals value="light"/>
                             </with>
                         </and>
+                    </visibleWhen>
+                </command>
+            </toolbar>
+        </menuContribution>
+        <!-- Job log viewer actions (CI-09): editor context menu, and the main toolbar while the
+             job log editor is active. No icons ship for them, so the toolbar shows the labels. -->
+        <menuContribution locationURI="popup:#TextEditorContext?after=additions">
+            <command
+                    commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                    label="Save Raw Log">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeEditorId">
+                        <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                    </with>
+                </visibleWhen>
+            </command>
+            <command
+                    commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                    label="Scroll to Bottom">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeEditorId">
+                        <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
+            <toolbar id="com.gitlab.eclipse.toolbar.jobLog">
+                <command
+                        commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                        label="Save Raw Log"
+                        mode="FORCE_TEXT">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="activeEditorId">
+                            <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command
+                        commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                        label="Scroll to Bottom"
+                        mode="FORCE_TEXT">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="activeEditorId">
+                            <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                        </with>
                     </visibleWhen>
                 </command>
             </toolbar>
