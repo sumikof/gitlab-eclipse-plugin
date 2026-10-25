@@ -16,6 +16,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.eclipse.core.runtime.ILog
+import org.eclipse.jface.text.Document
+import org.eclipse.jface.text.IDocument
 import java.io.IOException
 import java.time.LocalTime
 
@@ -166,10 +168,44 @@ internal class FakeRemote(private val env: FakeEnv) : JobLogRemote {
   }
 }
 
-/** An editor: visibility and disposal are switchable; pages and updates are recorded. */
-internal class FakeView(var visible: Boolean = true) : JobLogSessionView {
+/**
+ * An editor: visibility and disposal are switchable; pages and updates are recorded ("full" when a
+ * Full is decorated, "append:<replaceFrom>" when an Append swaps the runs). Each view has its own
+ * [document] unless one is passed in (the shared document of L-B2-1 (A)).
+ */
+internal class FakeView(
+  var visible: Boolean = true,
+  val document: IDocument = Document(),
+) : JobLogSessionView {
   var disposed = false
+  var tailVisible = true
+  var reveals = 0
   val calls = mutableListOf<String>()
+
+  override val surface: JobLogTextSurface = object : JobLogTextSurface {
+    override val document: IDocument
+      get() = this@FakeView.document
+
+    override var topIndex = 0
+
+    override fun isTailVisible() = tailVisible
+
+    override fun swapRuns(runs: StyleRunIndex, from: Int) {
+      calls += "append:$from"
+    }
+
+    override fun refreshVisible() = Unit
+
+    override fun addFolds(folds: List<FoldRegion>) = Unit
+
+    override fun applyRendered(result: RenderResult) {
+      calls += "full"
+    }
+
+    override fun revealEnd() {
+      reveals++
+    }
+  }
 
   override val isDisposed: Boolean
     get() = disposed
@@ -184,13 +220,6 @@ internal class FakeView(var visible: Boolean = true) : JobLogSessionView {
       is JobLogPage.Unavailable -> "Unavailable(${page.message})"
       JobLogPage.Erased -> "Erased"
       JobLogPage.Log -> "Log"
-    }
-  }
-
-  override fun apply(update: JobLogUpdate, followIfAtEnd: Boolean) {
-    calls += when (update) {
-      is JobLogUpdate.Full -> "full"
-      is JobLogUpdate.Append -> "append:${update.replaceFrom}"
     }
   }
 

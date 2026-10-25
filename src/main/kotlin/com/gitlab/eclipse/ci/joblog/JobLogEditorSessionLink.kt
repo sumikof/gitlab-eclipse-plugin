@@ -1,5 +1,7 @@
 package com.gitlab.eclipse.ci.joblog
 
+import org.eclipse.jface.text.IDocument
+import org.eclipse.jface.text.source.projection.ProjectionViewer
 import org.eclipse.ui.IPartListener2
 import org.eclipse.ui.IWorkbenchPage
 import org.eclipse.ui.IWorkbenchPartReference
@@ -58,25 +60,14 @@ internal class JobLogEditorSessionLink(private val editor: JobLogEditor) : JobLo
     editor.updatePartControl(editor.editorInput)
   }
 
-  // Minimal until the UI applier: the document is shared by the key's editors, so the first one
-  // changes it and the others find it changed already.
-  override fun apply(update: JobLogUpdate, followIfAtEnd: Boolean) {
-    val document = editor.viewer?.document ?: return
-    when (update) {
-      is JobLogUpdate.Full -> {
-        val text = update.result.text
-        if (document.length != text.length || document.get() != text) document.set(text)
-        editor.applyRendered(update.result)
-      }
-      is JobLogUpdate.Append -> {
-        val from = update.replaceFrom
-        val length = update.text.length
-        val done = document.length == from + length && document.get(from, length) == update.text
-        if (!done) document.replace(from, document.length - from, update.text)
-        editor.jobLogPresenter?.setRuns(update.runs)
-      }
+  // Null until the control (and with it the viewer, its document and the presenter) exists.
+  override val surface: JobLogTextSurface?
+    get() {
+      val viewer = editor.viewer ?: return null
+      val presenter = editor.jobLogPresenter ?: return null
+      val document = viewer.document ?: return null
+      return ViewerSurface(editor, viewer, presenter, document)
     }
-  }
 
   override fun decorate(runs: StyleRunIndex, folds: List<FoldRegion>) {
     val document = editor.viewer?.document ?: return
@@ -88,4 +79,35 @@ internal class JobLogEditorSessionLink(private val editor: JobLogEditor) : JobLo
     visible = now
     key?.let(JobLogSessionManager::visibilityChanged)
   }
+}
+
+/** The editor's viewer as [JobLogUiApplier] sees it. Made per update; holds nothing. UI thread only. */
+private class ViewerSurface(
+  private val editor: JobLogEditor,
+  private val viewer: ProjectionViewer,
+  private val presenter: JobLogPresenter,
+  override val document: IDocument,
+) : JobLogTextSurface {
+  override var topIndex: Int
+    get() = viewer.topIndex
+    set(value) {
+      viewer.topIndex = value
+    }
+
+  override fun isTailVisible(): Boolean = isTailVisible(viewer.bottomIndexEndOffset, document)
+
+  override fun swapRuns(runs: StyleRunIndex, from: Int) = presenter.swapRuns(runs, from)
+
+  override fun refreshVisible() = presenter.refreshVisible()
+
+  override fun addFolds(folds: List<FoldRegion>) {
+    // A missing model is audited by applyRendered (foldingUnavailable); the colors still apply.
+    val model = viewer.projectionAnnotationModel ?: return
+    addFoldAnnotations(model, document, folds)
+  }
+
+  override fun applyRendered(result: RenderResult) = editor.applyRendered(result)
+
+  // Not selectAndReveal (B1 M-8): the caret and a selection being copied stay where they are.
+  override fun revealEnd() = viewer.revealRange(document.length, 0)
 }

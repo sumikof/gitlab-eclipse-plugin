@@ -12,13 +12,14 @@ import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldStartWith
+import org.eclipse.jface.text.Document
 import java.io.IOException
 
 private const val LIVE_TEXT = "a\n"
 private const val ETAG_1 = "\"1\""
 
 /**
- * [JobLogSession] headless (Task 10): the UI-driven loop, the gate, visibility and memory, through
+ * [JobLogSession] headless (Tasks 10, 11): the UI-driven loop, the gate, visibility and memory, through
  * [JobLogSessionRegistry.open] with fake platform, GitLab and editors. After every test: no two
  * requests overlapped, no throwable reached the log, and no audit line carried a URL or credential.
  */
@@ -354,6 +355,81 @@ class JobLogSessionTest : DescribeSpec({
       w.env.fireNext(0)
       w.env.drainUi()
       w.remote.requests.count { it.startsWith("trace") } shouldBe 2
+    }
+  }
+
+  describe("applying (Task 11)") {
+    it("two editors on one document: the append changes it once and both take the new runs") {
+      val shared = Document()
+      val a = FakeView(document = shared)
+      val b = FakeView(document = shared)
+      live(a, b)
+      w.remote.traces(body("a\nb\n", etag = "\"2\""))
+
+      w.env.advance(3_000)
+
+      shared.get() shouldBe "a\nb\n"
+      listOf(a, b).forEach { view ->
+        view.calls.count { it == "full" } shouldBe 1
+        view.calls.count { it.startsWith("append:") } shouldBe 1
+      }
+    }
+
+    it("an append that does not fit the document audits applyMismatch; the next poll renders it all again") {
+      val view = FakeView()
+      live(view)
+      view.document.set("")
+      w.remote.traces(body("a\nb\n", etag = "\"2\""), body("a\nb\nc\n", etag = "\"3\""))
+
+      w.env.advance(3_000)
+
+      view.document.get() shouldBe ""
+      w.errors shouldContainExactly listOf(auditLine("pollJobLog", "outcome=applyMismatch"))
+
+      w.env.advance(3_000)
+
+      w.remote.requests shouldContainExactly listOf("job", "trace etag=null", "trace etag=$ETAG_1", "trace etag=null")
+      view.document.get() shouldBe "a\nb\nc\n"
+      view.calls.last() shouldBe "full"
+    }
+
+    it("a final append that does not fit reads the finished log once more from scratch, and only once") {
+      val view = FakeView()
+      live(view)
+      view.document.set("")
+      w.remote.jobs(job("success", STARTED))
+      w.remote.traces(TraceFetch.NotModified, body("a\nb", etag = "\"2\""), body("a\nb"))
+
+      w.env.advance(3_000)
+      w.env.advance(TEN_MINUTES)
+
+      view.document.get() shouldBe "a\nb"
+      view.calls.last() shouldBe "append:2"
+      w.remote.requests.last() shouldBe "trace etag=null"
+      w.remote.requests.count { it == "trace etag=null" } shouldBe 2
+      w.remote.traceReplies.shouldBeEmpty()
+      w.errors shouldContainExactly listOf(auditLine("pollJobLog", "outcome=applyMismatch"))
+      w.session.shouldNotBeNull().pollState.phase shouldBe PollPhase.STOPPED
+      w.session.shouldNotBeNull().retainedBytes shouldBe 0
+      w.env.pending.shouldBeEmpty()
+    }
+
+    it("a live job opens at the end of its log; a job finished before opening stays at the top") {
+      val running = FakeView()
+      live(running)
+
+      running.reveals shouldBe 1
+
+      val world = FakeWorld()
+      val finished = FakeView()
+      world.open(finished)
+      world.remote.jobs(job("success", STARTED))
+      world.remote.traces(body("ok\n"))
+      world.env.advance(0)
+
+      finished.calls shouldContainExactly listOf("full", "page:Log")
+      finished.reveals shouldBe 0
+      world.checkInvariants()
     }
   }
 

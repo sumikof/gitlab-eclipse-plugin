@@ -61,7 +61,8 @@ internal interface JobLogSessionView {
 
   fun showPage(page: JobLogPage)
 
-  fun apply(update: JobLogUpdate, followIfAtEnd: Boolean)
+  /** The viewer the log goes to ([JobLogUiApplier]); null while the view has no control. */
+  val surface: JobLogTextSurface?
 
   /**
    * Puts [runs] and [folds] on the document the view already shows: a duplicate tab opened after
@@ -118,6 +119,13 @@ internal class JobLogSession(
   private var disposed = false
   private var visible = true
 
+  // The first log of a run opens at its end while the job is live.
+  private var followNextFull = true
+
+  // An append did not fit the document since the last full render; a finished job then reads its log once more.
+  private var mismatched = false
+  private var finalRefetched = false
+
   // The action of the request whose result is being committed, and its last failure (for the audit).
   private var action = DISPLAY_ACTION
   private var failure: PollFailure? = null
@@ -153,6 +161,9 @@ internal class JobLogSession(
     if (content.page != JobLogPage.Log) commands.setPage(JobLogPage.Loading)
     visible = views.isEmpty || views.anyVisible()
     pollState = PollState()
+    followNextFull = true
+    mismatched = false
+    finalRefetched = false
     step(PollEvent.Opened(visible))
   }
 
@@ -262,10 +273,24 @@ internal class JobLogSession(
     // The document first; the page follows from the step after this one (ShowLog).
     fun applyUpdate(update: JobLogUpdate) {
       progress.record(update)
+      val full = update is JobLogUpdate.Full
       if (update is JobLogUpdate.Full) content.rendered = update.result
-      val applied = views.applyUpdate(update, followIfAtEnd = !pollState.stopAfterStart)
-      // One shared document per key: once it holds the text, later tabs connect to it and never read this.
-      if (applied && update is JobLogUpdate.Full) content.rendered = RenderResult.EMPTY
+      val follow = full && followNextFull && !pollState.stopAfterStart
+      when (views.applyUpdate(update, follow)) {
+        Applied.NONE -> Unit
+        // One shared document per key: once it holds the text, later tabs connect to it and never read this.
+        Applied.DONE -> if (full) {
+          content.rendered = RenderResult.EMPTY
+          followNextFull = false
+          mismatched = false
+        }
+        // R2-4: the document is not the one the append continues; the next poll renders it all again.
+        Applied.MISMATCH -> {
+          progress.release()
+          mismatched = true
+          audit.line(action, "applyMismatch")
+        }
+      }
     }
 
     private fun schedule(delayMs: Long, request: PollRequest) {
@@ -277,7 +302,10 @@ internal class JobLogSession(
     private fun stop(reason: StopReason) {
       cancelTimer()
       when (reason) {
-        StopReason.TERMINAL -> progress.finishing()?.let(::applyUpdate)
+        StopReason.TERMINAL -> {
+          progress.finishing()?.let(::applyUpdate)
+          if (mismatched) refetchFinal()
+        }
         StopReason.NOT_FOUND -> stopWithNotice(LOG_NOT_FOUND_MESSAGE)
         // 403 never confirms that the job exists, the same as 404.
         StopReason.DENIED -> {
@@ -292,6 +320,37 @@ internal class JobLogSession(
       }
       // Nothing more will be appended: keep only what a new duplicate tab needs (runs and folds).
       if (reason != StopReason.CLOSED) progress.release()
+    }
+
+    /**
+     * The last log of a finished job did not fit the document: read it once more from scratch so
+     * that it does not stay broken. Outside the policy (already stopped), at most once per run;
+     * another miss or a failure is only audited.
+     */
+    private fun refetchFinal() {
+      if (finalRefetched) return
+      finalRefetched = true
+      mismatched = false
+      val gen = generation
+      val requestAction = action
+      val snapshot = TraceSnapshot(etag = null, cursor = null, state = null, runs = StyleRunIndex.EMPTY)
+      job = env.launchIo {
+        val outcome = io.poll(PollRequest.FINAL_TRACE, snapshot)
+        env.runOnUi {
+          if (!disposed && gen == generation && env.shouldAct(key, gen)) commitFinal(requestAction, outcome)
+        }
+      }
+    }
+
+    private fun commitFinal(requestAction: String, outcome: PollOutcome) {
+      action = requestAction
+      when (outcome) {
+        is PollOutcome.Trace ->
+          progress.event(outcome.result, outcome.elapsedMs, ::applyUpdate) { audit.failure(action, it) }
+        else -> audit.line(action, "connectionRejected")
+      }
+      progress.finishing()?.let(::applyUpdate)
+      progress.release()
     }
 
     private fun stopWithNotice(message: String) {
@@ -453,6 +512,9 @@ private class TraceProgress {
   }
 }
 
+/** What became of an update: no editor had a viewer, it is on screen, or it did not fit the document. */
+private enum class Applied { NONE, DONE, MISMATCH }
+
 /** The editors of a key, each called on its own so that one failing editor does not stop the others. UI thread. */
 private class SessionViews(private val audit: SessionAudit) {
   private val views: MutableSet<JobLogSessionView> = Collections.newSetFromMap(IdentityHashMap())
@@ -473,12 +535,14 @@ private class SessionViews(private val audit: SessionAudit) {
 
   fun showPage(page: JobLogPage) = each { it.showPage(page) }
 
-  /** True when at least one editor took [update]. */
-  fun applyUpdate(update: JobLogUpdate, followIfAtEnd: Boolean): Boolean {
-    var applied = false
-    each {
-      it.apply(update, followIfAtEnd)
-      applied = true
+  /** Puts [update] on every editor that has a viewer: each document is changed once ([JobLogUiApplier]). */
+  fun applyUpdate(update: JobLogUpdate, followOnFull: Boolean): Applied {
+    val surfaces = ArrayList<JobLogTextSurface>()
+    each { view -> view.surface?.let(surfaces::add) }
+    if (surfaces.isEmpty()) return Applied.NONE
+    var applied = Applied.NONE
+    audit.guarded {
+      applied = if (JobLogUiApplier.apply(update, surfaces, followOnFull)) Applied.DONE else Applied.MISMATCH
     }
     return applied
   }

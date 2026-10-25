@@ -40,8 +40,9 @@ private const val GREEN_BITS = 8
  * Read-only job-log editor (design §5.3): a [ProjectionViewer] folds the GitLab sections and a
  * [JobLogPresenter] colors only what is on screen. The document of a key is shared by all its
  * editors ([JobLogDocumentProvider.SHARED]); [applyRendered] puts the matching folds and style
- * runs on top. The editor follows the job's session ([JobLogEditorSessionLink]), which also picks
- * the page: a non-log page is a status of the provider, shown through [isErrorStatus]. UI thread only.
+ * runs on top, and live output is appended through [JobLogUiApplier]. The editor follows the
+ * job's session ([JobLogEditorSessionLink]), which also picks the page: a non-log page is a status
+ * of the provider, shown through [isErrorStatus]. UI thread only.
  */
 class JobLogEditor : TextEditor() {
   companion object {
@@ -157,8 +158,19 @@ private fun replaceFolds(model: ProjectionAnnotationModel, document: IDocument, 
   model.modifyAnnotations(existing, additions, null)
 }
 
+/** Adds the annotations of [folds] and leaves the existing ones, open or closed as the user left them. */
+internal fun addFoldAnnotations(model: ProjectionAnnotationModel, document: IDocument, folds: List<FoldRegion>) {
+  if (folds.isEmpty()) return
+  val additions = HashMap<Annotation, Position>()
+  for (fold in folds) {
+    val position = foldPosition(document, fold) ?: continue
+    additions[ProjectionAnnotation(fold.collapsedInitially)] = position
+  }
+  if (additions.isNotEmpty()) model.modifyAnnotations(null, additions, null)
+}
+
 /** From the start of [FoldRegion.startLine] to the end of [FoldRegion.endLine], its delimiter included. */
-private fun foldPosition(document: IDocument, fold: FoldRegion): Position? {
+internal fun foldPosition(document: IDocument, fold: FoldRegion): Position? {
   if (fold.startLine < 0 || fold.endLine <= fold.startLine || fold.endLine >= document.numberOfLines) return null
   val start = document.getLineOffset(fold.startLine)
   val end = document.getLineOffset(fold.endLine) + document.getLineLength(fold.endLine)
@@ -220,6 +232,15 @@ internal class JobLogPresenter(
     refreshVisible()
   }
 
+  /**
+   * Switches to [newRuns] and forgets what was colored from [from] on (an append replaces the text
+   * there). Invalidates nothing: the replace that follows repaints its own range.
+   */
+  fun swapRuns(newRuns: StyleRunIndex, from: Int) {
+    runs = newRuns
+    colored.subtract(from, Int.MAX_VALUE - from)
+  }
+
   override fun applyTextPresentation(presentation: TextPresentation) {
     val extent = presentation.extent ?: return
     val documentLength = viewer.document?.length ?: return
@@ -250,7 +271,8 @@ internal class JobLogPresenter(
     }
   }
 
-  private fun refreshVisible() {
+  /** Invalidates the visible parts not colored yet. */
+  fun refreshVisible() {
     if (widget.isDisposed) return
     for (visible in visibleRanges()) {
       colored.missingIn(visible.first, visible.last + 1 - visible.first).forEach {
