@@ -10,4 +10,6 @@ data class GitLabJob(
   @SerializedName("stage") val stage: String? = null,
   @SerializedName("web_url") val webUrl: String? = null,
   @SerializedName("allow_failure") val allowFailure: Boolean? = null,
+  @SerializedName("started_at") val startedAt: String? = null,
+  @SerializedName("erased_at") val erasedAt: String? = null,
 )

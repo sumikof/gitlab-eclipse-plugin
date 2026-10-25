@@ -40,6 +40,10 @@ class JobService(private val apiClient: GitLabApiClient = service()) {
     )
   }
 
+  /** Fetches one job, pinned to [connection]. The job log viewer reads `status`, `started_at` and `erased_at`. */
+  fun getJob(projectId: Long, jobId: Long, connection: ConnectionSnapshot): GitLabJob =
+    apiClient.fetchObject("/projects/$projectId/jobs/$jobId", type = GitLabJob::class.java, connection = connection)
+
   companion object {
     private val JOBS_DEADLINE = Duration.ofSeconds(15)
   }
