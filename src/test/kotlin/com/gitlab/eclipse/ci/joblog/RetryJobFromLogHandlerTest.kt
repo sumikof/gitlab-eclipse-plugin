@@ -126,6 +126,22 @@ class RetryJobFromLogHandlerTest : DescribeSpec({
     }
   }
 
+  describe("announcing") {
+    it("announces a change even when the editor it last saw keeps its answer, so the service asks again") {
+      openedOn("failed")
+      val handler = handler()
+      handler.setEnabled(context(editor))
+      val events = mutableListOf<HandlerEvent>()
+      handler.addHandlerListener(IHandlerListener { events += it })
+
+      // Another job log may be active now without setEnabled having been called for it yet.
+      JobLogRetryEnablement.changed()
+
+      handler.isEnabled shouldBe true
+      events.map { it.isEnabledChanged } shouldBe listOf(true)
+    }
+  }
+
   describe("execute") {
     it("retries the job of the active job log editor") {
       openedOn("failed")
