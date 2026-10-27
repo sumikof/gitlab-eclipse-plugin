@@ -49,8 +49,6 @@ internal class JobLogRetry(
     val target = JobWriteTarget(input.key.jobId, input.key.projectId, input.instanceUrl, input.authFingerprint)
     val key = jobWriteKeyOf(target)
     if (!tryAcquire(key)) return false
-    session.retryStarted()
-    setBusy(true)
     // Both hops are queued from the write's coroutine, onNewJob first, so onDone sees it.
     var succeeded = false
     val onNewJob = { id: Long? ->
@@ -67,14 +65,16 @@ internal class JobLogRetry(
     }
     var started = false
     try {
+      session.retryStarted()
+      setBusy(true)
       launch(key, input, onNewJob, onDone)
       started = true
     } finally {
-      // A launch that threw never runs its finally: free the job, the control and Retry here.
+      // Nothing launched (or a launch that threw never runs its finally): free the job, the control and Retry.
       if (!started) {
         release(key)
-        setBusy(false)
         session.retryFinished(succeeded = false)
+        setBusy(false)
       }
     }
     return true

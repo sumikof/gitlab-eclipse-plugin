@@ -234,6 +234,19 @@ class JobLogRetryTest : DescribeSpec({
       closes shouldBe 0
     }
 
+    it("frees the job and Retry when marking the control busy throws, and launches nothing") {
+      val (session, input) = openedOn("failed")
+
+      shouldThrow<IllegalStateException> {
+        retry().press(input, closeOrigin = { closes++ }, setBusy = { if (it) error("control disposed") })
+      }
+
+      released shouldContainExactly listOf(WriteKey(FAKE_URL, "job", FAKE_JOB))
+      held.shouldBeEmpty()
+      launches.shouldBeEmpty()
+      session.canRetry shouldBe true
+    }
+
     it("frees the job, the button and Retry when the launch itself throws") {
       val (session, input) = openedOn("failed")
       val throwing = retry { _, _, _, _ -> throw IllegalStateException("no scope") }
