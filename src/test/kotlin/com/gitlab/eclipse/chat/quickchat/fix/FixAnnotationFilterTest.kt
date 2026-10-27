@@ -66,5 +66,30 @@ class FixAnnotationFilterTest : DescribeSpec({
       select(TextSpan(0, 14), ann(0, 2, "dup"), ann(6, 2, "dup")) shouldBe
         listOf(FixDiagnostic("dup", 1), FixDiagnostic("dup", 2))
     }
+
+    it("ignores a sized annotation that starts at the range end") {
+      select(TextSpan(5, 3), ann(8, 2, "after")) shouldBe emptyList()
+    }
+
+    it("matches a caret at the start of a sized annotation") {
+      select(TextSpan(5, 0), ann(5, 3, "start")) shouldBe listOf(FixDiagnostic("start", 2))
+    }
+
+    it("matches a caret at the end of a sized annotation") {
+      select(TextSpan(8, 0), ann(5, 3, "end")) shouldBe listOf(FixDiagnostic("end", 2))
+    }
+
+    it("keeps different texts on the same line") {
+      select(TextSpan(0, 4), ann(0, 1, "a"), ann(2, 1, "b")) shouldBe
+        listOf(FixDiagnostic("a", 1), FixDiagnostic("b", 1))
+    }
+
+    it("ignores a zero-length annotation on the line after a range that ends at that line's start") {
+      select(TextSpan(0, 5), ann(5, 0, "next")) shouldBe emptyList()
+    }
+
+    it("matches a zero-length annotation on a later line of a multi-line range") {
+      select(TextSpan(2, 10), ann(10, 0, "z")) shouldBe listOf(FixDiagnostic("z", 3))
+    }
   }
 })
