@@ -112,9 +112,7 @@ internal class LanguageServerExtraction(
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
         // Sweep only if nobody else is installing right now (and locking works); never wait here.
-        // Skipped while the plugin stops: the sweep is retried on the next start.
-        (tryExclusiveLock(dataRoot.resolve(LOCK_FILE), openLockFile) as? LockAttempt.Acquired)
-          ?.lock?.use { if (!shouldAbandon()) sweep(keep = installDir) }
+        withUncontendedLock(dataRoot.resolve(LOCK_FILE), openLockFile) { sweep(keep = installDir, shouldAbandon) }
         return binaryOf(installDir)
       }
       // Incomplete, or being swept by another instance: let go and install under the install lock.
@@ -158,7 +156,7 @@ internal class LanguageServerExtraction(
         if (InUseLocks.acquire(installDir) != InUseLocks.Outcome.HELD) {
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
-        if (lock != null && !shouldAbandon()) sweep(keep = installDir)
+        if (lock != null) sweep(keep = installDir, shouldAbandon)
         binaryOf(installDir)
       } else {
         null
@@ -220,8 +218,12 @@ internal class LanguageServerExtraction(
     return binary
   }
 
-  /** Cleans up next to [keep]. Call only while holding the install lock. */
-  private fun sweep(keep: Path) {
+  /**
+   * Cleans up next to [keep]. Call only while holding the install lock. Skipped once [shouldAbandon]
+   * is true (the plugin is stopping): the next start sweeps instead.
+   */
+  private fun sweep(keep: Path, shouldAbandon: () -> Boolean) {
+    if (shouldAbandon()) return
     val entries = try {
       Files.newDirectoryStream(dataRoot).use { it.toList() }
     } catch (e: IOException) {
@@ -425,6 +427,14 @@ private fun tryExclusiveLock(file: Path, open: (Path) -> FileChannel): LockAttem
     return LockAttempt.Held
   }
   return LockAttempt.Acquired(HeldLock(channel, lock))
+}
+
+/**
+ * Runs [action] while holding an exclusive lock on [file], only if the lock can be taken at once:
+ * nobody else is installing right now, and locking works. Never waits.
+ */
+private fun withUncontendedLock(file: Path, open: (Path) -> FileChannel, action: () -> Unit) {
+  (tryExclusiveLock(file, open) as? LockAttempt.Acquired)?.lock?.use { action() }
 }
 
 /**
