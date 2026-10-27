@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.utils.system.Arch
 import com.gitlab.eclipse.utils.system.OS
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -15,10 +16,13 @@ import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
 import org.osgi.framework.Version
 import java.io.File
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.util.Hashtable
 import java.util.Optional
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.createTempDirectory
@@ -116,6 +120,22 @@ class LanguageServerInstallerTest : DescribeSpec({
 
     it("returns null for an unknown OS") {
       installer(OS.UNKNOWN, Arch.X86_64).install().shouldBeNull()
+    }
+
+    // #124: the abandon check reaches the extraction, so a stopping plugin stops waiting for the lock.
+    it("passes the abandon check on, giving up the wait for another instance's install lock") {
+      val channel = FileChannel.open(dataArea.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+      val started = System.nanoTime()
+      try {
+        installer().install(shouldAbandon = { true }).shouldBeNull()
+      } finally {
+        held.release()
+        channel.close()
+      }
+
+      TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) shouldBeLessThan 5_000
+      Files.exists(dataArea.resolve(installDirectoryName("1.2.3.456|9.30.0"))) shouldBe false
     }
   }
 })
