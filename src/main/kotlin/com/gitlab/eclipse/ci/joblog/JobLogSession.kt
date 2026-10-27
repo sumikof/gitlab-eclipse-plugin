@@ -101,7 +101,11 @@ sealed interface JobLogPage {
  * Stopping (finished job, 404, 401/403, changed connection) keeps the session and what the editors
  * show; [dispose] (last editor closed, plugin stopped) drops everything. The connection tags stay
  * private and never reach a log line. UI thread only.
+ *
+ * TooManyFunctions is suppressed: the Retry state (L4) lives here because it shares the session's
+ * lifetime, its disposal and its views (the page re-send); a separate holder would need all three.
  */
+@Suppress("TooManyFunctions")
 internal class JobLogSession(
   val key: JobLogKey,
   private val projectId: Long,

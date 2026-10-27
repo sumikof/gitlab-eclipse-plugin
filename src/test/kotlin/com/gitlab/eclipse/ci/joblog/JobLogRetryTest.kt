@@ -20,13 +20,13 @@ class JobLogRetryTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   lateinit var w: FakeWorld
-  lateinit var held: MutableSet<WriteKey>
-  lateinit var released: MutableList<WriteKey>
-  lateinit var launches: MutableList<Launch>
-  lateinit var ui: ArrayDeque<() -> Unit>
-  lateinit var opened: MutableList<JobLogTarget>
-  lateinit var notices: MutableList<String>
-  lateinit var busy: MutableList<Boolean>
+  val held = mutableSetOf<WriteKey>()
+  val released = mutableListOf<WriteKey>()
+  val launches = mutableListOf<Launch>()
+  val ui = ArrayDeque<() -> Unit>()
+  val opened = mutableListOf<JobLogTarget>()
+  val notices = mutableListOf<String>()
+  val busy = mutableListOf<Boolean>()
   lateinit var originView: FakeView
   var closes = 0
   var active = true
@@ -34,13 +34,8 @@ class JobLogRetryTest : DescribeSpec({
 
   beforeEach {
     w = FakeWorld()
-    held = mutableSetOf()
-    released = mutableListOf()
-    launches = mutableListOf()
-    ui = ArrayDeque()
-    opened = mutableListOf()
-    notices = mutableListOf()
-    busy = mutableListOf()
+    listOf(held, released, launches, opened, notices, busy).forEach { recorded -> recorded.clear() }
+    ui.clear()
     closes = 0
     active = true
     newEditorOpens = true

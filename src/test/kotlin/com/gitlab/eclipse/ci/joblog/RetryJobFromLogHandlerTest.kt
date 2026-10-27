@@ -25,13 +25,13 @@ class RetryJobFromLogHandlerTest : DescribeSpec({
   lateinit var w: FakeWorld
   lateinit var editor: IEditorPart
   lateinit var input: JobLogEditorInput
-  lateinit var retried: MutableList<Pair<IEditorPart, JobLogEditorInput>>
+  val retried = mutableListOf<Pair<IEditorPart, JobLogEditorInput>>()
   val handlers = mutableListOf<RetryJobFromLogHandler>()
 
   beforeEach {
     w = FakeWorld()
     editor = mockk()
-    retried = mutableListOf()
+    retried.clear()
   }
 
   afterEach {
