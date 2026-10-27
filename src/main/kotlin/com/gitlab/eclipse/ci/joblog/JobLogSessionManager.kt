@@ -139,6 +139,8 @@ internal object JobLogSessionManager {
 
   fun actionDone(key: JobLogKey) = registry.actionDone(key)
 
+  fun sessionFor(key: JobLogKey): JobLogSession? = registry.sessionFor(key)
+
   fun launchSave(key: JobLogKey, block: suspend () -> Unit) = registry.launchSave(key, block)
 
   fun disposeAll() = registry.disposeAll()
@@ -193,6 +195,8 @@ private object DisplaySessionEnv : JobLogSessionEnv {
   override fun wallClock(): LocalTime = LocalTime.now()
 
   override fun notify(message: String) = NotificationUtils.showOnUiThread(message)
+
+  override fun retryStateChanged() = JobLogRetryEnablement.changed()
 }
 
 /** The REST calls, each pinned to the connection the sidebar node came from (design B7). */

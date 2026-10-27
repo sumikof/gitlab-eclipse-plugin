@@ -107,6 +107,13 @@ internal class FakeEnv : JobLogSessionEnv {
     notices += message
   }
 
+  /** How often a session said its Retry state changed. */
+  var retryStateChanges = 0
+
+  override fun retryStateChanged() {
+    retryStateChanges++
+  }
+
   fun drainUi() {
     while (ui.isNotEmpty()) ui.removeFirst().invoke()
   }
