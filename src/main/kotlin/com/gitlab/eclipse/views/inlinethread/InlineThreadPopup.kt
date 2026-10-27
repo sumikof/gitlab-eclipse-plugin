@@ -238,6 +238,20 @@ class InlineThreadPopup(
   }
 
   /**
+   * Puts [text] in the selected thread as an automatic draft (see [InlineThreadState.onAutoEdit])
+   * and submits it like the button. False when the popup is closed or the draft is not submittable
+   * (busy, locked or blank); the draft stays in the input then.
+   */
+  fun submitDraft(text: String): Boolean {
+    if (!isOpen) return false
+    state.onAutoEdit(state.selectedThreadId, text)
+    refresh()
+    if (externalBusy || !state.canSubmit()) return false
+    submit()
+    return true
+  }
+
+  /**
    * Re-syncs the widgets from the state: enablement from busy / canSubmit, and the input text from
    * the **selected** thread's draft (never cleared blindly — a success may have cleared another
    * thread's draft). Safe after the shell is gone.
