@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.inlinethread
 
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldNotBeNull
 
@@ -51,6 +52,32 @@ class DraftsToPreserveTest : DescribeSpec({
       s.onAttemptFinished(ticket)
       s.draftsToPreserve(null, keepInFlight = true) shouldContainExactly listOf("sending", "typed later")
       s.draftsToPreserve(ticket, keepInFlight = true) shouldContainExactly listOf("sending", "typed later")
+    }
+  }
+
+  describe("an untouched automatic draft (QCHAT-05 /fix) is not offered") {
+    it("is left out while it is in flight, even with keepInFlight") {
+      val s = InlineThreadState(MODEL)
+      s.onAutoEdit("d1", "/fix")
+      s.onEdit("d2", "typed later")
+      val ticket = s.beginSubmit().shouldNotBeNull()
+      s.draftsToPreserve(ticket, keepInFlight = true) shouldContainExactly listOf("typed later")
+    }
+
+    it("is left out after a failed attempt (not busy)") {
+      val s = InlineThreadState(MODEL)
+      s.onAutoEdit("d1", "/fix")
+      val ticket = s.beginSubmit().shouldNotBeNull()
+      s.onAttemptFinished(ticket)
+      s.draftsToPreserve(null, keepInFlight = true).shouldBeEmpty()
+      s.draftsToPreserve(ticket).shouldBeEmpty()
+    }
+
+    it("is offered in its edited form once the user changed it") {
+      val s = InlineThreadState(MODEL)
+      s.onAutoEdit("d1", "/fix")
+      s.onEdit("d1", "/fix but explain")
+      s.draftsToPreserve(null, keepInFlight = true) shouldContainExactly listOf("/fix but explain")
     }
   }
 })

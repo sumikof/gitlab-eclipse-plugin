@@ -20,7 +20,7 @@ package com.gitlab.eclipse.views.inlinethread
  *   never be submitted again from this popup: the text may already be posted, so re-sending it must
  *   take a deliberate new popup, not one click on the button that just timed out.
  *
- * `@Suppress("TooManyFunctions")`: the twelve members are the fixed API the popup (and later
+ * `@Suppress("TooManyFunctions")`: the fourteen members are the fixed API the popup (and later
  * Quick Chat) depends on verbatim; splitting them would scatter one state machine.
  */
 @Suppress("TooManyFunctions")
@@ -48,6 +48,9 @@ class InlineThreadState(model: InlineThreadModel) {
   private val unconfirmed = HashSet<String>()
   private val generations = HashMap<String, Long>()
 
+  /** The generation each thread's automatic draft ([onAutoEdit]) produced. */
+  private val autoGenerations = HashMap<String, Long>()
+
   fun draft(threadId: String): String = drafts[threadId].orEmpty()
 
   fun editGeneration(threadId: String): Long = generations[threadId] ?: 0L
@@ -62,6 +65,18 @@ class InlineThreadState(model: InlineThreadModel) {
     drafts[threadId] = text
     generations[threadId] = editGeneration(threadId) + 1
   }
+
+  /** Like [onEdit], and remembers the resulting generation as automatic (design §5.2, Fable S1). */
+  fun onAutoEdit(threadId: String, text: String) {
+    onEdit(threadId, text)
+    autoGenerations[threadId] = editGeneration(threadId)
+  }
+
+  /** Drafts still exactly as [onAutoEdit] left them (no user edit since). */
+  fun autoDrafts(): List<String> =
+    autoGenerations
+      .filter { (id, gen) -> editGeneration(id) == gen && isSubmittable(draft(id)) }
+      .map { draft(it.key) }
 
   /** Selects [threadId]. Returns false while [busy] or when the model has no such thread. */
   fun select(threadId: String): Boolean {

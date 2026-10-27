@@ -84,8 +84,10 @@ interface InlineThreadHost {
  */
 fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?, keepInFlight: Boolean = false): List<String> {
   val drafts = unsentDrafts().toMutableList()
-  if (keepInFlight) return drafts
-  if (inFlight != null && busy && editGeneration(inFlight.threadId) == inFlight.generation) drafts.remove(inFlight.body)
+  if (!keepInFlight && inFlight != null && busy && editGeneration(inFlight.threadId) == inFlight.generation) {
+    drafts.remove(inFlight.body)
+  }
+  autoDrafts().forEach { drafts.remove(it) }
   return drafts
 }
 
