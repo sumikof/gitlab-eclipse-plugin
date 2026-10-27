@@ -21,7 +21,8 @@ private fun file(type: ChangeType) = ChangedFileNode("dir/file.kt", "dir/file.kt
 
 private fun commentedFile(commented: Boolean, type: ChangeType = ChangeType.NEW): ChangedFileNode {
   val paths = if (commented) setOf("dir/file.kt") else emptySet()
-  val badges = MrCommentBadges("base", "head").also { it.index = CommentIndex.Complete(CommentedSides(emptySet(), paths)) }
+  val badges = MrCommentBadges("base", "head")
+  badges.index = CommentIndex.Complete(CommentedSides(emptySet(), paths))
   return ChangedFileNode("dir/file.kt", "dir/file.kt", type, "sha", commentBadges = badges)
 }
 

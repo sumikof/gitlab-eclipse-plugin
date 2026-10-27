@@ -9,7 +9,14 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
 
 private fun mergeRequest() = MergeRequestNode(
-  GitLabMergeRequest(id = 1, iid = 1, title = "t", projectId = 1, webUrl = "https://h/g/p/-/merge_requests/1", state = "opened"),
+  GitLabMergeRequest(
+    id = 1,
+    iid = 1,
+    title = "t",
+    projectId = 1,
+    webUrl = "https://h/g/p/-/merge_requests/1",
+    state = "opened",
+  ),
 )
 
 private fun section(badges: MrCommentBadges?) = DiscussionsSectionNode(
@@ -64,7 +71,10 @@ class CommentBadgeBindingTest : StringSpec({
     val second = badges()
     val assigned = loadedMr(first)
     val currentBranch = loadedMr(second)
-    val roots = listOf(QueryRootNode("q", "Assigned", listOf(assigned)), CurrentBranchSectionNode(listOf(currentBranch)))
+    val roots = listOf(
+      QueryRootNode("q", "Assigned", listOf(assigned)),
+      CurrentBranchSectionNode(listOf(currentBranch)),
+    )
     mrNodeOwning(roots, second) shouldBeSameInstanceAs currentBranch
     mrNodeOwning(roots, first) shouldBeSameInstanceAs assigned
   }

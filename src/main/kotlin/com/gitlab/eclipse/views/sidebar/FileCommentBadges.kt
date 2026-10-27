@@ -48,9 +48,9 @@ internal fun commentedSides(discussions: List<GitLabDiscussion>, baseSha: String
   val oldPaths = mutableSetOf<String>()
   val newPaths = mutableSetOf<String>()
   for (discussion in discussions) {
-    val position = discussion.notes.firstOrNull { !it.system }?.position ?: continue
-    val refs = position.diffRefs
-    if (position.positionType != "text" || refs == null) continue
+    val position = discussion.notes.firstOrNull { !it.system }?.position
+    val refs = position?.diffRefs
+    if (position == null || position.positionType != "text" || refs == null) continue
     if (position.oldLine != null) {
       val path = position.oldPath
       if (path != null && refs.baseSha == baseSha) oldPaths += path

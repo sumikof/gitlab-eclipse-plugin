@@ -20,8 +20,7 @@ internal fun badgePrefetchTargets(children: List<SidebarNode>): List<Discussions
 internal fun mrNodeOwning(roots: List<SidebarNode>, badges: MrCommentBadges): MergeRequestNode? {
   for (node in roots) {
     val found = when (node) {
-      is MergeRequestNode ->
-        node.takeIf { mr -> mr.loadedChildren.orEmpty().any { it is DiscussionsSectionNode && it.commentBadges === badges } }
+      is MergeRequestNode -> node.takeIf { mr -> mr.loadedChildren.orEmpty().any { it.holds(badges) } }
       is DiscussionsSectionNode -> null
       else -> mrNodeOwning(node.children, badges)
     }
@@ -46,3 +45,6 @@ internal fun settleCommentBadges(
   badges.index = commentIndexOf(result, badges.baseSha, badges.headSha)
   mrNodeOwning(roots, badges)?.let(refreshSubtree)
 }
+
+private fun SidebarNode.holds(badges: MrCommentBadges): Boolean =
+  this is DiscussionsSectionNode && commentBadges === badges

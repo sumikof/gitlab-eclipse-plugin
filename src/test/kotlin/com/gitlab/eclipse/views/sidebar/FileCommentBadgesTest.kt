@@ -16,6 +16,8 @@ private const val START = "start-sha"
 
 private val currentRefs = GitLabDiffRefs(baseSha = BASE, headSha = HEAD, startSha = START)
 
+private val noSides = CommentedSides(emptySet(), emptySet())
+
 private fun pos(
   oldPath: String? = null,
   newPath: String? = null,
@@ -35,8 +37,14 @@ private fun note(position: GitLabNotePosition?, system: Boolean = false) = GitLa
   position = position,
 )
 
-private fun thread(vararg notes: GitLabNote, resolved: Boolean = false) =
-  GitLabDiscussion("r", "2024-01-01T00:00:00Z", resolved, resolvable = true, notes = notes.toList(), hasMoreNotes = false)
+private fun thread(vararg notes: GitLabNote, resolved: Boolean = false) = GitLabDiscussion(
+  "r",
+  "2024-01-01T00:00:00Z",
+  resolved,
+  resolvable = true,
+  notes = notes.toList(),
+  hasMoreNotes = false,
+)
 
 private fun sidesOf(vararg threads: GitLabDiscussion) = commentedSides(threads.toList(), BASE, HEAD)
 
@@ -60,7 +68,7 @@ class FileCommentBadgesTest : StringSpec({
       CommentedSides(oldPaths = setOf("a.kt"), newPaths = emptySet())
     val wrongBase = currentRefs.copy(baseSha = "other")
     sidesOf(thread(note(pos(oldPath = "a.kt", newPath = "a.kt", oldLine = 2, newLine = 2, refs = wrongBase)))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+      noSides
   }
 
   // §4.6 #4
@@ -90,40 +98,40 @@ class FileCommentBadgesTest : StringSpec({
 
   // §4.6 #8, #10
   "threads without a position or with a non-text position are not counted" {
-    sidesOf(thread(note(null))) shouldBe CommentedSides(emptySet(), emptySet())
+    sidesOf(thread(note(null))) shouldBe noSides
     sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, type = "image")))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+      noSides
     state(complete(thread(note(null))), ChangeType.MODIFIED) shouldBe FileCommentState.ABSENT
   }
 
   "a thread whose position has no diff refs is not counted" {
-    sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = null)))) shouldBe CommentedSides(emptySet(), emptySet())
+    sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = null)))) shouldBe noSides
   }
 
   // §4.6 #11, and old ↔ base / new ↔ head are never crossed.
   "the old side is checked against the base sha and the new side against the head sha" {
     sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = currentRefs.copy(headSha = "older"))))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+      noSides
     sidesOf(thread(note(pos(oldPath = "a.kt", oldLine = 1, refs = currentRefs.copy(baseSha = "older"))))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+      noSides
     // Swapped refs: a new-side note whose head is our base, an old-side note whose base is our head.
     val swapped = GitLabDiffRefs(baseSha = HEAD, headSha = BASE, startSha = START)
     sidesOf(
       thread(note(pos(newPath = "a.kt", newLine = 1, refs = swapped))),
       thread(note(pos(oldPath = "b.kt", oldLine = 1, refs = swapped))),
-    ) shouldBe CommentedSides(emptySet(), emptySet())
+    ) shouldBe noSides
     // startSha is not part of the match (VS Code parity).
     sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = currentRefs.copy(startSha = "x"))))) shouldBe
       CommentedSides(emptySet(), setOf("a.kt"))
   }
 
   "sha comparison is case-sensitive" {
-    sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = currentRefs.copy(headSha = HEAD.uppercase()))))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+    val upperHead = currentRefs.copy(headSha = HEAD.uppercase())
+    sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1, refs = upperHead)))) shouldBe noSides
   }
 
   "only the first note's position is looked at, never a reply's" {
-    sidesOf(thread(note(null), note(pos(newPath = "a.kt", newLine = 1)))) shouldBe CommentedSides(emptySet(), emptySet())
+    sidesOf(thread(note(null), note(pos(newPath = "a.kt", newLine = 1)))) shouldBe noSides
     sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1)), note(pos(newPath = "b.kt", newLine = 1)))) shouldBe
       CommentedSides(emptySet(), setOf("a.kt"))
   }
@@ -133,17 +141,20 @@ class FileCommentBadgesTest : StringSpec({
     sidesOf(thread(note(null, system = true), note(pos(newPath = "a.kt", newLine = 1)))) shouldBe
       CommentedSides(emptySet(), setOf("a.kt"))
     sidesOf(thread(note(pos(newPath = "a.kt", newLine = 1), system = true))) shouldBe
-      CommentedSides(emptySet(), emptySet())
+      noSides
   }
 
   // I-7
   "a side whose path is null in the position does not match anything" {
-    sidesOf(thread(note(pos(oldPath = null, newPath = "a.kt", oldLine = 1)))) shouldBe CommentedSides(emptySet(), emptySet())
-    sidesOf(thread(note(pos(oldPath = "a.kt", newPath = null, newLine = 1)))) shouldBe CommentedSides(emptySet(), emptySet())
+    sidesOf(thread(note(pos(oldPath = null, newPath = "a.kt", oldLine = 1)))) shouldBe noSides
+    sidesOf(thread(note(pos(oldPath = "a.kt", newPath = null, newLine = 1)))) shouldBe noSides
   }
 
   "a file path that is null on the node never matches" {
-    val index = complete(thread(note(pos(oldPath = "a.kt", oldLine = 1))), thread(note(pos(newPath = "a.kt", newLine = 1))))
+    val index = complete(
+      thread(note(pos(oldPath = "a.kt", oldLine = 1))),
+      thread(note(pos(newPath = "a.kt", newLine = 1))),
+    )
     state(index, ChangeType.MODIFIED, oldPath = null, newPath = null) shouldBe FileCommentState.ABSENT
   }
 
@@ -163,7 +174,7 @@ class FileCommentBadgesTest : StringSpec({
   "every truncation reason is partial" {
     TruncationReason.entries.forEach { reason ->
       commentIndexOf(DiscussionsReadResult(true, emptyList(), reason), BASE, HEAD) shouldBe
-        CommentIndex.Partial(CommentedSides(emptySet(), emptySet()))
+        CommentIndex.Partial(noSides)
     }
   }
 

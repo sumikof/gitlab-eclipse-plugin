@@ -651,8 +651,14 @@ class GitLabSidebarView : ViewPart() {
     sourceInstanceUrl: String?,
     sourceAuthFingerprint: String?,
   ) {
-    val children =
-      viewModel.buildMrChildren(node.url, versionResult, viewState.mode, node.mr, sourceInstanceUrl, sourceAuthFingerprint)
+    val children = viewModel.buildMrChildren(
+      node.url,
+      versionResult,
+      viewState.mode,
+      node.mr,
+      sourceInstanceUrl,
+      sourceAuthFingerprint,
+    )
     node.loadedChildren = children
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)

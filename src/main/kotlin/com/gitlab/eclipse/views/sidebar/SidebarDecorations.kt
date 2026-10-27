@@ -66,8 +66,8 @@ private fun ChangedFileNode.commentState(): FileCommentState? =
   commentBadges?.let { fileCommentState(oldPath, newPath, changeType, it.index) }
 
 /**
- * Text drawn for [node]: a changed file reads `<name> · <letter>` (name = last path segment in the tree), a Discussions
- * section carries how far its comment badges can be trusted, others use the label.
+ * Text drawn for [node]: a changed file reads `<name> · <letter>` (name = last path segment in the tree), a
+ * Discussions section carries how far its comment badges can be trusted, others use the label.
  */
 fun sidebarDisplayText(node: SidebarNode): String {
   if (node is DiscussionsSectionNode) return node.label + commentBadgesSuffix(node.commentBadges)

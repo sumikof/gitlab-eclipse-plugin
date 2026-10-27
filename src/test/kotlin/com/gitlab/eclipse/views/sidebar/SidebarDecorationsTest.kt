@@ -35,7 +35,8 @@ private fun file(
 
 private fun badges(index: CommentIndex) = MrCommentBadges("base", "head").also { it.index = index }
 
-private val commentedA = CommentIndex.Complete(CommentedSides(oldPaths = emptySet(), newPaths = setOf("dir/sub/file.kt")))
+private val commentedA =
+  CommentIndex.Complete(CommentedSides(oldPaths = emptySet(), newPaths = setOf("dir/sub/file.kt")))
 
 private fun commentedFile(index: CommentIndex?, inTree: Boolean = false, type: ChangeType = ChangeType.MODIFIED) =
   ChangedFileNode(
