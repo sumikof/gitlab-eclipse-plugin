@@ -26,6 +26,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.verify
+import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IPath
 import org.eclipse.core.runtime.Platform
 import org.eclipse.lsp4j.WorkspaceFolder
@@ -408,12 +409,14 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
       var provider: GitLabLanguageServerProcessProvider? = null
       val registrations = AtomicInteger()
       val secondSpawn = CountDownLatch(1)
-      val store = LanguageServerLifecycleStore()
-      // Runs on the thread that marks the start failed. Under the lifecycle lock, as it must be, the
+      // The failed start's error line comes between its failure and its clean-up, and is written
+      // whether or not the store still takes the failure. Under the lifecycle lock, as it must be, the
       // restart cannot spawn during this wait; were the clean-up outside the lock, the restart would
       // spawn here and the clean-up after this wait would stop the restart's server.
-      store.addListener { _, new ->
-        if (new.failure == LanguageServerFailureKind.START_FAILED) secondSpawn.await(1, TimeUnit.SECONDS)
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      every { log.error(match<String> { it.startsWith("Failed to start the Language Server (") }) } answers {
+        secondSpawn.await(1, TimeUnit.SECONDS)
       }
       every { wrapper.registerLanguageServer(any()) } answers {
         if (registrations.getAndIncrement() == 0) {
@@ -435,7 +438,6 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
             if (spawnedProcesses.size >= 2) secondSpawn.countDown()
           }
         },
-        store = store,
         wrapper = wrapper,
       )
 
