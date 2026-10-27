@@ -262,6 +262,14 @@ class GitLabSidebarView : ViewPart() {
       // of producing the exceptionType= audit line. The loader calls `notify` on the UI thread
       // already, so opening the popup synchronously here keeps it inside the guard.
       notify = { message -> guarded("notify", Unit) { NotificationUtils.showOnUiThread(message) } },
+      // #142 B: one subtree refresh of the owning MR repaints the section and every file (TREE included) while
+      // keeping their identity, so expansion and selection survive; refresh(element[]) would walk the tree per file.
+      onSettled = { section, result ->
+        guarded("commentBadges", Unit) {
+          val roots = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
+          settleCommentBadges(section, result, roots) { mr -> if (!viewer.control.isDisposed) viewer.refresh(mr, true) }
+        }
+      },
     )
   }
 
@@ -643,10 +651,16 @@ class GitLabSidebarView : ViewPart() {
     sourceInstanceUrl: String?,
     sourceAuthFingerprint: String?,
   ) {
-    node.loadedChildren =
+    val children =
       viewModel.buildMrChildren(node.url, versionResult, viewState.mode, node.mr, sourceInstanceUrl, sourceAuthFingerprint)
+    node.loadedChildren = children
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
+    // #142 B: prefetch the discussions once per build for the files' comment badges. A later expansion of the section
+    // finds it LOADING / LOADED and does not fetch again. Not asked for by the user, so a gate rejection stays silent.
+    badgePrefetchTargets(children).forEach {
+      discussionsLoader.loadDiscussions(it, force = false, notifyOnGateRejected = false, onOutcome = {})
+    }
   }
 
   /**
