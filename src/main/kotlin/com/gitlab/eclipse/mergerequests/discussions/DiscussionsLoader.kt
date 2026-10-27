@@ -41,6 +41,11 @@ import kotlin.coroutines.cancellation.CancellationException
  *   connection gate rather than a fetch error, so the caller can word the message differently.
  * @param runInBackground runs its argument off the UI thread; no default — the caller supplies it.
  * @param runOnUi runs its argument on the UI thread; no default — the caller supplies it.
+ * @param onSettled called on the UI thread when a load that passed both guards settles — with the
+ *   applied result, or `null` for Failed / GateRejected — before the terminal [refreshNode] and
+ *   `onOutcome`, so a dialog `onOutcome` opens already sees the updated comment badges. Never for
+ *   Skipped, Superseded or a lifecycle discard, and never when a load starts: a re-fetch keeps the
+ *   previous badges until it settles. Like the other injected functions it must not throw.
  */
 class DiscussionsLoader(
   private val discussionService: DiscussionService = service(),
@@ -52,6 +57,7 @@ class DiscussionsLoader(
   private val buildLoadingChildren: (DiscussionsSectionNode) -> List<SidebarNode>,
   private val refreshNode: (DiscussionsSectionNode) -> Unit,
   private val notify: (String) -> Unit,
+  private val onSettled: (DiscussionsSectionNode, DiscussionsReadResult?) -> Unit = { _, _ -> },
 ) {
 
   private val logger by lazy { logger<DiscussionsLoader>() }
@@ -72,12 +78,16 @@ class DiscussionsLoader(
    * Starts (or skips) a discussions load for [node]. Must be called on the UI thread —
    * [DiscussionsSectionNode.loadState] is UI-thread-confined, so the not-loaded check and the
    * `LOADING` write below are atomic without any lock. [force] `= true` issues the fetch even
-   * when the node is already `LOADED` (the post-write re-fetch path). [onOutcome] is delivered
-   * per the class-level completion contract.
+   * when the node is already `LOADED` (the post-write re-fetch path). [notifyOnGateRejected]
+   * `= false` keeps a gate-rejected load from showing [CONNECTION_CHANGED_MESSAGE] — for the
+   * comment-badge prefetch, which the user did not ask for; the section still settles FAILED with
+   * its failure children, so expanding it retries with a normal, notifying load. [onOutcome] is
+   * delivered per the class-level completion contract.
    */
   fun loadDiscussions(
     node: DiscussionsSectionNode,
     force: Boolean,
+    notifyOnGateRejected: Boolean = true,
     onOutcome: (LoadOutcome) -> Unit,
   ) {
     if (!force && node.loadState == DiscussionLoadState.LOADED) {
@@ -93,7 +103,7 @@ class DiscussionsLoader(
     refreshNode(node)
     runInBackground {
       val fetch = fetchInBackground(node)
-      runOnUi { finish(node, key, generation, startEpoch, fetch, onOutcome) }
+      runOnUi { finish(node, key, generation, startEpoch, fetch, notifyOnGateRejected, onOutcome) }
     }
   }
 
@@ -150,6 +160,7 @@ class DiscussionsLoader(
     generation: Long,
     startEpoch: Long,
     fetch: FetchOutcome,
+    notifyOnGateRejected: Boolean,
     onOutcome: (LoadOutcome) -> Unit,
   ) {
     if (!DiscussionGenerationRegistry.active || DiscussionGenerationRegistry.currentEpoch != startEpoch) return
@@ -158,18 +169,23 @@ class DiscussionsLoader(
       return
     }
     when (fetch) {
-      is FetchOutcome.GateRejected -> applyGateRejected(node, onOutcome)
+      is FetchOutcome.GateRejected -> applyGateRejected(node, notifyOnGateRejected, onOutcome)
       is FetchOutcome.Failed -> applyFailed(node, fetch.cause, onOutcome)
       is FetchOutcome.Fetched -> applyFetched(node, fetch.result, onOutcome)
     }
   }
 
-  /** Gate-rejected terminal branch: failure children (gateRejected = true), notify, then callback. */
-  private fun applyGateRejected(node: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
+  /** Gate-rejected terminal branch: failure children (gateRejected = true), notify unless suppressed, then callback. */
+  private fun applyGateRejected(
+    node: DiscussionsSectionNode,
+    notifyOnGateRejected: Boolean,
+    onOutcome: (LoadOutcome) -> Unit,
+  ) {
     node.loadedChildren = buildFailureChildren(node, true)
+    onSettled(node, null)
     refreshNode(node)
     node.loadState = DiscussionLoadState.FAILED
-    notify(CONNECTION_CHANGED_MESSAGE)
+    if (notifyOnGateRejected) notify(CONNECTION_CHANGED_MESSAGE)
     onOutcome(LoadOutcome.GateRejected)
   }
 
@@ -182,6 +198,7 @@ class DiscussionsLoader(
   private fun applyFailed(node: DiscussionsSectionNode, cause: Throwable, onOutcome: (LoadOutcome) -> Unit) {
     logger.error("Discussions fetch failed: exceptionType=${cause.javaClass.name}")
     node.loadedChildren = buildFailureChildren(node, false)
+    onSettled(node, null)
     refreshNode(node)
     node.loadState = DiscussionLoadState.FAILED
     onOutcome(LoadOutcome.Failed(cause))
@@ -199,6 +216,7 @@ class DiscussionsLoader(
   ) {
     node.canCreateNote = result.canCreateNote
     node.loadedChildren = buildChildren(node, result)
+    onSettled(node, result)
     refreshNode(node)
     node.loadState = DiscussionLoadState.LOADED
     onOutcome(LoadOutcome.Applied)

@@ -14,6 +14,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
@@ -74,6 +75,12 @@ private class LoaderHarness(
   var refreshCount = 0
     private set
 
+  /** Every `onSettled` call, in order (comment badges, #142 candidate B). */
+  val settled = mutableListOf<Pair<DiscussionsSectionNode, DiscussionsReadResult?>>()
+
+  /** The terminal effects in call order: `refresh`, `settled`, `notify`, `outcome`. */
+  val events = mutableListOf<String>()
+
   val loader = DiscussionsLoader(
     discussionService = discussionService,
     apiClient = apiClient,
@@ -82,14 +89,31 @@ private class LoaderHarness(
     buildChildren = { _, _ -> successChildren },
     buildFailureChildren = { _, gateRejected -> if (gateRejected) gateRejectedChildren else failureChildren },
     buildLoadingChildren = { _ -> loadingChildren },
-    refreshNode = { refreshCount++ },
-    notify = { notifications += it },
+    refreshNode = {
+      refreshCount++
+      events += "refresh"
+    },
+    notify = {
+      notifications += it
+      events += "notify"
+    },
+    onSettled = { settledNode, result ->
+      settled += settledNode to result
+      events += "settled"
+    },
   )
 
-  fun load(force: Boolean = false) {
-    loader.loadDiscussions(node, force) { outcome ->
+  /** [notifyOnGateRejected] `null` calls the two-argument shape, so the parameter's default is what runs. */
+  fun load(force: Boolean = false, notifyOnGateRejected: Boolean? = null) {
+    val onOutcome: (LoadOutcome) -> Unit = { outcome ->
       outcomes += outcome
       outcomesDeliveredInsideUiHop += insideUiHop
+      events += "outcome"
+    }
+    if (notifyOnGateRejected == null) {
+      loader.loadDiscussions(node, force, onOutcome = onOutcome)
+    } else {
+      loader.loadDiscussions(node, force, notifyOnGateRejected, onOutcome)
     }
   }
 
@@ -452,6 +476,158 @@ class DiscussionsLoaderTest : DescribeSpec({
 
       h.runPendingBackground()
       h.outcomes shouldContainExactly listOf(LoadOutcome.Applied)
+    }
+  }
+
+  describe("onSettled (comment badges)") {
+    it("an applied fetch settles once with that exact result, before the terminal refresh and onOutcome") {
+      val result = DiscussionsReadResult(canCreateNote = true, discussions = emptyList(), truncation = null)
+      val h = LoaderHarness()
+      h.givenSuccess(result)
+
+      h.load()
+
+      h.settled shouldHaveSize 1
+      h.settled.single().first shouldBeSameInstanceAs h.node
+      h.settled.single().second shouldBeSameInstanceAs result
+      h.events shouldContainExactly listOf("refresh", "settled", "refresh", "outcome")
+    }
+
+    it("a failed fetch settles once with null, before the terminal refresh and onOutcome") {
+      val h = LoaderHarness()
+      h.givenFailure(IOException("boom"))
+
+      h.load()
+
+      h.settled shouldContainExactly listOf(h.node to null)
+      h.events shouldContainExactly listOf("refresh", "settled", "refresh", "outcome")
+    }
+
+    it("a gate-rejected load settles once with null, before the terminal refresh, the notice and onOutcome") {
+      val h = LoaderHarness()
+      h.givenConnection(authFingerprint = "fp-other-account")
+
+      h.load()
+
+      h.settled shouldContainExactly listOf(h.node to null)
+      h.events shouldContainExactly listOf("refresh", "settled", "refresh", "notify", "outcome")
+    }
+
+    it("is not called while the fetch runs, so a re-fetch keeps the previous index until it settles") {
+      val h = LoaderHarness(deferBackground = true)
+      h.givenSuccess()
+
+      h.load(force = true)
+
+      h.settled.shouldBeEmpty()
+      h.runPendingBackground()
+      h.settled shouldHaveSize 1
+    }
+
+    it("is not called for a skipped load") {
+      val h = LoaderHarness()
+      h.node.loadState = DiscussionLoadState.LOADED
+
+      h.load(force = false)
+
+      h.settled.shouldBeEmpty()
+    }
+
+    it("is not called for a superseded result of any kind") {
+      listOf<LoaderHarness.() -> Unit>(
+        { givenSuccess() },
+        { givenFailure(IOException("late")) },
+        { givenConnection(authFingerprint = "fp-other-account") },
+      ).forEach { given ->
+        DiscussionGenerationRegistry.resetForTest()
+        val h = LoaderHarness(deferUi = true)
+        h.given()
+
+        h.load()
+        DiscussionGenerationRegistry.nextGeneration(h.key)
+        h.runPendingUi()
+
+        h.outcomes shouldContainExactly listOf(LoadOutcome.Superseded)
+        h.settled.shouldBeEmpty()
+      }
+    }
+
+    it("is not called when the lifecycle guard discards the result") {
+      val h = LoaderHarness(deferUi = true)
+      h.givenSuccess()
+
+      h.load()
+      DiscussionGenerationRegistry.onDeactivate()
+      h.runPendingUi()
+
+      h.settled.shouldBeEmpty()
+    }
+
+    it("a loader built without onSettled and loads without notifyOnGateRejected behave as before") {
+      val h = LoaderHarness()
+      h.givenConnection(authFingerprint = "fp-other-account")
+      val notifications = mutableListOf<String>()
+      val outcomes = mutableListOf<LoadOutcome>()
+      val loader = DiscussionsLoader(
+        discussionService = h.discussionService,
+        apiClient = h.apiClient,
+        runInBackground = { it() },
+        runOnUi = { it() },
+        buildChildren = { _, _ -> h.successChildren },
+        buildFailureChildren = { _, _ -> h.gateRejectedChildren },
+        buildLoadingChildren = { _ -> h.loadingChildren },
+        refreshNode = {},
+        notify = { notifications += it },
+      )
+
+      loader.loadDiscussions(h.node, force = false) { outcomes += it }
+
+      outcomes shouldContainExactly listOf(LoadOutcome.GateRejected)
+      notifications shouldContainExactly listOf(DiscussionsLoader.CONNECTION_CHANGED_MESSAGE)
+    }
+  }
+
+  describe("notifyOnGateRejected (comment-badge prefetch)") {
+    it("false: a gate-rejected load does not notify, but is otherwise the same FAILED settle") {
+      val h = LoaderHarness()
+      h.givenConnection(authFingerprint = "fp-other-account")
+
+      h.load(notifyOnGateRejected = false)
+
+      h.notifications.shouldBeEmpty()
+      h.node.loadState shouldBe DiscussionLoadState.FAILED
+      h.node.loadedChildren shouldBeSameInstanceAs h.gateRejectedChildren
+      h.settled shouldContainExactly listOf(h.node to null)
+      h.outcomes shouldContainExactly listOf(LoadOutcome.GateRejected)
+      h.events shouldContainExactly listOf("refresh", "settled", "refresh", "outcome")
+      h.verifyNoFetchIssued()
+    }
+
+    it("true (and the default): a gate-rejected load notifies once") {
+      listOf<Boolean?>(true, null).forEach { flag ->
+        DiscussionGenerationRegistry.resetForTest()
+        val h = LoaderHarness()
+        h.givenConnection(authFingerprint = "fp-other-account")
+
+        h.load(notifyOnGateRejected = flag)
+
+        h.notifications shouldContainExactly listOf(DiscussionsLoader.CONNECTION_CHANGED_MESSAGE)
+        h.outcomes shouldContainExactly listOf(LoadOutcome.GateRejected)
+      }
+    }
+
+    it("false: a successful or failed load is unaffected") {
+      val ok = LoaderHarness()
+      ok.givenSuccess()
+      ok.load(notifyOnGateRejected = false)
+      ok.outcomes shouldContainExactly listOf(LoadOutcome.Applied)
+      ok.node.loadState shouldBe DiscussionLoadState.LOADED
+
+      val failed = LoaderHarness()
+      failed.givenFailure(IOException("boom"))
+      failed.load(notifyOnGateRejected = false)
+      failed.node.loadState shouldBe DiscussionLoadState.FAILED
+      failed.notifications.shouldBeEmpty()
     }
   }
 

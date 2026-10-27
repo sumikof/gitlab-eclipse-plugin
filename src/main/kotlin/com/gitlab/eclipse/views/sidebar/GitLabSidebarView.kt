@@ -720,7 +720,7 @@ class GitLabSidebarView : ViewPart() {
    * would report the thread as not reloaded even though it could have been.
    */
   internal fun reloadDiscussions(section: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
-    discussionsLoader.loadDiscussions(section, force = true, onOutcome)
+    discussionsLoader.loadDiscussions(section, force = true, onOutcome = onOutcome)
   }
 
   override fun setFocus() {
