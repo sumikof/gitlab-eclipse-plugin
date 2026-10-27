@@ -8,12 +8,17 @@ import com.gitlab.eclipse.utils.logger
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import org.eclipse.ui.preferences.ScopedPreferenceStore
+import java.io.IOException
+import java.io.InputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -63,6 +68,7 @@ class GitLabApiClient(
   private val httpClient: GitLabHttpClient = service(),
   private val tokenManager: GitLabTokenProviderManager = service(),
   private val preferenceStore: ScopedPreferenceStore = service(),
+  private val bodyDeadline: BodyDeadline = SharedBodyDeadline,
   private val readGeneration: () -> Long = { ConnectionConfigGeneration.generation },
 ) {
   private val gson = Gson()
@@ -347,6 +353,73 @@ class GitLabApiClient(
     return body
   }
 
+  /**
+   * Conditional GET of the last [maxBytes] of a trace, pinned to [connection]. [ifNoneMatch] is sent as given.
+   * 304 → [TraceFetch.NotModified]; other non-2xx → [GitLabApiException] (status and correlation id only, the
+   * body is never read); timeouts and I/O errors propagate as-is.
+   */
+  fun fetchTrace(path: String, ifNoneMatch: String?, maxBytes: Int, connection: ConnectionSnapshot): TraceFetch {
+    val builder = HttpRequest.newBuilder(buildUri(path, emptyMap(), baseOverride = connection.instanceUrl))
+      .header("Authorization", "Bearer ${connection.token}")
+      .header("Accept", "*/*")
+      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+    if (ifNoneMatch != null) builder.header("If-None-Match", ifNoneMatch)
+
+    val response = httpClient.send(builder.GET().build(), TailKeepingBodyHandler(maxBytes, deadline = bodyDeadline))
+    return when (val outcome = response.body()) {
+      is TailOutcome.Done -> outcome.fetch
+      is TailOutcome.Rejected -> throw GitLabApiException(outcome.status, "", outcome.correlationId)
+    }
+  }
+
+  /**
+   * Streams a response body to [sink] without any size cap, pinned to [connection]. Non-2xx →
+   * [GitLabApiException] without reading the body. The body must finish within [DOWNLOAD_BODY_TIMEOUT]: on expiry
+   * the stream is closed and the call fails with [HttpTimeoutException]. [onOpened] receives a function that closes
+   * the body at once, for a caller that is cancelled while [sink] is blocked in a read (the read then fails).
+   */
+  fun downloadTo(
+    path: String,
+    connection: ConnectionSnapshot,
+    onOpened: (closeNow: () -> Unit) -> Unit = {},
+    sink: (InputStream) -> Unit,
+  ) {
+    val httpRequest = HttpRequest.newBuilder(buildUri(path, emptyMap(), baseOverride = connection.instanceUrl))
+      .header("Authorization", "Bearer ${connection.token}")
+      .header("Accept", "*/*")
+      .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+      .GET()
+      .build()
+
+    val response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
+    val stream = response.body()
+    val expired = AtomicBoolean(false)
+    val disarm = bodyDeadline.arm(DOWNLOAD_BODY_TIMEOUT) {
+      expired.set(true)
+      closeQuietly(stream)
+    }
+    try {
+      if (response.statusCode() !in SUCCESS_STATUS_MIN..SUCCESS_STATUS_MAX) {
+        throw GitLabApiException(response.statusCode(), "", response.headers().firstValue("x-request-id").orElse(null))
+      }
+      onOpened { closeQuietly(stream) }
+      sink(stream)
+    } catch (e: IOException) {
+      throw if (expired.get()) HttpTimeoutException("Response body not received in time") else e
+    } finally {
+      disarm()
+      closeQuietly(stream)
+    }
+  }
+
+  private fun closeQuietly(stream: InputStream) {
+    try {
+      stream.close()
+    } catch (ignored: IOException) {
+      // Closing only releases the connection; there is nothing to recover.
+    }
+  }
+
   private fun sendPost(
     path: String,
     query: Map<String, String>,
@@ -409,6 +482,8 @@ class GitLabApiClient(
     private const val PER_PAGE = 100
     private const val MAX_PAGES = 20
     private const val REQUEST_TIMEOUT_SECONDS = 30L
+    private const val DOWNLOAD_BODY_TIMEOUT_MINUTES = 10L
+    private val DOWNLOAD_BODY_TIMEOUT: Duration = Duration.ofMinutes(DOWNLOAD_BODY_TIMEOUT_MINUTES)
 
     /** Inclusive bounds of the HTTP 2xx (successful) status class. */
     private const val SUCCESS_STATUS_MIN = 200

@@ -39,6 +39,19 @@ fun decidePlacement(existing: OpenPlacement?, editor: Any, oneBasedLine: Int): P
 }
 
 /**
+ * The SWT-free part of [QuickChatPopups.openAndSend]: sends [message] only to a popup that really
+ * opened and is still open (create returns null when the shell failed to open). True when [submit]
+ * accepted it (Fable N3).
+ */
+internal fun <P> sendIfOpened(
+  popup: P?,
+  isOpen: (P) -> Boolean,
+  submit: (P, String) -> Boolean,
+  message: String,
+): Boolean =
+  popup != null && isOpen(popup) && submit(popup, message)
+
+/**
  * A thread-safe snapshot of the windows that show a Quick Chat, for readers that may run off the
  * UI thread (the close command's enablement, design §11.1). [publish] runs on the UI thread
  * whenever the popups change, and tells the listeners there — only when the set really changed.
@@ -109,6 +122,24 @@ object QuickChatPopups {
     create(window, editor, oneBasedLine)
   }
 
+  /**
+   * UI thread. Always replaces [editor]'s window's Quick Chat (L6) — a prepared question belongs in
+   * a conversation of its own — then opens one at [oneBasedLine] and sends [message].
+   */
+  fun openAndSend(editor: ITextEditor, oneBasedLine: Int, message: String) {
+    val window = editor.site.workbenchWindow
+    open[window]?.takeIf { it.popup.isOpen }?.popup?.close()
+    // close() may have offered the drafts in a modal dialog, whose nested event loop can close the
+    // editor. A disposed text editor has no document provider any more (disposeDocumentProvider);
+    // its input stays set, so the editorInput check is only a guard, not the dispose test.
+    if (editor.editorInput == null || editor.documentProvider?.getDocument(editor.editorInput) == null) {
+      logger.info("Quick Chat open-and-send skipped: the editor closed")
+      return
+    }
+    val sent = sendIfOpened(create(window, editor, oneBasedLine), { it.isOpen }, { p, m -> p.submitDraft(m) }, message)
+    if (!sent) logger.info("Quick Chat open-and-send did not send")
+  }
+
   /** UI thread. Closes [window]'s Quick Chat (drafts offered); false when it has none. */
   fun closeIn(window: IWorkbenchWindow): Boolean {
     val current = open[window]?.takeIf { it.popup.isOpen } ?: return false
@@ -132,7 +163,8 @@ object QuickChatPopups {
     }
   }
 
-  private fun create(window: IWorkbenchWindow, editor: ITextEditor, oneBasedLine: Int) {
+  /** Opens a Quick Chat in [window]; null when the shell could not be opened (nothing is left behind then). */
+  private fun create(window: IWorkbenchWindow, editor: ITextEditor, oneBasedLine: Int): InlineThreadPopup? {
     val scheduler = DisplayUiScheduler(editor.site.shell.display)
     val conversation = QuickChatConversation()
     val codeActions = QuickChatCodeActions(insert = QuickChatSnippetInserter(service<CodeFormatter>())::insert)
@@ -169,12 +201,14 @@ object QuickChatPopups {
     publish()
     try {
       popup.open(conversation.toInlineModel())
+      return popup
     } catch (e: Exception) {
       // A half-built shell must not stay in the map or keep a session.
       logger.error("Quick Chat popup open failed: exceptionType=${e.javaClass.name}")
       guarded("discard") { popup.discard() }
       removeIfCurrent(window, popup)
       guarded("end") { session.end() }
+      return null
     }
   }
 

@@ -13,6 +13,7 @@ import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerOpenFilesService
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureKind
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerLifecycleStore
+import com.gitlab.eclipse.lsp.lifecycle.LanguageServerPhase
 import com.gitlab.eclipse.lsp.lifecycle.StartOrigin
 import com.gitlab.eclipse.lsp.proxy.LanguageServerProxyManager
 import com.gitlab.eclipse.lsp.webview.LanguageServerWebviewService
@@ -31,9 +32,11 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
@@ -55,6 +58,8 @@ class GitLabLanguageServerProcessProvider(
    * share this one value (design §15 I8). Internal seam for the tests.
    */
   private val initializeTimeout: Duration = Duration.ofSeconds(DEFAULT_INITIALIZE_TIMEOUT_SECONDS),
+  /** Runs the install and the spawn off the caller's thread (#124); a direct executor in the tests. */
+  private val startExecutor: Executor = newLanguageServerStartExecutor(),
 ) {
   companion object {
     private const val DEFAULT_INITIALIZE_TIMEOUT_SECONDS = 30L
@@ -87,33 +92,87 @@ class GitLabLanguageServerProcessProvider(
     get() = synchronized(lifecycleLock) { process != null }
 
   /**
-   * Starts the language server. Never throws: bundle activation calls this without a catch of its
-   * own, so a failure here (no install for this platform, a failed extraction, a spawn error) would
-   * skip the rest of activation. The failure is logged, the provider stays stopped, and a later
-   * [restart] retries from that clean state.
+   * Starts the language server without blocking the caller (#124). The attempt is begun here, under
+   * [lifecycleLock], so the store reads STARTING before this returns; the install and the spawn run
+   * on [startExecutor]. Never throws: bundle activation calls this without a catch of its own, so a
+   * failure here would skip the rest of activation. A failure is logged, the provider stays stopped,
+   * and a later [restart] retries from that clean state. A second call while an attempt is pending
+   * or a server runs does nothing; only [restart] replaces a server.
    */
   fun start(bundle: Bundle) {
-    // Fire-and-forget: workbench startup must never block on the initialize handshake,
-    // so the future returned by startLocked is deliberately ignored here.
-    synchronized(lifecycleLock) {
+    try {
+      val generation = synchronized(lifecycleLock) {
+        val phase = lifecycleStore.snapshot().phase
+        if (process != null || phase == LanguageServerPhase.STARTING || phase == LanguageServerPhase.RUNNING) return
+        // -1: the store is closed, the bundle is stopping and nothing may start.
+        lifecycleStore.beginAttempt(StartOrigin.STARTUP).takeIf { it >= 0 } ?: return
+      }
       try {
-        startLocked(bundle, StartOrigin.STARTUP)
+        startExecutor.execute {
+          try {
+            runStartAttempt(bundle, generation)
+          } finally {
+            // Never carry an interrupt into the next task of this pooled thread.
+            Thread.interrupted()
+          }
+        }
+      } catch (e: RejectedExecutionException) {
+        synchronized(lifecycleLock) { lifecycleStore.markFailed(generation, LanguageServerFailureKind.START_FAILED) }
+        logger.error("Failed to start the Language Server (${e.javaClass.simpleName}).")
+      }
+    } catch (e: Exception) {
+      logger.error("Failed to start the Language Server (${rootCauseName(e)}).")
+    }
+  }
+
+  /**
+   * The start attempt [generation] on [startExecutor]. Everything, the clean-up included, runs under
+   * [lifecycleLock], so a restart waiting for the lock cannot have its server stopped by this
+   * attempt's failure handling. The attempt re-checks that it is still current before the install
+   * and again before the spawn: a stop, a restart or a closed store in between wins.
+   */
+  private fun runStartAttempt(bundle: Bundle, generation: Long) {
+    synchronized(lifecycleLock) {
+      fun isCurrent(): Boolean {
+        val snapshot = lifecycleStore.snapshot()
+        return !lifecycleStore.isClosed && snapshot.generation == generation &&
+          snapshot.phase == LanguageServerPhase.STARTING && process == null
+      }
+
+      // Only this attempt can have published `process`: it was null at the check, and the lock has
+      // been held since.
+      fun stopIfSpawned() {
+        if (process != null) runCatching { stopLocked() }
+      }
+
+      var settled = false
+      try {
+        if (isCurrent()) {
+          val path = languageServerInstaller.install(shouldAbandon = { lifecycleStore.isClosed })
+          if (isCurrent()) spawnAndConnectLocked(bundle, generation, path)
+        }
+        settled = true
       } catch (_: LanguageServerStartAbortedException) {
-        // The lifecycle store is closed: the bundle is stopping, so nothing is started or reported.
+        // The bundle stopped between the check and the spawn: nothing was started or is reported.
+        settled = true
       } catch (_: LanguageServerNotInstalledException) {
-        // startLocked threw before it could hand its generation back; every lifecycle mutation runs
-        // under this lock, so the snapshot read here is that attempt's generation (design §15 I3).
-        lifecycleStore.markFailed(lifecycleStore.snapshot().generation, LanguageServerFailureKind.INSTALL_FAILED)
+        lifecycleStore.markFailed(generation, LanguageServerFailureKind.INSTALL_FAILED)
         // The installer has already logged the reason as one clear error (for example "not bundled
         // for linux/aarch64"); a second error with a stack trace would only bury it.
         logger.info("The Language Server stays stopped: it could not be installed.")
+        settled = true
       } catch (e: Exception) {
-        // Generation read as above. Every remaining failure precedes the initialize handshake.
-        lifecycleStore.markFailed(lifecycleStore.snapshot().generation, LanguageServerFailureKind.START_FAILED)
+        lifecycleStore.markFailed(generation, LanguageServerFailureKind.START_FAILED)
         // Class name only: the message of a spawn failure can carry the installation path.
         logger.error("Failed to start the Language Server (${rootCauseName(e)}).")
-        // Only a start that got as far as a process has anything to undo.
-        if (process != null) stopLocked()
+        stopIfSpawned()
+        settled = true
+      } finally {
+        // An Error is not caught above, but it must not leave STARTING or an untracked server behind.
+        if (!settled) {
+          runCatching { lifecycleStore.markFailed(generation, LanguageServerFailureKind.START_FAILED) }
+          stopIfSpawned()
+        }
       }
     }
   }
@@ -152,7 +211,9 @@ class GitLabLanguageServerProcessProvider(
       val failure = try {
         // Await the RAW initialize future (completed by the lsp4j listener thread), not the
         // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
-        val initialization = startLocked(bundle, StartOrigin.RESTART)
+        val generation = requireAttemptBegun(lifecycleStore.beginAttempt(StartOrigin.RESTART))
+        val path = languageServerInstaller.install(shouldAbandon = { lifecycleStore.isClosed })
+        val initialization = spawnAndConnectLocked(bundle, generation, path)
         val startedProcess = checkNotNull(process) { "Language server process is not tracked after start" }
         // Race the handshake against the process's own exit so a server that dies during
         // (or right after) initialization fails the restart quickly instead of timing out.
@@ -166,7 +227,8 @@ class GitLabLanguageServerProcessProvider(
         lifecycleStore.markRunning(lifecycleStore.snapshot().generation)
         return true
       } catch (_: LanguageServerStartAbortedException) {
-        // The lifecycle store is closed: the bundle is stopping. Nothing was started.
+        // The lifecycle store is closed: the bundle is stopping. Nothing was started, and an install
+        // that gave up its lock wait for that reason is not reported as a failure.
         return false
       } catch (e: Exception) {
         e
@@ -184,16 +246,26 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
-  private fun startLocked(bundle: Bundle, origin: StartOrigin): CompletableFuture<InitializeResult> {
-    val generation = requireAttemptBegun(lifecycleStore.beginAttempt(origin))
-
-    val languageServerInstallationPath = languageServerInstaller.install()
-      ?: throw LanguageServerNotInstalledException()
-
+  /**
+   * Spawns the server installed at [path] for the attempt [generation] and connects to it. Call
+   * only under [lifecycleLock], with the attempt begun. A null [path] (the install failed) throws
+   * [LanguageServerNotInstalledException], or [LanguageServerStartAbortedException] once the store
+   * is closed: the bundle is stopping, and an install that gave up its lock wait is not a failure.
+   */
+  private fun spawnAndConnectLocked(
+    bundle: Bundle,
+    generation: Long,
+    path: String?,
+  ): CompletableFuture<InitializeResult> {
+    if (path == null) {
+      val stopping = lifecycleStore.isClosed
+      throw if (stopping) LanguageServerStartAbortedException() else LanguageServerNotInstalledException()
+    }
     val startedProcess = try {
-      processFactory(createProcessBuilder(languageServerInstallationPath))
+      processFactory(createProcessBuilder(path, languageServerProxyManager, logger))
     } catch (e: Exception) {
-      // Logged by start()/restart(), by class name only: the message can carry the installation path.
+      // Logged by the start attempt or restart(), by class name only: the message can carry the
+      // installation path.
       throw LanguageServerSpawnException(e)
     }
     process = startedProcess
@@ -393,17 +465,6 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
-  private fun createProcessBuilder(path: String): ProcessBuilder {
-    val builder = ProcessBuilder(path, "--stdio")
-
-    if (BuildConfig.IS_EQUO_IDE) {
-      builder.redirectError(ProcessBuilder.Redirect.INHERIT)
-    }
-
-    builder.injectHttpProxyEnvironmentVariables()
-    return builder
-  }
-
   private fun Process.pullStdErrLogs() {
     // No path in the Error Log (AC-G1); the stderr lines go to the LS's own log file via languageServerLogger.
     logger.info("Language server logs saved to language_server.log in the plugin state directory.")
@@ -419,21 +480,31 @@ class GitLabLanguageServerProcessProvider(
       }
     }
   }
+}
 
-  private fun ProcessBuilder.injectHttpProxyEnvironmentVariables() {
-    val proxySettings = mapOf(
-      "http_proxy" to languageServerProxyManager.getHttpProxyUrl(),
-      "HTTPS_PROXY" to languageServerProxyManager.getHttpsProxyUrl(),
-      "NO_PROXY" to languageServerProxyManager.getBypassHosts()
-    )
+/**
+ * The command line of the language server at [path], with the proxy settings passed through as
+ * environment variables (top-level to keep the provider's function count).
+ */
+private fun createProcessBuilder(path: String, proxyManager: LanguageServerProxyManager, logger: ILog): ProcessBuilder {
+  val builder = ProcessBuilder(path, "--stdio")
 
-    proxySettings.forEach { (key, value) ->
-      if (value != null) {
-        logger.info("Passing through $key to the language server.")
-        environment()[key] = value
-      }
+  if (BuildConfig.IS_EQUO_IDE) {
+    builder.redirectError(ProcessBuilder.Redirect.INHERIT)
+  }
+
+  val proxySettings = mapOf(
+    "http_proxy" to proxyManager.getHttpProxyUrl(),
+    "HTTPS_PROXY" to proxyManager.getHttpsProxyUrl(),
+    "NO_PROXY" to proxyManager.getBypassHosts()
+  )
+  proxySettings.forEach { (key, value) ->
+    if (value != null) {
+      logger.info("Passing through $key to the language server.")
+      builder.environment()[key] = value
     }
   }
+  return builder
 }
 
 /**
@@ -480,7 +551,7 @@ internal class LanguageServerSpawnException(cause: Throwable) :
 internal class LanguageServerExitedDuringStartupException :
   IllegalStateException("Language server exited during startup")
 
-/** The lifecycle store is closed (the bundle is stopping): no attempt was begun. */
+/** The lifecycle store is closed (the bundle is stopping): no attempt was begun, or its install gave up. */
 private class LanguageServerStartAbortedException : IllegalStateException("Language server start aborted")
 
 /** [generation] as returned by `beginAttempt`; -1 means the store is closed and nothing may start. */
@@ -490,7 +561,7 @@ private fun requireAttemptBegun(generation: Long): Long {
 }
 
 /**
- * Maps a failure of `startLocked` / `restart()`'s wait to its kind by exception TYPE, never by
+ * Maps a failure of a start attempt / `restart()`'s wait to its kind by exception TYPE, never by
  * message (design §15 R2-I1). A timeout can arrive bare (restart's own wait) or wrapped in an
  * [ExecutionException] (the `orTimeout` of the initialize future won the race, R2-I4).
  */

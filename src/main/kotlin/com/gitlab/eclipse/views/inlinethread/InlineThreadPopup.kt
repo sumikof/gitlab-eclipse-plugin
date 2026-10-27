@@ -84,8 +84,9 @@ interface InlineThreadHost {
  */
 fun InlineThreadState.draftsToPreserve(inFlight: SubmitTicket?, keepInFlight: Boolean = false): List<String> {
   val drafts = unsentDrafts().toMutableList()
-  if (keepInFlight) return drafts
-  if (inFlight != null && busy && editGeneration(inFlight.threadId) == inFlight.generation) drafts.remove(inFlight.body)
+  val unedited = inFlight?.takeIf { busy && editGeneration(it.threadId) == it.generation }
+  if (!keepInFlight && unedited != null) drafts.remove(unedited.body)
+  autoDrafts().forEach { drafts.remove(it) }
   return drafts
 }
 
@@ -233,6 +234,20 @@ class InlineThreadPopup(
     val current = shell?.takeUnless { it.isDisposed } ?: return
     current.setActive()
     input?.takeIf { !it.isDisposed && it.isEnabled }?.setFocus()
+  }
+
+  /**
+   * Puts [text] in the selected thread as an automatic draft (see [InlineThreadState.onAutoEdit])
+   * and submits it like the button. False when the popup is closed or the draft is not submittable
+   * (busy, locked or blank); the draft stays in the input then.
+   */
+  fun submitDraft(text: String): Boolean {
+    if (!isOpen) return false
+    state.onAutoEdit(state.selectedThreadId, text)
+    refresh()
+    if (externalBusy || !state.canSubmit()) return false
+    submit()
+    return true
   }
 
   /**

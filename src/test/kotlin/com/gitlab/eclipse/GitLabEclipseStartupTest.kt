@@ -490,7 +490,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
         uiDispatch = { dispatched += it }
       }
 
-    it("attaches the listeners before the language server starts, so a startup failure reaches them") {
+    it("attaches the listeners before the start, so failures reach them, even those the start thread publishes") {
       val seen = mutableListOf<String>()
       every { processProvider.start(any()) } answers {
         seen += "provider.start"
@@ -544,7 +544,7 @@ class GitLabEclipseStartupTest : DescribeSpec({
       shouldNotThrowAny { startup.startLanguageServer(mockk<Bundle>()) }
     }
 
-    it("hands the Duo status steps to the UI thread asynchronously, after the language server started") {
+    it("hands the Duo status steps to the UI thread asynchronously, after the language server start was requested") {
       val seen = mutableListOf<String>()
       val dispatched = mutableListOf<Runnable>()
       every { processProvider.start(any()) } answers { seen += "provider.start" }

@@ -81,8 +81,68 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ExplainCode"
+                name="Explain Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.FixCode"
+                name="Fix Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.GenerateTests"
+                name="Generate Tests"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.RefactorCode"
+                name="Refactor Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
                 name="Toggle Code Suggestions"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
+                name="Toggle Code Suggestions for Language"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.chatStatus"
+                name="Duo Chat Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                name="Code Suggestions Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showPluginStatus"
+                name="Show Plugin Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showSettings"
+                name="Show Settings"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showDocumentation"
+                name="Show Documentation"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
@@ -167,6 +227,20 @@
         <command
                 id="com.gitlab.eclipse.commands.DisplayJobLog"
                 name="Display Log"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.SaveRawJobLog"
+                name="Save Raw Log"
+                description="Save the full, unformatted job log to a file"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                name="Scroll to Bottom"
+                description="Scroll the job log to its end"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
@@ -409,6 +483,20 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                name="Open in GitLab"
+                description="Open the selected GitLab sidebar item in the browser"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                name="Copy Link to Clipboard"
+                description="Copy the web link of the selected GitLab sidebar item"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.ResolveThread"
                 name="Resolve Thread"
                 categoryId="gitlab-eclipse-plugin">
@@ -506,6 +594,13 @@
         <command
                 id="gitlab-eclipse-plugin.commands.OpenQuickChat"
                 name="Open Quick Chat"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <!-- QCHAT-05: /fix for the error / warning annotations of the selection or the caret line. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.FixWithDuo"
+                name="Fix with GitLab Duo"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
@@ -659,6 +754,12 @@
         <super type="org.eclipse.core.resources.problemmarker"/>
         <super type="org.eclipse.core.resources.textmarker"/>
         <persistent value="false"/>
+    </extension>
+
+    <!-- QCHAT-05: no markerType — markerResolution matches the exact type only (markerResolution.exsd:63-67),
+         so hasResolutions narrows to problem markers with severity error / warning. -->
+    <extension point="org.eclipse.ui.ide.markerResolution">
+        <markerResolutionGenerator class="com.gitlab.eclipse.chat.quickchat.fix.ui.FixWithDuoMarkerResolutionGenerator"/>
     </extension>
 
     <extension point="org.eclipse.ui.views">
@@ -893,6 +994,27 @@
                 class="com.gitlab.eclipse.ci.actions.DisplayJobLogHandler"
         />
 
+        <!-- Job log viewer actions (CI-09): only while the job log editor is active. -->
+        <handler
+                commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                class="com.gitlab.eclipse.ci.joblog.SaveRawJobLogHandler">
+            <activeWhen>
+                <with variable="activeEditorId">
+                    <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                </with>
+            </activeWhen>
+        </handler>
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                class="com.gitlab.eclipse.ci.joblog.ScrollJobLogToBottomHandler">
+            <activeWhen>
+                <with variable="activeEditorId">
+                    <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                </with>
+            </activeWhen>
+        </handler>
+
         <handler
                 commandId="com.gitlab.eclipse.commands.DownloadArtifacts"
                 class="com.gitlab.eclipse.ci.actions.DownloadArtifactsHandler"
@@ -1090,6 +1212,16 @@
         />
 
         <handler
+                commandId="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                class="com.gitlab.eclipse.views.sidebar.OpenSidebarItemInGitLabHandler"
+        />
+
+        <handler
+                commandId="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                class="com.gitlab.eclipse.views.sidebar.CopySidebarItemLinkHandler"
+        />
+
+        <handler
                 commandId="com.gitlab.eclipse.commands.ResolveThread"
                 class="com.gitlab.eclipse.mergerequests.discussions.actions.ThreadResolveHandler"
         />
@@ -1173,6 +1305,17 @@
             </enabledWhen>
         </handler>
 
+        <!-- QCHAT-05: like Open Quick Chat, enabled while Duo Chat is (re-checked when it runs). -->
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.FixWithDuo"
+                class="com.gitlab.eclipse.chat.quickchat.fix.ui.FixWithDuoHandler">
+            <enabledWhen>
+                <with variable="duo_chat_enabled">
+                    <equals value="true"/>
+                </with>
+            </enabledWhen>
+        </handler>
+
         <handler
                 commandId="gitlab-eclipse-plugin.commands.CloseQuickChat"
                 class="com.gitlab.eclipse.chat.quickchat.ui.CloseQuickChatHandler"
@@ -1194,6 +1337,14 @@
                 namespace="com.gitlab.eclipse.node"
                 properties="canReplyToThread,canResolveThread,canUnresolveThread,canEditNote,canDeleteNote,canCommentOnMergeRequest"
                 class="com.gitlab.eclipse.views.sidebar.DiscussionActionPropertyTester">
+        </propertyTester>
+
+        <propertyTester
+                id="com.gitlab.eclipse.node.sidebarLinkPropertyTester"
+                type="com.gitlab.eclipse.views.sidebar.SidebarNode"
+                namespace="com.gitlab.eclipse.node"
+                properties="hasWebUrl"
+                class="com.gitlab.eclipse.views.sidebar.SidebarLinkPropertyTester">
         </propertyTester>
     </extension>
 
@@ -1233,6 +1384,52 @@
                                 <equals value="light"/>
                             </with>
                         </and>
+                    </visibleWhen>
+                </command>
+            </toolbar>
+        </menuContribution>
+        <!-- Job log viewer actions (CI-09): editor context menu, and the main toolbar while the
+             job log editor is active. No icons ship for them, so the toolbar shows the labels. -->
+        <menuContribution locationURI="popup:#TextEditorContext?after=additions">
+            <command
+                    commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                    label="Save Raw Log">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeEditorId">
+                        <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                    </with>
+                </visibleWhen>
+            </command>
+            <command
+                    commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                    label="Scroll to Bottom">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeEditorId">
+                        <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                    </with>
+                </visibleWhen>
+            </command>
+        </menuContribution>
+        <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
+            <toolbar id="com.gitlab.eclipse.toolbar.jobLog">
+                <command
+                        commandId="com.gitlab.eclipse.commands.SaveRawJobLog"
+                        label="Save Raw Log"
+                        mode="FORCE_TEXT">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="activeEditorId">
+                            <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command
+                        commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
+                        label="Scroll to Bottom"
+                        mode="FORCE_TEXT">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="activeEditorId">
+                            <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                        </with>
                     </visibleWhen>
                 </command>
             </toolbar>
@@ -1351,6 +1548,18 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenQuickChat"
                         label="Open Quick Chat"
                         tooltip="Ask GitLab Duo about this line in a popup"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.FixWithDuo"
+                        label="Fix with GitLab Duo"
+                        tooltip="Ask GitLab Duo to fix the errors and warnings of the selection or this line"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="duo_chat_enabled">
@@ -1682,6 +1891,29 @@
              validate the selection themselves (and notify on mismatch); the visibleWhen
              expressions here only keep irrelevant items out of the menu. -->
         <menuContribution locationURI="popup:com.gitlab.eclipse.views.GitLabSidebarView">
+            <command
+                    commandId="com.gitlab.eclipse.commands.OpenSidebarItemInGitLab"
+                    label="Open in GitLab">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <test property="com.gitlab.eclipse.node.hasWebUrl"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+            <command
+                    commandId="com.gitlab.eclipse.commands.CopySidebarItemLink"
+                    label="Copy Link to Clipboard">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeMenuSelection">
+                        <iterate ifEmpty="false">
+                            <test property="com.gitlab.eclipse.node.hasWebUrl"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+            </command>
+            <separator name="com.gitlab.eclipse.sidebar.links" visible="true"/>
             <command
                     commandId="com.gitlab.eclipse.commands.CheckoutMrBranch"
                     label="Checkout Merge Request Branch">
@@ -2165,6 +2397,62 @@
         </menuContribution>
     </extension>
 
+    <extension point="org.eclipse.ui.themes">
+        <themeElementCategory
+                id="com.gitlab.eclipse.sidebar.themeCategory"
+                label="GitLab Sidebar">
+            <description>Colors of the changed files in the GitLab sidebar.</description>
+        </themeElementCategory>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeAddedForeground"
+                label="Sidebar Added File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_GREEN">
+            <description>Foreground of an added file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeDeletedForeground"
+                label="Sidebar Deleted File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_RED">
+            <description>Foreground of a deleted file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeRenamedForeground"
+                label="Sidebar Renamed File"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_DARK_YELLOW">
+            <description>Foreground of a renamed file in the GitLab sidebar, used with a light theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeAddedForegroundDark"
+                label="Sidebar Added File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_GREEN">
+            <description>Foreground of an added file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeDeletedForegroundDark"
+                label="Sidebar Deleted File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_RED">
+            <description>Foreground of a deleted file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+        <colorDefinition
+                id="com.gitlab.eclipse.sidebar.changeRenamedForegroundDark"
+                label="Sidebar Renamed File (Dark Theme)"
+                categoryId="com.gitlab.eclipse.sidebar.themeCategory"
+                isEditable="true"
+                value="COLOR_YELLOW">
+            <description>Foreground of a renamed file in the GitLab sidebar, used with a dark theme.</description>
+        </colorDefinition>
+    </extension>
+
     <!-- No `extensions`/`filenames`: this editor is reached only through page.openEditor(input, id). -->
     <extension point="org.eclipse.ui.editors">
         <editor
@@ -2172,6 +2460,15 @@
                 class="com.gitlab.eclipse.views.webview.WebviewEditorPart"
                 name="GitLab Webview"
                 icon="icons/notification.png"
+        />
+        <!-- Job log viewer (CI-09). Opened only by Display Log through page.openEditor(input, id):
+             never the default editor, no file associations. -->
+        <editor
+                id="com.gitlab.eclipse.editors.JobLog"
+                class="com.gitlab.eclipse.ci.joblog.JobLogEditor"
+                contributorClass="org.eclipse.ui.editors.text.TextEditorActionContributor"
+                name="GitLab Job Log"
+                default="false"
         />
     </extension>
 

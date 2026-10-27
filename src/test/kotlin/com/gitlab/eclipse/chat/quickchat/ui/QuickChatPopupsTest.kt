@@ -28,6 +28,44 @@ class QuickChatPopupsTest : DescribeSpec({
     }
   }
 
+  describe("sendIfOpened") {
+    class FakePopup(val isOpen: Boolean, val accepts: Boolean = true) {
+      val sent = mutableListOf<String>()
+    }
+
+    fun send(popup: FakePopup?) = sendIfOpened(
+      popup,
+      isOpen = { it.isOpen },
+      submit = { p, message ->
+        p.sent += message
+        p.accepts
+      },
+      message = "/fix",
+    )
+
+    it("sends nothing when the popup failed to open") {
+      send(null) shouldBe false
+    }
+
+    it("sends nothing to a popup that is already closed") {
+      val popup = FakePopup(isOpen = false)
+      send(popup) shouldBe false
+      popup.sent shouldBe emptyList()
+    }
+
+    it("sends the message once to an open popup") {
+      val popup = FakePopup(isOpen = true)
+      send(popup) shouldBe true
+      popup.sent shouldBe listOf("/fix")
+    }
+
+    it("reports a submit the popup refused") {
+      val popup = FakePopup(isOpen = true, accepts = false)
+      send(popup) shouldBe false
+      popup.sent shouldBe listOf("/fix")
+    }
+  }
+
   describe("QuickChatUiTexts") {
     it("titles the popup with its line") {
       QuickChatUiTexts.popupTitle(12) shouldBe "GitLab Duo Quick Chat — line 12"

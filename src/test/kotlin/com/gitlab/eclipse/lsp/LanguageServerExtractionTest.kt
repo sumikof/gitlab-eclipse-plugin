@@ -31,6 +31,7 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -516,6 +517,63 @@ class LanguageServerExtractionTest : DescribeSpec({
 
       install.get(10, TimeUnit.SECONDS).shouldNotBeNull()
       verify(exactly = 1) { log.info(match<String> { it.startsWith(WAITING) }) }
+    }
+
+    // #124: a plugin stopping while another instance installs must not wait out the lock timeout.
+    it("abandons the wait for another instance's install lock once asked to, without an error") {
+      val log = recordingLog()
+      val channel = FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+      val abandon = AtomicBoolean(false)
+      try {
+        val install = CompletableFuture.supplyAsync {
+          extraction(timeoutMillis = 60_000).install(KEY, openArchive(), shouldAbandon = { abandon.get() })
+        }
+        eventually(5.seconds) { verify { log.info(match<String> { it.startsWith(WAITING) }) } }
+        val asked = System.nanoTime()
+        abandon.set(true)
+
+        install.get(5, TimeUnit.SECONDS).shouldBeNull()
+        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - asked) shouldBeLessThan 5_000
+      } finally {
+        held.release()
+        channel.close()
+      }
+      archiveOpens shouldBe 0
+      verify(exactly = 0) { log.error(any<String>()) }
+      verify(exactly = 1) { log.info(match<String> { it.startsWith("Stopped waiting") }) }
+    }
+
+    it("skips the sweep after an install when asked to abandon") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+
+      extraction().install(OTHER_KEY, openArchive(), shouldAbandon = { true }).shouldNotBeNull()
+
+      dataRoot.names() shouldContainExactlyInAnyOrder
+        listOf(installDirectoryName(KEY), installDirectoryName(OTHER_KEY), "lsp.lock")
+    }
+
+    it("skips the fast-path sweep when asked to abandon") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+      Files.createDirectories(dataRoot.resolve("lsp.tmp-crashed/bin"))
+
+      extraction().install(KEY, openArchive(), shouldAbandon = { true }).shouldNotBeNull()
+
+      dataRoot.names() shouldContainExactlyInAnyOrder listOf(installDirectoryName(KEY), "lsp.lock", "lsp.tmp-crashed")
+    }
+
+    it("does not consult the abandon check while the lock is free") {
+      var asked = 0
+      extraction().install(
+        KEY,
+        openArchive(),
+        shouldAbandon = {
+          asked++
+          false
+        },
+      ).shouldNotBeNull()
+      // One look before the sweep only; never inside an uncontended lock acquisition.
+      asked shouldBe 1
     }
 
     // R3: an interrupted wait is not a timeout, and the interrupt flag survives.

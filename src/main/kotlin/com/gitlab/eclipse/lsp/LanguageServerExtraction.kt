@@ -95,8 +95,10 @@ internal class LanguageServerExtraction(
   /**
    * Returns the installed binary for [key], extracting it from [openArchive] first when needed, or
    * null when the install fails (the reason is logged). The archive is opened only when extracting.
+   * Once [shouldAbandon] is true, it stops waiting for another instance's install lock (returning
+   * null) and skips the sweep; an extraction under way still completes.
    */
-  fun install(key: String, openArchive: () -> ZipFile): Path? {
+  fun install(key: String, openArchive: () -> ZipFile, shouldAbandon: () -> Boolean = { false }): Path? {
     val installDir = dataRoot.resolve(installDirectoryName(key))
 
     if (Files.isDirectory(installDir, LinkOption.NOFOLLOW_LINKS)) {
@@ -110,8 +112,7 @@ internal class LanguageServerExtraction(
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
         // Sweep only if nobody else is installing right now (and locking works); never wait here.
-        (tryExclusiveLock(dataRoot.resolve(LOCK_FILE), openLockFile) as? LockAttempt.Acquired)
-          ?.lock?.use { sweep(keep = installDir) }
+        withUncontendedLock(dataRoot.resolve(LOCK_FILE), openLockFile) { sweep(keep = installDir, shouldAbandon) }
         return binaryOf(installDir)
       }
       // Incomplete, or being swept by another instance: let go and install under the install lock.
@@ -120,7 +121,7 @@ internal class LanguageServerExtraction(
 
     Files.createDirectories(dataRoot)
     val lockFile = dataRoot.resolve(LOCK_FILE)
-    val attempt = pollExclusiveLock(lockFile, lockTimeout, lockPollInterval, openLockFile) {
+    val attempt = pollExclusiveLock(lockFile, lockTimeout, lockPollInterval, openLockFile, shouldAbandon) {
       logger.info("Waiting for another Eclipse instance to finish installing the GitLab Language Server in $dataRoot.")
     }
     val lock = when (attempt) {
@@ -142,6 +143,11 @@ internal class LanguageServerExtraction(
         logger.error("Interrupted while waiting for the language server install lock in $dataRoot.")
         return null
       }
+      LockAttempt.Abandoned -> {
+        // The plugin is stopping: not a failure, and the next start installs again.
+        logger.info("Stopped waiting for the language server install lock: the plugin is stopping.")
+        return null
+      }
     }
 
     return try {
@@ -150,7 +156,7 @@ internal class LanguageServerExtraction(
         if (InUseLocks.acquire(installDir) != InUseLocks.Outcome.HELD) {
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
-        if (lock != null) sweep(keep = installDir)
+        if (lock != null) sweep(keep = installDir, shouldAbandon)
         binaryOf(installDir)
       } else {
         null
@@ -212,8 +218,12 @@ internal class LanguageServerExtraction(
     return binary
   }
 
-  /** Cleans up next to [keep]. Call only while holding the install lock. */
-  private fun sweep(keep: Path) {
+  /**
+   * Cleans up next to [keep]. Call only while holding the install lock. Skipped once [shouldAbandon]
+   * is true (the plugin is stopping): the next start sweeps instead.
+   */
+  private fun sweep(keep: Path, shouldAbandon: () -> Boolean) {
+    if (shouldAbandon()) return
     val entries = try {
       Files.newDirectoryStream(dataRoot).use { it.toList() }
     } catch (e: IOException) {
@@ -382,6 +392,9 @@ private sealed interface LockAttempt {
 
   /** The wait was interrupted; the interrupt flag is set again. */
   data object Interrupted : LockAttempt
+
+  /** The caller stopped waiting (the plugin is stopping); no lock is held. */
+  data object Abandoned : LockAttempt
 }
 
 /**
@@ -417,15 +430,25 @@ private fun tryExclusiveLock(file: Path, open: (Path) -> FileChannel): LockAttem
 }
 
 /**
+ * Runs [action] while holding an exclusive lock on [file], only if the lock can be taken at once:
+ * nobody else is installing right now, and locking works. Never waits.
+ */
+private fun withUncontendedLock(file: Path, open: (Path) -> FileChannel, action: () -> Unit) {
+  (tryExclusiveLock(file, open) as? LockAttempt.Acquired)?.lock?.use { action() }
+}
+
+/**
  * Polls [tryExclusiveLock] until [timeout]. Returns at once when the lock is acquired or locking is
  * unavailable; [LockAttempt.Held] means timed out. [onWait] runs once, when the first attempt finds
- * the lock held.
+ * the lock held. While the lock is held, [shouldAbandon] is asked before each wait and ends the poll
+ * with [LockAttempt.Abandoned] once true.
  */
 private fun pollExclusiveLock(
   file: Path,
   timeout: Duration,
   interval: Duration,
   open: (Path) -> FileChannel,
+  shouldAbandon: () -> Boolean,
   onWait: () -> Unit,
 ): LockAttempt {
   val deadline = System.nanoTime() + timeout.inWholeNanoseconds
@@ -437,6 +460,7 @@ private fun pollExclusiveLock(
       waiting = true
       onWait()
     }
+    if (shouldAbandon()) return LockAttempt.Abandoned
     val remaining = deadline - System.nanoTime()
     if (remaining <= 0) return LockAttempt.Held
     try {

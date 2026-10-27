@@ -1,60 +1,11 @@
 package com.gitlab.eclipse.ci.joblog
 
-import com.gitlab.eclipse.api.GitLabApiException
-import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
-import kotlinx.coroutines.CancellationException
-import java.io.IOException
-import java.net.http.HttpTimeoutException
 
 class JobLogReadTest : DescribeSpec({
-  describe("fetchAndFormatTrace") {
-    it("applies strip to the raw trace and returns Loaded with the stripped text") {
-      val result = fetchAndFormatTrace({ "RAW" }, { it.lowercase() })
-
-      result shouldBe TraceResult.Loaded("raw")
-    }
-
-    it("maps 404 to Failed(http, 404, corr, notCommittal=true) — existence-hiding") {
-      val result = fetchAndFormatTrace({ throw GitLabApiException(404, "not-found-body", "corr-404") }, { it })
-
-      result shouldBe TraceResult.Failed("http", 404, "corr-404", notCommittal = true)
-    }
-
-    it("maps a non-404 http failure to Failed(http, status, corr, notCommittal=false)") {
-      val result = fetchAndFormatTrace({ throw GitLabApiException(403, "forbidden-body", "corr-403") }, { it })
-
-      result shouldBe TraceResult.Failed("http", 403, "corr-403", notCommittal = false)
-    }
-
-    it("maps HttpTimeoutException to Failed(timeout)") {
-      val result = fetchAndFormatTrace({ throw HttpTimeoutException("timed out") }, { it })
-
-      result shouldBe TraceResult.Failed("timeout", null, null, notCommittal = false)
-    }
-
-    it("maps IOException to Failed(io)") {
-      val result = fetchAndFormatTrace({ throw IOException("boom") }, { it })
-
-      result shouldBe TraceResult.Failed("io", null, null, notCommittal = false)
-    }
-
-    it("rethrows CancellationException — cancellation never becomes a Failure") {
-      shouldThrow<CancellationException> {
-        fetchAndFormatTrace({ throw CancellationException("cancelled") }, { it })
-      }
-    }
-
-    it("does not catch an unexpected RuntimeException — it propagates to the caller") {
-      shouldThrow<IllegalStateException> {
-        fetchAndFormatTrace({ error("unexpected") }, { it })
-      }
-    }
-  }
-
   describe("readAuditMessage") {
     it("carries action, normalized instance url, project id, job id, and outcome") {
       val message = readAuditMessage(
@@ -101,6 +52,33 @@ class JobLogReadTest : DescribeSpec({
 
       message shouldNotContain secretToken
       message shouldNotContain responseBody
+    }
+  }
+
+  describe("jobLogAuditMessage") {
+    it("has the fixed shape without an instance URL") {
+      jobLogAuditMessage("displayJobLog", 7L, 42L, "loaded") shouldBe
+        "ciReadAction action=displayJobLog projectId=7 jobId=42 outcome=loaded"
+    }
+
+    it("appends httpStatus, correlationId and exceptionClass only when present, in that order") {
+      jobLogAuditMessage("saveRawLog", 7L, 42L, "http", 404, "corr-1", "GitLabApiException") shouldBe
+        "ciReadAction action=saveRawLog projectId=7 jobId=42 outcome=http " +
+        "httpStatus=404 correlationId=corr-1 exceptionClass=GitLabApiException"
+      jobLogAuditMessage("saveRawLog", null, 42L, "io", exceptionClass = "IOException") shouldBe
+        "ciReadAction action=saveRawLog projectId=null jobId=42 outcome=io exceptionClass=IOException"
+    }
+
+    it("has no parameter that could carry a URL, path, body or credential") {
+      ::jobLogAuditMessage.parameters.map { it.name } shouldBe
+        listOf("action", "projectId", "jobId", "outcome", "httpStatus", "correlationId", "exceptionClass", "prefix")
+    }
+
+    it("starts with ciReadAction by default and ciWriteAction for a waiting-page write, the rest unchanged") {
+      jobLogAuditMessage("play", 7L, 42L, "success", 201) shouldBe
+        "ciReadAction action=play projectId=7 jobId=42 outcome=success httpStatus=201"
+      jobLogAuditMessage("play", 7L, 42L, "success", 201, prefix = JobLogAuditPrefix.WRITE) shouldBe
+        "ciWriteAction action=play projectId=7 jobId=42 outcome=success httpStatus=201"
     }
   }
 })

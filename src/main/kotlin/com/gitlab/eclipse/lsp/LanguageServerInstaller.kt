@@ -21,8 +21,12 @@ class LanguageServerInstaller internal constructor(
 
   private val logger = logger<LanguageServerInstaller>()
 
-  /** Returns the path of the language server binary to run, or null when it cannot be installed. */
-  fun install(): String? {
+  /**
+   * Returns the path of the language server binary to run, or null when it cannot be installed.
+   * Once [shouldAbandon] is true, it stops waiting for another instance's install lock and skips the
+   * cleanup, returning null; an extraction under way still completes.
+   */
+  fun install(shouldAbandon: () -> Boolean = { false }): String? {
     val (os, arch) = platform()
     val target = languageServerTarget(os, arch)
     if (target == null) {
@@ -35,7 +39,7 @@ class LanguageServerInstaller internal constructor(
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
         ?: return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
 
-      installFrom(bundle)?.toAbsolutePath()?.toString()
+      installFrom(bundle, shouldAbandon)?.toAbsolutePath()?.toString()
     } catch (e: Exception) {
       // Class name only (AC-G1): the message of an extraction failure carries the installation path.
       logger.error("Failed to install the language server (${e.javaClass.simpleName}).")
@@ -43,7 +47,7 @@ class LanguageServerInstaller internal constructor(
     }
   }
 
-  private fun installFrom(bundle: Bundle): Path? {
+  private fun installFrom(bundle: Bundle, shouldAbandon: () -> Boolean): Path? {
     val bundleFile = FileLocator.getBundleFileLocation(bundle).orElse(null) ?: run {
       logger.error("Cannot locate the file of ${bundle.symbolicName}.")
       return null
@@ -56,7 +60,7 @@ class LanguageServerInstaller internal constructor(
     }
 
     val key = installKey(bundle.version.toString(), bundle.headers?.get(LSP_VERSION_HEADER))
-    return LanguageServerExtraction(dataRoot.toPath()).install(key) { JarFile(bundleFile) }
+    return LanguageServerExtraction(dataRoot.toPath()).install(key, { JarFile(bundleFile) }, shouldAbandon)
   }
 
   private companion object {

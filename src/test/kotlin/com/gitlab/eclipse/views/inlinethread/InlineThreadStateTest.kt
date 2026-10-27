@@ -333,4 +333,49 @@ class InlineThreadStateTest : DescribeSpec({
       s.selectedThreadId shouldBe "a"
     }
   }
+
+  describe("automatic edits (onAutoEdit / autoDrafts)") {
+    it("remembers an automatic draft") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "/fix")
+      s.draft("a") shouldBe "/fix"
+      s.autoDrafts() shouldContainExactly listOf("/fix")
+    }
+
+    it("forgets it once the user edits to another text") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "/fix")
+      s.onEdit("a", "/fix please")
+      s.autoDrafts().shouldBeEmpty()
+    }
+
+    it("keeps it through an echo of the same text") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "/fix")
+      s.onEdit("a", "/fix")
+      s.autoDrafts() shouldContainExactly listOf("/fix")
+    }
+
+    it("judges by generation, not by text: restoring the original text by hand is a user edit") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "/fix")
+      s.onEdit("a", "/fix x")
+      s.onEdit("a", "/fix")
+      s.autoDrafts().shouldBeEmpty()
+    }
+
+    it("never reports a blank automatic draft") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "  ")
+      s.autoDrafts().shouldBeEmpty()
+    }
+
+    it("is empty after onSucceeded cleared the draft") {
+      val s = InlineThreadState(model("a"))
+      s.onAutoEdit("a", "/fix")
+      val ticket = s.beginSubmit().shouldNotBeNull()
+      s.onSucceeded(ticket)
+      s.autoDrafts().shouldBeEmpty()
+    }
+  }
 })

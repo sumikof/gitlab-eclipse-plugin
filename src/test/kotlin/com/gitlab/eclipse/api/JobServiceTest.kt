@@ -124,4 +124,21 @@ class JobServiceTest : DescribeSpec({
       }
     }
   }
+
+  describe("getJob") {
+    it("fetches the single-job path pinned to the given connection") {
+      val connection = ConnectionSnapshot(
+        instanceUrl = "https://pinned.example.com/",
+        token = "pinned-token",
+        authFingerprint = "0123456789abcdef",
+        configGeneration = 42L,
+      )
+      val job = GitLabJob(id = 7, status = "running", startedAt = "2024-01-01T00:00:00Z")
+      every {
+        apiClient.fetchObject("/projects/5/jobs/7", emptyMap(), GitLabJob::class.java, connection)
+      } returns job
+
+      service.getJob(5L, 7L, connection) shouldBe job
+    }
+  }
 })
