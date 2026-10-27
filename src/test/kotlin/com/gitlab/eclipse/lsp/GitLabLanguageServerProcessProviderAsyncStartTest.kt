@@ -592,5 +592,23 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
       check() shouldBe true
       provider.stop()
     }
+
+    it("a restart whose install is abandoned as the bundle stops returns false without reporting a failure (S-1)") {
+      val log = mockk<ILog>(relaxUnitFun = true)
+      every { Platform.getLog(any<Bundle>()) } returns log
+      val store = LanguageServerLifecycleStore()
+      // The bundle stops during the install, which then gives up its lock wait and returns null.
+      every { installer.install(any()) } answers {
+        store.close()
+        null
+      }
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restart(bundle) shouldBe false
+
+      spawnedProcesses shouldHaveSize 0
+      verify(exactly = 0) { log.error(any<String>()) }
+      verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
+    }
   }
 })

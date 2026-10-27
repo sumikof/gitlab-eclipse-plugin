@@ -152,6 +152,9 @@ class GitLabLanguageServerProcessProvider(
           if (isCurrent()) spawnAndConnectLocked(bundle, generation, path)
         }
         settled = true
+      } catch (_: LanguageServerStartAbortedException) {
+        // The bundle stopped between the check and the spawn: nothing was started or is reported.
+        settled = true
       } catch (_: LanguageServerNotInstalledException) {
         lifecycleStore.markFailed(generation, LanguageServerFailureKind.INSTALL_FAILED)
         // The installer has already logged the reason as one clear error (for example "not bundled
@@ -224,7 +227,8 @@ class GitLabLanguageServerProcessProvider(
         lifecycleStore.markRunning(lifecycleStore.snapshot().generation)
         return true
       } catch (_: LanguageServerStartAbortedException) {
-        // The lifecycle store is closed: the bundle is stopping. Nothing was started.
+        // The lifecycle store is closed: the bundle is stopping. Nothing was started, and an install
+        // that gave up its lock wait for that reason is not reported as a failure.
         return false
       } catch (e: Exception) {
         e
@@ -245,14 +249,18 @@ class GitLabLanguageServerProcessProvider(
   /**
    * Spawns the server installed at [path] for the attempt [generation] and connects to it. Call
    * only under [lifecycleLock], with the attempt begun. A null [path] (the install failed) throws
-   * [LanguageServerNotInstalledException].
+   * [LanguageServerNotInstalledException], or [LanguageServerStartAbortedException] once the store
+   * is closed: the bundle is stopping, and an install that gave up its lock wait is not a failure.
    */
   private fun spawnAndConnectLocked(
     bundle: Bundle,
     generation: Long,
     path: String?,
   ): CompletableFuture<InitializeResult> {
-    if (path == null) throw LanguageServerNotInstalledException()
+    if (path == null) {
+      val stopping = lifecycleStore.isClosed
+      throw if (stopping) LanguageServerStartAbortedException() else LanguageServerNotInstalledException()
+    }
     val startedProcess = try {
       processFactory(createProcessBuilder(path, languageServerProxyManager, logger))
     } catch (e: Exception) {
@@ -543,7 +551,7 @@ internal class LanguageServerSpawnException(cause: Throwable) :
 internal class LanguageServerExitedDuringStartupException :
   IllegalStateException("Language server exited during startup")
 
-/** The lifecycle store is closed (the bundle is stopping): no attempt was begun. */
+/** The lifecycle store is closed (the bundle is stopping): no attempt was begun, or its install gave up. */
 private class LanguageServerStartAbortedException : IllegalStateException("Language server start aborted")
 
 /** [generation] as returned by `beginAttempt`; -1 means the store is closed and nothing may start. */
