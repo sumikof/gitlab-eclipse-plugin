@@ -17,12 +17,14 @@ class FixWithDuoMarkerResolutionTest : DescribeSpec({
 
   fun marker(
     exists: Boolean = true,
-    severity: Int = IMarker.SEVERITY_ERROR,
+    // null: the marker has no severity attribute, so getAttribute answers the caller's default.
+    severity: Int? = IMarker.SEVERITY_ERROR,
     onFile: Boolean = true,
+    isProblem: Boolean = true,
   ): IMarker = mockk {
     every { exists() } returns exists
-    every { isSubtypeOf(IMarker.PROBLEM) } returns true
-    every { getAttribute(IMarker.SEVERITY, IMarker.SEVERITY_INFO) } returns severity
+    every { isSubtypeOf(IMarker.PROBLEM) } returns isProblem
+    every { getAttribute(IMarker.SEVERITY, any<Int>()) } answers { severity ?: secondArg() }
     every { resource } returns if (onFile) mockk<IFile>() else mockk<IProject>()
   }
 
@@ -48,6 +50,15 @@ class FixWithDuoMarkerResolutionTest : DescribeSpec({
 
     it("offers nothing for a marker that is not on a file") {
       generator().hasResolutions(marker(onFile = false)) shouldBe false
+    }
+
+    it("offers nothing for a marker without a severity: it reads as info") {
+      generator().hasResolutions(marker(severity = null)) shouldBe false
+    }
+
+    it("offers nothing for a marker that is not a problem, such as a task or a bookmark") {
+      generator().hasResolutions(marker(isProblem = false)) shouldBe false
+      generator().getResolutions(marker(isProblem = false)).toList().shouldBeEmpty()
     }
 
     it("offers nothing while Duo Chat is disabled, without reading the marker") {
