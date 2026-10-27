@@ -749,6 +749,12 @@
         <persistent value="false"/>
     </extension>
 
+    <!-- QCHAT-05: no markerType — markerResolution matches the exact type only (markerResolution.exsd:63-67),
+         so hasResolutions narrows to problem markers with severity error / warning. -->
+    <extension point="org.eclipse.ui.ide.markerResolution">
+        <markerResolutionGenerator class="com.gitlab.eclipse.chat.quickchat.fix.ui.FixWithDuoMarkerResolutionGenerator"/>
+    </extension>
+
     <extension point="org.eclipse.ui.views">
         <category name="GitLab" id="gitlab-eclipse-plugin"/>
 

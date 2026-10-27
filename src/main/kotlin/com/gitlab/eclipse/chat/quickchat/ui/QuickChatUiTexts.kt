@@ -19,6 +19,9 @@ object QuickChatUiTexts {
   /** Insert failed; names neither the code nor the file (design §9.6 step 6, NFR-4). */
   const val INSERT_FAILED = "Could not insert the code."
 
+  /** Fix with GitLab Duo opened the marker in an editor that is not a text editor (QCHAT-05). */
+  const val FIX_NOT_TEXT_EDITOR = "Fix with GitLab Duo works only in text editors."
+
   /** I4: the popup's title bar. */
   fun popupTitle(oneBasedLine: Int): String = "${QuickChatTexts.ITEM_TITLE} — line $oneBasedLine"
 }
