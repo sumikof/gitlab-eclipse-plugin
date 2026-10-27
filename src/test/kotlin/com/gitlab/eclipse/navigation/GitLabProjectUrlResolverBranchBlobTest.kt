@@ -199,6 +199,21 @@ class GitLabProjectUrlResolverBranchBlobTest : DescribeSpec({
       resolver().resolveBranchBlobUrl(loose, null, null) shouldBe notInRepo
     }
 
+    it("warns NOT_IN_REPO for a file next to a git dir whose core.worktree points elsewhere") {
+      // findGitDir walks up from the file, but JGit takes the work tree from core.worktree, so the
+      // file lies outside it and relativizes to "../...".
+      val elsewhere = Files.createTempDirectory("nav03-worktree").toFile()
+      createdTempPaths += elsewhere
+      val (_, file) = tempRepo(fileName = "a.txt") { git ->
+        git.repository.config.apply {
+          setString("core", null, "worktree", elsewhere.absolutePath)
+          save()
+        }
+      }
+
+      resolver().resolveBranchBlobUrl(file, null, null) shouldBe notInRepo
+    }
+
     it("warns NOT_IN_REPO instead of throwing for a bare repository") {
       val dir = Files.createTempDirectory("nav03-bare").toFile()
       createdTempPaths += dir
