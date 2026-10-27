@@ -42,15 +42,11 @@ import org.koin.dsl.module
 import org.osgi.framework.Bundle
 import org.osgi.framework.Version
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
@@ -58,161 +54,6 @@ import kotlin.io.path.createTempDirectory
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import java.time.Duration as JavaDuration
-
-private enum class InitializeReply { SUCCESS, FAILURE, SUCCESS_THEN_EXIT }
-
-/**
- * Stands in for the real language-server process so the lifecycle state machine can be
- * exercised headlessly and deterministically. Speaks just enough of the LSP wire protocol
- * to answer the initialize request (success or failure per [initializeReply]); requests
- * without an id (notifications) are ignored. Unlike a real [Process], [destroy] does NOT
- * complete [onExit]; tests deliver the exit notification explicitly via [completeExit],
- * which is exactly the asynchronous gap the provider's identity guard must survive.
- */
-private class FakeLanguageServerProcess(
-  private val initializeReply: InitializeReply = InitializeReply.SUCCESS,
-  /**
-   * Held shut until [releaseInitializeReply], so a test can place other work — another start,
-   * an assertion — between the initialize request and the answer to it. Open by default.
-   */
-  private val initializeGate: CountDownLatch = CountDownLatch(0),
-) : Process() {
-  private val exit = CompletableFuture<Process>()
-
-  private val requestSink = PipedInputStream(PIPE_BUFFER_BYTES)
-  private val stdin = PipedOutputStream(requestSink)
-  private val stdout = PipedInputStream(PIPE_BUFFER_BYTES)
-  private val responseSink = PipedOutputStream(stdout)
-
-  // Connected-but-never-written pipe: the stderr pull loop blocks instead of spinning,
-  // and shutdownNow() interrupts it (InterruptedIOException ends the task).
-  private val stderr = PipedInputStream(PipedOutputStream())
-
-  var destroyed = false
-    private set
-
-  /**
-   * Every framed message the provider sent, in arrival order, so a test can assert on what
-   * actually went over the wire rather than on the params object the provider built.
-   */
-  val receivedMessages: List<String> get() = messages
-  private val messages = CopyOnWriteArrayList<String>()
-
-  @Suppress("unused")
-  private val responder = Thread {
-    try {
-      while (true) {
-        val body = readFramedMessage() ?: break
-        messages += body
-        // Notifications (initialized, didChangeConfiguration, ...) have no id: skip them.
-        val id = REQUEST_ID.find(body)?.groupValues?.get(1)
-        if (id != null) {
-          initializeGate.await()
-          if (initializeReply == InitializeReply.SUCCESS_THEN_EXIT) {
-            // Deterministic respond-then-die: exit is observably done BEFORE the reply is
-            // written, so whichever race arm restart sees first (exit or reply), the
-            // process is already provably dead and restart must report failure. Completing
-            // from a helper thread keeps the responder free: exit dependents include the
-            // provider's lock-taking guard, which would otherwise capture this thread and
-            // stall the reply until restart times out.
-            Thread { completeExit() }.apply {
-              isDaemon = true
-              name = "fake-language-server-exit"
-              start()
-            }
-            while (!exit.isDone) {
-              Thread.yield()
-            }
-          }
-          val reply = when (initializeReply) {
-            InitializeReply.SUCCESS, InitializeReply.SUCCESS_THEN_EXIT ->
-              """{"jsonrpc":"2.0","id":$id,"result":{"capabilities":{}}}"""
-            InitializeReply.FAILURE ->
-              """{"jsonrpc":"2.0","id":$id,"error":{"code":-32603,"message":"initialize rejected"}}"""
-          }
-          val bytes = reply.toByteArray(Charsets.UTF_8)
-          responseSink.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
-          responseSink.write(bytes)
-          responseSink.flush()
-        }
-      }
-    } catch (_: IOException) {
-      // Pipes closed by destroy(): the fake server is gone.
-    } catch (_: InterruptedException) {
-      // Declared by the gate's await(). Nothing in the suite interrupts this daemon thread; the
-      // catch is here so that ending the responder is the answer if anything ever does.
-    }
-  }.apply {
-    isDaemon = true
-    name = "fake-language-server"
-    start()
-  }
-
-  private fun readFramedMessage(): String? {
-    var contentLength = -1
-    while (true) {
-      val line = readHeaderLine() ?: return null
-      if (line.isEmpty()) break
-      CONTENT_LENGTH.find(line)?.let { contentLength = it.groupValues[1].toInt() }
-    }
-    if (contentLength < 0) return null
-    val body = ByteArray(contentLength)
-    var read = 0
-    while (read < contentLength) {
-      val n = requestSink.read(body, read, contentLength - read)
-      if (n < 0) return null
-      read += n
-    }
-    return String(body, Charsets.UTF_8)
-  }
-
-  private fun readHeaderLine(): String? {
-    val line = StringBuilder()
-    while (true) {
-      val b = requestSink.read()
-      if (b < 0) return null
-      if (b == '\n'.code) break
-      if (b != '\r'.code) line.append(b.toChar())
-    }
-    return line.toString()
-  }
-
-  fun completeExit() {
-    exit.complete(this)
-  }
-
-  fun releaseInitializeReply() {
-    initializeGate.countDown()
-  }
-
-  override fun getOutputStream(): OutputStream = stdin
-  override fun getInputStream(): InputStream = stdout
-  override fun getErrorStream(): InputStream = stderr
-  override fun waitFor(): Int {
-    exit.get()
-    return 0
-  }
-
-  override fun exitValue(): Int = if (exit.isDone) 0 else throw IllegalThreadStateException()
-  override fun destroy() {
-    destroyed = true
-    runCatching { stdin.close() }
-    runCatching { requestSink.close() }
-    runCatching { responseSink.close() }
-    runCatching { stdout.close() }
-  }
-
-  override fun onExit(): CompletableFuture<Process> = exit
-  override fun pid(): Long = 4242L
-
-  companion object {
-    private const val PIPE_BUFFER_BYTES = 1 shl 16
-
-    // Echoes the id verbatim (quoted or bare) so both string and numeric lsp4j ids round-trip.
-    private val REQUEST_ID = Regex("\"id\"\\s*:\\s*(\"?[0-9]+\"?)")
-    private val CONTENT_LENGTH = Regex("Content-Length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
-  }
-}
 
 class GitLabLanguageServerProcessProviderTest : DescribeSpec({
   extensions(LoggingKotestExtension)
@@ -247,6 +88,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       FakeLanguageServerProcess(nextInitializeReply).also { fake -> spawnedProcesses += fake }
     },
     wrapper: GitLabLanguageServerWrapper = languageServerWrapper,
+    initializeTimeout: JavaDuration = JavaDuration.ofSeconds(30),
   ) = GitLabLanguageServerProcessProvider(
     wrapper,
     configurationService,
@@ -255,6 +97,8 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     webviewService,
     installer,
     factory,
+    initializeTimeout = initializeTimeout,
+    startExecutor = Executor { it.run() },
   )
 
   beforeSpec {
@@ -280,7 +124,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     GitLabLanguageServerWrapper().unregisterLanguageServer()
     nextInitializeReply = InitializeReply.SUCCESS
     configurationService = mockk(relaxUnitFun = true)
-    every { installer.install() } returns "/fake/language-server"
+    every { installer.install(any()) } returns "/fake/language-server"
     every { workspaceFolders } returns eclipseProjects
     // Not covered by relaxUnitFun: the identity-aware revocation returns whether it cleared.
     every { languageServerWrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
@@ -363,14 +207,14 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
       val provider = newProvider()
       provider.start(bundle)
 
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       provider.restart(bundle) shouldBe false
 
       spawnedProcesses[0].destroyed shouldBe true
       provider.isRunning shouldBe false
       verify { languageServerWrapper.unregisterLanguageServer() }
 
-      every { installer.install() } returns "/fake/language-server"
+      every { installer.install(any()) } returns "/fake/language-server"
       provider.restart(bundle) shouldBe true
       spawnedProcesses.size shouldBe 2
       provider.isRunning shouldBe true
@@ -575,7 +419,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     }
 
     // Design §21 A26 (3): a superseded server's late failure must not disturb its successor.
-    it("keeps the newer snapshot when a superseded server's initialization fails late") {
+    it("keeps the newer snapshot when a server superseded by a restart fails its initialization late") {
       // The rejection is logged by the branch under test, so waiting for that line proves the branch
       // ran without waiting on the revocation this test is about — a wait on the revocation would
       // also fail when the revocation is simply deleted.
@@ -588,26 +432,28 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
         log.info(match<String> { it.startsWith("Ignoring initialization failure from a superseded Language Server") })
       } answers { rejectionLogged.countDown() }
       val wrapper = GitLabLanguageServerWrapper()
-      val superseded = FakeLanguageServerProcess(InitializeReply.FAILURE, CountDownLatch(1))
+      val superseded = FakeLanguageServerProcess(InitializeReply.SUCCESS, CountDownLatch(1))
       val pending = mutableListOf(superseded, FakeLanguageServerProcess(InitializeReply.SUCCESS))
       val provider = newProvider(
         factory = { pending.removeFirst().also { spawned -> spawnedProcesses += spawned } },
         wrapper = wrapper,
+        initializeTimeout = JavaDuration.ofMillis(800),
       )
 
-      // The first server's initialize is still unanswered when the second one takes over. This is
-      // the one ordering that really races the lock: the initialize callback runs outside it.
+      // The first server's initialize is still unanswered when the restart's server takes over; it
+      // fails late, by its own timeout. A second start() no longer replaces a pending one (#124,
+      // L-D7), so the restart is what supersedes it. The initialize callback runs outside the lock.
       provider.start(bundle)
-      provider.start(bundle)
+      provider.restart(bundle) shouldBe true
       val newest = wrapper.currentSnapshot.shouldNotBeNull()
 
-      superseded.releaseInitializeReply()
       rejectionLogged.await(5, TimeUnit.SECONDS) shouldBe true
 
       // The revocation runs just before the line above; the window stays open long enough for an
       // unconditional one to be seen clearing the successor.
       continually(500.milliseconds) { wrapper.currentSnapshot shouldBe newest }
       provider.stop()
+      superseded.releaseInitializeReply()
     }
   }
 
@@ -685,7 +531,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     }
 
     it("logs and stays stopped without throwing when the language server cannot be installed") {
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val provider = newProvider()
 
       shouldNotThrowAny { provider.start(bundle) }
@@ -699,7 +545,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     it("adds no error of its own when there is no installation") {
       val log = mockk<ILog>(relaxUnitFun = true)
       every { Platform.getLog(any<Bundle>()) } returns log
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val provider = newProvider()
 
       provider.start(bundle)
@@ -710,11 +556,11 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
     }
 
     it("can still be restarted after a start that failed to install") {
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val provider = newProvider()
       provider.start(bundle)
 
-      every { installer.install() } returns "/fake/language-server"
+      every { installer.install(any()) } returns "/fake/language-server"
       provider.restart(bundle) shouldBe true
       provider.isRunning shouldBe true
 
@@ -726,7 +572,7 @@ class GitLabLanguageServerProcessProviderTest : DescribeSpec({
 /**
  * LS-02 (design §5.3): how the provider drives the lifecycle store on every start, stop, restart,
  * initialize and exit path. A class of its own (same setup as the suite above) so that neither
- * spec outgrows detekt's LargeClass limit; in this file because the fake process is private to it.
+ * spec outgrows detekt's LargeClass limit. The fake process lives in FakeLanguageServerProcess.kt.
  */
 class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
   extensions(LoggingKotestExtension)
@@ -759,6 +605,7 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
     factory,
     store,
     initializeTimeout,
+    startExecutor = Executor { it.run() },
   )
 
   beforeSpec {
@@ -776,7 +623,7 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
   beforeEach {
     DiagnosticGenerationRegistry.resetForTest()
     nextInitializeReply = InitializeReply.SUCCESS
-    every { installer.install() } returns "/fake/language-server"
+    every { installer.install(any()) } returns "/fake/language-server"
     every { workspaceFolders } returns listOf(WorkspaceFolder("file:///w/alpha", "alpha"))
     every { languageServerWrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
     every { proxyManager.getHttpProxyUrl() } returns null
@@ -847,7 +694,7 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
 
   describe("lifecycle state on start (LS-02)") {
     it("records INSTALL_FAILED when there is no installation") {
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val store = LanguageServerLifecycleStore()
       val provider = newProvider(store = store)
 
@@ -1081,7 +928,7 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
     }
 
     it("returns false with INSTALL_FAILED when there is no installation") {
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val store = LanguageServerLifecycleStore()
       val provider = newProvider(store = store)
 
@@ -1195,7 +1042,7 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
 
     it("clears FAILED with STOPPED when stopped after a failure") {
       val store = LanguageServerLifecycleStore()
-      every { installer.install() } returns null
+      every { installer.install(any()) } returns null
       val provider = newProvider(store = store)
       provider.start(bundle)
       store.snapshot().phase shouldBe LanguageServerPhase.FAILED
