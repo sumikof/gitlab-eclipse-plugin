@@ -341,6 +341,12 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.CopyLinkToActiveFileOnBranch"
+                name="Copy GitLab Link to Active File on Branch"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.OpenInGitLab"
                 name="Open Project in GitLab"
                 categoryId="gitlab-eclipse-plugin">
@@ -1096,6 +1102,11 @@
         />
 
         <handler
+                commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFileOnBranch"
+                class="com.gitlab.eclipse.handlers.CopyLinkToActiveFileOnBranchHandler"
+        />
+
+        <handler
                 commandId="gitlab-eclipse-plugin.commands.OpenInGitLab"
                 class="com.gitlab.eclipse.handlers.OpenInGitLabHandler"
         />
@@ -1586,6 +1597,11 @@
                 <command
                         commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFile"
                         label="Copy Link to Active File"
+                />
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.CopyLinkToActiveFileOnBranch"
+                        label="Copy Link to Active File on Branch"
                 />
 
                 <separator name="gitlab-eclipse-plugin.navigation.sep1" visible="true"/>
