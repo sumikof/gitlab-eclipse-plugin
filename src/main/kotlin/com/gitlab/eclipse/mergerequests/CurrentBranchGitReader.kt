@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.mergerequests
 
 import com.gitlab.eclipse.utils.logger
+import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import java.io.File
 
@@ -39,25 +40,28 @@ class CurrentBranchGitReader {
    */
   fun read(gitDir: File): CurrentBranch =
     try {
-      FileRepositoryBuilder().findGitDir(gitDir).setMustExist(true).build().use { repo ->
-        val name = repo.branch?.takeIf { repo.fullBranch == "$REFS_HEADS_PREFIX$it" }
-        val trackingBranch = name
-          ?.let { repo.config.getString("branch", it, "merge") }
-          ?.removePrefix(REFS_HEADS_PREFIX)
-        val upstreamRemote = name?.let { repo.config.getString("branch", it, "remote") }
-        val headSha = repo.resolve("HEAD")?.name
-        CurrentBranch(
-          name = name,
-          trackingBranch = trackingBranch,
-          hasUpstream = trackingBranch != null && upstreamRemote != null,
-          upstreamRemote = upstreamRemote,
-          headSha = headSha,
-        )
-      }
+      FileRepositoryBuilder().findGitDir(gitDir).setMustExist(true).build().use { readFrom(it) }
     } catch (e: Exception) {
       // Class name only (CI-04 design §5): the auto refresh reads HEAD often, and neither the
       // repository path nor the exception message (which usually repeats the path) belongs in the log.
       logger.warn("Could not read current branch state: ${e.javaClass.name}")
       CurrentBranch(null, null, false, null, null)
     }
+
+  /** Reads [CurrentBranch] from an already-open [repo]. Throws on JGit failures; [read] maps those to all-null. */
+  internal fun readFrom(repo: Repository): CurrentBranch {
+    val name = repo.branch?.takeIf { repo.fullBranch == "$REFS_HEADS_PREFIX$it" }
+    val trackingBranch = name
+      ?.let { repo.config.getString("branch", it, "merge") }
+      ?.removePrefix(REFS_HEADS_PREFIX)
+    val upstreamRemote = name?.let { repo.config.getString("branch", it, "remote") }
+    val headSha = repo.resolve("HEAD")?.name
+    return CurrentBranch(
+      name = name,
+      trackingBranch = trackingBranch,
+      hasUpstream = trackingBranch != null && upstreamRemote != null,
+      upstreamRemote = upstreamRemote,
+      headSha = headSha,
+    )
+  }
 }
