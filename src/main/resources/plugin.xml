@@ -81,8 +81,68 @@
         </command>
 
         <command
+                id="gitlab-eclipse-plugin.commands.ExplainCode"
+                name="Explain Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.FixCode"
+                name="Fix Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.GenerateTests"
+                name="Generate Tests"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.RefactorCode"
+                name="Refactor Code"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="gitlab-eclipse-plugin.commands.toggleCodeSuggestions"
                 name="Toggle Code Suggestions"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.toggleCodeSuggestionsForLanguage"
+                name="Toggle Code Suggestions for Language"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.chatStatus"
+                name="Duo Chat Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.codeSuggestionsStatus"
+                name="Code Suggestions Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showPluginStatus"
+                name="Show Plugin Status"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showSettings"
+                name="Show Settings"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
+                id="gitlab-eclipse-plugin.commands.showDocumentation"
+                name="Show Documentation"
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
