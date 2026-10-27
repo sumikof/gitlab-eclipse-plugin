@@ -47,6 +47,7 @@ class FixRangeTest : DescribeSpec({
       Case("zero-length target widens to its line without CRLF", "ab\r\ncd\r\nef", null, TextSpan(5, 0), TextSpan(4, 2)),
       Case("last line without delimiter is not truncated", "ab\ncd", null, TextSpan(4, 0), TextSpan(3, 2)),
       Case("empty line yields an empty span", "ab\n\ncd", null, TextSpan(3, 0), TextSpan(3, 0)),
+      Case("non-empty selection wins over a zero-length target", "ab\ncd", TextSpan(0, 2), TextSpan(4, 0), TextSpan(0, 2)),
       Case("null selection with a sized target returns the target", "", null, TextSpan(20, 4), TextSpan(20, 4)),
     ) { c ->
       fixRange(c.selection, c.target, lineSpans(c.text)) shouldBe c.expected
