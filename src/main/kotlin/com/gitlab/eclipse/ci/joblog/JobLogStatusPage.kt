@@ -327,7 +327,7 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
             PageButton.PLAY -> service.play(connection, key.projectId, key.jobId)
             PageButton.CANCEL -> service.cancel(connection, key.projectId, key.jobId)
             // Not reached: Retry went through JobLogRetry above.
-            PageButton.RETRY -> service.retry(connection, key.projectId, key.jobId)
+            PageButton.RETRY -> error("Retry goes through JobLogRetry")
           }
         }
       },

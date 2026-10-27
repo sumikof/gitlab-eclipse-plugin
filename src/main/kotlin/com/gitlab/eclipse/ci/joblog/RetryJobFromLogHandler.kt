@@ -2,7 +2,6 @@ package com.gitlab.eclipse.ci.joblog
 
 import org.eclipse.core.commands.AbstractHandler
 import org.eclipse.core.commands.ExecutionEvent
-import org.eclipse.core.commands.HandlerEvent
 import org.eclipse.core.expressions.IEvaluationContext
 import org.eclipse.swt.widgets.Display
 import org.eclipse.ui.IEditorPart
@@ -19,8 +18,8 @@ internal fun jobLogRetryEnabled(input: JobLogEditorInput?, sessionOf: (JobLogKey
  * Code, whose log viewer has no Retry.
  *
  * Enabled only while the active job log's session can retry. The handler decides that itself, in
- * [setEnabled] (the active editor of the evaluation context), and announces a change of it when a
- * session's Retry state changes ([JobLogRetryEnablement]): a job finishing fires nothing the
+ * [setEnabled] (the active editor of the evaluation context), and recomputes it, which announces a
+ * change, when a session's Retry state changes ([JobLogRetryEnablement]): a job finishing fires nothing the
  * handler service would re-evaluate on. Asked off the UI thread, it keeps its last answer and
  * touches nothing. Pressing re-checks, so a stale enablement never retries twice.
  */
@@ -43,8 +42,8 @@ class RetryJobFromLogHandler internal constructor(
 
   /** Runs on the UI thread, where sessions change their Retry state. */
   private val enablementChanged: () -> Unit = {
+    // setBaseEnabled fires the handler-changed event itself when the value changes.
     setBaseEnabled(shownKey?.let(sessionOf)?.canRetry == true)
-    fireHandlerChanged(HandlerEvent(this, true, false))
   }
 
   init {
