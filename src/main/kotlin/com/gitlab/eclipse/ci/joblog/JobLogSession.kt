@@ -255,8 +255,12 @@ internal class JobLogSession(
 
   private fun seeStatus(status: String?) {
     if (status == lastStatus) return
+    val couldRetry = canRetry
     lastStatus = status
     env.retryStateChanged()
+    // The waiting page's Retry button follows the status even when the policy keeps the page up;
+    // only a change of Retry is sent, so an ordinary status change costs the page nothing.
+    if (canRetry != couldRetry && content.page is JobLogPage.Waiting) views.showPage(content.page)
   }
 
   // The page is sent again although it did not change: setPage skips an equal page, and a stopped
@@ -293,6 +297,7 @@ internal class JobLogSession(
     val event = when (outcome) {
       is PollOutcome.Unpinned -> PollEvent.Failed(PollFailureKind.UNPINNED, outcome.elapsedMs)
       is PollOutcome.Status -> {
+        // Before or after the policy's step makes no difference: seeStatus re-sends a waiting page itself.
         (outcome.result as? StatusStepResult.Seen)?.let { seeStatus(it.status) }
         statusEvent(outcome.result, outcome.elapsedMs, onFailure)
       }

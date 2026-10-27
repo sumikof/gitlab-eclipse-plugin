@@ -99,6 +99,24 @@ class JobLogSessionRetryStateTest : DescribeSpec({
     view.calls shouldContainExactly listOf("page:Waiting(canceled)", "page:Waiting(canceled)", "page:Waiting(canceled)")
   }
 
+  it("re-sends the waiting page when the seen status changes, even when the policy keeps that page") {
+    val view = FakeView()
+    w.open(view)
+    // pending: the waiting page. canceling (live, not started): the policy asks for the trace and
+    // leaves the waiting page up, so only the session can tell it that Retry is now possible.
+    w.remote.jobs(job("pending"), job("canceling"))
+    w.env.advance(0)
+    view.calls shouldContainExactly listOf("page:Waiting(pending)")
+
+    w.env.fireNext()
+    w.env.drainUi()
+
+    val session = w.session.shouldNotBeNull()
+    session.lastStatus shouldBe "canceling"
+    session.canRetry shouldBe true
+    view.calls shouldContainExactly listOf("page:Waiting(pending)", "page:Waiting(pending)")
+  }
+
   it("reopening the job forgets the seen status but not the retry done") {
     val view = FakeView()
     val session = finishedWithoutLog(view, "failed")
