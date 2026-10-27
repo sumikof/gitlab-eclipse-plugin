@@ -315,7 +315,7 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
 
 // Any thread. Once the workbench or its display is gone the action is dropped (same shape as the
 // session's runOnUi).
-private fun asyncOnUi(action: () -> Unit) {
+internal fun asyncOnUi(action: () -> Unit) {
   try {
     val display = PlatformUI.getWorkbench().display
     display.asyncExec {
