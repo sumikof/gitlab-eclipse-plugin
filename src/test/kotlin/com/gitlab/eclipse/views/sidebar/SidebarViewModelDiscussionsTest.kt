@@ -346,4 +346,104 @@ class SidebarViewModelDiscussionsTest : DescribeSpec({
       children.none { it is DiscussionsSectionNode } shouldBe true
     }
   }
+
+  describe("buildMrChildren: comment badges holder") {
+    val mrUrl = "https://gitlab.example.com/group/sub/proj/-/merge_requests/42"
+    val mr =
+      GitLabMergeRequest(
+        id = 987L,
+        iid = 42L,
+        title = "A merge request",
+        projectId = 7L,
+        webUrl = mrUrl,
+        state = "opened",
+        sha = "headsha",
+        references = GitLabMergeRequest.Reference("group/sub/proj!42"),
+      )
+    val version =
+      GitLabMrVersion(
+        id = 1L,
+        headCommitSha = "headsha",
+        baseCommitSha = "basesha",
+        diffs = listOf(
+          GitLabMrVersion.Diff("src/main/A.kt", "src/main/A.kt", false, false, false),
+          GitLabMrVersion.Diff("src/main/deep/B.kt", "src/main/deep/B.kt", false, false, false),
+          GitLabMrVersion.Diff("README.md", "README.md", false, false, false),
+        ),
+      )
+
+    fun build(
+      mode: SidebarViewMode,
+      versionResult: Result<GitLabMrVersion?> = Result.success(version),
+      mergeRequest: GitLabMergeRequest = mr,
+      instanceUrl: String? = "https://gitlab.example.com",
+      fingerprint: String? = "fp-1",
+    ) = vm.buildMrChildren(mrUrl, versionResult, mode, mergeRequest, instanceUrl, fingerprint)
+
+    fun filesIn(nodes: List<SidebarNode>): List<ChangedFileNode> =
+      nodes.flatMap { node ->
+        when (node) {
+          is ChangedFileNode -> listOf(node)
+          is ChangedDirectoryNode -> filesIn(node.children)
+          else -> emptyList()
+        }
+      }
+
+    it("shares ONE holder, carrying the version's base and head SHAs, between the section and every file") {
+      SidebarViewMode.entries.forEach { mode ->
+        val children = build(mode)
+        val badges = children.filterIsInstance<DiscussionsSectionNode>().single().commentBadges.shouldNotBeNull()
+        badges.baseSha shouldBe "basesha"
+        badges.headSha shouldBe "headsha"
+        badges.index shouldBe CommentIndex.Pending
+        val files = filesIn(children)
+        files shouldHaveSize 3
+        files.forEach { (it.commentBadges === badges) shouldBe true }
+      }
+    }
+
+    it("reaches the files nested inside TREE directories") {
+      val children = build(SidebarViewMode.TREE)
+      children.any { it is ChangedDirectoryNode } shouldBe true
+      val badges = children.filterIsInstance<DiscussionsSectionNode>().single().commentBadges.shouldNotBeNull()
+      val nested = children.filterIsInstance<ChangedDirectoryNode>().flatMap { filesIn(it.children) }
+      nested shouldHaveSize 2
+      nested.forEach { (it.commentBadges === badges) shouldBe true }
+    }
+
+    it("builds a fresh holder for every build of the children") {
+      val first = build(SidebarViewMode.LIST).filterIsInstance<DiscussionsSectionNode>().single().commentBadges
+      val second = build(SidebarViewMode.LIST).filterIsInstance<DiscussionsSectionNode>().single().commentBadges
+      first.shouldNotBeNull()
+      (first === second) shouldBe false
+    }
+
+    it("gives the files no holder when the section is not built") {
+      listOf(
+        build(SidebarViewMode.LIST, instanceUrl = null),
+        build(SidebarViewMode.LIST, fingerprint = null),
+        build(SidebarViewMode.LIST, mergeRequest = mr.copy(references = null)),
+        vm.buildMrChildren(mrUrl, Result.success(version), SidebarViewMode.LIST),
+      ).forEach { children ->
+        children.none { it is DiscussionsSectionNode } shouldBe true
+        val files = filesIn(children)
+        files shouldHaveSize 3
+        files.forEach { it.commentBadges shouldBe null }
+      }
+    }
+
+    it("gives the section no holder when the version failed or does not exist") {
+      listOf<Result<GitLabMrVersion?>>(Result.failure(IllegalStateException("boom")), Result.success(null))
+        .forEach { result ->
+          build(SidebarViewMode.LIST, versionResult = result)
+            .filterIsInstance<DiscussionsSectionNode>().single().commentBadges shouldBe null
+        }
+    }
+
+    it("derives DELETED before NEW when a diff claims both (I-6)") {
+      val both = version.copy(diffs = listOf(GitLabMrVersion.Diff("x.kt", "x.kt", true, true, false)))
+      filesIn(build(SidebarViewMode.LIST, versionResult = Result.success(both))).single().changeType shouldBe
+        ChangeType.DELETED
+    }
+  }
 })

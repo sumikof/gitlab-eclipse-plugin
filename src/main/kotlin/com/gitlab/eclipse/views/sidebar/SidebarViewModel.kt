@@ -312,6 +312,10 @@ class SidebarViewModel {
    * They also carry an [MrDiffSource] built directly from [mr], the two tags and the version — not
    * from the section — so a merge request without `references.full` can still open a diff
    * (REVIEW-01 design §5.2).
+   *
+   * The version is folded first so the section and every changed file can share one
+   * [MrCommentBadges] for that version's base/head SHAs. The holder exists only when the section
+   * is built and the version is known; otherwise the section and the files carry `null`.
    */
   fun buildMrChildren(
     webUrl: String,
@@ -321,14 +325,16 @@ class SidebarViewModel {
     sourceInstanceUrl: String? = null,
     sourceAuthFingerprint: String? = null,
   ): List<SidebarNode> {
-    val section = discussionsSectionChildren(mr, sourceInstanceUrl, sourceAuthFingerprint)
-    val mrRef = section.filterIsInstance<DiscussionsSectionNode>().firstOrNull()?.toMergeRequestRef()
+    val badges = versionResult.getOrNull()?.let { MrCommentBadges(it.baseCommitSha, it.headCommitSha) }
+    val section = discussionsSectionChildren(mr, sourceInstanceUrl, sourceAuthFingerprint, badges)
+    val sectionNode = section.filterIsInstance<DiscussionsSectionNode>().firstOrNull()
+    val mrRef = sectionNode?.toMergeRequestRef()
     return listOf(OverviewNode(webUrl)) +
       section +
       versionResult.fold(
         onSuccess = { version ->
           val diffSource = diffSourceOf(mr, sourceInstanceUrl, sourceAuthFingerprint, version)
-          buildChangedFileNodes(version, mode, webUrl, mrRef, diffSource)
+          buildChangedFileNodes(version, mode, webUrl, mrRef, diffSource, sectionNode?.commentBadges)
         },
         onFailure = { error -> failureChildren(error) },
       )
@@ -372,7 +378,8 @@ class SidebarViewModel {
    * [mrWebUrl] is the enclosing MR's web URL, stamped on each [ChangedFileNode] so
    * `OpenMrFileHandler` can match the node back to a workspace repository; [mrRef] is stamped the
    * same way, for the editor review session that handler begins (`null`: no session), and so is
-   * [diffSource], for opening a base↔head diff (`null`: the diff cannot be opened).
+   * [diffSource], for opening a base↔head diff (`null`: the diff cannot be opened), and so is
+   * [commentBadges], the holder shared with the sibling section (`null`: no badge).
    */
   fun buildChangedFileNodes(
     version: GitLabMrVersion?,
@@ -380,11 +387,20 @@ class SidebarViewModel {
     mrWebUrl: String? = null,
     mrRef: MergeRequestRef? = null,
     diffSource: MrDiffSource? = null,
+    commentBadges: MrCommentBadges? = null,
   ): List<SidebarNode> {
     val diffs = version?.let(::nullSafeDiffs) ?: emptyList()
     if (diffs.isEmpty()) return listOf(MessageNode(NO_CHANGED_FILES_MESSAGE))
     val fileNodes = diffs.map { diff ->
-      toChangedFileNode(diff, version?.headCommitSha, mrWebUrl, mrRef, diffSource, mode == SidebarViewMode.TREE)
+      toChangedFileNode(
+        diff,
+        version?.headCommitSha,
+        mrWebUrl,
+        mrRef,
+        diffSource,
+        mode == SidebarViewMode.TREE,
+        commentBadges,
+      )
     }
     return when (mode) {
       SidebarViewMode.LIST -> fileNodes
@@ -399,6 +415,7 @@ class SidebarViewModel {
     mrRef: MergeRequestRef?,
     diffSource: MrDiffSource?,
     inTree: Boolean,
+    commentBadges: MrCommentBadges?,
   ): ChangedFileNode {
     val changeType =
       when {
@@ -418,6 +435,7 @@ class SidebarViewModel {
       aMode = diff.aMode,
       bMode = diff.bMode,
       inTree = inTree,
+      commentBadges = commentBadges,
     )
   }
 
@@ -445,6 +463,7 @@ class SidebarViewModel {
     mr: GitLabMergeRequest?,
     sourceInstanceUrl: String?,
     sourceAuthFingerprint: String?,
+    commentBadges: MrCommentBadges?,
   ): List<SidebarNode> {
     if (mr == null) return emptyList()
     if (sourceInstanceUrl == null || sourceAuthFingerprint == null) {
@@ -465,6 +484,7 @@ class SidebarViewModel {
         mrGid = DiscussionService.mrGid(mr.id),
         mrSha = mr.sha,
         namespaceWithPath = DiscussionService.namespaceWithPath(references),
+        commentBadges = commentBadges,
       ),
     )
   }
