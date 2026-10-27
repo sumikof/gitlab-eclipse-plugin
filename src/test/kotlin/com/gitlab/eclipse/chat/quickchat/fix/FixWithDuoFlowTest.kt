@@ -13,7 +13,10 @@ class FixWithDuoFlowTest : DescribeSpec({
       fixWithDuo<String>(
         unavailableReason = { "Duo Chat is off" },
         notify = { notified += it },
-        prepare = { prepared = true; null },
+        prepare = {
+          prepared = true
+          null
+        },
         send = { sent = true },
       )
       notified shouldBe listOf("Duo Chat is off")

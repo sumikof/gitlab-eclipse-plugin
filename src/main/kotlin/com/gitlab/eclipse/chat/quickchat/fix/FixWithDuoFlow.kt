@@ -1,3 +1,6 @@
+// The file holds the Fix flow: its request type and fixWithDuo.
+@file:Suppress("MatchingDeclarationName")
+
 package com.gitlab.eclipse.chat.quickchat.fix
 
 /** What one Fix sends: the popup's editor, its anchor line, and the `/fix` message. */
@@ -14,6 +17,10 @@ fun <E> fixWithDuo(
   prepare: () -> FixRequest<E>?,
   send: (FixRequest<E>) -> Unit,
 ) {
-  unavailableReason()?.let { notify(it); return }
+  val reason = unavailableReason()
+  if (reason != null) {
+    notify(reason)
+    return
+  }
   prepare()?.let(send)
 }

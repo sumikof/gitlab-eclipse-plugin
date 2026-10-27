@@ -1,3 +1,6 @@
+// The file holds the annotation filter: its fact type, annotation-type constants and selectFixDiagnostics.
+@file:Suppress("MatchingDeclarationName")
+
 package com.gitlab.eclipse.chat.quickchat.fix
 
 data class AnnotationFacts(

@@ -27,7 +27,10 @@ class FixEligibilityTest : DescribeSpec({
 
     it("does not read the marker while Duo Chat is disabled") {
       var reads = 0
-      isFixEligible({ false }, { reads++; ok }) shouldBe false
+      isFixEligible({ false }, {
+        reads++
+        ok
+      }) shouldBe false
       reads shouldBe 0
     }
 

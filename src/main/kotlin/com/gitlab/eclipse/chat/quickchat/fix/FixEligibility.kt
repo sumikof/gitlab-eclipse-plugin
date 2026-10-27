@@ -1,3 +1,6 @@
+// The file holds the eligibility check: its fact type and isFixEligible.
+@file:Suppress("MatchingDeclarationName")
+
 package com.gitlab.eclipse.chat.quickchat.fix
 
 import org.eclipse.core.resources.IMarker
