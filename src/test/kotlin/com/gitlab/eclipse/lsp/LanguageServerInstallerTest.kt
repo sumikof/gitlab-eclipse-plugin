@@ -122,6 +122,27 @@ class LanguageServerInstallerTest : DescribeSpec({
       installer(OS.UNKNOWN, Arch.X86_64).install().shouldBeNull()
     }
 
+    // #124: by default, and when not asked to abandon, the installer still cleans up after earlier installs.
+    it("sweeps an earlier install and leftover temp directories by default") {
+      val stale = Files.createDirectories(dataArea.resolve(installDirectoryName("1.2.3.455|9.29.0")).resolve("bin"))
+      val temp = Files.createDirectories(dataArea.resolve("lsp.tmp-x"))
+
+      installer().install().shouldNotBeNull()
+
+      Files.exists(stale.parent) shouldBe false
+      Files.exists(temp) shouldBe false
+    }
+
+    it("sweeps an earlier install and leftover temp directories when not asked to abandon") {
+      val stale = Files.createDirectories(dataArea.resolve(installDirectoryName("1.2.3.455|9.29.0")).resolve("bin"))
+      val temp = Files.createDirectories(dataArea.resolve("lsp.tmp-x"))
+
+      installer().install(shouldAbandon = { false }).shouldNotBeNull()
+
+      Files.exists(stale.parent) shouldBe false
+      Files.exists(temp) shouldBe false
+    }
+
     // #124: the abandon check reaches the extraction, so a stopping plugin stops waiting for the lock.
     it("passes the abandon check on, giving up the wait for another instance's install lock") {
       val channel = FileChannel.open(dataArea.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
