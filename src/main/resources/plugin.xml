@@ -597,6 +597,13 @@
                 categoryId="gitlab-eclipse-plugin">
         </command>
 
+        <!-- QCHAT-05: /fix for the error / warning annotations of the selection or the caret line. -->
+        <command
+                id="gitlab-eclipse-plugin.commands.FixWithDuo"
+                name="Fix with GitLab Duo"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
         <command
                 id="gitlab-eclipse-plugin.commands.CloseQuickChat"
                 name="Close Quick Chat"
@@ -1298,6 +1305,17 @@
             </enabledWhen>
         </handler>
 
+        <!-- QCHAT-05: like Open Quick Chat, enabled while Duo Chat is (re-checked when it runs). -->
+        <handler
+                commandId="gitlab-eclipse-plugin.commands.FixWithDuo"
+                class="com.gitlab.eclipse.chat.quickchat.fix.ui.FixWithDuoHandler">
+            <enabledWhen>
+                <with variable="duo_chat_enabled">
+                    <equals value="true"/>
+                </with>
+            </enabledWhen>
+        </handler>
+
         <handler
                 commandId="gitlab-eclipse-plugin.commands.CloseQuickChat"
                 class="com.gitlab.eclipse.chat.quickchat.ui.CloseQuickChatHandler"
@@ -1530,6 +1548,18 @@
                         commandId="gitlab-eclipse-plugin.commands.OpenQuickChat"
                         label="Open Quick Chat"
                         tooltip="Ask GitLab Duo about this line in a popup"
+                >
+                    <visibleWhen checkEnabled="false">
+                        <with variable="duo_chat_enabled">
+                            <equals value="true"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+
+                <command
+                        commandId="gitlab-eclipse-plugin.commands.FixWithDuo"
+                        label="Fix with GitLab Duo"
+                        tooltip="Ask GitLab Duo to fix the errors and warnings of the selection or this line"
                 >
                     <visibleWhen checkEnabled="false">
                         <with variable="duo_chat_enabled">
