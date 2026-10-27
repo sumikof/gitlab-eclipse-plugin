@@ -73,6 +73,13 @@ class DraftsToPreserveTest : DescribeSpec({
       s.draftsToPreserve(ticket).shouldBeEmpty()
     }
 
+    it("removes only the automatic draft, not an identical draft the user typed in another thread") {
+      val s = InlineThreadState(MODEL)
+      s.onAutoEdit("d1", "/fix")
+      s.onEdit("d2", "/fix")
+      s.draftsToPreserve(null) shouldContainExactly listOf("/fix")
+    }
+
     it("is offered in its edited form once the user changed it") {
       val s = InlineThreadState(MODEL)
       s.onAutoEdit("d1", "/fix")
