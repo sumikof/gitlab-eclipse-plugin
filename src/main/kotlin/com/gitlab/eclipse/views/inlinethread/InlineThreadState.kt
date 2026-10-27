@@ -20,7 +20,7 @@ package com.gitlab.eclipse.views.inlinethread
  *   never be submitted again from this popup: the text may already be posted, so re-sending it must
  *   take a deliberate new popup, not one click on the button that just timed out.
  *
- * `@Suppress("TooManyFunctions")`: the fourteen members are the fixed API the popup (and later
+ * `@Suppress("TooManyFunctions")`: the members are the fixed API the popup (and later
  * Quick Chat) depends on verbatim; splitting them would scatter one state machine.
  */
 @Suppress("TooManyFunctions")

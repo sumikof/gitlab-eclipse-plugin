@@ -29,6 +29,7 @@ import org.eclipse.ui.IMarkerResolutionGenerator2
 import org.eclipse.ui.IMarkerResolutionRelevance
 import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.ide.IDE
+import org.eclipse.ui.texteditor.AbstractMarkerAnnotationModel
 import org.eclipse.ui.texteditor.ITextEditor
 
 private val logger by lazy { logger<FixWithDuoMarkerResolution>() }
@@ -125,12 +126,23 @@ private fun prepareOpenedMarker(marker: IMarker): FixRequest<ITextEditor>? {
     NotificationUtils.showOnUiThread(QuickChatUiTexts.FIX_NOT_TEXT_EDITOR)
     return null
   }
-  val document = editor.documentProvider?.getDocument(editor.editorInput) ?: return null
+  val provider = editor.documentProvider ?: return null
+  val document = provider.getDocument(editor.editorInput) ?: return null
+  // gotoMarker returns without selecting when the marker's position was deleted (an edit removed its
+  // text, AbstractDecoratedTextEditor.gotoMarker): the selection would be a stale one, not the marker.
+  val markerModel = provider.getAnnotationModel(editor.editorInput) as? AbstractMarkerAnnotationModel
+  if (markerModel?.getMarkerPosition(marker)?.isDeleted == true) {
+    logger.info("Fix with GitLab Duo skipped: the marker's text was deleted")
+    return null
+  }
   // IDE.openEditor ran gotoMarker: the selection is the marker's range, or its line's start without one.
   val selection = editor.selectionProvider?.selection as? ITextSelection ?: return null
   val hasChars = marker.getAttribute(IMarker.CHAR_START, -1) >= 0 && marker.getAttribute(IMarker.CHAR_END, -1) >= 0
   val target = if (hasChars) TextSpan(selection.offset, selection.length) else TextSpan(selection.offset, 0)
-  val lineSpan = lineSpanOf(document::getLineOfOffset, document::getLineOffset) { document.getLineInformation(it).length }
+  val lineSpan = lineSpanOf(
+    document::getLineOfOffset,
+    document::getLineOffset,
+  ) { document.getLineInformation(it).length }
   val range = fixRange(null, target, lineSpan)
   editor.selectAndReveal(range.offset, range.length)
   val line = anchorLineOf(editor) ?: return null

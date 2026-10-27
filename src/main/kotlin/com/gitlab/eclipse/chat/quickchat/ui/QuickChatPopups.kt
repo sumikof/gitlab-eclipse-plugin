@@ -43,7 +43,12 @@ fun decidePlacement(existing: OpenPlacement?, editor: Any, oneBasedLine: Int): P
  * opened and is still open (create returns null when the shell failed to open). True when [submit]
  * accepted it (Fable N3).
  */
-internal fun <P> sendIfOpened(popup: P?, isOpen: (P) -> Boolean, submit: (P, String) -> Boolean, message: String): Boolean =
+internal fun <P> sendIfOpened(
+  popup: P?,
+  isOpen: (P) -> Boolean,
+  submit: (P, String) -> Boolean,
+  message: String,
+): Boolean =
   popup != null && isOpen(popup) && submit(popup, message)
 
 /**
@@ -125,7 +130,8 @@ object QuickChatPopups {
     val window = editor.site.workbenchWindow
     open[window]?.takeIf { it.popup.isOpen }?.popup?.close()
     // close() may have offered the drafts in a modal dialog, whose nested event loop can close the
-    // editor: a disposed text editor has no document provider any more.
+    // editor. A disposed text editor has no document provider any more (disposeDocumentProvider);
+    // its input stays set, so the editorInput check is only a guard, not the dispose test.
     if (editor.editorInput == null || editor.documentProvider?.getDocument(editor.editorInput) == null) {
       logger.info("Quick Chat open-and-send skipped: the editor closed")
       return

@@ -36,7 +36,10 @@ class QuickChatPopupsTest : DescribeSpec({
     fun send(popup: FakePopup?) = sendIfOpened(
       popup,
       isOpen = { it.isOpen },
-      submit = { p, message -> p.sent += message; p.accepts },
+      submit = { p, message ->
+        p.sent += message
+        p.accepts
+      },
       message = "/fix",
     )
 

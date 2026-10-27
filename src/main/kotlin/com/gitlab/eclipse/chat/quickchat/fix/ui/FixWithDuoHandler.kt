@@ -60,14 +60,22 @@ private fun prepareActiveEditor(editor: ITextEditor): FixRequest<ITextEditor>? {
   val provider = editor.documentProvider ?: return null
   val document = provider.getDocument(input) ?: return null
   val selection = editor.selectionProvider?.selection as? ITextSelection ?: return null
-  val lineSpan = lineSpanOf(document::getLineOfOffset, document::getLineOffset) { document.getLineInformation(it).length }
+  val lineSpan = lineSpanOf(
+    document::getLineOfOffset,
+    document::getLineOffset,
+  ) { document.getLineInformation(it).length }
   val range = fixRange(
     selection.takeIf { it.length > 0 }?.let { TextSpan(it.offset, it.length) },
     TextSpan(selection.offset, 0),
     lineSpan,
   )
   val facts = annotationFactsOf(provider.getAnnotationModel(input))
-  val diagnostics = selectFixDiagnostics(facts, range, document::getLineOfOffset, DefaultMarkerAnnotationAccess()::isSubtype)
+  val diagnostics = selectFixDiagnostics(
+    facts,
+    range,
+    document::getLineOfOffset,
+    DefaultMarkerAnnotationAccess()::isSubtype,
+  )
   editor.selectAndReveal(range.offset, range.length)
   val line = anchorLineOf(editor) ?: return null
   return FixRequest(editor, line, FixMessage.of(diagnostics))
