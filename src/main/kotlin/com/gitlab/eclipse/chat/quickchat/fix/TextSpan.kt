@@ -1,6 +1,3 @@
-// The file pairs the TextSpan value with the fixRange / lineSpanOf functions that use it.
-@file:Suppress("MatchingDeclarationName")
-
 package com.gitlab.eclipse.chat.quickchat.fix
 
 /** A document range: 0-based offset and length (like IDocument / ITextSelection). */
