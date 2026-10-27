@@ -26,14 +26,24 @@ internal const val GENERIC_LOG_ERROR_MESSAGE = "Couldn't load the job log. Try a
  */
 @Suppress("unused")
 class DisplayJobLogHandler(
-  private val open: (JobLogTarget) -> Unit = { target -> JobLogSessionManager.open(target, JobLogEditorOpener::show) },
-  private val notify: (String) -> Unit = { NotificationUtils.show(it) },
+  private val open: (JobLogTarget) -> Unit = DEFAULT_OPEN_JOB_LOG,
+  private val notify: (String) -> Unit = DEFAULT_NOTIFY_JOB_LOG,
 ) : AbstractHandler() {
   override fun execute(event: ExecutionEvent): Any? {
     displayJobLog(selectedSidebarNode<JobNode>(event), notify, open)
     return null
   }
 }
+
+/** Display Log's production opener: the job's session shows it in the job-log editor. UI thread. */
+internal val DEFAULT_OPEN_JOB_LOG: (JobLogTarget) -> Unit =
+  { target -> JobLogSessionManager.open(target, JobLogEditorOpener::show) }
+
+/** Display Log's production notifier. */
+internal val DEFAULT_NOTIFY_JOB_LOG: (String) -> Unit = { NotificationUtils.show(it) }
+
+/** UI thread. The Display Log entry shared by [DisplayJobLogHandler] and the sidebar double-click (L6). */
+internal fun displayJobLogInEditor(node: JobNode?) = displayJobLog(node, DEFAULT_NOTIFY_JOB_LOG, DEFAULT_OPEN_JOB_LOG)
 
 /** UI thread. Resolves the selected [node] to the job to show, or tells the user what is missing. */
 internal fun displayJobLog(node: JobNode?, notify: (String) -> Unit, open: (JobLogTarget) -> Unit) {

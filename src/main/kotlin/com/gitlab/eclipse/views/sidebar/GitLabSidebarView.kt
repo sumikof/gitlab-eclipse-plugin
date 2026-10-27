@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.ci.actions.displayJobLogInEditor
 import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.currentbranch.CurrentBranchStateService
 import com.gitlab.eclipse.currentbranch.WindowEditorFileReader
@@ -305,6 +306,7 @@ class GitLabSidebarView : ViewPart() {
       // Inline rather than a member (keeps the class under the TooManyFunctions threshold).
       when (val action = sidebarDoubleClick(node)) {
         is SidebarDoubleClick.OpenDiff -> MrFileDiffEntryPoint.open(action.node)
+        is SidebarDoubleClick.OpenJobLog -> displayJobLogInEditor(action.node)
         is SidebarDoubleClick.OpenUrl ->
           try {
             PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(action.url).toURL())
@@ -753,15 +755,22 @@ internal sealed interface SidebarDoubleClick {
   /** A changed file opens its base/head diff (REVIEW-01). */
   class OpenDiff(val node: ChangedFileNode) : SidebarDoubleClick
 
+  /** A job opens its log in the job-log editor, like Display Log (L6). */
+  class OpenJobLog(val node: JobNode) : SidebarDoubleClick
+
   /** A node with an activation URL opens it in the external browser. */
   class OpenUrl(val url: String) : SidebarDoubleClick
 
   object None : SidebarDoubleClick
 }
 
-/** Routes a double-click on [node]: changed files to the diff, other nodes to their URL if any. */
+/**
+ * Routes a double-click on [node]: changed files to the diff, jobs to their log (bridges are not
+ * jobs and keep their URL), other nodes to their URL if any.
+ */
 internal fun sidebarDoubleClick(node: SidebarNode?): SidebarDoubleClick {
   if (node is ChangedFileNode) return SidebarDoubleClick.OpenDiff(node)
+  if (node is JobNode) return SidebarDoubleClick.OpenJobLog(node)
   val url = node?.activationUrl ?: return SidebarDoubleClick.None
   return SidebarDoubleClick.OpenUrl(url)
 }
