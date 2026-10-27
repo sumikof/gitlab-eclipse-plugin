@@ -245,6 +245,13 @@
         </command>
 
         <command
+                id="com.gitlab.eclipse.commands.RetryJobLogJob"
+                name="Retry Job from Log"
+                description="Retry the job shown in the job log"
+                categoryId="gitlab-eclipse-plugin">
+        </command>
+
+        <command
                 id="com.gitlab.eclipse.commands.DownloadArtifacts"
                 name="Download Artifacts"
                 categoryId="gitlab-eclipse-plugin">
@@ -1021,6 +1028,17 @@
             </activeWhen>
         </handler>
 
+        <!-- L4: no enabledWhen; the handler decides its enablement from the job log's session. -->
+        <handler
+                commandId="com.gitlab.eclipse.commands.RetryJobLogJob"
+                class="com.gitlab.eclipse.ci.joblog.RetryJobFromLogHandler">
+            <activeWhen>
+                <with variable="activeEditorId">
+                    <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                </with>
+            </activeWhen>
+        </handler>
+
         <handler
                 commandId="com.gitlab.eclipse.commands.DownloadArtifacts"
                 class="com.gitlab.eclipse.ci.actions.DownloadArtifactsHandler"
@@ -1420,6 +1438,15 @@
                     </with>
                 </visibleWhen>
             </command>
+            <command
+                    commandId="com.gitlab.eclipse.commands.RetryJobLogJob"
+                    label="Retry Job from Log">
+                <visibleWhen checkEnabled="false">
+                    <with variable="activeEditorId">
+                        <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                    </with>
+                </visibleWhen>
+            </command>
         </menuContribution>
         <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
             <toolbar id="com.gitlab.eclipse.toolbar.jobLog">
@@ -1436,6 +1463,16 @@
                 <command
                         commandId="com.gitlab.eclipse.commands.ScrollJobLogToBottom"
                         label="Scroll to Bottom"
+                        mode="FORCE_TEXT">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="activeEditorId">
+                            <equals value="com.gitlab.eclipse.editors.JobLog"/>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command
+                        commandId="com.gitlab.eclipse.commands.RetryJobLogJob"
+                        label="Retry Job from Log"
                         mode="FORCE_TEXT">
                     <visibleWhen checkEnabled="false">
                         <with variable="activeEditorId">
