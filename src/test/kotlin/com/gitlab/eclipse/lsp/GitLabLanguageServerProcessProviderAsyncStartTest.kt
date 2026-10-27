@@ -86,6 +86,24 @@ private class GatedInstall(private val result: String? = "/fake/language-server"
   }
 }
 
+/** Wraps a real executor, recording whatever a task lets escape; [done] opens once a task has finished. */
+private class EscapeRecorder(private val real: Executor) : Executor {
+  val escaped = CopyOnWriteArrayList<Throwable>()
+  val done = CountDownLatch(1)
+
+  override fun execute(command: Runnable) {
+    real.execute {
+      try {
+        command.run()
+      } catch (t: Throwable) {
+        escaped += t
+      } finally {
+        done.countDown()
+      }
+    }
+  }
+}
+
 /**
  * #124: the provider's start runs the install and the spawn on its own daemon thread, begun under
  * the lifecycle lock so that a stop, a restart or a closed store that comes in between wins. Same
@@ -389,6 +407,14 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
       var restarter: Thread? = null
       var provider: GitLabLanguageServerProcessProvider? = null
       val registrations = AtomicInteger()
+      val secondSpawn = CountDownLatch(1)
+      val store = LanguageServerLifecycleStore()
+      // Runs on the thread that marks the start failed. Under the lifecycle lock, as it must be, the
+      // restart cannot spawn during this wait; were the clean-up outside the lock, the restart would
+      // spawn here and the clean-up after this wait would stop the restart's server.
+      store.addListener { _, new ->
+        if (new.failure == LanguageServerFailureKind.START_FAILED) secondSpawn.await(1, TimeUnit.SECONDS)
+      }
       every { wrapper.registerLanguageServer(any()) } answers {
         if (registrations.getAndIncrement() == 0) {
           // The restart arrives while this start still holds the lock, then this start fails.
@@ -401,7 +427,17 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
           error("boom")
         }
       }
-      provider = newProvider(startExecutor = startExecutor(), wrapper = wrapper)
+      provider = newProvider(
+        startExecutor = startExecutor(),
+        factory = {
+          FakeLanguageServerProcess(InitializeReply.SUCCESS).also { fake ->
+            spawnedProcesses += fake
+            if (spawnedProcesses.size >= 2) secondSpawn.countDown()
+          }
+        },
+        store = store,
+        wrapper = wrapper,
+      )
 
       provider.start(bundle)
       eventually(10.seconds) { restarter.shouldNotBeNull().isAlive shouldBe false }
@@ -435,6 +471,123 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
 
       eventually(5.seconds) { spawnedProcesses shouldHaveSize 1 }
       executor.submit<Boolean> { Thread.currentThread().isInterrupted }.get(5, TimeUnit.SECONDS) shouldBe false
+      provider.stop()
+    }
+  }
+
+  describe("asynchronous start, pinned against regressions (#124)") {
+    it("runs the install and the spawn on the gitlab-ls-start daemon thread by default (M1)") {
+      val gate = GatedInstall()
+      every { installer.install(any()) } answers { gate.answer(firstArg()) }
+      val spawnThreads = CopyOnWriteArrayList<Thread>()
+      // The constructor's own executor, as Koin builds the provider in production.
+      val provider = GitLabLanguageServerProcessProvider(
+        languageServerWrapper,
+        configurationService,
+        openFilesService,
+        proxyManager,
+        webviewService,
+        installer,
+        {
+          spawnThreads += Thread.currentThread()
+          FakeLanguageServerProcess(InitializeReply.SUCCESS).also { fake -> spawnedProcesses += fake }
+        },
+      )
+      val caller = Thread({ provider.start(bundle) }, "fake-activator")
+
+      caller.start()
+      gate.entered.await(5, TimeUnit.SECONDS) shouldBe true
+      caller.join(5_000)
+      caller.isAlive shouldBe false
+      gate.release.countDown()
+      eventually(5.seconds) { spawnedProcesses shouldHaveSize 1 }
+
+      gate.threads.single().name shouldBe LANGUAGE_SERVER_START_THREAD_NAME
+      gate.threads.single().isDaemon shouldBe true
+      spawnThreads.single() shouldBe gate.threads.single()
+      provider.stop()
+    }
+
+    it("a queued start of an earlier generation does nothing once a later start is queued (M3)") {
+      val store = LanguageServerLifecycleStore()
+      val executor = ManualExecutor()
+      val provider = newProvider(startExecutor = executor, store = store)
+      provider.start(bundle)
+      provider.stop()
+      provider.start(bundle)
+
+      executor.runNext()
+
+      spawnedProcesses shouldHaveSize 0
+      executor.runNext()
+      spawnedProcesses shouldHaveSize 1
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+      provider.stop()
+    }
+
+    it("lets nothing escape the start task when the start throws after the spawn (M8)") {
+      val store = LanguageServerLifecycleStore()
+      val wrapper = mockk<GitLabLanguageServerWrapper>(relaxUnitFun = true)
+      every { wrapper.registerLanguageServer(any()) } throws IllegalStateException("boom")
+      every { wrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
+      val executor = EscapeRecorder(startExecutor())
+      val provider = newProvider(startExecutor = executor, store = store, wrapper = wrapper)
+
+      provider.start(bundle)
+      executor.done.await(5, TimeUnit.SECONDS) shouldBe true
+
+      executor.escaped shouldBe emptyList()
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      spawnedProcesses.single().destroyed shouldBe true
+      provider.isRunning shouldBe false
+    }
+
+    it("lets nothing escape the start task when its clean-up throws too (M15b)") {
+      val store = LanguageServerLifecycleStore()
+      val wrapper = mockk<GitLabLanguageServerWrapper>(relaxUnitFun = true)
+      every { wrapper.registerLanguageServer(any()) } throws IllegalStateException("boom")
+      every { wrapper.unregisterLanguageServer(any<LanguageServerHandle>()) } returns true
+      // The first step of the stop: a late or degraded stop whose Koin scope is already closed.
+      every { wrapper.unregisterLanguageServer() } throws IllegalStateException("Koin scope is already closed")
+      val executor = EscapeRecorder(startExecutor())
+      val provider = newProvider(startExecutor = executor, store = store, wrapper = wrapper)
+
+      provider.start(bundle)
+      executor.done.await(5, TimeUnit.SECONDS) shouldBe true
+
+      executor.escaped shouldBe emptyList()
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+    }
+
+    it("starts again after a stop, on the same executor (M12)") {
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(startExecutor = startExecutor(), store = store)
+      provider.start(bundle)
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+
+      provider.stop()
+      provider.start(bundle)
+
+      eventually(5.seconds) { spawnedProcesses shouldHaveSize 2 }
+      eventually(5.seconds) { store.snapshot().phase shouldBe LanguageServerPhase.RUNNING }
+      provider.stop()
+    }
+
+    it("lets a restart's install abandon its lock wait once the bundle stops (R1)") {
+      val checks = CopyOnWriteArrayList<() -> Boolean>()
+      every { installer.install(any()) } answers {
+        checks += firstArg<() -> Boolean>()
+        "/fake/language-server"
+      }
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restart(bundle) shouldBe true
+      val check = checks.single()
+      check() shouldBe false
+      store.close()
+
+      check() shouldBe true
       provider.stop()
     }
   }
