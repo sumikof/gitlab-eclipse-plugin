@@ -33,6 +33,31 @@ private fun file(
   inTree: Boolean = false,
 ) = ChangedFileNode(oldPath, newPath, type, "sha", inTree = inTree)
 
+private fun badges(index: CommentIndex) = MrCommentBadges("base", "head").also { it.index = index }
+
+private val commentedA = CommentIndex.Complete(CommentedSides(oldPaths = emptySet(), newPaths = setOf("dir/sub/file.kt")))
+
+private fun commentedFile(index: CommentIndex?, inTree: Boolean = false, type: ChangeType = ChangeType.MODIFIED) =
+  ChangedFileNode(
+    "dir/sub/file.kt",
+    "dir/sub/file.kt",
+    type,
+    "sha",
+    inTree = inTree,
+    commentBadges = index?.let(::badges),
+  )
+
+private fun section(index: CommentIndex?) = DiscussionsSectionNode(
+  sourceInstanceUrl = SRC_URL,
+  sourceAuthFingerprint = SRC_FP,
+  projectId = 1L,
+  mrIid = 1L,
+  mrGid = "gid://gitlab/MergeRequest/1",
+  mrSha = null,
+  namespaceWithPath = "g/p",
+  commentBadges = index?.let(::badges),
+)
+
 class SidebarDecorationsTest : StringSpec({
   "pipeline icon follows its status and ignores allowFailure" {
     val p = PipelineNode(GitLabPipeline(id = 1, status = "failed"), emptyList(), false, false, SRC_URL, SRC_FP)
@@ -107,6 +132,44 @@ class SidebarDecorationsTest : StringSpec({
     sidebarDisplayText(m) shouldBe "hello"
     val s = stage(job("success"))
     sidebarDisplayText(s) shouldBe s.label
+  }
+
+  "image name: a CI node keeps its status icon" {
+    sidebarImageName(job("failed", true)) shouldBe CiStatusIcon.FAILED_ALLOWED.iconName
+    sidebarImageName(stage(job("success"))) shouldBe CiStatusIcon.SUCCESS.iconName
+  }
+  "image name: only a file with a comment shows the comment badge" {
+    sidebarImageName(commentedFile(commentedA)) shouldBe COMMENT_BADGE_ICON
+    sidebarImageName(commentedFile(commentedA, inTree = true)) shouldBe COMMENT_BADGE_ICON
+    COMMENT_BADGE_ICON shouldBe "chat_on_obj"
+  }
+  "image name: an absent, unknown or badge-less file shows nothing" {
+    val emptyComplete = CommentIndex.Complete(CommentedSides(emptySet(), emptySet()))
+    val partialMiss = CommentIndex.Partial(CommentedSides(emptySet(), setOf("other.kt")))
+    sidebarImageName(commentedFile(emptyComplete)) shouldBe null
+    sidebarImageName(commentedFile(partialMiss)) shouldBe null
+    sidebarImageName(commentedFile(CommentIndex.Pending)) shouldBe null
+    sidebarImageName(commentedFile(CommentIndex.Unavailable)) shouldBe null
+    sidebarImageName(commentedFile(null)) shouldBe null
+  }
+  "image name: nodes that are neither CI nor files show nothing" {
+    sidebarImageName(MessageNode("m")) shouldBe null
+    sidebarImageName(ChangedDirectoryNode("dir", listOf(commentedFile(commentedA)))) shouldBe null
+    sidebarImageName(section(commentedA)) shouldBe null
+  }
+  "a comment badge never changes a file's text or change badge" {
+    sidebarDisplayText(commentedFile(commentedA)) shouldBe "dir/sub/file.kt · M"
+    sidebarDisplayText(commentedFile(commentedA, inTree = true)) shouldBe "file.kt · M"
+    changeBadge(commentedFile(commentedA, type = ChangeType.NEW)) shouldBe ChangeBadge('A', ChangeColorRole.ADDED)
+  }
+  "the Discussions section's text tells how far the comment badges can be trusted" {
+    sidebarDisplayText(section(null)) shouldBe "Discussions"
+    sidebarDisplayText(section(CommentIndex.Pending)) shouldBe "Discussions · Loading…"
+    sidebarDisplayText(section(commentedA)) shouldBe "Discussions"
+    sidebarDisplayText(section(CommentIndex.Partial(CommentedSides(emptySet(), emptySet())))) shouldBe
+      "Discussions · comment badges incomplete"
+    sidebarDisplayText(section(CommentIndex.Unavailable)) shouldBe "Discussions · comment badges unavailable"
+    section(CommentIndex.Unavailable).label shouldBe "Discussions"
   }
 
   "change color ids" {
