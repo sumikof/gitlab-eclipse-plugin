@@ -490,15 +490,17 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
 }
 
 /**
- * Attaches the lifecycle listeners, starts the language server, then hands the Duo status steps to
- * the UI thread.
+ * Attaches the lifecycle listeners, requests the language server start, then hands the Duo status
+ * steps to the UI thread.
  *
- * The listeners go first so that a startup failure — published synchronously inside `start()` —
- * already reaches the failure notifier and the status refresher. The Duo status steps are posted
- * with [uiDispatch] (`asyncExec`), not a waited UI turn: activation never blocks on the UI thread
- * for them, and a stop that runs first disposes the refresher, whose install is then a no-op. A
- * workbench or display that cannot be reached is the normal early-start case and is logged at INFO
- * by class name. Never throws beyond what `start()` itself documents (it never throws).
+ * The listeners go first so that the attempt `start()` begins (STARTING, published before it
+ * returns) and any later failure, published by the start thread (#124), reach the failure notifier
+ * and the status refresher. `start()` does not wait for the install or the spawn. The Duo status
+ * steps are posted with [uiDispatch] (`asyncExec`), not a waited UI turn: activation never blocks
+ * on the UI thread for them, and a stop that runs first disposes the refresher, whose install is
+ * then a no-op. A workbench or display that cannot be reached is the normal early-start case and is
+ * logged at INFO by class name. Never throws beyond what `start()` itself documents (it never
+ * throws).
  *
  * An extension, not a member, only to keep the plugin class within detekt's function budget.
  */
