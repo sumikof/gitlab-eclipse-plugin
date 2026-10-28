@@ -11,8 +11,10 @@ import com.github.scribejava.core.oauth2.OAuth2Error
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.navigation.BROWSER_OPEN_FAILED_MESSAGE
 import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.preferences.storage.GitLabInstanceKey
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.GsonBuilder
 import fi.iki.elonen.NanoHTTPD
@@ -73,6 +75,7 @@ class GitLabOAuthService(
 
   private var oauthCallbackServer: OAuthCallbackServer? = null
 
+  /** UI thread only: opens the authorization page through [BrowserLauncher.openChecked]. */
   fun startOAuthFlow() {
     oauthCallbackServer?.stop()
 
@@ -83,6 +86,7 @@ class GitLabOAuthService(
     val authUrl = "${oauthService.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
     if (!browser.openChecked(authUrl)) {
       logger.info("The browser did not open the OAuth authorization page; the callback server is not started.")
+      NotificationUtils.show(BROWSER_OPEN_FAILED_MESSAGE)
       return
     }
 

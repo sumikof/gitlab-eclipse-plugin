@@ -2,10 +2,15 @@ package com.gitlab.eclipse.authentication
 
 import com.github.scribejava.core.httpclient.jdk.JDKHttpClientConfig
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.navigation.BROWSER_OPEN_FAILED_MESSAGE
 import com.gitlab.eclipse.navigation.BrowserLauncher
+import com.gitlab.eclipse.navigation.BrowserUrlVerdict
+import com.gitlab.eclipse.navigation.browserUrlVerdict
+import com.gitlab.eclipse.utils.NotificationUtils
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import io.kotest.matchers.types.shouldBeTypeOf
 import io.mockk.*
 import org.eclipse.core.runtime.ILog
@@ -14,7 +19,10 @@ import org.osgi.framework.Bundle
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.net.ServerSocket
+import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.Base64
 
 @Suppress("IgnoredReturnValue")
 class GitLabOAuthServiceTest : DescribeSpec({
@@ -25,6 +33,13 @@ class GitLabOAuthServiceTest : DescribeSpec({
   }
 
   describe("startOAuthFlow") {
+    beforeEach {
+      mockkObject(NotificationUtils)
+      every { NotificationUtils.show(any(), any(), any(), any()) } just Runs
+    }
+
+    afterEach { unmockkObject(NotificationUtils) }
+
     it("does not start the callback server when the browser did not open") {
       val browser = mockk<BrowserLauncher>()
       every { browser.openChecked(any()) } returns false
@@ -38,6 +53,15 @@ class GitLabOAuthServiceTest : DescribeSpec({
       verify(exactly = 1) { browser.openChecked(any()) }
       verify(exactly = 0) { gitLabOAuthService.createServer(any()) }
       verify(exactly = 0) { serverMock.start() }
+    }
+
+    it("tells the user once when the browser did not open the authorization page") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openChecked(any()) } returns false
+
+      GitLabOAuthService(browser = browser).startOAuthFlow()
+
+      verify(exactly = 1) { NotificationUtils.show(BROWSER_OPEN_FAILED_MESSAGE, any(), any(), any()) }
     }
 
     it("opens the authorization URL through the BrowserLauncher gate, then starts the callback server") {
@@ -62,6 +86,28 @@ class GitLabOAuthServiceTest : DescribeSpec({
         )
         serverMock.start()
       }
+      verify(exactly = 0) { NotificationUtils.show(any(), any(), any(), any()) }
+    }
+
+    it("passes the gate's URL policy and sends the S256 challenge of the verifier the callback server uses") {
+      val browser = mockk<BrowserLauncher>()
+      val openedUrl = slot<String>()
+      every { browser.openChecked(capture(openedUrl)) } returns true
+      val gitLabOAuthService = spyk(GitLabOAuthService(browser = browser))
+      val serverMock = mockk<OAuthCallbackServer>()
+      val verifier = slot<String>()
+      every { serverMock.start() } just Runs
+      every { gitLabOAuthService.createServer(capture(verifier)) } returns serverMock
+
+      gitLabOAuthService.startOAuthFlow()
+
+      browserUrlVerdict(openedUrl.captured).shouldBeInstanceOf<BrowserUrlVerdict.Allowed>()
+      val challenge = URI(openedUrl.captured).rawQuery.split("&")
+        .single { it.startsWith("code_challenge=") }.substringAfter("=")
+      val expected = Base64.getUrlEncoder().withoutPadding().encodeToString(
+        MessageDigest.getInstance("SHA-256").digest(verifier.captured.toByteArray(StandardCharsets.US_ASCII)),
+      )
+      challenge shouldBe expected
     }
   }
 
