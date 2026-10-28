@@ -9,6 +9,7 @@ import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -81,6 +82,16 @@ class LanguageServerInstallerTest : DescribeSpec({
 
   afterEach {
     workDir.toFile().deleteRecursively()
+  }
+
+  describe("production wiring") {
+    it("reports install progress to Eclipse jobs when built without arguments") {
+      val reporter = LanguageServerInstaller::class.java.getDeclaredField("reporter")
+        .apply { isAccessible = true }
+        .get(LanguageServerInstaller())
+
+      reporter.shouldBeInstanceOf<JobInstallProgressReporter>()
+    }
   }
 
   describe("install") {

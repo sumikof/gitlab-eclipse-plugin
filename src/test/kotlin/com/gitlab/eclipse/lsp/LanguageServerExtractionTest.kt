@@ -778,6 +778,23 @@ class LanguageServerExtractionTest : DescribeSpec({
       progress.events shouldContainExactly waiting
     }
 
+    it("ends the wait when polling throws after the wait began") {
+      val progress = RecordingInstallProgressSession()
+      // Sees the lock held on the first attempt (the wait begins), then fails on the next one.
+      val failingAfterWaitBegan: (Path) -> FileChannel = { file ->
+        check("begin WAITING_FOR_LOCK" !in progress.events) { "poll failed" }
+        openLockFileForTest(file)
+      }
+
+      holdInstallLock {
+        shouldThrow<IllegalStateException> {
+          extraction(openLockFile = failingAfterWaitBegan, progress = progress).install(KEY, openArchive())
+        }
+      }
+
+      progress.events shouldContainExactly waiting
+    }
+
     it("reports extracting without waiting or cleaning up when the file system cannot lock") {
       val progress = RecordingInstallProgressSession()
 
