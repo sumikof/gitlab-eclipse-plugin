@@ -89,6 +89,7 @@ internal class LanguageServerExtraction(
   private val lockPollInterval: Duration = DEFAULT_LOCK_POLL_INTERVAL,
   private val renameAside: (Path, Path) -> Unit = ::renameAtomically,
   private val openLockFile: (Path) -> FileChannel = ::openLockFileForWrite,
+  private val progress: InstallProgressSession = InstallProgressSession.NONE,
 ) {
   private val logger by lazy { logger<LanguageServerExtraction>() }
 
@@ -112,7 +113,9 @@ internal class LanguageServerExtraction(
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
         // Sweep only if nobody else is installing right now (and locking works); never wait here.
-        withUncontendedLock(dataRoot.resolve(LOCK_FILE), openLockFile) { sweep(keep = installDir, shouldAbandon) }
+        withUncontendedLock(dataRoot.resolve(LOCK_FILE), openLockFile) {
+          progress.during(InstallPhase.CLEANING_UP) { sweep(keep = installDir, shouldAbandon) }
+        }
         return binaryOf(installDir)
       }
       // Incomplete, or being swept by another instance: let go and install under the install lock.
@@ -120,43 +123,26 @@ internal class LanguageServerExtraction(
     }
 
     Files.createDirectories(dataRoot)
-    val lockFile = dataRoot.resolve(LOCK_FILE)
-    val attempt = pollExclusiveLock(lockFile, lockTimeout, lockPollInterval, openLockFile, shouldAbandon) {
-      logger.info("Waiting for another Eclipse instance to finish installing the GitLab Language Server in $dataRoot.")
-    }
-    val lock = when (attempt) {
-      is LockAttempt.Acquired -> attempt.lock
-      is LockAttempt.Unavailable -> {
-        // As 9.3.0 did, which never locked: install anyway, but never sweep without the lock.
-        logger.warn(
-          "The language server install lock $lockFile is unavailable on this file system " +
-            "(${attempt.cause.javaClass.simpleName}: ${attempt.cause.message}); installing without it " +
-            "and skipping cleanup."
-        )
-        null
-      }
-      LockAttempt.Held -> {
-        logger.error("Timed out after $lockTimeout waiting for the language server install lock in $dataRoot.")
-        return null
-      }
-      LockAttempt.Interrupted -> {
-        logger.error("Interrupted while waiting for the language server install lock in $dataRoot.")
-        return null
-      }
-      LockAttempt.Abandoned -> {
-        // The plugin is stopping: not a failure, and the next start installs again.
-        logger.info("Stopped waiting for the language server install lock: the plugin is stopping.")
-        return null
-      }
-    }
+    val attempt = acquireInstallLock(
+      dataRoot.resolve(LOCK_FILE),
+      dataRoot,
+      lockTimeout,
+      lockPollInterval,
+      openLockFile,
+      shouldAbandon,
+      progress,
+    ) ?: return null
+    val lock = (attempt as? LockAttempt.Acquired)?.lock
 
     return try {
       // Another instance may have finished the same install while this one waited.
-      if (isComplete(installDir, key) || extract(key, installDir, openArchive)) {
+      val installed = isComplete(installDir, key) ||
+        progress.during(InstallPhase.EXTRACTING) { extract(key, installDir, openArchive) }
+      if (installed) {
         if (InUseLocks.acquire(installDir) != InUseLocks.Outcome.HELD) {
           logger.debug("Could not take the in-use lock of $installDir; using it unprotected.")
         }
-        if (lock != null) sweep(keep = installDir, shouldAbandon)
+        if (lock != null) progress.during(InstallPhase.CLEANING_UP) { sweep(keep = installDir, shouldAbandon) }
         binaryOf(installDir)
       } else {
         null
@@ -380,7 +366,7 @@ private fun openLockFileForWrite(file: Path): FileChannel =
   FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
 
 /** The outcome of trying for an exclusive lock. */
-private sealed interface LockAttempt {
+internal sealed interface LockAttempt {
   /** This process now holds the lock. */
   class Acquired(val lock: HeldLock) : LockAttempt
 
@@ -443,7 +429,7 @@ private fun withUncontendedLock(file: Path, open: (Path) -> FileChannel, action:
  * the lock held. While the lock is held, [shouldAbandon] is asked before each wait and ends the poll
  * with [LockAttempt.Abandoned] once true.
  */
-private fun pollExclusiveLock(
+internal fun pollExclusiveLock(
   file: Path,
   timeout: Duration,
   interval: Duration,
@@ -522,7 +508,7 @@ private fun deleteRecursively(path: Path) {
   )
 }
 
-private class HeldLock(private val channel: FileChannel, private val lock: FileLock) : AutoCloseable {
+internal class HeldLock(private val channel: FileChannel, private val lock: FileLock) : AutoCloseable {
   override fun close() {
     try {
       lock.release()

@@ -5,6 +5,8 @@ import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.longs.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.longs.shouldBeLessThan
@@ -30,8 +32,10 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -88,6 +92,24 @@ private val noLocksOnThisFileSystem: (Path) -> FileChannel = { throw IOException
 /** Fails like a rename on Windows of a directory whose binary is running. */
 private val failingRename: (Path, Path) -> Unit = { _, _ -> throw IOException("in use") }
 
+/** Records the phases an install reports, as `begin EXTRACTING` / `end EXTRACTING`, and how often it is closed. */
+internal class RecordingInstallProgressSession : InstallProgressSession {
+  val events = CopyOnWriteArrayList<String>()
+  val closes = AtomicInteger()
+
+  override fun begin(phase: InstallPhase) {
+    events += "begin $phase"
+  }
+
+  override fun end(phase: InstallPhase) {
+    events += "end $phase"
+  }
+
+  override fun close() {
+    closes.incrementAndGet()
+  }
+}
+
 class LanguageServerExtractionTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
@@ -105,7 +127,15 @@ class LanguageServerExtractionTest : DescribeSpec({
     timeoutMillis: Long = 5_000,
     renameAside: (Path, Path) -> Unit = ::renameAtomically,
     openLockFile: (Path) -> FileChannel = ::openLockFileForTest,
-  ) = LanguageServerExtraction(dataRoot, timeoutMillis.milliseconds, 20.milliseconds, renameAside, openLockFile)
+    progress: InstallProgressSession = InstallProgressSession.NONE,
+  ) = LanguageServerExtraction(
+    dataRoot,
+    timeoutMillis.milliseconds,
+    20.milliseconds,
+    renameAside,
+    openLockFile,
+    progress,
+  )
 
   /** Stands in for Eclipse's own log, so a test can see what was reported. */
   fun recordingLog(): ILog = mockk<ILog>(relaxUnitFun = true).also {
@@ -653,6 +683,127 @@ class LanguageServerExtractionTest : DescribeSpec({
 
       binary.readText() shouldBe "from the other instance"
       dataRoot.names().filter { it.startsWith("lsp.tmp-") }.shouldBeEmpty()
+    }
+  }
+
+  // #142 candidate C: the phases the install reports to its progress session (design §3.2).
+  describe("install progress phases") {
+    val extracting = listOf("begin EXTRACTING", "end EXTRACTING")
+    val cleaningUp = listOf("begin CLEANING_UP", "end CLEANING_UP")
+    val waiting = listOf("begin WAITING_FOR_LOCK", "end WAITING_FOR_LOCK")
+
+    fun holdInstallLock(block: () -> Unit) {
+      FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+        .use { channel -> channel.lock().use { block() } }
+    }
+
+    it("reports extracting, then cleaning up, on a new install") {
+      val progress = RecordingInstallProgressSession()
+
+      extraction(progress = progress).install(KEY, openArchive()).shouldNotBeNull()
+
+      progress.events shouldContainExactly extracting + cleaningUp
+      progress.closes.get() shouldBe 0
+    }
+
+    it("reports only cleaning up on the fast path") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+      val progress = RecordingInstallProgressSession()
+
+      extraction(progress = progress).install(KEY, openArchive()).shouldNotBeNull()
+
+      progress.events shouldContainExactly cleaningUp
+    }
+
+    it("reports nothing on the fast path while another holder has the install lock") {
+      extraction().install(KEY, openArchive()).shouldNotBeNull()
+      val progress = RecordingInstallProgressSession()
+
+      holdInstallLock { extraction(progress = progress).install(KEY, openArchive()).shouldNotBeNull() }
+
+      progress.events.shouldBeEmpty()
+    }
+
+    it("reports waiting for the lock until the other holder releases it, then extracting") {
+      val progress = RecordingInstallProgressSession()
+      val channel = FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+      try {
+        val install = CompletableFuture.supplyAsync {
+          extraction(timeoutMillis = 10_000, progress = progress).install(KEY, openArchive())
+        }
+        eventually(5.seconds) { progress.events shouldContain "begin WAITING_FOR_LOCK" }
+        progress.events shouldContainExactly listOf("begin WAITING_FOR_LOCK")
+        held.release()
+        channel.close()
+
+        install.get(10, TimeUnit.SECONDS).shouldNotBeNull()
+      } finally {
+        if (held.isValid) held.release()
+        channel.close()
+      }
+
+      progress.events shouldContainExactly waiting + extracting + cleaningUp
+    }
+
+    it("ends the wait when it is abandoned") {
+      val progress = RecordingInstallProgressSession()
+      val abandon = AtomicBoolean(false)
+      val channel = FileChannel.open(dataRoot.resolve("lsp.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+      val held = channel.lock()
+      try {
+        val install = CompletableFuture.supplyAsync {
+          extraction(timeoutMillis = 60_000, progress = progress)
+            .install(KEY, openArchive(), shouldAbandon = { abandon.get() })
+        }
+        eventually(5.seconds) { progress.events shouldContain "begin WAITING_FOR_LOCK" }
+        abandon.set(true)
+
+        install.get(5, TimeUnit.SECONDS).shouldBeNull()
+      } finally {
+        held.release()
+        channel.close()
+      }
+
+      progress.events shouldContainExactly waiting
+    }
+
+    it("ends the wait when it times out") {
+      val progress = RecordingInstallProgressSession()
+
+      val timingOut = extraction(timeoutMillis = 200, progress = progress)
+
+      holdInstallLock { timingOut.install(KEY, openArchive()).shouldBeNull() }
+
+      progress.events shouldContainExactly waiting
+    }
+
+    it("reports extracting without waiting or cleaning up when the file system cannot lock") {
+      val progress = RecordingInstallProgressSession()
+
+      extraction(openLockFile = noLocksOnThisFileSystem, progress = progress).install(KEY, openArchive())
+        .shouldNotBeNull()
+
+      progress.events shouldContainExactly extracting
+    }
+
+    it("ends extracting when the archive is broken") {
+      val broken = workDir.resolve("broken.jar").also { it.writeText("not a zip") }
+      val progress = RecordingInstallProgressSession()
+
+      extraction(progress = progress).install(KEY, openArchive(broken)).shouldBeNull()
+
+      progress.events shouldContainExactly extracting
+    }
+
+    it("ends extracting when the extraction throws past its own handling") {
+      val progress = RecordingInstallProgressSession()
+
+      shouldThrow<IllegalArgumentException> {
+        extraction(progress = progress).install(KEY, { throw IllegalArgumentException("unexpected") })
+      }
+
+      progress.events shouldContainExactly extracting
     }
   }
 })
