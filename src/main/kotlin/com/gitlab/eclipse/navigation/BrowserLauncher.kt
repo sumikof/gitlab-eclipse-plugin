@@ -22,8 +22,9 @@ const val BROWSER_OPEN_FAILED_MESSAGE = "Couldn't open the link in the browser."
  *
  * **`SWTError` is caught alongside `Exception`**: it extends `Error`, and escaping an `asyncExec` runnable it would
  * land in the SWT event loop, which logs it with its message and stack trace. `OutOfMemoryError` and the rest are
- * deliberately not caught. `IWebBrowser.openURL` signals failure by throwing `PartInitException` (see
- * `ShowDocumentLauncher`), so returning normally is what "it launched" means.
+ * deliberately not caught. `IWebBrowser.openURL` returns `void` and signals failure by throwing `PartInitException`,
+ * as does `getExternalBrowser` itself (verified against `org.eclipse.ui.workbench-3.137.0.jar`), so returning
+ * normally is what "it launched" means.
  *
  * Why [openAsync] takes `String?` while [open] / [openChecked] take `String`: [openAsync] serves the language server's
  * `window/showDocument`, whose URI may be absent, and a null is just one more refused link there. Every caller of the

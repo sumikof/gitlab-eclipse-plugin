@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -74,22 +75,33 @@ class ShowDocumentLauncherTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   val opened = mutableListOf<String>()
+  val notices = mutableListOf<String>()
 
   beforeTest {
     opened.clear()
+    notices.clear()
   }
 
+  /**
+   * A real [ShowDocumentLauncher] over a real [BrowserLauncher] gate whose three seams are fakes. The browser fake
+   * records what reached it by `toExternalForm()` (`URL.equals` resolves hosts over DNS). The production browser
+   * signals "did not launch" only by throwing (`IWebBrowser.openURL` returns `void`), so `launched = false` is a
+   * browser that received the URL and then threw.
+   */
   fun launcher(
     launched: Boolean = true,
     browserFailure: Throwable? = null,
     hopFailure: Exception? = null,
   ) = ShowDocumentLauncher(
-    onUiThread = { runnable -> if (hopFailure != null) throw hopFailure else runnable.run() },
-    openInBrowser = { url ->
-      opened += url
-      if (browserFailure != null) throw browserFailure
-      launched
-    },
+    BrowserLauncher(
+      onUiThread = { runnable -> if (hopFailure != null) throw hopFailure else runnable.run() },
+      openInBrowser = { url ->
+        opened += url.toExternalForm()
+        if (browserFailure != null) throw browserFailure
+        if (!launched) throw PartInitException("the browser declined")
+      },
+      notify = { notices += it },
+    ),
   )
 
   describe("show") {
@@ -174,6 +186,19 @@ class ShowDocumentLauncherTest : DescribeSpec({
 
       outcome.get(1, TimeUnit.SECONDS) shouldBe false
       opened.shouldBeEmpty()
+    }
+
+    it("never shows the user a notice, whatever the outcome: the server is the one told") {
+      fun outcomeOf(launcher: ShowDocumentLauncher, uri: String?) = launcher.show(uri).get(1, TimeUnit.SECONDS)
+
+      outcomeOf(launcher(), ACCEPTED_URL) shouldBe true
+      outcomeOf(launcher(), REFUSED_URL) shouldBe false
+      outcomeOf(launcher(), null) shouldBe false
+      outcomeOf(launcher(launched = false), ACCEPTED_URL) shouldBe false
+      outcomeOf(launcher(browserFailure = SWTError(SWT.ERROR_FAILED_EXEC, "x")), ACCEPTED_URL) shouldBe false
+      outcomeOf(launcher(hopFailure = IllegalStateException("gone")), ACCEPTED_URL) shouldBe false
+
+      notices.shouldBeEmpty()
     }
   }
 

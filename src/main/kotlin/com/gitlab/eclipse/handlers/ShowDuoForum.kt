@@ -9,10 +9,10 @@ import org.eclipse.core.commands.ExecutionEvent
  * Status menu "GitLab Forum (Help and feedback)": opens the GitLab Duo forum category in the
  * external browser.
  *
- * Uses [ShowDocumentLauncher] rather than [com.gitlab.eclipse.navigation.BrowserLauncher]: on a
- * browser failure the latter logs the whole URL (`BrowserLauncher.kt:17`), while this URL is a fixed
- * constant, not a value worth losing to a log line either. The returned future is ignored: the
- * launcher never completes exceptionally, and there is nothing to react to.
+ * Opens it through [ShowDocumentLauncher], which goes through the plugin's one browser gate,
+ * [com.gitlab.eclipse.navigation.BrowserLauncher.openAsync]: the gate never logs the URL or an
+ * exception message, and does not notify. The returned future is ignored: it never completes
+ * exceptionally, and there is nothing to react to.
  */
 @Suppress("unused")
 class ShowDuoForum(

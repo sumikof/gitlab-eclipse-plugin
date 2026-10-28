@@ -169,7 +169,7 @@ class DuoAgentPlatformWebViewControllerTest : DescribeSpec({
     }
 
     // SWTError extends Error: escaping the asyncExec runnable, the event loop would log its message
-    // and stack trace and may raise the internal-error dialog (review H2, ShowDocumentLauncher.openNow).
+    // and stack trace and may raise the internal-error dialog (review H2, BrowserLauncher.launchNow).
     it("contains an SWTError from the opener, logging the class only") {
       val f = Fixture()
       f.openerFailure = SWTError("SECRET-DETAIL")
