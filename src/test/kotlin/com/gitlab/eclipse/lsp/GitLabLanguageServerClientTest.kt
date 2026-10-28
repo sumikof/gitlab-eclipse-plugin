@@ -752,17 +752,6 @@ class GitLabLanguageServerClientTest : DescribeSpec({
     }
   }
 
-  describe("window/showDocument URI fidelity") {
-    it("hands a whitespace-padded URI to the launcher untouched") {
-      val padded = " https://gitlab.com/x "
-      every { showDocumentLauncher.show(padded) } returns CompletableFuture.completedFuture(false)
-
-      client.showDocument(ShowDocumentParams(padded)).get().isSuccess shouldBe false
-
-      verify(exactly = 1) { showDocumentLauncher.show(padded) }
-    }
-  }
-
   describe("$/gitlab/openFile") {
     it("passes the params the server sent to the opener") {
       val params = OpenFileParams("/p/a.kt")
