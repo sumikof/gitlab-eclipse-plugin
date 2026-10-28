@@ -11,8 +11,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
-import io.mockk.verify
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
 import org.eclipse.core.runtime.Platform
