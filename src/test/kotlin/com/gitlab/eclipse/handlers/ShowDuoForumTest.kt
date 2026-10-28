@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.ShowDocumentLauncher
 import com.gitlab.eclipse.navigation.BrowserLauncher
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
@@ -145,12 +146,16 @@ class ShowDuoForumTest : DescribeSpec({
     }
 
     // Only the browser is faked (it throws a message carrying a URL): the launcher and the gate are the real ones.
+    val notices = mutableListOf<String>()
+
+    beforeTest { notices.clear() }
+
     fun throwingLauncher() =
       ShowDocumentLauncher(
         BrowserLauncher(
           onUiThread = { it.run() },
           openInBrowser = { throwRuntime("boom https://forum.gitlab.com/c/gitlab-duo/52") },
-          notify = {},
+          notify = { notices += it },
         ),
       )
 
@@ -165,6 +170,7 @@ class ShowDuoForumTest : DescribeSpec({
         it.contains("docs.gitlab.com") shouldBe false
         it.contains("boom") shouldBe false
       }
+      notices.shouldBeEmpty()
     }
 
     it("ShowDuoDocumentation: leaks neither the URL nor the exception message when the browser throws") {
@@ -178,6 +184,7 @@ class ShowDuoForumTest : DescribeSpec({
         it.contains("docs.gitlab.com") shouldBe false
         it.contains("boom") shouldBe false
       }
+      notices.shouldBeEmpty()
     }
   }
 })

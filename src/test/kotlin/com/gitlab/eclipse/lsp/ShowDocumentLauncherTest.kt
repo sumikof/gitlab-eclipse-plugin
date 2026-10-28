@@ -11,6 +11,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
+import io.mockk.verify
 import io.mockk.unmockkStatic
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
@@ -19,6 +20,7 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.SWTError
 import org.eclipse.ui.PartInitException
 import org.osgi.framework.Bundle
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -151,6 +153,40 @@ class ShowDocumentLauncherTest : DescribeSpec({
 
       outcome.get(1, TimeUnit.SECONDS) shouldBe false
       opened.shouldBeEmpty()
+    }
+
+    it("hands a null URI to the gate as null, not as an empty string") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openAsync(null) } returns CompletableFuture.completedFuture(false)
+
+      ShowDocumentLauncher(browser).show(null).get(1, TimeUnit.SECONDS) shouldBe false
+
+      verify(exactly = 1) { browser.openAsync(null) }
+      verify(exactly = 1) { browser.openAsync(any()) }
+    }
+
+    it("does not trim a URI padded with whitespace: the gate refuses it and nothing reaches the browser") {
+      val outcome = launcher().show(" https://gitlab.com/x ")
+
+      outcome.get(1, TimeUnit.SECONDS) shouldBe false
+      opened.shouldBeEmpty()
+    }
+
+    it("hands a padded URI to the gate exactly as received") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openAsync(any()) } returns CompletableFuture.completedFuture(false)
+
+      ShowDocumentLauncher(browser).show(" https://gitlab.com/x ")
+
+      verify(exactly = 1) { browser.openAsync(" https://gitlab.com/x ") }
+    }
+
+    it("defaults to the production BrowserLauncher gate, not a stand-in") {
+      val default = ShowDocumentLauncher().browser
+
+      default.javaClass shouldBe BrowserLauncher::class.java
+      // A refusal needs no UI hop, so the real default gate can be exercised headless: it refuses and completes.
+      ShowDocumentLauncher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
     }
 
     it("reports failure when the browser declined the URI") {

@@ -28,7 +28,7 @@ import java.util.concurrent.CompletableFuture
  * @property browser the gate; defaults to the production [BrowserLauncher]
  */
 class ShowDocumentLauncher(
-  private val browser: BrowserLauncher = BrowserLauncher(),
+  internal val browser: BrowserLauncher = BrowserLauncher(),
 ) {
   /**
    * Opens [uri] in the external browser, completing with whether it launched.
