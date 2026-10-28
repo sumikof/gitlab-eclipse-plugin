@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.navigation.schemeLabel
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.swt.SWTError
@@ -10,13 +11,11 @@ import java.util.concurrent.CompletableFuture
 /**
  * Opens a URI the language server supplies — `window/showDocument` — in the user's external browser.
  *
- * **Not [com.gitlab.eclipse.navigation.BrowserLauncher], on purpose.** That one logs the whole URL
- * on failure (`BrowserLauncher.kt:17` and `:32`), which is right for its callers: they pass GitLab
- * URLs the user just clicked. A `window/showDocument` URI comes from the server instead and can
- * carry a signature or a token in its query or fragment, and a log line outlives the request — so
- * nothing here ever writes the URI, any part of it, or an exception message. Failures are logged by
- * exception class name, a refusal by scheme alone. `BrowserLauncher` is left untouched by
- * construction rather than by a default argument.
+ * A `window/showDocument` URI comes from the server and can carry a signature or a token in its
+ * query or fragment, and a log line outlives the request — so nothing here ever writes the URI, any
+ * part of it, or an exception message. Failures are logged by exception class name, a refusal by
+ * scheme label alone. (Still its own hop and policy check for now; routing it through
+ * [com.gitlab.eclipse.navigation.BrowserLauncher.openAsync], which has the same contract, is #142 D8a.)
  *
  * The URI is refused before the browser is touched, by [isBrowsableExternalUrl]: absolute http/https
  * with a host and no userinfo, so `javascript:`, `file:` and a host disguised as userinfo never
@@ -96,22 +95,11 @@ class ShowDocumentLauncher(
 }
 
 /**
- * The scheme of [uri], or a fixed word saying why there is none — the only part of a refused URI
- * that is ever logged.
- *
- * Safe to log: `java.net.URI` accepts a scheme only when it matches `ALPHA *( ALPHA | DIGIT | "+" |
- * "-" | "." )`, so nothing from the path, query, fragment or userinfo — where a signature or token
- * would sit — can reach this string. The parse failure itself is discarded rather than logged:
- * `URISyntaxException.getMessage` quotes the offending input in full.
+ * The scheme of [uri] as a label safe to log — the only part of a refused URI that is ever logged. Delegates to
+ * [com.gitlab.eclipse.navigation.schemeLabel]: a scheme from a fixed vocabulary, else `other` (the URI scheme grammar
+ * admits token-shaped strings such as `glpat-…`), or `none` / `relative` / `unparseable`.
  */
-internal fun schemeOf(uri: String?): String {
-  if (uri.isNullOrBlank()) return "none"
-  return try {
-    URI.create(uri).scheme?.lowercase() ?: "relative"
-  } catch (ignored: IllegalArgumentException) {
-    "unparseable"
-  }
-}
+internal fun schemeOf(uri: String?): String = schemeLabel(uri)
 
 /**
  * Production default for [ShowDocumentLauncher.openInBrowser]. **UI thread only.**

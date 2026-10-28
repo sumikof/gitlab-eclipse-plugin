@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.views.sidebar
 
 import com.gitlab.eclipse.ci.actions.selectedSidebarNode
+import com.gitlab.eclipse.navigation.BROWSER_OPEN_FAILED_MESSAGE
 import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.utils.NotificationUtils
 import org.eclipse.core.commands.AbstractHandler
@@ -8,7 +9,7 @@ import org.eclipse.core.commands.ExecutionEvent
 
 internal const val SELECT_SIDEBAR_ITEM_MESSAGE = "Select an item in the GitLab sidebar first."
 internal const val NO_SIDEBAR_LINK_MESSAGE = "This item has no GitLab link."
-internal const val BROWSER_FAILED_MESSAGE = "Couldn't open the link in the browser."
+internal const val BROWSER_FAILED_MESSAGE = BROWSER_OPEN_FAILED_MESSAGE
 
 /**
  * The web URL of [node] for the sidebar's Open / Copy actions (design A D4/D8), or null after telling the user why
