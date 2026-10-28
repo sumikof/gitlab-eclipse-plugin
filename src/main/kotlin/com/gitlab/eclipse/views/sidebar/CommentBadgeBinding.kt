@@ -48,3 +48,12 @@ internal fun settleCommentBadges(
 
 private fun SidebarNode.holds(badges: MrCommentBadges): Boolean =
   this is DiscussionsSectionNode && commentBadges === badges
+
+/**
+ * Whether a queued cache-hit apply may build an MR node's children (UI thread, inside the queued block). A LIST ↔ TREE
+ * toggle can queue two applies for the same current-branch node, so only the first fills it ([alreadyApplied] skips
+ * the second, and with it a second discussions prefetch); a full refresh that replaced the tree since the apply was
+ * queued ([generationCurrent] false) leaves the detached node alone, as the fetch path does.
+ */
+internal fun shouldApplyCachedMrChildren(alreadyApplied: Boolean, generationCurrent: Boolean): Boolean =
+  !alreadyApplied && generationCurrent

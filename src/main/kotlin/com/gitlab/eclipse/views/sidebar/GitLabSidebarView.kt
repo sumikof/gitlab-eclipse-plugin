@@ -580,8 +580,12 @@ class GitLabSidebarView : ViewPart() {
       // entry without stored tags — or one failing the check — yields (null, null), which
       // buildMrChildren already renders as "no Discussions section" rather than a wrong one.
       val tags = validatedCacheTags(mrConnectionTagsCache[cacheKey], node.mr.webUrl)
+      val generation = refreshState.currentGeneration()
       control.display.asyncExec {
         if (control.isDisposed) return@asyncExec
+        if (!shouldApplyCachedMrChildren(node.loadedChildren != null, refreshState.isCurrent(generation))) {
+          return@asyncExec
+        }
         applyMrChildren(node, Result.success(mrVersionCache[cacheKey]), tags.first, tags.second)
       }
       return
