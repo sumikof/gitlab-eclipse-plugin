@@ -4,6 +4,7 @@ import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.utils.system.Arch
 import com.gitlab.eclipse.utils.system.OS
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -48,6 +49,17 @@ class LanguageServerInstallerTest : DescribeSpec({
   lateinit var fragment: Bundle
 
   fun installer(os: OS = OS.LINUX, arch: Arch = Arch.X86_64) = LanguageServerInstaller { os to arch }
+
+  /** Hands out [session] and counts the opens. */
+  class CountingReporter : InstallProgressReporter {
+    val session = RecordingInstallProgressSession()
+    var opens = 0
+
+    override fun open(): InstallProgressSession {
+      opens++
+      return session
+    }
+  }
 
   beforeSpec {
     mockkStatic(FileLocator::class)
@@ -157,6 +169,53 @@ class LanguageServerInstallerTest : DescribeSpec({
 
       TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) shouldBeLessThan 5_000
       Files.exists(dataArea.resolve(installDirectoryName("1.2.3.456|9.30.0"))) shouldBe false
+    }
+  }
+
+  // #142 candidate C: one progress session per install, closed however the install ends (design §3.2-§3.3).
+  describe("install progress session") {
+    fun reportingInstaller(reporter: InstallProgressReporter, os: OS = OS.LINUX, arch: Arch = Arch.X86_64) =
+      LanguageServerInstaller(reporter) { os to arch }
+
+    it("opens and closes one session around a successful install, and passes it to the extraction") {
+      val reporter = CountingReporter()
+
+      reportingInstaller(reporter).install().shouldNotBeNull()
+
+      reporter.opens shouldBe 1
+      reporter.session.closes.get() shouldBe 1
+      reporter.session.events shouldContain "begin EXTRACTING"
+    }
+
+    it("opens and closes one session on an unsupported platform") {
+      val reporter = CountingReporter()
+
+      reportingInstaller(reporter, OS.LINUX, Arch.ARM64).install().shouldBeNull()
+
+      reporter.opens shouldBe 1
+      reporter.session.closes.get() shouldBe 1
+    }
+
+    it("opens and closes one session on the EquoIDE fallback") {
+      every { Platform.getBundle(LINUX_FRAGMENT) } returns null
+      val reporter = CountingReporter()
+
+      reportingInstaller(reporter).install().shouldNotBeNull()
+
+      reporter.opens shouldBe 1
+      reporter.session.closes.get() shouldBe 1
+    }
+
+    it("opens and closes one session when the extraction throws") {
+      // A data area whose root is a regular file: the extraction cannot create it and throws.
+      val notADirectory = Files.createFile(workDir.resolve("not-a-directory"))
+      every { fragment.getDataFile("lsp") } returns notADirectory.resolve("lsp").toFile()
+      val reporter = CountingReporter()
+
+      reportingInstaller(reporter).install().shouldBeNull()
+
+      reporter.opens shouldBe 1
+      reporter.session.closes.get() shouldBe 1
     }
   }
 })

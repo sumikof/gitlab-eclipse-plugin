@@ -21,6 +21,7 @@ import com.gitlab.eclipse.diagnostics.DiagnosticsLog
 import com.gitlab.eclipse.diagnostics.configuredSecrets
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
+import com.gitlab.eclipse.lsp.InstallProgressJobs
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.languageServerModule
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureNotifier
@@ -256,6 +257,9 @@ class GitLabEclipseStartup : AbstractUIPlugin() {
     // is still a workbench to show it, instead of leaving in-flight deadline jobs to notify one that
     // is already gone.
     stopLanguageServer()
+    // Design §3.4: the install ends inside provider.stop(), closing its progress session; this only
+    // makes sure no install progress outlives the bundle when that stop could not run.
+    bestEffort("Language server install progress") { InstallProgressJobs.cancelAll() }
     shutdownDiagnostics()
     // Still on the stop thread, as before; only contained now, so a session that fails to end (or a
     // manager that cannot be resolved) no longer leaves the HTTP client open.

@@ -10,6 +10,7 @@ import com.gitlab.eclipse.codesuggestions.CodeSuggestionsManager
 import com.gitlab.eclipse.codesuggestions.status.DuoStatusRefresher
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
+import com.gitlab.eclipse.lsp.InstallProgressJobs
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticGenerationRegistry
 import com.gitlab.eclipse.lsp.diagnostics.DiagnosticMarkerService
 import com.gitlab.eclipse.lsp.lifecycle.LanguageServerFailureKind
@@ -33,6 +34,8 @@ import io.kotest.matchers.string.shouldNotContain
 import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.verify
 import io.mockk.verifyOrder
 import kotlinx.coroutines.isActive
@@ -189,6 +192,37 @@ class GitLabEclipseStartupTest : DescribeSpec({
       } finally {
         every { codeSuggestionsManager.endAllSessions() } returns Unit
       }
+    }
+  }
+
+  // #142 candidate C (design §3.4-4): no install progress outlives the bundle.
+  describe("stop and the language server install progress") {
+    it("cancels every install progress display right after stopping the language server") {
+      val seen = mutableListOf<String>()
+      every { processProvider.stop() } answers { seen += "provider.stop" }
+      mockkObject(InstallProgressJobs)
+      try {
+        every { InstallProgressJobs.cancelAll() } answers { seen += "cancelAll" }
+
+        shouldNotThrowAny { startup(inlineTurn).stop(mockk<BundleContext>()) }
+      } finally {
+        unmockkObject(InstallProgressJobs)
+      }
+
+      seen shouldContainExactly listOf("provider.stop", "cancelAll")
+    }
+
+    it("runs the later steps when cancelling the install progress throws") {
+      mockkObject(InstallProgressJobs)
+      try {
+        every { InstallProgressJobs.cancelAll() } throws IllegalStateException("Job manager has been shut down")
+
+        shouldNotThrowAny { startup(inlineTurn).stop(mockk<BundleContext>()) }
+      } finally {
+        unmockkObject(InstallProgressJobs)
+      }
+
+      verifyLaterStepsRan()
     }
   }
 

@@ -14,19 +14,22 @@ import java.util.jar.JarFile
 internal const val LSP_VERSION_HEADER = "GitLab-Lsp-Version"
 
 class LanguageServerInstaller internal constructor(
+  /** Opens the progress session each install reports its phases to. */
+  private val reporter: InstallProgressReporter = InstallProgressReporter.NONE,
   /** The running platform; a seam so tests can pick one. */
   private val platform: () -> Pair<OS, Arch>,
 ) {
-  constructor() : this({ SystemUtils.os to SystemUtils.arch })
+  constructor() : this(JobInstallProgressReporter(), { SystemUtils.os to SystemUtils.arch })
 
   private val logger = logger<LanguageServerInstaller>()
 
   /**
    * Returns the path of the language server binary to run, or null when it cannot be installed.
    * Once [shouldAbandon] is true, it stops waiting for another instance's install lock and skips the
-   * cleanup, returning null; an extraction under way still completes.
+   * cleanup, returning null; an extraction under way still completes. Each call reports its phases
+   * to one session of [reporter], closed however the call ends.
    */
-  fun install(shouldAbandon: () -> Boolean = { false }): String? {
+  fun install(shouldAbandon: () -> Boolean = { false }): String? = reporter.open().use { session ->
     val (os, arch) = platform()
     val target = languageServerTarget(os, arch)
     if (target == null) {
@@ -34,12 +37,12 @@ class LanguageServerInstaller internal constructor(
       return null
     }
 
-    return try {
+    try {
       val bundle = Platform.getBundle(target.bundleSymbolicName)
         // NOTE: This is a workaround until we figure out how to bundle binaries for all platforms with EquoIDE.
         ?: return "${System.getProperty("user.dir")}/build/gitlab-lsp/bin/${target.binaryName}"
 
-      installFrom(bundle, shouldAbandon)?.toAbsolutePath()?.toString()
+      installFrom(bundle, shouldAbandon, session)?.toAbsolutePath()?.toString()
     } catch (e: Exception) {
       // Class name only (AC-G1): the message of an extraction failure carries the installation path.
       logger.error("Failed to install the language server (${e.javaClass.simpleName}).")
@@ -47,7 +50,7 @@ class LanguageServerInstaller internal constructor(
     }
   }
 
-  private fun installFrom(bundle: Bundle, shouldAbandon: () -> Boolean): Path? {
+  private fun installFrom(bundle: Bundle, shouldAbandon: () -> Boolean, session: InstallProgressSession): Path? {
     val bundleFile = FileLocator.getBundleFileLocation(bundle).orElse(null) ?: run {
       logger.error("Cannot locate the file of ${bundle.symbolicName}.")
       return null
@@ -60,7 +63,8 @@ class LanguageServerInstaller internal constructor(
     }
 
     val key = installKey(bundle.version.toString(), bundle.headers?.get(LSP_VERSION_HEADER))
-    return LanguageServerExtraction(dataRoot.toPath()).install(key, { JarFile(bundleFile) }, shouldAbandon)
+    val extraction = LanguageServerExtraction(dataRoot.toPath(), progress = session)
+    return extraction.install(key, { JarFile(bundleFile) }, shouldAbandon)
   }
 
   private companion object {
