@@ -14,7 +14,7 @@ import java.io.File
  *
  * Comments are ignored (a KDoc may name `openURL`); string contents are not (a `"xdg-open"` literal is a launch).
  * The ALLOWED table below is also checked from the other side: every pattern it allows must still occur in its file,
- * so the table cannot go stale.
+ * so the table cannot go stale. Each entry is a count: a second occurrence of an allowed pattern is a violation too.
  */
 class ExternalLaunchConventionTest : DescribeSpec({
   describe("external launch convention") {
@@ -26,8 +26,10 @@ class ExternalLaunchConventionTest : DescribeSpec({
     it("opens nothing outside BrowserLauncher except the allowed mailto launch") {
       val violations = productionFiles().flatMap { (relative, source) ->
         findLaunchPatterns(source)
-          .filterNot { (_, label) -> label in ALLOWED[relative].orEmpty() }
-          .map { (line, label) -> "$relative:$line: $label" }
+          .groupBy { (_, label) -> label }
+          .flatMap { (label, found) ->
+            found.drop(ALLOWED[relative]?.get(label) ?: 0).map { (line, _) -> "$relative:$line: $label" }
+          }
       }
 
       violations.shouldBeEmpty()
@@ -36,8 +38,9 @@ class ExternalLaunchConventionTest : DescribeSpec({
     it("every allowed pattern still occurs in its file") {
       val sources = productionFiles().toMap()
       val stale = ALLOWED.flatMap { (relative, labels) ->
-        val present = findLaunchPatterns(sources[relative].orEmpty()).map { it.second }.toSet()
-        labels.filterNot { it in present }.map { "$relative: $it" }
+        val present = findLaunchPatterns(sources[relative].orEmpty()).groupingBy { it.second }.eachCount()
+        labels.filter { (label, allowed) -> (present[label] ?: 0) < allowed }
+          .map { (label, allowed) -> "$relative: $label (allowed $allowed, found ${present[label] ?: 0})" }
       }
 
       stale.shouldBeEmpty()
@@ -53,6 +56,7 @@ class ExternalLaunchConventionTest : DescribeSpec({
         "Program.getPrograms()",
         "org.eclipse.swt.program.Program.launch(x)",
         "import org.eclipse.swt.program.Program as P",
+        "import org.eclipse.swt.program.*",
         "val b: org.eclipse.ui.browser.IWebBrowser",
         "val s = \"https://x\"; Program.launch(s)",
         "val s = \"a // b\"; Program.launch(s)",
@@ -84,6 +88,14 @@ class ExternalLaunchConventionTest : DescribeSpec({
         }
       }
 
+      it("counts each occurrence, and an import or a qualified use only once") {
+        findLaunchPatterns("Program.launch(a); Program.launch(b)").size shouldBe 2
+        findLaunchPatterns("import org.eclipse.swt.program.Program").map { it.second } shouldBe
+          listOf("import org.eclipse.swt.program.")
+        findLaunchPatterns("org.eclipse.swt.program.Program.launch(x)").map { it.second } shouldBe
+          listOf("Program.launch(", "org.eclipse.swt.program. (qualified)")
+      }
+
       it("reports the line number and the pattern") {
         findLaunchPatterns("val a = 1\n/* c\n*/\nval b = Program.launch(x)\n") shouldBe
           listOf(4 to "Program.launch(")
@@ -97,16 +109,12 @@ private const val SOURCE_ROOT = "src/main/kotlin/com/gitlab/eclipse"
 /**
  * The only direct launches. `BrowserLauncher` is the gate itself. `OpenUrlHandler` opens a `mailto:` link in the mail
  * client: `Program.launch` is how SWT hands a mailto to the OS, the browser gate refuses non-http(s) on purpose, and
- * `VulnerabilityLinkPolicy` has already admitted only a non-empty `mailto:` before it gets there (design §3.5). Its
- * import line also contains the `org.eclipse.swt.program.` prefix.
+ * `VulnerabilityLinkPolicy` has already admitted only a non-empty `mailto:` before it gets there (design §3.5). Each
+ * value is how many times the file may contain that pattern, exactly.
  */
-private val ALLOWED: Map<String, Set<String>> = mapOf(
-  "navigation/BrowserLauncher.kt" to setOf("browserSupport", "externalBrowser", ".openURL("),
-  "lsp/OpenUrlHandler.kt" to setOf(
-    "import org.eclipse.swt.program.Program",
-    "org.eclipse.swt.program.",
-    "Program.launch(",
-  ),
+private val ALLOWED: Map<String, Map<String, Int>> = mapOf(
+  "navigation/BrowserLauncher.kt" to mapOf("browserSupport" to 1, "externalBrowser" to 1, ".openURL(" to 1),
+  "lsp/OpenUrlHandler.kt" to mapOf("import org.eclipse.swt.program." to 1, "Program.launch(" to 1),
 )
 
 /** Label (what the failure message prints and ALLOWED names) to the regex that finds it in comment-free code. */
@@ -125,10 +133,11 @@ private val FORBIDDEN: List<Pair<String, Regex>> = listOf(
   ".browse(" to Regex("""\.browse\("""),
   "\"xdg-open\"" to Regex(""""xdg-open""""),
   "\"rundll32\"" to Regex(""""rundll32""""),
-  "import org.eclipse.swt.program.Program" to Regex("""import\s+org\.eclipse\.swt\.program\.Program"""),
-  "org.eclipse.swt.program." to Regex("""org\.eclipse\.swt\.program\."""),
+  // An import line and a fully qualified use are separate labels that never match the same line.
+  "import org.eclipse.swt.program." to Regex("""import\s+org\.eclipse\.swt\.program\."""),
+  "org.eclipse.swt.program. (qualified)" to Regex("""^(?!\s*import\b).*org\.eclipse\.swt\.program\."""),
   "import java.awt.Desktop" to Regex("""import\s+java\.awt\.Desktop"""),
-  "java.awt.Desktop" to Regex("""java\.awt\.Desktop"""),
+  "java.awt.Desktop (qualified)" to Regex("""^(?!\s*import\b).*java\.awt\.Desktop"""),
   "org.eclipse.ui.browser." to Regex("""org\.eclipse\.ui\.browser\."""),
 )
 
@@ -141,7 +150,7 @@ private fun productionFiles(): List<Pair<String, String>> =
 /** `(line, label)` for every forbidden pattern in [source], comments ignored; one entry per match. */
 private fun findLaunchPatterns(source: String): List<Pair<Int, String>> =
   stripComments(source).lines().flatMapIndexed { index, line ->
-    FORBIDDEN.filter { (_, regex) -> regex.containsMatchIn(line) }.map { (label, _) -> index + 1 to label }
+    FORBIDDEN.flatMap { (label, regex) -> regex.findAll(line).map { index + 1 to label }.toList() }
   }
 
 /**

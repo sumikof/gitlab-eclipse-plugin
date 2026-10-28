@@ -182,11 +182,7 @@ class ShowDocumentLauncherTest : DescribeSpec({
     }
 
     it("defaults to the production BrowserLauncher gate, not a stand-in") {
-      val default = ShowDocumentLauncher().browser
-
-      default.javaClass shouldBe BrowserLauncher::class.java
-      // A refusal needs no UI hop, so the real default gate can be exercised headless: it refuses and completes.
-      ShowDocumentLauncher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
+      ShowDocumentLauncher().browser.javaClass shouldBe BrowserLauncher::class.java
     }
 
     it("reports failure when the browser declined the URI") {
@@ -244,6 +240,16 @@ class ShowDocumentLauncherTest : DescribeSpec({
     afterTest {
       unmockkStatic(Platform::class)
       mockkStatic(Platform::class)
+    }
+
+    it("refuses through the production default gate before any UI hop") {
+      val logged = captureLog()
+
+      // A refusal needs no UI hop, so the real default gate can be exercised headless.
+      ShowDocumentLauncher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
+
+      logged.any { it.contains("refused a link outside") && it.contains("scheme=javascript") } shouldBe true
+      logged.any { it.contains("could not reach the UI thread") } shouldBe false
     }
 
     it("names the refused scheme but no part of the URI when the policy rejects it") {
