@@ -29,23 +29,41 @@ private const val ALLOWED = "https://gitlab.com/g/p/-/issues/1?a=b#frag"
 /** Refused for its scheme alone: it has a host and no userinfo. */
 private const val REFUSED = "javascript://gitlab.com/%0Aalert(1)"
 
+/** Every line a real [ILog] would write, in order, with the level each was written at alongside ([levels]). */
+private class CapturedLog : ArrayList<String>() {
+  val levels = mutableListOf<String>()
+
+  fun record(level: String, line: String) {
+    levels += level
+    add(line)
+  }
+}
+
 /**
  * Installs a log that records everything a real [ILog] would write, the throwable's message included (the platform
- * log writes an attached exception's message too), and returns that recording. Same shape as `ShowDocumentLauncherTest`.
+ * log writes an attached exception's message too), and the level of each line, and returns that recording. Same
+ * shape as `ShowDocumentLauncherTest`, plus the level, so a refusal or failure logged below warn is caught.
  */
-private fun captureLog(): List<String> {
-  val recorded = mutableListOf<String>()
+private fun captureLog(): CapturedLog {
+  val recorded = CapturedLog()
   val log = mockk<ILog>()
   val message = slot<String>()
   val status = slot<IStatus>()
-  every { log.error(capture(message)) } answers { recorded += message.captured }
-  every { log.error(any<String>(), any()) } answers { recorded += "${arg<String>(0)} ${arg<Throwable?>(1)?.message}" }
-  every { log.warn(capture(message)) } answers { recorded += message.captured }
-  every { log.warn(any<String>(), any()) } answers { recorded += "${arg<String>(0)} ${arg<Throwable?>(1)?.message}" }
-  every { log.info(capture(message)) } answers { recorded += message.captured }
-  every { log.info(any<String>(), any()) } answers { recorded += "${arg<String>(0)} ${arg<Throwable?>(1)?.message}" }
+  every { log.error(capture(message)) } answers { recorded.record("error", message.captured) }
+  every { log.error(any<String>(), any()) } answers {
+    recorded.record("error", "${arg<String>(0)} ${arg<Throwable?>(1)?.message}")
+  }
+  every { log.warn(capture(message)) } answers { recorded.record("warn", message.captured) }
+  every { log.warn(any<String>(), any()) } answers {
+    recorded.record("warn", "${arg<String>(0)} ${arg<Throwable?>(1)?.message}")
+  }
+  every { log.info(capture(message)) } answers { recorded.record("info", message.captured) }
+  every { log.info(any<String>(), any()) } answers {
+    recorded.record("info", "${arg<String>(0)} ${arg<Throwable?>(1)?.message}")
+  }
   every { log.log(capture(status)) } answers {
-    recorded += "${status.captured.message} ${status.captured.exception?.message}"
+    val logged = status.captured
+    recorded.record("status:${logged.severity}", "${logged.message} ${logged.exception?.message}")
   }
   every { Platform.getLog(any<Bundle>()) } returns log
   every { Platform.getLog(any<Class<*>>()) } returns log
@@ -207,14 +225,17 @@ class BrowserLauncherTest : DescribeSpec({
       it.contains(url) shouldBe false
     }
 
-    // D-D6 (b): the refusal line ends at the reason. No scheme, not even a bounded label, is logged.
+    // D-D6 (b): the refusal line ends at the reason. No scheme, not even a bounded label, is logged. Each case plants
+    // the secret in a different spot, and together they cover every reason a secret can ride in (BLANK carries none).
     listOf(
-      "https://u:$SECRET@gitlab.com/x" to "reason=USERINFO",
-      "glpat-$SECRET:x" to "reason=DISALLOWED_SCHEME",
-      "javascript://$SECRET.example/x?token=$SECRET#$SECRET" to "reason=DISALLOWED_SCHEME",
-      "https://$SECRET.example/a b?token=$SECRET" to "reason=UNPARSEABLE",
-    ).forEach { (url, expected) ->
-      it("names only the refusal reason, never the scheme, for \"$expected\" from every entry point") {
+      Triple("https://u:$SECRET@gitlab.com/x", "USERINFO", "the userinfo"),
+      Triple("glpat-$SECRET:x", "DISALLOWED_SCHEME", "a token-shaped scheme"),
+      Triple("javascript://$SECRET.example/x?token=$SECRET#$SECRET", "DISALLOWED_SCHEME", "a javascript link's host"),
+      Triple("https://$SECRET.example/a b?token=$SECRET", "UNPARSEABLE", "an unparseable link"),
+      Triple("//$SECRET.example/x", "NO_SCHEME", "a scheme-relative link's host"),
+      Triple("https:$SECRET", "NO_HOST", "an opaque https link"),
+    ).forEach { (url, reason, spot) ->
+      it("logs only reason=$reason at warn for $spot, from every entry point") {
         val logged = captureLog()
 
         launcher().open(url)
@@ -222,18 +243,16 @@ class BrowserLauncherTest : DescribeSpec({
         launcher().openAsync(url)
 
         logged.size shouldBe 3
+        logged.levels.shouldContainExactly("warn", "warn", "warn")
         logged.forEach {
-          it shouldBe "BrowserLauncher: refused a link outside the http/https policy; $expected"
-          it.contains("scheme") shouldBe false
-          listOf("javascript", "glpat", "other", "unparseable", "file").forEach { label ->
-            it.contains(label) shouldBe false
-          }
+          it shouldBe "BrowserLauncher: refused a link outside the http/https policy; reason=$reason"
+          it.contains("scheme=") shouldBe false
         }
         logged.shouldLeakNothingOf(url)
       }
     }
 
-    it("names the browser failure by exception class, never its message or the link") {
+    it("names the browser failure at warn by exception class, never its message or the link") {
       val logged = captureLog()
       val url = "https://$SECRET.example/x?token=$SECRET#$SECRET"
       val failure = PartInitException("could not open $url")
@@ -243,12 +262,13 @@ class BrowserLauncherTest : DescribeSpec({
       launcher(browserFailure = failure).openAsync(url)
 
       logged.size shouldBe 3
+      logged.levels.shouldContainExactly("warn", "warn", "warn")
       logged.count { it.contains(PartInitException::class.java.name) } shouldBe 2
       logged.count { it.contains(SWTError::class.java.name) } shouldBe 1
       logged.shouldLeakNothingOf(url)
     }
 
-    it("names the UI hop failure by exception class, never its message or the link") {
+    it("names the UI hop failure at warn by exception class, never its message or the link") {
       val logged = captureLog()
       val url = "https://$SECRET.example/x?token=$SECRET#$SECRET"
 
@@ -256,6 +276,7 @@ class BrowserLauncherTest : DescribeSpec({
       launcher(hopFailure = SWTException("disposed while opening $url")).openAsync(url)
 
       logged.size shouldBe 2
+      logged.levels.shouldContainExactly("warn", "warn")
       logged.count { it.contains(IllegalStateException::class.java.name) } shouldBe 1
       logged.count { it.contains(SWTException::class.java.name) } shouldBe 1
       logged.shouldLeakNothingOf(url)

@@ -10,8 +10,8 @@ import java.util.concurrent.CompletableFuture
  *
  * A `window/showDocument` URI comes from the server and can carry a signature or a token in its
  * query or fragment, and a log line outlives the request — so nothing on this path ever writes the
- * URI, any part of it, or an exception message: the gate logs a refusal by reason and scheme label,
- * and a failure by exception class name.
+ * URI, any part of it, or an exception message: the gate logs a refusal by reason alone (D-D6), and a
+ * failure by exception class name.
  *
  * The gate refuses the URI before any UI hop — absolute http/https with a host and no userinfo only,
  * so `javascript:`, `file:` and a host disguised as userinfo never reach the browser.
@@ -40,7 +40,8 @@ class ShowDocumentLauncher(
 }
 
 /**
- * The scheme of [uri] as a label safe to log — the only part of a refused URI that is ever logged. Delegates to
+ * The scheme of [uri] as a label safe to log — the only part of a refused URI that `OpenUrlHandler` (via
+ * `VulnerabilityLinkPolicy.schemeForLog`) ever logs; the browser gate itself logs no scheme (D-D6). Delegates to
  * [com.gitlab.eclipse.navigation.schemeLabel]: a scheme from a fixed vocabulary, else `other` (the URI scheme grammar
  * admits token-shaped strings such as `glpat-…`), or `none` / `relative` / `unparseable`.
  */

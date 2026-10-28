@@ -127,7 +127,7 @@ class BrowserUrlPolicyTest : DescribeSpec({
     }
   }
 
-  describe("schemeOf (the log label of ShowDocumentLauncher, VulnerabilityLinkPolicy and OpenUrlHandler)") {
+  describe("schemeOf (the log label of VulnerabilityLinkPolicy and OpenUrlHandler)") {
     it("is the bounded label, so a token-shaped scheme is logged as other") {
       schemeOf("glpat-abc:xyz") shouldBe "other"
       schemeOf("x-custom://h/x") shouldBe "other"

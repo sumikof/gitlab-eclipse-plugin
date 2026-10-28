@@ -249,7 +249,7 @@ class ShowDocumentLauncherTest : DescribeSpec({
       ShowDocumentLauncher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
 
       logged.any { it.contains("refused a link outside") && it.contains("reason=DISALLOWED_SCHEME") } shouldBe true
-      logged.any { it.contains("scheme") || it.contains("javascript") } shouldBe false
+      logged.any { it.contains("scheme=") || it.contains("javascript") } shouldBe false
       logged.any { it.contains("could not reach the UI thread") } shouldBe false
     }
 
@@ -259,7 +259,7 @@ class ShowDocumentLauncherTest : DescribeSpec({
       launcher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
 
       logged.any { it.contains("reason=DISALLOWED_SCHEME") } shouldBe true
-      logged.any { it.contains("scheme") || it.contains("javascript") } shouldBe false
+      logged.any { it.contains("scheme=") || it.contains("javascript") } shouldBe false
       // Review H8: page clicks reach this too, so the line must not name the language server as the source.
       logged.any { it.contains("language server") } shouldBe false
       logged.forEach {
