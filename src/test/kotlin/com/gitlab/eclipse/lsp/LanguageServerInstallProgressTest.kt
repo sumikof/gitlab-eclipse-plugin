@@ -1,25 +1,36 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.utils.DebugLogging
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeSameInstanceAs
+import io.mockk.MockKMatcherScope
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.delay
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.core.runtime.IStatus
+import org.eclipse.core.runtime.Platform
 import org.eclipse.core.runtime.Status
+import org.eclipse.core.runtime.jobs.IJobChangeEvent
 import org.eclipse.core.runtime.jobs.Job
+import org.eclipse.core.runtime.jobs.JobChangeAdapter
+import org.osgi.framework.Bundle
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.milliseconds
 
 private const val WAIT_SECONDS = 10L
-private const val VERIFY_TIMEOUT_MS = 5_000L
+
+/** A delay long enough that a scheduled Job never starts during the test (it is cancelled first). */
+private val NEVER_MS = TimeUnit.HOURS.toMillis(1)
 
 /** A [JobInstallProgressReporter] whose display seams are recorded instead of reaching a Job manager. */
 private class FakeDisplay(
@@ -62,6 +73,33 @@ private fun <T> onThread(block: () -> T): CompletableFuture<T> {
     }
   }.apply { isDaemon = true }.start()
   return future
+}
+
+/** A latch released the first time [call] is made on this relaxed mock; it still answers like a relaxed call. */
+private fun IProgressMonitor.latchOn(call: MockKMatcherScope.(IProgressMonitor) -> Unit): CountDownLatch {
+  val latch = CountDownLatch(1)
+  val monitor = this
+  every { call(monitor) } answers { latch.countDown() }
+  return latch
+}
+
+/**
+ * Runs the display body on another thread while [steer] drives it from the test thread. Every wait
+ * is bounded, and the session is always closed at the end, so a broken body fails the test instead
+ * of hanging the test worker.
+ */
+private suspend fun displayOnThread(
+  state: InstallProgressState,
+  monitor: IProgressMonitor,
+  steer: suspend () -> Unit,
+): IStatus {
+  val future = onThread { runInstallProgressDisplay(state, monitor, pollMillis = 10L) }
+  try {
+    steer()
+    return future.get(WAIT_SECONDS, TimeUnit.SECONDS)
+  } finally {
+    state.closed.countDown()
+  }
 }
 
 class LanguageServerInstallProgressTest : DescribeSpec({
@@ -189,6 +227,105 @@ class LanguageServerInstallProgressTest : DescribeSpec({
     }
   }
 
+  describe("the reporter's defaults and failures") {
+    it("delays the display by one second by default (D-C2)") {
+      val scheduled = mutableListOf<Long>()
+      val reporter = JobInstallProgressReporter(
+        scheduleDisplay = { _, ms -> scheduled += ms },
+        cancelDisplay = {},
+        newDisplayJob = { mockk(relaxed = true) },
+      )
+
+      reporter.open().apply {
+        begin(InstallPhase.EXTRACTING)
+        close()
+      }
+
+      DISPLAY_DELAY shouldBe 1_000.milliseconds
+      scheduled shouldBe listOf(1_000L)
+    }
+
+    it("opens a no-op session when the display Job cannot be made") {
+      val reporter = JobInstallProgressReporter(newDisplayJob = { throw IllegalStateException("boom") })
+
+      val session = reporter.open()
+
+      session shouldBeSameInstanceAs InstallProgressSession.NONE
+    }
+
+    it("never throws from begin or close when even the log fails") {
+      val previous = DebugLogging.isEnabled
+      DebugLogging.isEnabled = { true }
+      every { Platform.getLog(any<Bundle>()) } throws IllegalStateException("no log")
+      every { Platform.getLog(any<Class<*>>()) } throws IllegalStateException("no log")
+      try {
+        val shutDown = IllegalStateException("Job manager has been shut down.")
+        val display = FakeDisplay(scheduleFailure = shutDown, cancelFailure = shutDown)
+        val session = display.reporter().open()
+
+        session.begin(InstallPhase.EXTRACTING)
+        session.close()
+
+        display.scheduled.size shouldBe 1
+        display.cancelled.size shouldBe 1
+      } finally {
+        DebugLogging.isEnabled = previous
+      }
+    }
+  }
+
+  describe("with the real Job manager") {
+    it("schedules the display with the delay and cancels it on close, so it never runs") {
+      val jobs = mutableListOf<Job>()
+      val ran = AtomicInteger()
+      val reporter = JobInstallProgressReporter(
+        newDisplayJob = { state ->
+          InstallProgressJob(state).also { job ->
+            job.addJobChangeListener(
+              object : JobChangeAdapter() {
+                override fun running(event: IJobChangeEvent) {
+                  ran.incrementAndGet()
+                }
+              },
+            )
+            jobs += job
+          }
+        },
+      )
+      val session = reporter.open()
+      val job = jobs.single()
+      try {
+        session.begin(InstallPhase.EXTRACTING)
+        job.state shouldBe Job.SLEEPING
+
+        session.close()
+
+        job.state shouldBe Job.NONE
+        ran.get() shouldBe 0
+      } finally {
+        job.cancel()
+      }
+    }
+
+    it("cancels a waiting display Job of the family and leaves other Jobs alone") {
+      val mine = InstallProgressJob(InstallProgressState())
+      val other = object : Job("other") {
+        override fun run(monitor: IProgressMonitor?): IStatus = Status.OK_STATUS
+      }
+      mine.schedule(NEVER_MS)
+      other.schedule(NEVER_MS)
+      try {
+        InstallProgressJobs.cancelAll()
+
+        mine.state shouldBe Job.NONE
+        other.state shouldBe Job.SLEEPING
+      } finally {
+        mine.cancel()
+        other.cancel()
+      }
+    }
+  }
+
   describe("the no-op reporter and session") {
     it("does nothing") {
       InstallProgressReporter.NONE.open() shouldBeSameInstanceAs InstallProgressSession.NONE
@@ -206,12 +343,14 @@ class LanguageServerInstallProgressTest : DescribeSpec({
     it("returns OK once the session closes on another thread, after one beginTask and one done") {
       val state = InstallProgressState()
       val monitor = relaxedMonitor()
+      val began = monitor.latchOn { it.beginTask(INSTALL_PROGRESS_JOB_NAME, IProgressMonitor.UNKNOWN) }
 
-      val result = onThread { runInstallProgressDisplay(state, monitor, pollMillis = 10L) }
-      verify(timeout = VERIFY_TIMEOUT_MS) { monitor.beginTask(INSTALL_PROGRESS_JOB_NAME, IProgressMonitor.UNKNOWN) }
-      state.closed.countDown()
+      val result = displayOnThread(state, monitor) {
+        began.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        state.closed.countDown()
+      }
 
-      result.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.OK_STATUS
+      result shouldBe Status.OK_STATUS
       verify(exactly = 1) { monitor.beginTask(any(), any()) }
       verify(exactly = 1) { monitor.done() }
     }
@@ -219,16 +358,19 @@ class LanguageServerInstallProgressTest : DescribeSpec({
     it("reports each phase change as a sub task, once per change") {
       val state = InstallProgressState()
       val monitor = relaxedMonitor()
+      val waiting = monitor.latchOn { it.subTask(installPhaseLabel(InstallPhase.WAITING_FOR_LOCK)) }
+      val extracting = monitor.latchOn { it.subTask(installPhaseLabel(InstallPhase.EXTRACTING)) }
       state.currentPhase.set(InstallPhase.WAITING_FOR_LOCK)
 
-      val result = onThread { runInstallProgressDisplay(state, monitor, pollMillis = 10L) }
-      verify(timeout = VERIFY_TIMEOUT_MS) { monitor.subTask(installPhaseLabel(InstallPhase.WAITING_FOR_LOCK)) }
-      state.currentPhase.set(InstallPhase.EXTRACTING)
-      verify(timeout = VERIFY_TIMEOUT_MS) { monitor.subTask(installPhaseLabel(InstallPhase.EXTRACTING)) }
-      delay(50L)
-      state.closed.countDown()
+      val result = displayOnThread(state, monitor) {
+        waiting.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        state.currentPhase.set(InstallPhase.EXTRACTING)
+        extracting.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        delay(50L)
+        state.closed.countDown()
+      }
 
-      result.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.OK_STATUS
+      result shouldBe Status.OK_STATUS
       verify(exactly = 1) { monitor.subTask(installPhaseLabel(InstallPhase.WAITING_FOR_LOCK)) }
       verify(exactly = 1) { monitor.subTask(installPhaseLabel(InstallPhase.EXTRACTING)) }
     }
@@ -237,11 +379,15 @@ class LanguageServerInstallProgressTest : DescribeSpec({
       val state = InstallProgressState()
       val monitor = relaxedMonitor(cancelled = true)
 
-      val result = onThread { runInstallProgressDisplay(state, monitor, pollMillis = 10L) }
+      val future = onThread { runInstallProgressDisplay(state, monitor, pollMillis = 10L) }
 
-      result.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.CANCEL_STATUS
-      state.closed.count shouldBe 1L
-      verify(exactly = 1) { monitor.done() }
+      try {
+        future.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.CANCEL_STATUS
+        state.closed.count shouldBe 1L
+        verify(exactly = 1) { monitor.done() }
+      } finally {
+        state.closed.countDown()
+      }
     }
 
     it("returns OK at once when the session is already closed") {
@@ -249,24 +395,29 @@ class LanguageServerInstallProgressTest : DescribeSpec({
       state.closed.countDown()
       val monitor = relaxedMonitor(cancelled = true)
 
-      runInstallProgressDisplay(state, monitor, pollMillis = 10L) shouldBe Status.OK_STATUS
+      displayOnThread(state, monitor) {} shouldBe Status.OK_STATUS
       verify(exactly = 0) { monitor.subTask(any()) }
     }
 
     it("returns OK when its thread is interrupted") {
       val state = InstallProgressState()
       val monitor = relaxedMonitor()
-      val thread = arrayOfNulls<Thread>(1)
-
-      val result = onThread {
-        thread[0] = Thread.currentThread()
+      val began = monitor.latchOn { it.beginTask(any(), any()) }
+      val thread = AtomicReference<Thread>()
+      val future = onThread {
+        thread.set(Thread.currentThread())
         runInstallProgressDisplay(state, monitor, pollMillis = 60_000L)
       }
-      verify(timeout = VERIFY_TIMEOUT_MS) { monitor.beginTask(any(), any()) }
-      thread[0]!!.interrupt()
 
-      result.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.OK_STATUS
-      verify(exactly = 1) { monitor.done() }
+      try {
+        began.await(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe true
+        thread.get().interrupt()
+
+        future.get(WAIT_SECONDS, TimeUnit.SECONDS) shouldBe Status.OK_STATUS
+        verify(exactly = 1) { monitor.done() }
+      } finally {
+        state.closed.countDown()
+      }
     }
 
     it("folds a failing monitor into OK") {
@@ -274,7 +425,16 @@ class LanguageServerInstallProgressTest : DescribeSpec({
       val monitor = relaxedMonitor()
       every { monitor.beginTask(any(), any()) } throws IllegalStateException("boom")
 
-      runInstallProgressDisplay(state, monitor, pollMillis = 10L).severity shouldBe IStatus.OK
+      displayOnThread(state, monitor) {}.severity shouldBe IStatus.OK
+    }
+
+    it("does not let a failing done escape") {
+      val state = InstallProgressState()
+      state.closed.countDown()
+      val monitor = relaxedMonitor()
+      every { monitor.done() } throws IllegalStateException("boom")
+
+      displayOnThread(state, monitor) {} shouldBe Status.OK_STATUS
     }
   }
 

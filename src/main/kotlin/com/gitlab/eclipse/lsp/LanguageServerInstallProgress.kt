@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.lsp
 
+import com.gitlab.eclipse.utils.debug
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.core.runtime.IProgressMonitor
 import org.eclipse.core.runtime.IStatus
@@ -91,8 +92,8 @@ internal class InstallProgressState {
 
 /**
  * The production reporter: each session shows a non-user Job in the Progress view, scheduled with
- * [delay] on the first phase and cancelled on close, so an install that ends within [delay] — every
- * start after the first — never shows anything. The Job only displays; cancelling it in the
+ * [delay] on the first phase and cancelled on close, so an install that ends within [delay] — normally
+ * every start after the first — shows nothing. The Job only displays; cancelling it in the
  * Progress view hides it and leaves the install running. Every platform touch point is a
  * constructor seam, so this is tested without a Job manager.
  */
@@ -104,9 +105,20 @@ internal class JobInstallProgressReporter(
 ) : InstallProgressReporter {
   private val delayMs = delay.inWholeMilliseconds
 
-  override fun open(): InstallProgressSession {
+  /** Never throws: a display Job that cannot be made leaves the install without progress, not failed. */
+  override fun open(): InstallProgressSession = runCatching {
     val state = InstallProgressState()
-    return JobSession(state, newDisplayJob(state))
+    JobSession(state, newDisplayJob(state))
+  }.getOrElse {
+    logFailure("create", it)
+    InstallProgressSession.NONE
+  }
+
+  private fun logFailure(action: String, e: Throwable) {
+    runCatching {
+      logger<JobInstallProgressReporter>()
+        .debug("Could not $action the language server install progress: ${e.javaClass.name}")
+    }
   }
 
   private inner class JobSession(private val state: InstallProgressState, private val job: Job) :
@@ -124,6 +136,9 @@ internal class JobInstallProgressReporter(
       if (state.scheduled.compareAndSet(false, true)) {
         // The Job manager rejects every schedule once the workbench is shutting down.
         runCatching { scheduleDisplay(job, delayMs) }.onFailure { logFailure("schedule", it) }
+        // A close that ran between the check above and the schedule saw nothing to cancel, so the
+        // Job just scheduled is cancelled here; a second cancel is harmless.
+        if (closing.get()) cancel()
       }
     }
 
@@ -135,16 +150,11 @@ internal class JobInstallProgressReporter(
       if (!closing.compareAndSet(false, true)) return
       state.currentPhase.set(null)
       state.closed.countDown()
-      if (state.scheduled.get()) {
-        runCatching { cancelDisplay(job) }.onFailure { logFailure("cancel", it) }
-      }
+      if (state.scheduled.get()) cancel()
     }
 
-    private fun logFailure(action: String, e: Throwable) {
-      runCatching {
-        logger<JobInstallProgressReporter>()
-          .info("Could not $action the language server install progress: ${e.javaClass.name}")
-      }
+    private fun cancel() {
+      runCatching { cancelDisplay(job) }.onFailure { logFailure("cancel", it) }
     }
   }
 }
