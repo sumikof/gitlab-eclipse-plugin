@@ -10,6 +10,7 @@ private val OPENABLE_SCHEMES = setOf("http", "https")
 /**
  * The trimmed [raw] when it is an http(s) URL with a host, else null (null, blank, unparsable, other scheme,
  * no host). The scheme is lower-cased only to decide; the returned string is the input as given.
+ * A display / UX decision only: the security decision before a link leaves for the browser is `BrowserLauncher` (D8a).
  */
 fun openableWebUrl(raw: String?): String? {
   val trimmed = raw?.trim().orEmpty()

@@ -17,6 +17,7 @@ import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
@@ -43,7 +44,6 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.GlobalContext
-import java.net.URI
 
 /**
  * GitLab sidebar: a [TreeViewer] over one root per configured sidebar query (ISSUE-01; built by
@@ -86,6 +86,7 @@ class GitLabSidebarView : ViewPart() {
   private val viewState by lazyService<SidebarViewState>()
 
   private val viewModel = SidebarViewModel()
+  private val browser = BrowserLauncher()
   private val refreshState = ViewRefreshState()
 
   // Composes viewer input from one generation's RefreshSlots. UI thread only: its memo
@@ -315,12 +316,8 @@ class GitLabSidebarView : ViewPart() {
       when (val action = sidebarDoubleClick(node)) {
         is SidebarDoubleClick.OpenDiff -> MrFileDiffEntryPoint.open(action.node)
         is SidebarDoubleClick.OpenJobLog -> displayJobLogInEditor(action.node)
-        is SidebarDoubleClick.OpenUrl ->
-          try {
-            PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(action.url).toURL())
-          } catch (e: Exception) {
-            logger.error("Failed to open URL: ${action.url}", e)
-          }
+        // The one external-browser gate (D8a): a refused or failed link is logged without the URL and noticed once.
+        is SidebarDoubleClick.OpenUrl -> browser.open(action.url)
         SidebarDoubleClick.None -> Unit
       }
     }

@@ -28,8 +28,8 @@ internal fun sidebarLinkOrNotify(node: SidebarNode?, notify: (String) -> Unit): 
 
 /**
  * "Open in GitLab" on a sidebar node (NAV-05, VS Code `gl.openInGitLab` on tree items): opens the node's web URL in
- * the external browser. Runs on the UI thread, which [BrowserLauncher.openChecked] requires. Double-click keeps its
- * own path ([sidebarDoubleClick], D8a).
+ * the external browser. Runs on the UI thread, which [BrowserLauncher.openChecked] requires. Double-click
+ * ([sidebarDoubleClick]) goes through the same gate with [BrowserLauncher.open], which notices a failure itself (D8a).
  */
 @Suppress("unused")
 class OpenSidebarItemInGitLabHandler(
