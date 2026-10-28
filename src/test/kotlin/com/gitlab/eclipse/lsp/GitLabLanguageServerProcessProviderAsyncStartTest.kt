@@ -88,6 +88,22 @@ private class GatedInstall(private val result: String? = "/fake/language-server"
   }
 }
 
+/**
+ * A server that answers initialize but is already dead when the provider checks it afterwards: [onExit]
+ * stays open (so the handshake arm of the race wins) while [isAlive] reports false.
+ */
+private class DeadOnArrivalProcess(private val delegate: FakeLanguageServerProcess) : Process() {
+  override fun getOutputStream() = delegate.outputStream
+  override fun getInputStream() = delegate.inputStream
+  override fun getErrorStream() = delegate.errorStream
+  override fun waitFor() = delegate.waitFor()
+  override fun exitValue() = delegate.exitValue()
+  override fun destroy() = delegate.destroy()
+  override fun onExit() = delegate.onExit()
+  override fun pid() = delegate.pid()
+  override fun isAlive() = false
+}
+
 /** Wraps a real executor, recording whatever a task lets escape; [done] opens once a task has finished. */
 private class EscapeRecorder(private val real: Executor) : Executor {
   val escaped = CopyOnWriteArrayList<Throwable>()
@@ -618,6 +634,11 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
       every { Platform.getLog(any<Bundle>()) } returns log
     }
 
+    fun verifyOneErrorLogged(log: ILog) {
+      verify(exactly = 1) { log.error(any<String>()) }
+      verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
+    }
+
     fun verifyNoErrorLogged(log: ILog) {
       verify(exactly = 0) { log.error(any<String>()) }
       verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
@@ -680,6 +701,7 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
     }
 
     it("is FAILED when the spawn fails with the store open") {
+      val log = errorLog()
       val store = LanguageServerLifecycleStore()
       val provider = newProvider(
         startExecutor = ManualExecutor(),
@@ -691,9 +713,11 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
 
       store.snapshot().phase shouldBe LanguageServerPhase.FAILED
       provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
     }
 
     it("stays FAILED when the store closes after the spawn and the initialize then fails (N-1)") {
+      val log = errorLog()
       val store = LanguageServerLifecycleStore()
       val provider = newProvider(
         startExecutor = ManualExecutor(),
@@ -710,6 +734,40 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
 
       spawnedProcesses shouldHaveSize 1
       provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
+    }
+
+    it("never runs the installer and is ABANDONED when the store is closed before the restart") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      store.close()
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.ABANDONED
+
+      verify(exactly = 0) { installer.install(any()) }
+      verifyNoErrorLogged(log)
+    }
+
+    it("is FAILED when the server answers initialize but is already dead afterwards") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(
+        startExecutor = ManualExecutor(),
+        factory = {
+          FakeLanguageServerProcess(InitializeReply.SUCCESS).also { fake -> spawnedProcesses += fake }
+            .let { fake -> DeadOnArrivalProcess(fake) }
+        },
+        store = store,
+      )
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.FAILED
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.EXITED_DURING_STARTUP
+      spawnedProcesses.single().destroyed shouldBe true
+      provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
     }
   }
 })
