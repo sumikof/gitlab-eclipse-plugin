@@ -2,8 +2,11 @@ package com.gitlab.eclipse.handlers
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.GitLabLanguageServerProcessProvider
+import com.gitlab.eclipse.lsp.RestartOutcome
+import com.gitlab.eclipse.preferences.storage.CapturedLog
 import com.gitlab.eclipse.utils.NotificationUtils
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldHaveSize
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.just
@@ -52,21 +55,21 @@ class RestartLanguageServerHandlerTest : DescribeSpec({
 
   describe("execute") {
     it("restarts the language server and notifies on success") {
-      every { provider.restart(bundle) } returns true
+      every { provider.restartForOutcome(bundle) } returns RestartOutcome.RESTARTED
 
       RestartLanguageServerHandler().execute(mockk())
 
-      verify { provider.restart(bundle) }
+      verify { provider.restartForOutcome(bundle) }
       verify { NotificationUtils.show("GitLab Language Server restarted.") }
       verify { NotificationUtils.show("Restarting the GitLab Language Server...") }
     }
 
     it("notifies that the restart failed and can be retried") {
-      every { provider.restart(bundle) } returns false
+      every { provider.restartForOutcome(bundle) } returns RestartOutcome.FAILED
 
       RestartLanguageServerHandler().execute(mockk())
 
-      verify { provider.restart(bundle) }
+      verify { provider.restartForOutcome(bundle) }
       verify {
         NotificationUtils.show(
           "GitLab Language Server restart failed. Check the error log and run the command again to retry."
@@ -75,7 +78,7 @@ class RestartLanguageServerHandlerTest : DescribeSpec({
     }
 
     it("notifies failure when the restart throws unexpectedly") {
-      every { provider.restart(bundle) } throws IllegalStateException("boom")
+      every { provider.restartForOutcome(bundle) } throws IllegalStateException("boom")
 
       RestartLanguageServerHandler().execute(mockk())
 
@@ -84,6 +87,25 @@ class RestartLanguageServerHandlerTest : DescribeSpec({
           "GitLab Language Server restart failed. Check the error log and run the command again to retry."
         )
       }
+    }
+
+    it("stays quiet when the restart is abandoned because the plugin is stopping") {
+      every { provider.restartForOutcome(bundle) } returns RestartOutcome.ABANDONED
+      val log = CapturedLog()
+      log.install()
+
+      RestartLanguageServerHandler().execute(mockk())
+
+      log.lines.filter { it.contains("restart was abandoned") } shouldHaveSize 1
+
+      verify { provider.restartForOutcome(bundle) }
+      verify(exactly = 0) {
+        NotificationUtils.show(
+          "GitLab Language Server restart failed. Check the error log and run the command again to retry."
+        )
+      }
+      verify(exactly = 0) { NotificationUtils.show("GitLab Language Server restarted.") }
+      verify(exactly = 1) { NotificationUtils.show("Restarting the GitLab Language Server...") }
     }
   }
 })
