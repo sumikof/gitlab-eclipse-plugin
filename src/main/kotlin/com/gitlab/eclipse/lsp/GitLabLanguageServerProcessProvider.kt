@@ -188,15 +188,20 @@ class GitLabLanguageServerProcessProvider(
     }
   }
 
+  /** Kept for existing callers and tests (migration); production uses [restartForOutcome]. */
+  fun restart(bundle: Bundle): Boolean = restartForOutcome(bundle) == RestartOutcome.RESTARTED
+
   /**
    * Atomically restarts the language server: stop and start run under the lifecycle lock,
-   * so concurrent start/stop/restart calls cannot interleave. Success is reported only
-   * after the new server completes the initialize handshake (bounded by
-   * [initializeTimeout]). On any failure — spawn error, rejected
-   * initialize, or timeout — the provider settles in the stopped state (no partial start
-   * is left behind) and returns false; calling restart again retries from that clean state.
+   * so concurrent start/stop/restart calls cannot interleave. [RestartOutcome.RESTARTED] is
+   * reported only after the new server completes the initialize handshake (bounded by
+   * [initializeTimeout]). On any failure — spawn error, rejected initialize, or timeout — the
+   * provider settles in the stopped state (no partial start is left behind) and returns
+   * [RestartOutcome.FAILED], even when the bundle has started stopping meanwhile; calling restart
+   * again retries from that clean state. [RestartOutcome.ABANDONED] means the bundle is stopping
+   * and nothing was spawned: not a failure, so nothing is reported.
    */
-  fun restart(bundle: Bundle): Boolean {
+  fun restartForOutcome(bundle: Bundle): RestartOutcome {
     synchronized(lifecycleLock) {
       logger.info("Restarting the Language Server.")
       val previousGeneration = lifecycleStore.snapshot().generation
@@ -213,7 +218,10 @@ class GitLabLanguageServerProcessProvider(
         // handleAsync stage: the stage takes lifecycleLock, which this thread holds.
         val generation = requireAttemptBegun(lifecycleStore.beginAttempt(StartOrigin.RESTART))
         val path = languageServerInstaller.install(shouldAbandon = { lifecycleStore.isClosed })
-        val initialization = spawnAndConnectLocked(bundle, generation, path)
+        // As the start attempt re-checks before its spawn (T-1): if the bundle began stopping during
+        // the install, a server spawned now would only delay the shutdown, so no path is handed on
+        // and spawnAndConnectLocked aborts.
+        val initialization = spawnAndConnectLocked(bundle, generation, path.takeUnless { lifecycleStore.isClosed })
         val startedProcess = checkNotNull(process) { "Language server process is not tracked after start" }
         // Race the handshake against the process's own exit so a server that dies during
         // (or right after) initialization fails the restart quickly instead of timing out.
@@ -225,11 +233,11 @@ class GitLabLanguageServerProcessProvider(
         // The initialize callback makes the same (then rejected) call once restart() releases the
         // lock; recording it here means a restart that reported success is already RUNNING.
         lifecycleStore.markRunning(lifecycleStore.snapshot().generation)
-        return true
+        return RestartOutcome.RESTARTED
       } catch (_: LanguageServerStartAbortedException) {
         // The lifecycle store is closed: the bundle is stopping. Nothing was started, and an install
         // that gave up its lock wait for that reason is not reported as a failure.
-        return false
+        return RestartOutcome.ABANDONED
       } catch (e: Exception) {
         e
       }
@@ -242,7 +250,7 @@ class GitLabLanguageServerProcessProvider(
       logger.error("Failed to restart the Language Server ($kind, ${rootCauseName(failure)}).")
       // Any start failure must settle to the stopped state, not leave a partial start.
       stopLocked()
-      return false
+      return RestartOutcome.FAILED
     }
   }
 
@@ -550,6 +558,9 @@ internal class LanguageServerSpawnException(cause: Throwable) :
 /** The new process exited before (or right after) completing the initialize handshake. */
 internal class LanguageServerExitedDuringStartupException :
   IllegalStateException("Language server exited during startup")
+
+/** What a restart came to (N-10). */
+enum class RestartOutcome { RESTARTED, FAILED, ABANDONED }
 
 /** The lifecycle store is closed (the bundle is stopping): no attempt was begun, or its install gave up. */
 private class LanguageServerStartAbortedException : IllegalStateException("Language server start aborted")
