@@ -61,6 +61,7 @@ class BrowserUrlPolicyTest : DescribeSpec({
       "https:x" to BrowserUrlRefusal.NO_HOST,
       "https://例え.jp/x" to BrowserUrlRefusal.NO_HOST,
       "https://my_host.example/x" to BrowserUrlRefusal.NO_HOST,
+      "https://127.1/x" to BrowserUrlRefusal.NO_HOST,
       "https://u:p@gitlab.com/" to BrowserUrlRefusal.USERINFO,
       "https://gitlab.com@evil.example/" to BrowserUrlRefusal.USERINFO,
     ).forEach { (input, reason) ->

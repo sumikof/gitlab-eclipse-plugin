@@ -1,5 +1,6 @@
 package com.gitlab.eclipse.navigation
 
+import java.net.MalformedURLException
 import java.net.URI
 import java.net.URISyntaxException
 import java.net.URL
@@ -78,7 +79,7 @@ private fun parseOrNull(url: String): URI? =
 private fun toUrlOrNull(uri: URI): URL? =
   try {
     uri.toURL()
-  } catch (ignored: java.net.MalformedURLException) {
+  } catch (ignored: MalformedURLException) {
     null
   } catch (ignored: IllegalArgumentException) {
     null

@@ -254,6 +254,17 @@ class BrowserLauncherTest : DescribeSpec({
       logged.shouldLeakNothingOf(url)
     }
 
+    it("logs nothing when every entry point opens the link") {
+      val logged = captureLog()
+
+      launcher().open(ALLOWED)
+      launcher().openChecked(ALLOWED) shouldBe true
+      launcher().openAsync(ALLOWED).get(1, TimeUnit.SECONDS) shouldBe true
+
+      opened.size shouldBe 3
+      logged.shouldBeEmpty()
+    }
+
     it("keeps the notice a fixed text, never the link") {
       launcher().open("javascript://$SECRET.example/x?token=$SECRET")
 
