@@ -70,11 +70,11 @@ class BrowserUrlPolicyTest : DescribeSpec({
       }
     }
 
-    it("labels the refused scheme with the bounded vocabulary, never the raw scheme") {
+    it("carries only the refusal reason, no scheme at all (D-D6)") {
       val refused = browserUrlVerdict("glpat-abc:xyz").shouldBeInstanceOf<BrowserUrlVerdict.Refused>()
 
       refused.reason shouldBe BrowserUrlRefusal.DISALLOWED_SCHEME
-      refused.schemeLabel shouldBe "other"
+      refused.toString() shouldBe "Refused(reason=DISALLOWED_SCHEME)"
     }
   }
 

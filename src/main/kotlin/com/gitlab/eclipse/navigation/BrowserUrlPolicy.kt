@@ -6,7 +6,7 @@ import java.net.URISyntaxException
 import java.net.URL
 import java.util.Locale
 
-/** Why a link was refused (D8a). With [schemeLabel], the only thing about a refused link that is ever logged. */
+/** Why a link was refused (D8a). The only thing about a refused link that the gate ever logs (D-D6): no scheme. */
 internal enum class BrowserUrlRefusal { BLANK, UNPARSEABLE, NO_SCHEME, DISALLOWED_SCHEME, NO_HOST, USERINFO }
 
 /** The outcome of [browserUrlVerdict]. */
@@ -22,8 +22,8 @@ internal sealed interface BrowserUrlVerdict {
     override fun toString(): String = "Allowed(url=<redacted>)"
   }
 
-  /** Refused; both fields are safe to log ([schemeLabel] is a bounded vocabulary, never the raw scheme). */
-  data class Refused(val reason: BrowserUrlRefusal, val schemeLabel: String) : BrowserUrlVerdict
+  /** Refused; [reason] is safe to log. Carries nothing about the link itself, not even a scheme label (D-D6). */
+  data class Refused(val reason: BrowserUrlRefusal) : BrowserUrlVerdict
 }
 
 private val BROWSABLE_SCHEMES = setOf("http", "https")
@@ -43,21 +43,22 @@ private val LOGGABLE_SCHEMES =
  * can disguise the real host: `https://gitlab.com@evil.example/` goes to `evil.example`.
  */
 internal fun browserUrlVerdict(url: String?): BrowserUrlVerdict {
-  if (url.isNullOrBlank()) return refused(BrowserUrlRefusal.BLANK, url)
-  val uri = parseOrNull(url) ?: return refused(BrowserUrlRefusal.UNPARSEABLE, url)
-  val scheme = uri.scheme ?: return refused(BrowserUrlRefusal.NO_SCHEME, url)
+  if (url.isNullOrBlank()) return refused(BrowserUrlRefusal.BLANK)
+  val uri = parseOrNull(url) ?: return refused(BrowserUrlRefusal.UNPARSEABLE)
+  val scheme = uri.scheme ?: return refused(BrowserUrlRefusal.NO_SCHEME)
   return when {
-    scheme.lowercase(Locale.ROOT) !in BROWSABLE_SCHEMES -> refused(BrowserUrlRefusal.DISALLOWED_SCHEME, url)
-    uri.host.isNullOrBlank() -> refused(BrowserUrlRefusal.NO_HOST, url)
-    uri.rawUserInfo != null -> refused(BrowserUrlRefusal.USERINFO, url)
-    else -> toUrlOrNull(uri)?.let { BrowserUrlVerdict.Allowed(it) } ?: refused(BrowserUrlRefusal.UNPARSEABLE, url)
+    scheme.lowercase(Locale.ROOT) !in BROWSABLE_SCHEMES -> refused(BrowserUrlRefusal.DISALLOWED_SCHEME)
+    uri.host.isNullOrBlank() -> refused(BrowserUrlRefusal.NO_HOST)
+    uri.rawUserInfo != null -> refused(BrowserUrlRefusal.USERINFO)
+    else -> toUrlOrNull(uri)?.let { BrowserUrlVerdict.Allowed(it) } ?: refused(BrowserUrlRefusal.UNPARSEABLE)
   }
 }
 
 /**
- * A scheme label safe to log: the lower-cased scheme when it is in a fixed vocabulary, else `other`; `none` for null
- * or blank input, `relative` for a reference without a scheme, `unparseable` when it is not a URI at all. The parse
- * failure is discarded, never logged: `URISyntaxException.getMessage` quotes the input in full.
+ * A scheme label safe to log, for the logs that predate the gate (`schemeOf` in `ShowDocumentLauncher.kt`); the
+ * gate's own refusal log names no scheme (D-D6). The lower-cased scheme when it is in a fixed vocabulary, else
+ * `other`; `none` for null or blank input, `relative` for a reference without a scheme, `unparseable` when it is not a
+ * URI at all. The parse failure is discarded, never logged: `URISyntaxException.getMessage` quotes the input in full.
  */
 internal fun schemeLabel(url: String?): String {
   if (url.isNullOrBlank()) return "none"
@@ -66,7 +67,7 @@ internal fun schemeLabel(url: String?): String {
   return if (scheme in LOGGABLE_SCHEMES) scheme else "other"
 }
 
-private fun refused(reason: BrowserUrlRefusal, url: String?) = BrowserUrlVerdict.Refused(reason, schemeLabel(url))
+private fun refused(reason: BrowserUrlRefusal) = BrowserUrlVerdict.Refused(reason)
 
 private fun parseOrNull(url: String): URI? =
   try {

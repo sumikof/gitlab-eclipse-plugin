@@ -16,9 +16,8 @@ const val BROWSER_OPEN_FAILED_MESSAGE = "Couldn't open the link in the browser."
  * host and no userinfo passes ([browserUrlVerdict]); nothing else reaches the browser. The decision is made on the
  * calling thread, before any UI hop.
  *
- * Logs a fixed text plus the refusal reason, a bounded scheme label ([schemeLabel]) or an exception class name —
- * never the link, any part of it, or an exception message, and never a throwable (the platform log would write its
- * message).
+ * Logs a fixed text plus the refusal reason or an exception class name — never the link, any part of it (not even a
+ * scheme label, D-D6), or an exception message, and never a throwable (the platform log would write its message).
  *
  * **`SWTError` is caught alongside `Exception`**: it extends `Error`, and escaping an `asyncExec` runnable it would
  * land in the SWT event loop, which logs it with its message and stack trace. `OutOfMemoryError` and the rest are
@@ -86,10 +85,7 @@ class BrowserLauncher internal constructor(
     when (val verdict = browserUrlVerdict(url)) {
       is BrowserUrlVerdict.Allowed -> verdict.url
       is BrowserUrlVerdict.Refused -> {
-        log.warn(
-          "BrowserLauncher: refused a link outside the http/https policy; " +
-            "reason=${verdict.reason}, scheme=${verdict.schemeLabel}",
-        )
+        log.warn("BrowserLauncher: refused a link outside the http/https policy; reason=${verdict.reason}")
         null
       }
     }

@@ -207,13 +207,14 @@ class BrowserLauncherTest : DescribeSpec({
       it.contains(url) shouldBe false
     }
 
+    // D-D6 (b): the refusal line ends at the reason. No scheme, not even a bounded label, is logged.
     listOf(
-      "https://u:$SECRET@gitlab.com/x" to "reason=USERINFO, scheme=https",
-      "glpat-$SECRET:x" to "reason=DISALLOWED_SCHEME, scheme=other",
-      "javascript://$SECRET.example/x?token=$SECRET#$SECRET" to "reason=DISALLOWED_SCHEME, scheme=javascript",
-      "https://$SECRET.example/a b?token=$SECRET" to "reason=UNPARSEABLE, scheme=unparseable",
+      "https://u:$SECRET@gitlab.com/x" to "reason=USERINFO",
+      "glpat-$SECRET:x" to "reason=DISALLOWED_SCHEME",
+      "javascript://$SECRET.example/x?token=$SECRET#$SECRET" to "reason=DISALLOWED_SCHEME",
+      "https://$SECRET.example/a b?token=$SECRET" to "reason=UNPARSEABLE",
     ).forEach { (url, expected) ->
-      it("names only the refusal reason and scheme label for \"$expected\"") {
+      it("names only the refusal reason, never the scheme, for \"$expected\" from every entry point") {
         val logged = captureLog()
 
         launcher().open(url)
@@ -221,7 +222,13 @@ class BrowserLauncherTest : DescribeSpec({
         launcher().openAsync(url)
 
         logged.size shouldBe 3
-        logged.forEach { it.contains(expected) shouldBe true }
+        logged.forEach {
+          it shouldBe "BrowserLauncher: refused a link outside the http/https policy; $expected"
+          it.contains("scheme") shouldBe false
+          listOf("javascript", "glpat", "other", "unparseable", "file").forEach { label ->
+            it.contains(label) shouldBe false
+          }
+        }
         logged.shouldLeakNothingOf(url)
       }
     }
