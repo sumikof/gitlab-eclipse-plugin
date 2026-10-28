@@ -11,12 +11,11 @@ import com.github.scribejava.core.oauth2.OAuth2Error
 import com.github.scribejava.core.oauth2.clientauthentication.ClientAuthentication
 import com.github.scribejava.core.oauth2.clientauthentication.RequestBodyAuthenticationScheme
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.preferences.storage.GitLabInstanceKey
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.GsonBuilder
 import fi.iki.elonen.NanoHTTPD
-import java.awt.Desktop
-import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.*
@@ -25,12 +24,15 @@ import java.util.*
  * @param tokenEndpoint test seam (design §7.1): the OAuth token endpoint. Defaults to GitLab.com.
  * @param httpClientConfig test seam: connect/read timeouts for the single HTTP round trip. Defaults
  *   bound the refresh call so it can never hang indefinitely (design §10, C1).
+ * @param browser test seam: the external-browser gate the authorization page is opened through (D8a).
+ *   [startOAuthFlow] calls its UI-thread-only `openChecked`, so it must run on the UI thread.
  */
 class GitLabOAuthService(
   tokenEndpoint: String = TOKEN_ENDPOINT,
   httpClientConfig: HttpClientConfig = JDKHttpClientConfig.defaultConfig()
     .withConnectTimeout(CONNECT_TIMEOUT_MS)
     .withReadTimeout(READ_TIMEOUT_MS),
+  private val browser: BrowserLauncher = BrowserLauncher(),
 ) {
   companion object {
     private const val CLIENT_ID = "ee276bb6507af1f6a7eb086d1a07c5cd1bc3c192b631a214d9f8bba35fb9178a"
@@ -77,12 +79,10 @@ class GitLabOAuthService(
     val codeVerifier = generateCodeVerifier()
     val codeChallenge = generateCodeChallenge(codeVerifier)
 
-    // Open in default browser
-    if (Desktop.isDesktopSupported()) {
-      val authUrl = "${oauthService.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
-      Desktop.getDesktop().browse(URI(authUrl))
-    } else {
-      logger.info("Desktop is not supported, cannot open the browser.")
+    // Through the one external-browser gate (D8a, D-D4). UI thread: the preference page's button.
+    val authUrl = "${oauthService.authorizationUrl}&code_challenge=$codeChallenge&code_challenge_method=S256"
+    if (!browser.openChecked(authUrl)) {
+      logger.info("The browser did not open the OAuth authorization page; the callback server is not started.")
       return
     }
 

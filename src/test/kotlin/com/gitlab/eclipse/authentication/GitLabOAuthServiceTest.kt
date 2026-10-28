@@ -2,6 +2,7 @@ package com.gitlab.eclipse.authentication
 
 import com.github.scribejava.core.httpclient.jdk.JDKHttpClientConfig
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
@@ -10,62 +11,54 @@ import io.mockk.*
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.Platform
 import org.osgi.framework.Bundle
-import java.awt.Desktop
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.net.ServerSocket
-import java.net.URI
 import java.nio.charset.StandardCharsets
 
 @Suppress("IgnoredReturnValue")
 class GitLabOAuthServiceTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
-  beforeSpec {
-    mockkStatic(Desktop::class)
-  }
-
   afterSpec {
     unmockkAll()
   }
-  var gitLabOAuthService = spyk(GitLabOAuthService())
 
   describe("startOAuthFlow") {
-    it("should not attempt to open browser when desktop is not supported") {
-      gitLabOAuthService = spyk(GitLabOAuthService())
-      val desktopMock = mockk<Desktop>()
-      every { Desktop.isDesktopSupported() } returns false
-      every { Desktop.getDesktop() } returns desktopMock
-
-      gitLabOAuthService.startOAuthFlow()
-
-      verify(exactly = 0) {
-        Desktop.getDesktop()
-      }
-    }
-
-    it("should open the browser with the correct authorization URL") {
-      val desktopMock = mockk<Desktop>()
-      every { Desktop.isDesktopSupported() } returns true
-      every { Desktop.getDesktop() } returns desktopMock
-      every { desktopMock.browse(any()) } just Runs
-
+    it("does not start the callback server when the browser did not open") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openChecked(any()) } returns false
+      val gitLabOAuthService = spyk(GitLabOAuthService(browser = browser))
       val serverMock = mockk<OAuthCallbackServer>()
       every { serverMock.start() } just Runs
       every { gitLabOAuthService.createServer(any()) } returns serverMock
 
       gitLabOAuthService.startOAuthFlow()
 
-      verify {
-        desktopMock.browse(
-          match<URI> { uri ->
-            uri.toString().startsWith("https://gitlab.com/oauth/authorize") &&
-              uri.toString().contains("client_id=") &&
-              uri.toString()
-                .contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A63343%2Fapi%2Foauth%2Fgitlab%2Fauthorization") &&
-              uri.toString().contains("code_challenge=") &&
-              uri.toString().contains("code_challenge_method=S256")
-          }
+      verify(exactly = 1) { browser.openChecked(any()) }
+      verify(exactly = 0) { gitLabOAuthService.createServer(any()) }
+      verify(exactly = 0) { serverMock.start() }
+    }
+
+    it("opens the authorization URL through the BrowserLauncher gate, then starts the callback server") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openChecked(any()) } returns true
+      val gitLabOAuthService = spyk(GitLabOAuthService(browser = browser))
+      val serverMock = mockk<OAuthCallbackServer>()
+      every { serverMock.start() } just Runs
+      every { gitLabOAuthService.createServer(any()) } returns serverMock
+
+      gitLabOAuthService.startOAuthFlow()
+
+      verifyOrder {
+        browser.openChecked(
+          match { url ->
+            url.startsWith("https://gitlab.com/oauth/authorize") &&
+              url.contains("client_id=") &&
+              url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A63343%2Fapi%2Foauth%2Fgitlab%2Fauthorization") &&
+              url.contains("code_challenge=") &&
+              url.contains("code_challenge_method=S256")
+          },
         )
         serverMock.start()
       }
