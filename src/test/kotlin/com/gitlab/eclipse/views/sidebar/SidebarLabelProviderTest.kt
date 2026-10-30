@@ -19,6 +19,13 @@ private fun job(status: String?, allowFailure: Boolean? = null) = JobNode(
 
 private fun file(type: ChangeType) = ChangedFileNode("dir/file.kt", "dir/file.kt", type, "sha")
 
+private fun commentedFile(commented: Boolean, type: ChangeType = ChangeType.NEW): ChangedFileNode {
+  val paths = if (commented) setOf("dir/file.kt") else emptySet()
+  val badges = MrCommentBadges("base", "head")
+  badges.index = CommentIndex.Complete(CommentedSides(emptySet(), paths))
+  return ChangedFileNode("dir/file.kt", "dir/file.kt", type, "sha", commentBadges = badges)
+}
+
 /** Records the icon names and color roles the provider asks for, answering with fixed SWT stand-ins. */
 private class Recorder {
   val image = mockk<Image>()
@@ -118,6 +125,29 @@ class SidebarLabelProviderTest : StringSpec({
     provider.getForeground(file(ChangeType.MODIFIED)) shouldBe null
     provider.getForeground(job("failed")) shouldBe null
     recorder.colorCalls.shouldBeEmpty()
+  }
+
+  "a file with a comment gets the comment badge image, created once across repaints" {
+    val recorder = Recorder()
+    val provider = recorder.provider()
+    repeat(3) { provider.getImage(commentedFile(true)) shouldBeSameInstanceAs recorder.image }
+    recorder.imageCalls shouldContainExactly listOf(COMMENT_BADGE_ICON)
+  }
+
+  "a file without a comment has no image and never asks for one" {
+    val recorder = Recorder()
+    val provider = recorder.provider()
+    provider.getImage(commentedFile(false)) shouldBe null
+    recorder.imageCalls.shouldBeEmpty()
+  }
+
+  "a comment badge leaves a file's text and color unchanged" {
+    val recorder = Recorder()
+    val provider = recorder.provider()
+    provider.getText(commentedFile(true)) shouldBe "dir/file.kt · A"
+    provider.getForeground(commentedFile(true)) shouldBeSameInstanceAs recorder.color
+    provider.getForeground(commentedFile(true, ChangeType.MODIFIED)) shouldBe null
+    recorder.colorCalls shouldContainExactly listOf(ChangeColorRole.ADDED)
   }
 
   "the defaults draw no image and no color" {

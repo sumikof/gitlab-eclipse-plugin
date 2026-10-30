@@ -154,7 +154,7 @@ class DuoAgentPlatformWebViewController(
   }
 
   /**
-   * **`SWTError` extends `Error`, not `Exception`** (same reason as `ShowDocumentLauncher.openNow`):
+   * **`SWTError` extends `Error`, not `Exception`** (same reason as `BrowserLauncher.launchNow`):
    * this runs inside an `asyncExec` runnable, where an escaping error would reach the event loop,
    * which logs it with its message and stack trace and may raise the internal-error dialog.
    */

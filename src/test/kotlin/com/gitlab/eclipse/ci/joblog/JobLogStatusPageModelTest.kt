@@ -17,6 +17,9 @@ private fun live(title: String, description: String, button: PageButton) =
 
 private fun plain(title: String) = StatusPageModel(title, "", null, null)
 
+// L4: a job that finished without a log can be retried from its page, as in VS Code.
+private fun retryable(title: String) = StatusPageModel(title, "", null, PageButton.RETRY)
+
 private val CASES = listOf(
   PageCase(
     "manual",
@@ -66,9 +69,10 @@ private val CASES = listOf(
     ),
   ),
   PageCase("skipped before it started (L-B2-5)", waiting("skipped"), plain("This job has been skipped")),
-  PageCase("canceled before it started", waiting("canceled"), plain("This job has been canceled")),
-  PageCase("failed before it started", waiting("failed"), plain("This job does not have a trace.")),
-  PageCase("success without a trace", waiting("success"), plain("This job does not have a trace.")),
+  PageCase("canceled before it started", waiting("canceled"), retryable("This job has been canceled")),
+  PageCase("failed before it started", waiting("failed"), retryable("This job does not have a trace.")),
+  PageCase("success without a trace", waiting("success"), retryable("This job does not have a trace.")),
+  PageCase("canceling without a trace", waiting("canceling"), retryable("This job does not have a trace.")),
   PageCase("an unknown status", waiting("brand_new"), plain("This job does not have a trace.")),
   PageCase("no status", waiting(null), plain("This job does not have a trace.")),
   PageCase("erased", JobLogPage.Erased, plain("Job has been erased")),
@@ -125,6 +129,8 @@ class JobLogStatusPageModelTest : DescribeSpec({
       PageButton.PLAY.action shouldBe "play"
       PageButton.CANCEL.label shouldBe "Cancel this job"
       PageButton.CANCEL.action shouldBe "cancel"
+      PageButton.RETRY.label shouldBe "Retry this job"
+      PageButton.RETRY.action shouldBe "retry"
     }
   }
 })

@@ -7,6 +7,7 @@ import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.JobService
 import com.gitlab.eclipse.api.MergeRequestService
 import com.gitlab.eclipse.api.model.GitLabMrVersion
+import com.gitlab.eclipse.ci.actions.displayJobLogInEditor
 import com.gitlab.eclipse.ci.actions.normalizeInstanceUrl
 import com.gitlab.eclipse.currentbranch.CurrentBranchStateService
 import com.gitlab.eclipse.currentbranch.WindowEditorFileReader
@@ -16,6 +17,7 @@ import com.gitlab.eclipse.mergerequests.diff.MrFileDiffEntryPoint
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionGenerationRegistry
 import com.gitlab.eclipse.mergerequests.discussions.DiscussionsLoader
 import com.gitlab.eclipse.mergerequests.discussions.LoadOutcome
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
@@ -42,7 +44,6 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.part.ViewPart
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.core.context.GlobalContext
-import java.net.URI
 
 /**
  * GitLab sidebar: a [TreeViewer] over one root per configured sidebar query (ISSUE-01; built by
@@ -85,6 +86,7 @@ class GitLabSidebarView : ViewPart() {
   private val viewState by lazyService<SidebarViewState>()
 
   private val viewModel = SidebarViewModel()
+  private val browser = BrowserLauncher()
   private val refreshState = ViewRefreshState()
 
   // Composes viewer input from one generation's RefreshSlots. UI thread only: its memo
@@ -261,6 +263,14 @@ class GitLabSidebarView : ViewPart() {
       // of producing the exceptionType= audit line. The loader calls `notify` on the UI thread
       // already, so opening the popup synchronously here keeps it inside the guard.
       notify = { message -> guarded("notify", Unit) { NotificationUtils.showOnUiThread(message) } },
+      // #142 B: one subtree refresh of the owning MR repaints the section and every file (TREE included) while
+      // keeping their identity, so expansion and selection survive; refresh(element[]) would walk the tree per file.
+      onSettled = { section, result ->
+        guarded("commentBadges", Unit) {
+          val roots = (viewer.input as? List<*>).orEmpty().filterIsInstance<SidebarNode>()
+          settleCommentBadges(section, result, roots) { mr -> if (!viewer.control.isDisposed) viewer.refresh(mr, true) }
+        }
+      },
     )
   }
 
@@ -305,12 +315,9 @@ class GitLabSidebarView : ViewPart() {
       // Inline rather than a member (keeps the class under the TooManyFunctions threshold).
       when (val action = sidebarDoubleClick(node)) {
         is SidebarDoubleClick.OpenDiff -> MrFileDiffEntryPoint.open(action.node)
-        is SidebarDoubleClick.OpenUrl ->
-          try {
-            PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(action.url).toURL())
-          } catch (e: Exception) {
-            logger.error("Failed to open URL: ${action.url}", e)
-          }
+        is SidebarDoubleClick.OpenJobLog -> displayJobLogInEditor(action.node)
+        // The one external-browser gate (D8a): a refused or failed link is logged without the URL and noticed once.
+        is SidebarDoubleClick.OpenUrl -> browser.open(action.url)
         SidebarDoubleClick.None -> Unit
       }
     }
@@ -570,8 +577,12 @@ class GitLabSidebarView : ViewPart() {
       // entry without stored tags — or one failing the check — yields (null, null), which
       // buildMrChildren already renders as "no Discussions section" rather than a wrong one.
       val tags = validatedCacheTags(mrConnectionTagsCache[cacheKey], node.mr.webUrl)
+      val generation = refreshState.currentGeneration()
       control.display.asyncExec {
         if (control.isDisposed) return@asyncExec
+        if (!shouldApplyCachedMrChildren(node.loadedChildren != null, refreshState.isCurrent(generation))) {
+          return@asyncExec
+        }
         applyMrChildren(node, Result.success(mrVersionCache[cacheKey]), tags.first, tags.second)
       }
       return
@@ -641,10 +652,22 @@ class GitLabSidebarView : ViewPart() {
     sourceInstanceUrl: String?,
     sourceAuthFingerprint: String?,
   ) {
-    node.loadedChildren =
-      viewModel.buildMrChildren(node.url, versionResult, viewState.mode, node.mr, sourceInstanceUrl, sourceAuthFingerprint)
+    val children = viewModel.buildMrChildren(
+      node.url,
+      versionResult,
+      viewState.mode,
+      node.mr,
+      sourceInstanceUrl,
+      sourceAuthFingerprint,
+    )
+    node.loadedChildren = children
     viewer.refresh(node)
     viewer.expandToLevel(node, 1)
+    // #142 B: prefetch the discussions once per build for the files' comment badges. A later expansion of the section
+    // finds it LOADING / LOADED and does not fetch again. Not asked for by the user, so a gate rejection stays silent.
+    badgePrefetchTargets(children).forEach {
+      discussionsLoader.loadDiscussions(it, force = false, notifyOnGateRejected = false, onOutcome = {})
+    }
   }
 
   /**
@@ -718,7 +741,7 @@ class GitLabSidebarView : ViewPart() {
    * would report the thread as not reloaded even though it could have been.
    */
   internal fun reloadDiscussions(section: DiscussionsSectionNode, onOutcome: (LoadOutcome) -> Unit) {
-    discussionsLoader.loadDiscussions(section, force = true, onOutcome)
+    discussionsLoader.loadDiscussions(section, force = true, onOutcome = onOutcome)
   }
 
   override fun setFocus() {
@@ -753,15 +776,22 @@ internal sealed interface SidebarDoubleClick {
   /** A changed file opens its base/head diff (REVIEW-01). */
   class OpenDiff(val node: ChangedFileNode) : SidebarDoubleClick
 
+  /** A job opens its log in the job-log editor, like Display Log (L6). */
+  class OpenJobLog(val node: JobNode) : SidebarDoubleClick
+
   /** A node with an activation URL opens it in the external browser. */
   class OpenUrl(val url: String) : SidebarDoubleClick
 
   object None : SidebarDoubleClick
 }
 
-/** Routes a double-click on [node]: changed files to the diff, other nodes to their URL if any. */
+/**
+ * Routes a double-click on [node]: changed files to the diff, jobs to their log (bridges are not
+ * jobs and keep their URL), other nodes to their URL if any.
+ */
 internal fun sidebarDoubleClick(node: SidebarNode?): SidebarDoubleClick {
   if (node is ChangedFileNode) return SidebarDoubleClick.OpenDiff(node)
+  if (node is JobNode) return SidebarDoubleClick.OpenJobLog(node)
   val url = node?.activationUrl ?: return SidebarDoubleClick.None
   return SidebarDoubleClick.OpenUrl(url)
 }

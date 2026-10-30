@@ -3,12 +3,12 @@ package com.gitlab.eclipse.chat.webview
 import com.gitlab.eclipse.chat.context.CurrentFileContextProvider
 import com.gitlab.eclipse.chat.services.InsertCodeSnippetService
 import com.gitlab.eclipse.lsp.FileContext
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.navigation.ClipboardWriter
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.PlatformUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.logger
-import java.net.URI
 
 /**
  * Webview-to-host message handlers shared by the classic Duo Chat (`duo-chat-v2`) and the
@@ -21,8 +21,9 @@ import java.net.URI
  * through a base class. Instead each controller declares its own annotated methods and
  * delegates to an instance of this class.
  *
- * [clipboardWriter] and [notify] are seams with production defaults, so the copy path below is
- * reachable headless: the real writer needs a display and the real notice needs a workbench.
+ * [clipboardWriter], [notify] and [browser] are seams with production defaults, so the copy and link
+ * paths below are reachable headless: the real writer needs a display, the real notice and the real
+ * browser need a workbench.
  */
 class ChatWebViewMessageHandlers(
   private val platformUtils: PlatformUtils,
@@ -30,6 +31,7 @@ class ChatWebViewMessageHandlers(
   private val insertCodeSnippetService: InsertCodeSnippetService,
   private val clipboardWriter: ClipboardWriter = ClipboardWriter(),
   private val notify: (String) -> Unit = { NotificationUtils.show(it) },
+  private val browser: BrowserLauncher = BrowserLauncher(),
 ) {
   private val logger by lazy { logger<ChatWebViewMessageHandlers>() }
 
@@ -57,13 +59,14 @@ class ChatWebViewMessageHandlers(
   /**
    * Classic chat sends `openLink` with `href`; Agentic chat sends `openUrl` with `url`.
    * Both are routed here, coalescing like the VSCode handler (`href || url`).
+   *
+   * The notification arrives off the UI thread, so the link goes through [BrowserLauncher.open],
+   * which applies the http/https gate, hops to the UI thread itself, and contains, logs (without
+   * the link) and notifies its own refusals and failures — never [BrowserLauncher.openChecked],
+   * which is UI thread only. Nothing is thrown back to the webview message dispatch.
    */
   fun openLink(notification: OpenLinkNotification) {
-    val link = notification.href ?: notification.url ?: return
-
-    platformUtils.getWorkbench().browserSupport.externalBrowser.openURL(
-      URI.create(link).toURL()
-    )
+    (notification.href ?: notification.url)?.let(browser::open)
   }
 
   fun copyCodeSnippet(notification: CopyCodeSnippetNotification) {

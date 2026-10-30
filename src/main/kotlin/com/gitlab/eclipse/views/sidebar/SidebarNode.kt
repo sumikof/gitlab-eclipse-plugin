@@ -154,6 +154,8 @@ class ChangedFileNode(
   val bMode: String? = null,
   /** True for a leaf of the TREE view, where only the last path segment is displayed. */
   val inTree: Boolean = false,
+  /** The comment badges shared with the sibling [DiscussionsSectionNode]; `null` when that section has none. */
+  val commentBadges: MrCommentBadges? = null,
 ) : SidebarNode {
   override val label: String = newPath ?: oldPath ?: ""
   override val children: List<SidebarNode> = emptyList()
@@ -395,6 +397,11 @@ class DiscussionsSectionNode(
   val mrGid: String,
   val mrSha: String?,
   val namespaceWithPath: String,
+  /**
+   * The comment badges of the changed files built alongside this section (one shared instance);
+   * `null` when the diff version is unavailable, in which case no file shows a badge.
+   */
+  val commentBadges: MrCommentBadges? = null,
 ) : SidebarNode {
   /**
    * Unique per-instance identity, folded into [com.gitlab.eclipse.mergerequests.discussions.DiscussionKey]

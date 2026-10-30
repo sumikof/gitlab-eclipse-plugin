@@ -116,4 +116,38 @@ class CurrentBranchGitReaderTest : DescribeSpec({
       log.lines.single() shouldNotContain "missing-repo"
     }
   }
+
+  describe("readFrom") {
+    it("reads the tracking branch, upstream remote and HEAD sha from an already-open repository") {
+      val (dir, git) = tempRepo()
+      val (result, sha) = git.use {
+        commit(it, dir)
+        it.repository.config.apply {
+          setString("branch", "master", "remote", "upstream")
+          setString("branch", "master", "merge", "refs/heads/feature/x")
+          save()
+        }
+        CurrentBranchGitReader().readFrom(it.repository) to it.repository.resolve("HEAD")!!.name
+      }
+
+      result shouldBe CurrentBranch("master", "feature/x", true, "upstream", sha)
+    }
+
+    it("returns a null name and no tracking for a detached HEAD") {
+      val (dir, git) = tempRepo()
+      val (result, sha) = git.use {
+        commit(it, dir)
+        it.repository.config.apply {
+          setString("branch", "master", "remote", "origin")
+          setString("branch", "master", "merge", "refs/heads/master")
+          save()
+        }
+        val headSha = it.repository.resolve("HEAD")!!.name
+        it.checkout().setName(headSha).call()
+        CurrentBranchGitReader().readFrom(it.repository) to headSha
+      }
+
+      result shouldBe CurrentBranch(null, null, false, null, sha)
+    }
+  }
 })

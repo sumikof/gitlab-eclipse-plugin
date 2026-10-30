@@ -10,6 +10,7 @@ import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
 import com.gitlab.eclipse.mergerequests.CurrentBranchMrLookup
 import com.gitlab.eclipse.mergerequests.HeadTagReader
 import com.gitlab.eclipse.mergerequests.RepositoryContextResolver
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.ActionNotifications
 import com.gitlab.eclipse.utils.debug
@@ -31,7 +32,6 @@ import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import org.koin.dsl.module
 import java.io.File
-import java.net.URI
 
 private const val NANOS_PER_MILLI = 1_000_000L
 private const val NOTIFICATION_AUTO_CLOSE_MILLIS = 8_000L
@@ -49,6 +49,7 @@ val currentBranchModule = module {
     val warn: (String) -> Unit = { message -> log.warn(message) }
     val filter = SharedActivationFilter(displayActivationFilter { PlatformUI.getWorkbench().display }, warn)
     val preferences = get<ScopedPreferenceStore>()
+    val browser = BrowserLauncher()
     CurrentBranchStateService(
       createState = withPipelineNotifier(
         createBase = { window -> productionWindowState(window, scope, apiClient, mergeRequestService, filter) },
@@ -61,7 +62,7 @@ val currentBranchModule = module {
               val severity = SWT.ICON_INFORMATION
               ActionNotifications.show(title, message, severity, links, NOTIFICATION_AUTO_CLOSE_MILLIS, gate = gate)
             },
-            openUrl = { url -> openInBrowser(url, warn) },
+            openUrl = { url -> browser.open(url) },
           )
         },
       ),
@@ -166,15 +167,6 @@ internal fun pipelineStatusNotifier(
   show = show,
   openUrl = openUrl,
 )
-
-/** Opens [url] in the external browser; a failure is logged by exception class only. */
-private fun openInBrowser(url: String, warn: (String) -> Unit) {
-  try {
-    PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
-  } catch (e: Exception) {
-    warn("Pipeline notification could not open the browser: ${e.javaClass.name}")
-  }
-}
 
 /**
  * T3b: a window whose shell is gone (or not created) or a closing workbench gets no entry: a trim control rebuilt

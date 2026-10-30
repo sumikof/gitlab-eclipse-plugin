@@ -2,7 +2,9 @@ package com.gitlab.eclipse.handlers
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
 import com.gitlab.eclipse.lsp.ShowDocumentLauncher
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import io.mockk.clearAllMocks
@@ -35,8 +37,9 @@ private fun captureLog(): List<String> {
 
 /**
  * Records every message a real [ILog] would write, at any level — mirroring
- * `ShowDocumentLauncherTest.captureLog`. Needed for the failure-path case: [ShowDocumentLauncher]
- * logs its own failure with `log.warn`, on its own logger, not the handler's `log.info`.
+ * `ShowDocumentLauncherTest.captureLog`. Needed for the failure-path case: the [BrowserLauncher] gate
+ * behind [ShowDocumentLauncher] logs its own failure with `log.warn`, on its own logger, not the
+ * handler's `log.info`.
  */
 private fun captureAllLog(): List<String> {
   val recorded = mutableListOf<String>()
@@ -133,7 +136,7 @@ class ShowDuoForumTest : DescribeSpec({
     }
   }
 
-  describe("real ShowDocumentLauncher failure path (no URL leak)") {
+  describe("real ShowDocumentLauncher -> BrowserLauncher failure path (no URL leak)") {
     // Same teardown as ShowDocumentLauncherTest's log-hygiene block: restore the bare static mock
     // that LoggingKotestExtension.beforeSpec installed, so its beforeEach keeps stubbing a mocked
     // class for the next test.
@@ -142,10 +145,18 @@ class ShowDuoForumTest : DescribeSpec({
       mockkStatic(Platform::class)
     }
 
+    // Only the browser is faked (it throws a message carrying a URL): the launcher and the gate are the real ones.
+    val notices = mutableListOf<String>()
+
+    beforeTest { notices.clear() }
+
     fun throwingLauncher() =
       ShowDocumentLauncher(
-        onUiThread = { it.run() },
-        openInBrowser = { throwRuntime("boom https://forum.gitlab.com/c/gitlab-duo/52") },
+        BrowserLauncher(
+          onUiThread = { it.run() },
+          openInBrowser = { throwRuntime("boom https://forum.gitlab.com/c/gitlab-duo/52") },
+          notify = { notices += it },
+        ),
       )
 
     it("ShowDuoForum: leaks neither the URL nor the exception message when the browser throws") {
@@ -159,6 +170,7 @@ class ShowDuoForumTest : DescribeSpec({
         it.contains("docs.gitlab.com") shouldBe false
         it.contains("boom") shouldBe false
       }
+      notices.shouldBeEmpty()
     }
 
     it("ShowDuoDocumentation: leaks neither the URL nor the exception message when the browser throws") {
@@ -172,6 +184,7 @@ class ShowDuoForumTest : DescribeSpec({
         it.contains("docs.gitlab.com") shouldBe false
         it.contains("boom") shouldBe false
       }
+      notices.shouldBeEmpty()
     }
   }
 })

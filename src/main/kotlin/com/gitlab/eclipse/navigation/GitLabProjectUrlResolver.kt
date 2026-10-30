@@ -2,6 +2,9 @@ package com.gitlab.eclipse.navigation
 
 import com.gitlab.eclipse.assignments.AssignedProjectLookup
 import com.gitlab.eclipse.inject.service
+import com.gitlab.eclipse.mergerequests.CurrentBranch
+import com.gitlab.eclipse.mergerequests.CurrentBranchGitReader
+import com.gitlab.eclipse.mergerequests.EffectiveRef
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.logger
 import org.eclipse.jgit.api.Git
@@ -36,6 +39,7 @@ data class GitLabProjectInfo(
 class GitLabProjectUrlResolver(
   private val preferenceStore: ScopedPreferenceStore = service(),
   assignmentLookupFactory: () -> AssignedProjectLookup = { AssignedProjectLookup() },
+  private val branchOf: (Repository) -> CurrentBranch = { CurrentBranchGitReader().readFrom(it) },
 ) {
   private val logger by lazy { logger<GitLabProjectUrlResolver>() }
 
@@ -94,6 +98,7 @@ class GitLabProjectUrlResolver(
     const val NO_INSTANCE = "Set your GitLab instance URL in the GitLab preferences."
     const val MISMATCH = "The current project does not match your configured GitLab instance."
     const val NO_REMOTE = "No GitLab remote is configured for the current project."
+    const val DETACHED_HEAD = "The repository seems to be in a detached HEAD state. Please check out a branch."
   }
 
   fun resolveWebUrlForRepo(repoDir: File): Resolution =
@@ -130,27 +135,65 @@ class GitLabProjectUrlResolver(
 
   fun resolveBlobUrl(file: File, startLine: Int?, endLine: Int?): Resolution =
     withRepo(file) { repo ->
-      val relPath = repo.workTree.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-      if (relPath == ".." || relPath.startsWith("../")) return@withRepo Resolution.Warn(NOT_IN_REPO)
-      // A repo with zero commits has no HEAD; log() throws NoHeadException rather than
-      // returning an empty result — that also means "this file was never committed".
-      val sha = Git(repo).use {
-        try {
-          it.log().addPath(relPath).setMaxCount(1).call().firstOrNull()?.name
-        } catch (@Suppress("SwallowedException") e: NoHeadException) {
-          // A brand-new repo (no commits at all) has no HEAD to log from; that is
-          // itself "this file was never committed", not an error to surface.
-          null
-        }
-      } ?: return@withRepo Resolution.Warn(NOT_COMMITTED)
+      val path = when (val committed = committedPath(repo, file)) {
+        is CommittedPath.Missing -> return@withRepo committed.warn
+        is CommittedPath.Found -> committed
+      }
       when (val base = webUrlFor(repo)) {
         is Resolution.Warn -> base
         is Resolution.Ok -> Resolution.Ok(
-          "${base.url}/-/blob/${PathSegmentEncoder.encodeSegment(sha)}/" +
-            PathSegmentEncoder.encodePath(relPath) + anchor(startLine, endLine),
+          "${base.url}/-/blob/${PathSegmentEncoder.encodeSegment(path.sha)}/" +
+            PathSegmentEncoder.encodePath(path.relPath) + anchor(startLine, endLine),
         )
       }
     } ?: Resolution.Warn(NOT_IN_REPO)
+
+  /**
+   * NAV-03: the blob URL of [file] on the current branch (VS Code `copyLinkToActiveFileOnBranch`). Runs
+   * NAV-02's checks in NAV-02's order, then names the branch the way Open Current MR does ([EffectiveRef]
+   * against the resolved project's remote). Whether the branch was pushed is not checked, as in VS Code.
+   * Never throws.
+   */
+  fun resolveBranchBlobUrl(file: File, startLine: Int?, endLine: Int?): Resolution =
+    withRepo(file) { repo ->
+      val path = when (val committed = committedPath(repo, file)) {
+        is CommittedPath.Missing -> return@withRepo committed.warn
+        is CommittedPath.Found -> committed
+      }
+      val project = when (val context = contextFor(repo)) {
+        is ContextResolution.Warn -> return@withRepo Resolution.Warn(context.message)
+        is ContextResolution.Ok -> context.project
+      }
+      val ref = EffectiveRef.resolve(branchOf(repo), project.remoteName)
+        ?: return@withRepo Resolution.Warn(DETACHED_HEAD)
+      Resolution.Ok(
+        "${project.webUrl}/-/blob/${PathSegmentEncoder.encodeSegment(ref)}/" +
+          PathSegmentEncoder.encodePath(path.relPath) + anchor(startLine, endLine),
+      )
+    } ?: Resolution.Warn(NOT_IN_REPO)
+
+  /** The checks NAV-02 and NAV-03 share before any project is resolved: inside the work tree, and committed. */
+  private sealed interface CommittedPath {
+    data class Found(val relPath: String, val sha: String) : CommittedPath
+    data class Missing(val warn: Resolution.Warn) : CommittedPath
+  }
+
+  private fun committedPath(repo: Repository, file: File): CommittedPath {
+    val relPath = repo.workTree.toPath().relativize(file.toPath()).toString().replace('\\', '/')
+    if (relPath == ".." || relPath.startsWith("../")) return CommittedPath.Missing(Resolution.Warn(NOT_IN_REPO))
+    // A repo with zero commits has no HEAD; log() throws NoHeadException rather than
+    // returning an empty result — that also means "this file was never committed".
+    val sha = Git(repo).use {
+      try {
+        it.log().addPath(relPath).setMaxCount(1).call().firstOrNull()?.name
+      } catch (@Suppress("SwallowedException") e: NoHeadException) {
+        // A brand-new repo (no commits at all) has no HEAD to log from; that is
+        // itself "this file was never committed", not an error to surface.
+        null
+      }
+    } ?: return CommittedPath.Missing(Resolution.Warn(NOT_COMMITTED))
+    return CommittedPath.Found(relPath, sha)
+  }
 
   /**
    * The user's explicit assignment wins over what the remote says (design §9.7). With nothing

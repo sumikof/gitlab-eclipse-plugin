@@ -11,6 +11,8 @@ import com.gitlab.eclipse.codesuggestions.refreshCodeSuggestionsToggle
 import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.lsp.configuration.GitLabLanguageServerConfigurationService
 import com.gitlab.eclipse.lsp.utils.LanguageServerLanguage
+import com.gitlab.eclipse.navigation.BROWSER_OPEN_FAILED_MESSAGE
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationRequest
 import com.gitlab.eclipse.preferences.healthcheck.ConfigurationValidationService
 import com.gitlab.eclipse.preferences.healthcheck.HealthCheckFieldEditor
@@ -19,6 +21,7 @@ import com.gitlab.eclipse.preferences.storage.GitLabInstanceKey
 import com.gitlab.eclipse.preferences.storage.InstanceSecretStore
 import com.gitlab.eclipse.preferences.storage.SecretStringWithButtonFieldEditor
 import com.gitlab.eclipse.security.SecurityScanSettings
+import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.currentDisplay
 import com.gitlab.eclipse.utils.makeBoldFont
 import com.gitlab.eclipse.utils.makeHintFont
@@ -27,7 +30,6 @@ import kotlinx.coroutines.launch
 import org.eclipse.jface.preference.*
 import org.eclipse.jface.util.PropertyChangeEvent
 import org.eclipse.swt.SWT
-import org.eclipse.swt.program.Program
 import org.eclipse.swt.widgets.Composite
 import org.eclipse.swt.widgets.Label
 import org.eclipse.ui.IWorkbench
@@ -41,6 +43,7 @@ class GitLabPreferencePage(
 ) : FieldEditorPreferencePage(GRID), IWorkbenchPreferencePage {
   private var urlField: StringFieldEditor? = null
   private var tokenField: SecretStringWithButtonFieldEditor? = null
+  private val browser = BrowserLauncher()
 
   public override fun createFieldEditors() {
     // Connection
@@ -76,7 +79,8 @@ class GitLabPreferencePage(
       val tokenUrl =
         "$gitLabUrl/-/user_settings/personal_access_tokens?name=GitLab%20Duo%20For%20Eclipse&scopes=api"
 
-      Program.launch(tokenUrl)
+      // The one external-browser gate (D8a); a typed URL without http(s) is refused. UI thread (the button).
+      if (!browser.openChecked(tokenUrl)) NotificationUtils.show(BROWSER_OPEN_FAILED_MESSAGE)
     }.also(::addField)
     this.tokenField = tokenField
 

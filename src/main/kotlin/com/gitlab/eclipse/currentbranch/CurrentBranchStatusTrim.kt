@@ -3,6 +3,7 @@ package com.gitlab.eclipse.currentbranch
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.PipelineActionService
 import com.gitlab.eclipse.ci.actions.launchPinnedPipelineWrite
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import com.gitlab.eclipse.utils.NotificationUtils
 import com.gitlab.eclipse.utils.logger
 import com.gitlab.eclipse.utils.theming.ThemeUtils
@@ -23,11 +24,9 @@ import org.eclipse.swt.widgets.Control
 import org.eclipse.swt.widgets.Menu
 import org.eclipse.swt.widgets.ToolBar
 import org.eclipse.ui.IWorkbenchWindow
-import org.eclipse.ui.PlatformUI
 import org.eclipse.ui.handlers.IHandlerService
 import org.eclipse.ui.menus.WorkbenchWindowControlContribution
 import org.koin.core.context.GlobalContext
-import java.net.URI
 
 private const val CREATE_PIPELINE_COMMAND = "com.gitlab.eclipse.commands.CreatePipeline"
 private const val CREATE_MR_COMMAND = "com.gitlab.eclipse.commands.OpenCreateNewMR"
@@ -53,6 +52,7 @@ private const val TRIM_SPACING = 8
  */
 class CurrentBranchStatusTrim : WorkbenchWindowControlContribution() {
   private val log = logger<CurrentBranchStatusTrim>()
+  private val browser = BrowserLauncher()
   private var controller: StatusTrimController? = null
   private var menuManager: MenuManager? = null
   private var menu: Menu? = null
@@ -91,7 +91,7 @@ class CurrentBranchStatusTrim : WorkbenchWindowControlContribution() {
     val display = root.display
     val uiHop = uiHopUnlessDisposed({ display.isDisposed }, display::asyncExec)
     val actions = PipelineMenuActions(
-      openUrl = ::openInBrowser,
+      openUrl = browser::openChecked,
       writePipeline = { write, onSuccess ->
         launchPinnedPipelineWrite(
           write,
@@ -111,7 +111,7 @@ class CurrentBranchStatusTrim : WorkbenchWindowControlContribution() {
     val trimController = StatusTrimController(
       view = view,
       menuItems = actions::itemsFor,
-      openUrl = { openInBrowser(it) },
+      openUrl = { browser.open(it) },
       createMergeRequest = { executeCommand(window, CREATE_MR_COMMAND) },
       log = { message -> log.warn(message) },
     )
@@ -161,15 +161,6 @@ class CurrentBranchStatusTrim : WorkbenchWindowControlContribution() {
       },
     )
   }
-
-  private fun openInBrowser(url: String): Boolean =
-    try {
-      PlatformUI.getWorkbench().browserSupport.externalBrowser.openURL(URI.create(url).toURL())
-      true
-    } catch (e: Exception) {
-      log.warn("Current-branch trim could not open the browser: ${e.javaClass.name}")
-      false
-    }
 
   /** Runs an existing command in [window]'s context (it keeps its own dialogs and refresh). */
   private fun executeCommand(window: IWorkbenchWindow?, commandId: String) {

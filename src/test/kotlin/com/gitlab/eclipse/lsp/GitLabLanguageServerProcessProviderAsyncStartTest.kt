@@ -21,6 +21,7 @@ import io.kotest.matchers.collections.shouldBeIn
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
@@ -85,6 +86,22 @@ private class GatedInstall(private val result: String? = "/fake/language-server"
       interruptedAtEnd = Thread.currentThread().isInterrupted
     }
   }
+}
+
+/**
+ * A server that answers initialize but is already dead when the provider checks it afterwards: [onExit]
+ * stays open (so the handshake arm of the race wins) while [isAlive] reports false.
+ */
+private class DeadOnArrivalProcess(private val delegate: FakeLanguageServerProcess) : Process() {
+  override fun getOutputStream() = delegate.outputStream
+  override fun getInputStream() = delegate.inputStream
+  override fun getErrorStream() = delegate.errorStream
+  override fun waitFor() = delegate.waitFor()
+  override fun exitValue() = delegate.exitValue()
+  override fun destroy() = delegate.destroy()
+  override fun onExit() = delegate.onExit()
+  override fun pid() = delegate.pid()
+  override fun isAlive() = false
 }
 
 /** Wraps a real executor, recording whatever a task lets escape; [done] opens once a task has finished. */
@@ -609,6 +626,148 @@ class GitLabLanguageServerProcessProviderAsyncStartTest : DescribeSpec({
       spawnedProcesses shouldHaveSize 0
       verify(exactly = 0) { log.error(any<String>()) }
       verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
+    }
+  }
+
+  describe("what a restart came to (N-10)") {
+    fun errorLog(): ILog = mockk<ILog>(relaxUnitFun = true).also { log ->
+      every { Platform.getLog(any<Bundle>()) } returns log
+    }
+
+    fun verifyOneErrorLogged(log: ILog) {
+      verify(exactly = 1) { log.error(any<String>()) }
+      verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
+    }
+
+    fun verifyNoErrorLogged(log: ILog) {
+      verify(exactly = 0) { log.error(any<String>()) }
+      verify(exactly = 0) { log.error(any<String>(), any<Throwable>()) }
+    }
+
+    it("is RESTARTED once the new server has initialized") {
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.RESTARTED
+
+      store.snapshot().phase shouldBe LanguageServerPhase.RUNNING
+      provider.stop()
+    }
+
+    it("is ABANDONED, with nothing spawned or reported, when the store closed before the attempt began") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      store.close()
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.ABANDONED
+
+      spawnedProcesses shouldHaveSize 0
+      store.snapshot().phase shouldNotBe LanguageServerPhase.FAILED
+      verifyNoErrorLogged(log)
+    }
+
+    it("is ABANDONED when the install gives up (returns null) because the store closed (S-1)") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      every { installer.install(any()) } answers {
+        store.close()
+        null
+      }
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.ABANDONED
+
+      spawnedProcesses shouldHaveSize 0
+      store.snapshot().phase shouldNotBe LanguageServerPhase.FAILED
+      verifyNoErrorLogged(log)
+    }
+
+    it("spawns nothing and is ABANDONED when the store closes during an install that still succeeds (T-1)") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      every { installer.install(any()) } answers {
+        store.close()
+        "/fake/language-server"
+      }
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.ABANDONED
+
+      spawnedProcesses shouldHaveSize 0
+      store.snapshot().phase shouldNotBe LanguageServerPhase.FAILED
+      verifyNoErrorLogged(log)
+      provider.isRunning shouldBe false
+    }
+
+    it("is FAILED when the spawn fails with the store open") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(
+        startExecutor = ManualExecutor(),
+        factory = { throw java.io.IOException("cannot run program") },
+        store = store,
+      )
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.FAILED
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
+    }
+
+    it("stays FAILED when the store closes after the spawn and the initialize then fails (N-1)") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(
+        startExecutor = ManualExecutor(),
+        factory = {
+          // The bundle starts stopping once the server is already spawned: a real failure after
+          // that point is still reported.
+          store.close()
+          FakeLanguageServerProcess(InitializeReply.FAILURE).also { fake -> spawnedProcesses += fake }
+        },
+        store = store,
+      )
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.FAILED
+
+      spawnedProcesses shouldHaveSize 1
+      provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
+    }
+
+    it("never runs the installer and is ABANDONED when the store is closed before the restart") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      store.close()
+      val provider = newProvider(startExecutor = ManualExecutor(), store = store)
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.ABANDONED
+
+      verify(exactly = 0) { installer.install(any()) }
+      verifyNoErrorLogged(log)
+    }
+
+    it("is FAILED when the server answers initialize but is already dead afterwards") {
+      val log = errorLog()
+      val store = LanguageServerLifecycleStore()
+      val provider = newProvider(
+        startExecutor = ManualExecutor(),
+        factory = {
+          FakeLanguageServerProcess(InitializeReply.SUCCESS).also { fake -> spawnedProcesses += fake }
+            .let { fake -> DeadOnArrivalProcess(fake) }
+        },
+        store = store,
+      )
+
+      provider.restartForOutcome(bundle) shouldBe RestartOutcome.FAILED
+
+      store.snapshot().phase shouldBe LanguageServerPhase.FAILED
+      store.snapshot().failure shouldBe LanguageServerFailureKind.EXITED_DURING_STARTUP
+      spawnedProcesses.single().destroyed shouldBe true
+      provider.isRunning shouldBe false
+      verifyOneErrorLogged(log)
     }
   }
 })

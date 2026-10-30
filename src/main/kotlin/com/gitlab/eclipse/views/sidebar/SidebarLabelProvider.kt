@@ -5,8 +5,8 @@ import org.eclipse.swt.graphics.Color
 import org.eclipse.swt.graphics.Image
 
 /**
- * Renders each [SidebarNode] (design A D1-D3): [sidebarDisplayText] as text, the node's CI status icon as image and
- * the change badge's theme color as foreground. No owner draw.
+ * Renders each [SidebarNode] (design A D1-D3): [sidebarDisplayText] as text, [sidebarImageName] (a CI status icon or
+ * a changed file's comment badge) as image and the change badge's theme color as foreground. No owner draw.
  *
  * [image] creates the icon for a registry name; it runs once per name through an [IconImageCache] (a failure is
  * reported once through [onImageError] and drawn without an image). The images belong to the caller's resource
@@ -23,7 +23,7 @@ class SidebarLabelProvider(
   override fun getText(element: Any?): String = (element as? SidebarNode)?.let(::sidebarDisplayText) ?: ""
 
   override fun getImage(element: Any?): Image? =
-    (element as? SidebarNode)?.let(::sidebarStatusIcon)?.let { images.get(it.iconName) }
+    (element as? SidebarNode)?.let(::sidebarImageName)?.let(images::get)
 
   override fun getForeground(element: Any?): Color? =
     (element as? SidebarNode)?.let(::changeBadge)?.colorRole?.let(color)

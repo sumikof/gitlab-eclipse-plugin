@@ -1,6 +1,7 @@
 package com.gitlab.eclipse.lsp
 
 import com.gitlab.eclipse.extensions.LoggingKotestExtension
+import com.gitlab.eclipse.navigation.BrowserLauncher
 import io.kotest.assertions.throwables.shouldNotThrowAny
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -11,6 +12,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import org.eclipse.core.runtime.ILog
 import org.eclipse.core.runtime.IStatus
 import org.eclipse.core.runtime.Platform
@@ -18,6 +20,7 @@ import org.eclipse.swt.SWT
 import org.eclipse.swt.SWTError
 import org.eclipse.ui.PartInitException
 import org.osgi.framework.Bundle
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -74,22 +77,33 @@ class ShowDocumentLauncherTest : DescribeSpec({
   extensions(LoggingKotestExtension)
 
   val opened = mutableListOf<String>()
+  val notices = mutableListOf<String>()
 
   beforeTest {
     opened.clear()
+    notices.clear()
   }
 
+  /**
+   * A real [ShowDocumentLauncher] over a real [BrowserLauncher] gate whose three seams are fakes. The browser fake
+   * records what reached it by `toExternalForm()` (`URL.equals` resolves hosts over DNS). The production browser
+   * signals "did not launch" only by throwing (`IWebBrowser.openURL` returns `void`), so `launched = false` is a
+   * browser that received the URL and then threw.
+   */
   fun launcher(
     launched: Boolean = true,
     browserFailure: Throwable? = null,
     hopFailure: Exception? = null,
   ) = ShowDocumentLauncher(
-    onUiThread = { runnable -> if (hopFailure != null) throw hopFailure else runnable.run() },
-    openInBrowser = { url ->
-      opened += url
-      if (browserFailure != null) throw browserFailure
-      launched
-    },
+    BrowserLauncher(
+      onUiThread = { runnable -> if (hopFailure != null) throw hopFailure else runnable.run() },
+      openInBrowser = { url ->
+        opened += url.toExternalForm()
+        if (browserFailure != null) throw browserFailure
+        if (!launched) throw PartInitException("the browser declined")
+      },
+      notify = { notices += it },
+    ),
   )
 
   describe("show") {
@@ -141,6 +155,36 @@ class ShowDocumentLauncherTest : DescribeSpec({
       opened.shouldBeEmpty()
     }
 
+    it("hands a null URI to the gate as null, not as an empty string") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openAsync(null) } returns CompletableFuture.completedFuture(false)
+
+      ShowDocumentLauncher(browser).show(null).get(1, TimeUnit.SECONDS) shouldBe false
+
+      verify(exactly = 1) { browser.openAsync(null) }
+      verify(exactly = 1) { browser.openAsync(any()) }
+    }
+
+    it("does not trim a URI padded with whitespace: the gate refuses it and nothing reaches the browser") {
+      val outcome = launcher().show(" https://gitlab.com/x ")
+
+      outcome.get(1, TimeUnit.SECONDS) shouldBe false
+      opened.shouldBeEmpty()
+    }
+
+    it("hands a padded URI to the gate exactly as received") {
+      val browser = mockk<BrowserLauncher>()
+      every { browser.openAsync(any()) } returns CompletableFuture.completedFuture(false)
+
+      ShowDocumentLauncher(browser).show(" https://gitlab.com/x ")
+
+      verify(exactly = 1) { browser.openAsync(" https://gitlab.com/x ") }
+    }
+
+    it("defaults to the production BrowserLauncher gate, not a stand-in") {
+      ShowDocumentLauncher().browser.javaClass shouldBe BrowserLauncher::class.java
+    }
+
     it("reports failure when the browser declined the URI") {
       val outcome = launcher(launched = false).show(ACCEPTED_URL)
 
@@ -175,6 +219,19 @@ class ShowDocumentLauncherTest : DescribeSpec({
       outcome.get(1, TimeUnit.SECONDS) shouldBe false
       opened.shouldBeEmpty()
     }
+
+    it("never shows the user a notice, whatever the outcome: the server is the one told") {
+      fun outcomeOf(launcher: ShowDocumentLauncher, uri: String?) = launcher.show(uri).get(1, TimeUnit.SECONDS)
+
+      outcomeOf(launcher(), ACCEPTED_URL) shouldBe true
+      outcomeOf(launcher(), REFUSED_URL) shouldBe false
+      outcomeOf(launcher(), null) shouldBe false
+      outcomeOf(launcher(launched = false), ACCEPTED_URL) shouldBe false
+      outcomeOf(launcher(browserFailure = SWTError(SWT.ERROR_FAILED_EXEC, "x")), ACCEPTED_URL) shouldBe false
+      outcomeOf(launcher(hopFailure = IllegalStateException("gone")), ACCEPTED_URL) shouldBe false
+
+      notices.shouldBeEmpty()
+    }
   }
 
   describe("log hygiene") {
@@ -185,12 +242,24 @@ class ShowDocumentLauncherTest : DescribeSpec({
       mockkStatic(Platform::class)
     }
 
-    it("names the refused scheme but no part of the URI when the policy rejects it") {
+    it("refuses through the production default gate before any UI hop") {
+      val logged = captureLog()
+
+      // A refusal needs no UI hop, so the real default gate can be exercised headless.
+      ShowDocumentLauncher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
+
+      logged.any { it.contains("refused a link outside") && it.contains("reason=DISALLOWED_SCHEME") } shouldBe true
+      logged.any { it.contains("scheme=") || it.contains("javascript") } shouldBe false
+      logged.any { it.contains("could not reach the UI thread") } shouldBe false
+    }
+
+    it("names only the refusal reason, not the scheme or any part of the URI, when the policy rejects it") {
       val logged = captureLog()
 
       launcher().show(REFUSED_URL).get(1, TimeUnit.SECONDS) shouldBe false
 
-      logged.any { it.contains("javascript") } shouldBe true
+      logged.any { it.contains("reason=DISALLOWED_SCHEME") } shouldBe true
+      logged.any { it.contains("scheme=") || it.contains("javascript") } shouldBe false
       // Review H8: page clicks reach this too, so the line must not name the language server as the source.
       logged.any { it.contains("language server") } shouldBe false
       logged.forEach {

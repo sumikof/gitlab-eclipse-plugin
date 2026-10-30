@@ -3,6 +3,8 @@ package com.gitlab.eclipse.ci.joblog
 import com.gitlab.eclipse.api.ConnectionSnapshot
 import com.gitlab.eclipse.api.TraceFetch
 import com.gitlab.eclipse.api.model.GitLabJob
+import com.gitlab.eclipse.ci.CiAction
+import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.ci.actions.CONNECTION_CHANGED_MESSAGE
 import com.gitlab.eclipse.ci.actions.GENERIC_LOG_ERROR_MESSAGE
 import com.gitlab.eclipse.ci.actions.LOG_NOT_FOUND_MESSAGE
@@ -43,6 +45,9 @@ internal interface JobLogSessionEnv {
 
   /** UI thread. */
   fun notify(message: String)
+
+  /** UI thread. A session's Retry state ([JobLogSession.canRetry]) may have changed. */
+  fun retryStateChanged()
 }
 
 /** The GitLab calls of one poll. IO thread. */
@@ -96,7 +101,11 @@ sealed interface JobLogPage {
  * Stopping (finished job, 404, 401/403, changed connection) keeps the session and what the editors
  * show; [dispose] (last editor closed, plugin stopped) drops everything. The connection tags stay
  * private and never reach a log line. UI thread only.
+ *
+ * TooManyFunctions is suppressed: the Retry state (L4) lives here because it shares the session's
+ * lifetime, its disposal and its views (the page re-send); a separate holder would need all three.
  */
+@Suppress("TooManyFunctions")
 internal class JobLogSession(
   val key: JobLogKey,
   private val projectId: Long,
@@ -140,6 +149,38 @@ internal class JobLogSession(
   internal val hasViews: Boolean
     get() = !views.isEmpty
 
+  /**
+   * The job status the last status poll saw, null until one is seen in this run. Kept apart from
+   * [pollState], whose status the policy drops when it stops (L4).
+   */
+  internal var lastStatus: String? = null
+    private set
+
+  private var retryInFlight = false
+
+  // A retry of this job succeeded. Kept for the session's life, across start(): the old job stays
+  // retried even when its log is shown again.
+  private var retried = false
+
+  /** Retry may be offered for this job now (same rule as the sidebar's Retry Job). */
+  internal val canRetry: Boolean
+    get() = jobLogCanRetry(disposed, lastStatus, retryInFlight, retried)
+
+  /** A retry of this job was sent. */
+  fun retryStarted() {
+    if (disposed) return
+    retryInFlight = true
+    retryStateChanged()
+  }
+
+  /** The retry sent by [retryStarted] ended; only a [succeeded] one keeps Retry off. */
+  fun retryFinished(succeeded: Boolean) {
+    if (disposed) return
+    retryInFlight = false
+    if (succeeded) retried = true
+    retryStateChanged()
+  }
+
   init {
     content.page = JobLogPage.Loading
   }
@@ -155,6 +196,7 @@ internal class JobLogSession(
     job = null
     generation = env.nextGeneration(key)
     progress.release()
+    seeStatus(null)
     if (content.page != JobLogPage.Log) commands.setPage(JobLogPage.Loading)
     visible = views.isEmpty || views.anyVisible()
     pollState = PollState()
@@ -211,6 +253,23 @@ internal class JobLogSession(
     content.page = JobLogPage.Log
   }
 
+  private fun seeStatus(status: String?) {
+    if (status == lastStatus) return
+    val couldRetry = canRetry
+    lastStatus = status
+    env.retryStateChanged()
+    // The waiting page's Retry button follows the status even when the policy keeps the page up;
+    // only a change of Retry is sent, so an ordinary status change costs the page nothing.
+    if (canRetry != couldRetry && content.page is JobLogPage.Waiting) views.showPage(content.page)
+  }
+
+  // The page is sent again although it did not change: setPage skips an equal page, and a stopped
+  // waiting page gets no other update, so this is how its Retry button follows the state.
+  private fun retryStateChanged() {
+    env.retryStateChanged()
+    views.showPage(content.page)
+  }
+
   private fun gate(gen: Long): Boolean =
     !disposed && gen == generation && env.shouldAct(key, gen) && pollState.phase != PollPhase.STOPPED
 
@@ -237,7 +296,11 @@ internal class JobLogSession(
     val onFailure = { f: PollFailure -> failure = f }
     val event = when (outcome) {
       is PollOutcome.Unpinned -> PollEvent.Failed(PollFailureKind.UNPINNED, outcome.elapsedMs)
-      is PollOutcome.Status -> statusEvent(outcome.result, outcome.elapsedMs, onFailure)
+      is PollOutcome.Status -> {
+        // Before or after the policy's step makes no difference: seeStatus re-sends a waiting page itself.
+        (outcome.result as? StatusStepResult.Seen)?.let { seeStatus(it.status) }
+        statusEvent(outcome.result, outcome.elapsedMs, onFailure)
+      }
       is PollOutcome.Trace -> progress.event(outcome.result, outcome.elapsedMs, commands::applyUpdate, onFailure)
       is PollOutcome.Failure -> {
         onFailure(outcome.failure)
@@ -622,3 +685,7 @@ private fun statusEvent(result: StatusStepResult, elapsedMs: Long, onFailure: (P
       PollEvent.Failed(result.failure.kind, elapsedMs)
     }
   }
+
+/** Pure. Retry is offered on the same statuses as the sidebar's Retry Job ([CiStatus.contextAction]). */
+internal fun jobLogCanRetry(disposed: Boolean, status: String?, inFlight: Boolean, retried: Boolean): Boolean =
+  !disposed && !inFlight && !retried && CiStatus.contextAction(status) == CiAction.RETRYABLE

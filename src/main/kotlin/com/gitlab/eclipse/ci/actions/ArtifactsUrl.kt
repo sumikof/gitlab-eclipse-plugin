@@ -6,6 +6,8 @@ import java.net.URI
  * Builds the external artifacts-download URL for a job (design §8.2), or null when [webUrl] is unusable.
  * Validation: non-blank, parseable, http/https scheme, and a non-empty host — so a null/garbage/relative
  * or non-web webUrl never reaches the browser. Mirrors the VSCode literal `${webUrl}/artifacts/download?file_type=archive`.
+ * A display / UX decision only (its own "unavailable" notice): the security decision before a link leaves for the
+ * browser is `BrowserLauncher` (D8a).
  */
 fun buildArtifactsDownloadUrl(webUrl: String?): String? {
   if (webUrl.isNullOrBlank()) return null

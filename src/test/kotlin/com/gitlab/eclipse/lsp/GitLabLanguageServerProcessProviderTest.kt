@@ -967,6 +967,36 @@ class GitLabLanguageServerProcessProviderLifecycleTest : DescribeSpec({
       fake.releaseInitializeReply()
     }
 
+    it("leaves the interrupt flag set on the calling thread after an interrupted restart") {
+      val fake = unansweredFake()
+      val spawned = CountDownLatch(1)
+      val provider = newProvider(
+        factory = {
+          spawnedProcesses += fake
+          spawned.countDown()
+          fake
+        },
+        initializeTimeout = JavaDuration.ofSeconds(10),
+      )
+      val outcome = AtomicReference<RestartOutcome?>(null)
+      val flagOnReturn = AtomicReference<Boolean?>(null)
+      val restarting = Thread {
+        outcome.set(provider.restartForOutcome(bundle))
+        flagOnReturn.set(Thread.interrupted())
+      }.apply {
+        isDaemon = true
+        start()
+      }
+
+      spawned.await(5, TimeUnit.SECONDS) shouldBe true
+      restarting.interrupt()
+      restarting.join(5_000)
+
+      outcome.get() shouldBe RestartOutcome.FAILED
+      flagOnReturn.get() shouldBe true
+      fake.releaseInitializeReply()
+    }
+
     it("does not stop the new server when the superseded server's initialize fails late (F1)") {
       val log = captureLog()
       val store = LanguageServerLifecycleStore()

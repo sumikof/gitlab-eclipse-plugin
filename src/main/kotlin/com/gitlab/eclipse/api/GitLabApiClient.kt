@@ -6,6 +6,7 @@ import com.gitlab.eclipse.inject.service
 import com.gitlab.eclipse.preferences.PreferenceConstants
 import com.gitlab.eclipse.utils.logger
 import com.google.gson.Gson
+import com.google.gson.JsonParseException
 import com.google.gson.reflect.TypeToken
 import org.eclipse.ui.preferences.ScopedPreferenceStore
 import java.io.IOException
@@ -285,6 +286,23 @@ class GitLabApiClient(
   fun post(path: String, query: Map<String, String> = emptyMap(), connection: ConnectionSnapshot): PostResult {
     val response = sendPost(path, query, connection)
     return PostResult(response.statusCode(), correlationId(response))
+  }
+
+  /**
+   * [post], but also returns the 2xx response body parsed as [type] (e.g. the new job a retry
+   * creates). The write has happened once this returns, so a body that does not parse is a null
+   * [PostedObject.body], never an exception; the failure is logged by exception class only (the
+   * body is server content and stays out of the log). Non-2xx → [GitLabApiException] as for [post].
+   */
+  fun <T> postReturning(path: String, type: Class<T>, connection: ConnectionSnapshot): PostedObject<T> {
+    val response = sendPost(path, emptyMap(), connection)
+    val body = try {
+      gson.fromJson(response.body(), type)
+    } catch (e: JsonParseException) {
+      logger.warn("The response of a write could not be parsed: ${e.javaClass.name}")
+      null
+    }
+    return PostedObject(PostResult(response.statusCode(), correlationId(response)), body)
   }
 
   /**

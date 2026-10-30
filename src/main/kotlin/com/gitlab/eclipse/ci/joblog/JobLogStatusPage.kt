@@ -2,6 +2,8 @@ package com.gitlab.eclipse.ci.joblog
 
 import com.gitlab.eclipse.api.GitLabApiClient
 import com.gitlab.eclipse.api.JobActionService
+import com.gitlab.eclipse.ci.CiAction
+import com.gitlab.eclipse.ci.CiStatus
 import com.gitlab.eclipse.ci.actions.InFlightWriteGuard
 import com.gitlab.eclipse.ci.actions.JobWriteTarget
 import com.gitlab.eclipse.ci.actions.WriteKey
@@ -28,10 +30,11 @@ private const val PAGE_MARGIN = 20
 private const val PAGE_SPACING = 10
 private val LAST_CHECKED_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
-/** The write a waiting page offers (VS Code `pending_job_webview_controller.ts:15-19`; no Retry, L4). */
+/** The write a waiting page offers (VS Code `pending_job_webview_controller.ts:15-19`). */
 enum class PageButton(val label: String, val action: String) {
   PLAY("Trigger this manual action", "play"),
   CANCEL("Cancel this job", "cancel"),
+  RETRY("Retry this job", "retry"),
 }
 
 /** What a non-log page shows. [lastChecked] only while the job is still waiting. */
@@ -76,7 +79,7 @@ private val WAITING = mapOf(
   ),
 )
 
-// Finished before it started (L-B2-5): only the title, no button (VS Code's Retry is out of scope, L4).
+// Finished before it started (L-B2-5): only the title, and Retry when the status allows it (L4).
 private val FINISHED_TITLES = mapOf(
   "skipped" to "This job has been skipped",
   "canceled" to "This job has been canceled",
@@ -101,13 +104,21 @@ fun statusPageModel(page: JobLogPage): StatusPageModel? = when (page) {
   is JobLogPage.Waiting -> {
     val waiting = WAITING[page.status]
     if (waiting == null) {
-      StatusPageModel(FINISHED_TITLES[page.status] ?: NO_TRACE_TITLE, "", null, null)
+      val retry = PageButton.RETRY.takeIf { CiStatus.contextAction(page.status) == CiAction.RETRYABLE }
+      StatusPageModel(FINISHED_TITLES[page.status] ?: NO_TRACE_TITLE, "", null, retry)
     } else {
       val checked = page.lastChecked?.let { "Last checked at " + LAST_CHECKED_FORMAT.format(it) }
       StatusPageModel(waiting.title, waiting.description, checked, waiting.button)
     }
   }
 }
+
+/**
+ * [model] as the page shows it: Retry only while the job's session can retry ([JobLogSession.canRetry]),
+ * so it goes away while a retry runs and after one succeeded, and comes back after a failed one.
+ */
+internal fun retryButtonShown(model: StatusPageModel, canRetry: Boolean): StatusPageModel =
+  if (model.button == PageButton.RETRY && !canRetry) model.copy(button = null) else model
 
 /**
  * UI thread. Starts the write [launch] makes on [target] unless a write to the same job is in flight
@@ -256,7 +267,7 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
 
   /** The page's control, or null for the log (the editor then shows its text). */
   fun create(parent: Composite, page: JobLogPage): Control? {
-    val model = statusPageModel(page) ?: return null
+    val model = shownModel(page) ?: return null
     currentKind = page.javaClass
     return JobLogStatusPage(parent, model, ::press).also { current = it }.control
   }
@@ -264,9 +275,16 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
   /** True when [next] can stay on the page shown now ([keepsStatusPage]). */
   fun keepsShowing(next: JobLogPage?): Boolean = keepsStatusPage(currentKind, current?.isDisposed == false, next)
 
+  // The session re-sends its page whenever its Retry state changes, which brings the button up to date.
   fun update(page: JobLogPage) {
-    val model = statusPageModel(page) ?: return
+    val model = shownModel(page) ?: return
     current?.takeUnless { it.isDisposed }?.update(model)
+  }
+
+  private fun shownModel(page: JobLogPage): StatusPageModel? {
+    val model = statusPageModel(page) ?: return null
+    val canRetry = editor.jobLogInput?.key?.let(JobLogSessionManager::sessionFor)?.canRetry == true
+    return retryButtonShown(model, canRetry)
   }
 
   fun forget() {
@@ -277,6 +295,11 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
   private fun press(button: PageButton) {
     val input = editor.jobLogInput ?: return
     val page = current ?: return
+    if (button == PageButton.RETRY) {
+      // The new job's log replaces this page's editor, as VS Code's panel follows the new job.
+      JobLogRetry().press(input, closeOrigin = { editor.site.page.closeEditor(editor, false) }, setBusy = page::setBusy)
+      return
+    }
     val key = input.key
     val target = JobWriteTarget(key.jobId, key.projectId, input.instanceUrl, input.authFingerprint)
     val window = editor.site.workbenchWindow
@@ -303,6 +326,8 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
           when (button) {
             PageButton.PLAY -> service.play(connection, key.projectId, key.jobId)
             PageButton.CANCEL -> service.cancel(connection, key.projectId, key.jobId)
+            // Not reached: Retry went through JobLogRetry above.
+            PageButton.RETRY -> error("Retry goes through JobLogRetry")
           }
         }
       },
@@ -315,7 +340,7 @@ internal class JobLogStatusPages(private val editor: JobLogEditor) {
 
 // Any thread. Once the workbench or its display is gone the action is dropped (same shape as the
 // session's runOnUi).
-private fun asyncOnUi(action: () -> Unit) {
+internal fun asyncOnUi(action: () -> Unit) {
   try {
     val display = PlatformUI.getWorkbench().display
     display.asyncExec {

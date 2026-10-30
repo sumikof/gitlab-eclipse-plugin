@@ -55,4 +55,12 @@ class SidebarDecorationAssetsTest : StringSpec({
 
     missing.shouldBeEmpty()
   }
+
+  "the comment badge icon exists for both tones (light/dark folders), at 1x and @2x" {
+    val missing = listOf("light", "dark").flatMap { folder ->
+      listOf("", "@2x").map { scale -> "icons/$folder/$COMMENT_BADGE_ICON$scale.png" }
+    }.filter { javaClass.classLoader.getResource(it) == null }
+
+    missing.shouldBeEmpty()
+  }
 })
