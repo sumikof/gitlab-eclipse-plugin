@@ -22,16 +22,11 @@ class BrowserRouteConventionTest : DescribeSpec({
 
   describe("the route table") {
     it("has no unlisted route and no extra occurrence") {
-      actual.flatMap { (file, labels) ->
-        labels.filter { (label, n) -> n > (ROUTES[file]?.get(label) ?: 0) }.map { (label, n) -> "$file: $label x$n" }
-      }.shouldBeEmpty()
+      routeDiff(ROUTES, actual).unlisted.shouldBeEmpty()
     }
 
     it("has no stale row") {
-      ROUTES.flatMap { (file, labels) ->
-        labels.filter { (label, n) -> (actual[file]?.get(label) ?: 0) < n }
-          .map { (label, n) -> "$file: $label (table $n)" }
-      }.shouldBeEmpty()
+      routeDiff(ROUTES, actual).stale.shouldBeEmpty()
     }
 
     it("derives exactly the expected browser commands, without errors, defaultHandler or child-element classes") {
@@ -41,18 +36,58 @@ class BrowserRouteConventionTest : DescribeSpec({
     }
 
     it("has no aliased import, typealias, nested-type import or id-prefix literal (TP §2.1.2)") {
-      val bad = Regex(
-        """import\s+\S*\b(BrowserLauncher|ShowDocumentLauncher)\s+as\b|""" +
-          """typealias\s+\w+\s*=\s*(BrowserLauncher|ShowDocumentLauncher)\b|""" +
-          """import\s+\S*\b(TrimAction|SidebarDoubleClick)\.(OpenUrl|\*)|""" +
-          // A bare command-id prefix: the usual start of an id assembled by concatenation.
-          """"(com\.gitlab\.eclipse|gitlab-eclipse-plugin)\.commands\.?"""",
-      )
-      sources.filterValues { bad.containsMatchIn(it) }.keys.shouldBeEmpty()
+      sources.filterValues { ROUTE_EVASION.containsMatchIn(it) }.keys.shouldBeEmpty()
     }
   }
 
   describe("the detector itself (TP §2.1.8)") {
+    listOf(
+      "import com.gitlab.eclipse.navigation.BrowserLauncher as BL",
+      "import com.gitlab.eclipse.lsp.ShowDocumentLauncher as SDL",
+      "import com.gitlab.eclipse.currentbranch.TrimAction as TA",
+      "import com.gitlab.eclipse.views.sidebar.SidebarDoubleClick as SD",
+      "typealias BL = BrowserLauncher",
+      "typealias BL = com.gitlab.eclipse.navigation.BrowserLauncher",
+      "typealias TA = com.gitlab.eclipse.currentbranch.TrimAction",
+      "typealias Open = SidebarDoubleClick.OpenUrl",
+      "import com.gitlab.eclipse.currentbranch.TrimAction.OpenUrl",
+      "import com.gitlab.eclipse.views.sidebar.SidebarDoubleClick.*",
+      "val id = \"com.gitlab.eclipse.commands.\" + name",
+      "val id = \"gitlab-eclipse-plugin.commands\"",
+      "val id = \"com.gitlab.eclipse.commands.\$name\"",
+      "val id = \"gitlab-eclipse-plugin.commands.\${name}\"",
+    ).forEach { code ->
+      it("flags the evasion: $code") {
+        ROUTE_EVASION.containsMatchIn(code) shouldBe true
+      }
+    }
+
+    listOf(
+      "import com.gitlab.eclipse.navigation.BrowserLauncher",
+      "import com.gitlab.eclipse.currentbranch.TrimAction",
+      "val a = TrimAction.OpenUrl(u)",
+      "typealias Other = com.gitlab.eclipse.navigation.MyBrowserLauncherFactory",
+      "import com.gitlab.eclipse.currentbranch.MyTrimAction as X",
+      "val id = \"com.gitlab.eclipse.commands.OpenCreateNewMR\"",
+      "val id = \"com.gitlab.eclipse.commands.SelectChatWebview.\$name\"",
+    ).forEach { code ->
+      it("allows: $code") {
+        ROUTE_EVASION.containsMatchIn(code) shouldBe false
+      }
+    }
+
+    it("reports an unlisted file, an extra occurrence and a stale row, and nothing when they agree") {
+      val table = mapOf("a.kt" to mapOf("BrowserLauncher" to 2), "gone.kt" to mapOf("ShowDocumentLauncher" to 1))
+      val diff = routeDiff(table, mapOf("a.kt" to mapOf("BrowserLauncher" to 1), "new.kt" to mapOf("cmd:x" to 1)))
+      diff.unlisted shouldBe listOf("new.kt: cmd:x x1")
+      diff.stale shouldBe listOf("a.kt: BrowserLauncher (table 2)", "gone.kt: ShowDocumentLauncher (table 1)")
+
+      routeDiff(table, mapOf("a.kt" to mapOf("BrowserLauncher" to 3))).unlisted shouldBe
+        listOf("a.kt: BrowserLauncher x3")
+      routeDiff(table, table).unlisted.shouldBeEmpty()
+      routeDiff(table, table).stale.shouldBeEmpty()
+    }
+
     it("counts code, not comments; whole identifiers; spaced qualifiers; command literals") {
       val code = stripComments("// BrowserLauncher\nval b = BrowserLauncher(); val t = BrowserLauncherTest()")
       countRouteIdentifiers(code, emptySet()) shouldBe mapOf("BrowserLauncher" to 1)
@@ -101,6 +136,31 @@ private val LABELS = linkedMapOf(
   "ShowDocumentLauncher" to Regex("""\bShowDocumentLauncher\b"""),
   "TrimAction.OpenUrl" to Regex("""\bTrimAction\s*\.\s*OpenUrl\b"""),
   "SidebarDoubleClick.OpenUrl" to Regex("""\bSidebarDoubleClick\s*\.\s*OpenUrl\b"""),
+)
+
+/**
+ * TP §2.1.2: the spellings that would let a route slip past [LABELS] — an alias or typealias of any of the four types
+ * (`TA.OpenUrl(u)` after `import …TrimAction as TA` matches no label), an import of the nested `OpenUrl`, and a
+ * literal that is only a command-id prefix, closed (`"…commands."` + name) or continued by a template
+ * (`"…commands.$x"`).
+ */
+internal val ROUTE_EVASION = Regex(
+  """import\s+\S*\b(BrowserLauncher|ShowDocumentLauncher|TrimAction|SidebarDoubleClick)\s+as\b|""" +
+    """typealias\s+\w+\s*=\s*[\w.]*\b(BrowserLauncher|ShowDocumentLauncher|TrimAction|SidebarDoubleClick)\b|""" +
+    """import\s+\S*\b(TrimAction|SidebarDoubleClick)\.(OpenUrl|\*)|""" +
+    """"(com\.gitlab\.eclipse|gitlab-eclipse-plugin)\.commands\.?(\$|")""",
+)
+
+/** [unlisted]: occurrences the table does not allow (`file: label xN`); [stale]: rows above the actual count. */
+internal data class RouteDiff(val unlisted: List<String>, val stale: List<String>)
+
+internal fun routeDiff(table: Map<String, Map<String, Int>>, actual: Map<String, Map<String, Int>>) = RouteDiff(
+  unlisted = actual.flatMap { (file, labels) ->
+    labels.filter { (label, n) -> n > (table[file]?.get(label) ?: 0) }.map { (label, n) -> "$file: $label x$n" }
+  },
+  stale = table.flatMap { (file, labels) ->
+    labels.filter { (label, n) -> (actual[file]?.get(label) ?: 0) < n }.map { (label, n) -> "$file: $label (table $n)" }
+  },
 )
 
 /** TP §2.1.3: the browser commands derived at `54593ea`. U6 removes `OpenCurrentMergeRequest` (17 → 16). */
